@@ -1,0 +1,51 @@
+// ─────────────────────────────────────────────
+// EHTE FEATURES — Post
+// ─────────────────────────────────────────────
+
+enum PostType {
+  INCIDENT
+  AWARENESS
+}
+
+enum PostStatus {
+  DRAFT
+  PENDING
+  APPROVED
+  PUBLISHED
+  REJECTED
+  UNPUBLISHED
+  CHANGES_REQUESTED
+}
+
+model Post {
+  id     String @id @default(uuid())
+  userId String
+
+  title   String?
+  content String
+
+  type   PostType
+  status PostStatus @default(DRAFT)
+
+  // Flags content involving a child, triggering the additional
+  // review required by PRD §32 before it can be approved.
+  involvesChild Boolean @default(false)
+
+  photo    String[]
+  video    String[]
+  audio    String[]
+  pdf      String[]
+  document String[]
+  other    String[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([status])
+  @@index([type])
+  @@index([involvesChild])
+  @@map("post")
+}

@@ -1,0 +1,15 @@
+// ─────────────────────────────────────────────
+// AUTHORIZATION — Permission
+// ─────────────────────────────────────────────
+
+model Permission {
+  id          String  @id @default(uuid())
+  name        String  @unique
+  description String?
+
+  createdAt DateTime @default(now())
+
+  rolePermissions RolePermission[]
+
+  @@map("permission")
+}

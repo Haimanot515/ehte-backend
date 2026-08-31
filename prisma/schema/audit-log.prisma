@@ -1,0 +1,32 @@
+// ─────────────────────────────────────────────
+// SYSTEM — AuditLog
+// ─────────────────────────────────────────────
+
+enum ActorType {
+  USER
+  ADMIN
+  SUPER_ADMIN
+  SYSTEM
+}
+
+model AuditLog {
+  id        String    @id @default(uuid())
+  userId    String?
+  actorType ActorType
+
+  action   String
+  entity   String
+  entityId String?
+
+  diff Json?
+
+  createdAt DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([createdAt])
+  @@index([entity, entityId])
+  @@index([action])
+  @@map("audit_log")
+}

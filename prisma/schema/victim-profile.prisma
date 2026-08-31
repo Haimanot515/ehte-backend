@@ -1,0 +1,62 @@
+// ─────────────────────────────────────────────
+// EHTE FEATURES — VictimProfile
+// ─────────────────────────────────────────────
+
+// Tracks the 5-gate approval pipeline required for Victim/Survivor Profiles
+// (Verification, Safety review, Consent/authorization, Privacy review, Admin approval)
+enum VictimProfileStatus {
+  PENDING
+  UNDER_REVIEW
+  VERIFIED
+  CONSENT_PENDING
+  APPROVED
+  PUBLISHED
+  REJECTED
+  UNPUBLISHED
+}
+
+model VictimProfile {
+  id String @id @default(uuid())
+
+  name        String?
+  description String?
+  story       String?
+
+  supportType SupportType?
+  supportGoal Decimal?     @db.Decimal(12, 2)
+
+  photo    String[]
+  video    String[]
+  audio    String[]
+  pdf      String[]
+  document String[]
+  other    String[]
+
+  // Flags a case that involves a minor, driving the stronger
+  // protection rules required by PRD Sections 19 and 32.
+  involvesChild Boolean @default(false)
+
+  // Overall lifecycle status, replacing the previous single
+  // isPublished flag so each gate in the approval pipeline is visible.
+  status VictimProfileStatus @default(PENDING)
+
+  // The 5 approval gates from PRD Section 19, tracked individually
+  isVerified        Boolean   @default(false)
+  isSafetyReviewed  Boolean   @default(false)
+  hasConsent        Boolean   @default(false)
+  consentAt         DateTime?
+  consentRecordedBy String?
+  isPrivacyReviewed Boolean   @default(false)
+  isAdminApproved   Boolean   @default(false)
+
+  isPublished Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  supports Support[]
+
+  @@index([status])
+  @@index([involvesChild])
+  @@map("victim_profile")
+}

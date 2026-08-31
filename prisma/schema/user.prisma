@@ -1,0 +1,38 @@
+// ─────────────────────────────────────────────
+// AUTHENTICATION — User
+// ─────────────────────────────────────────────
+
+model User {
+  id       String  @id @default(uuid())
+  name     String?
+  phone    String  @unique
+  password String?
+  isActive Boolean @default(true)
+
+  // Gates login until signup OTP is verified (see AuthService.login()).
+  // Set to true only inside AuthService.verifySignupOtp() when the OTP
+  // is successfully consumed — never set it true anywhere else.
+  isPhoneVerified Boolean @default(false)
+
+  // Discreet Mode state (Section 9.1 / 9.5).
+  // Toggling this requires password re-authentication at the application layer.
+  discreetModeEnabled   Boolean   @default(false)
+  discreetModeUpdatedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  otps          UserOtp[]
+  sessions      Session[]
+  userRoles     UserRole[]
+  auditLogs     AuditLog[]
+  notifications Notification[]
+
+  reports            Report[]
+  posts              Post[]
+  missingPersons     MissingPerson[]
+  informationReports InformationSubmission[]
+  supports           Support[]
+
+  @@map("user")
+}

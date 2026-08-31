@@ -1,0 +1,60 @@
+// ─────────────────────────────────────────────
+// EHTE FEATURES — Support
+// ─────────────────────────────────────────────
+
+enum SupportType {
+  FINANCIAL
+  NON_FINANCIAL
+  OTHER
+}
+
+enum SupportStatus {
+  PENDING
+  CONFIRMED
+  COMPLETED
+  CANCELLED
+  FAILED
+}
+
+// Matches the Payment and Money Distribution table in the PRD (Section 22)
+enum SupportAgreementType {
+  DIRECT
+  PARTNER_ORGANIZATION
+  INSTITUTIONAL
+}
+
+model Support {
+  id String @id @default(uuid())
+
+  victimProfileId String
+  userId          String?
+
+  type   SupportType   @default(FINANCIAL)
+  status SupportStatus @default(PENDING)
+
+  // Agreement type this support falls under (Section 22 table:
+  // Direct / Partner Organization / Institutional Agreement)
+  agreementType SupportAgreementType @default(DIRECT)
+
+  // Total amount the supporter pays
+  amount Decimal? @db.Decimal(12, 2)
+
+  // Distribution breakdown, so the payer can see where the money
+  // goes before confirming (Section 22 requirement)
+  recipientAmount    Decimal? @db.Decimal(12, 2)
+  organizationAmount Decimal? @db.Decimal(12, 2)
+  platformAmount     Decimal? @db.Decimal(12, 2)
+
+  message String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  victimProfile VictimProfile @relation(fields: [victimProfileId], references: [id], onDelete: Cascade)
+  user          User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([victimProfileId])
+  @@index([userId])
+  @@index([status])
+  @@map("support")
+}

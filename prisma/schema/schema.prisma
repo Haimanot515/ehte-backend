@@ -1,0 +1,19 @@
+// ─────────────────────────────────────────────
+// Ehte — Safe Reporting, Public Awareness,
+// Missing Persons and Victim Support Platform
+//
+// Mobile Application + Secure Admin Portal
+//
+// v1.1 — adds: Discreet Mode state on User,
+// VictimProfile approval workflow + consent
+// tracking, child-safety flag on VictimProfile,
+// payment distribution breakdown on Support
+// ─────────────────────────────────────────────
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}

@@ -1,0 +1,39 @@
+// ─────────────────────────────────────────────
+// EHTE FEATURES — InformationSubmission
+// ─────────────────────────────────────────────
+
+enum InformationStatus {
+  PENDING
+  UNDER_REVIEW
+  REVIEWED
+  REJECTED
+}
+
+model InformationSubmission {
+  id              String @id @default(uuid())
+  userId          String
+  missingPersonId String
+
+  information String
+  location    String?
+
+  photo    String[]
+  video    String[]
+  audio    String[]
+  pdf      String[]
+  document String[]
+  other    String[]
+
+  status InformationStatus @default(PENDING)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  missingPerson MissingPerson @relation(fields: [missingPersonId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([missingPersonId])
+  @@index([status])
+  @@map("information_submission")
+}
