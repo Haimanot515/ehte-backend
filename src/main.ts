@@ -13,6 +13,7 @@ import {
 import helmet from 'helmet';
 import compression from 'compression';
 import { json, urlencoded } from 'express';
+import basicAuth from 'express-basic-auth';
 import { Logger } from 'nestjs-pino';
 import { execSync } from 'child_process';
 
@@ -104,20 +105,6 @@ async function bootstrap() {
 
   // ─────────────────────────────────────────────
   // SWAGGER CONFIGURATION
-  //
-  // Swagger is controlled ONLY by:
-  //
-  // SWAGGER_ENABLED=true
-  //
-  // This means Swagger can be enabled in
-  // development or production.
-  //
-  // In production, ALWAYS provide:
-  //
-  // SWAGGER_USER
-  // SWAGGER_PASSWORD
-  //
-  // so /docs is protected by Basic Auth.
   // ─────────────────────────────────────────────
 
   const swaggerEnabled =
@@ -131,8 +118,6 @@ async function bootstrap() {
   const swaggerPassword =
     configService.get<string>('SWAGGER_PASSWORD');
 
-  // Swagger is controlled by SWAGGER_ENABLED.
-  // DO NOT add NODE_ENV !== 'production' here.
   const shouldEnableSwagger = swaggerEnabled;
 
   // ─────────────────────────────────────────────
@@ -244,51 +229,16 @@ async function bootstrap() {
     if (swaggerUser && swaggerPassword) {
       app.use(
         '/docs',
-        (req, res, next) => {
-          const header =
-            req.headers.authorization;
+        basicAuth({
+          challenge: true,
+          users: {
+            [swaggerUser]: swaggerPassword,
+          },
+        }),
+      );
 
-          if (header?.startsWith('Basic ')) {
-            const decoded = Buffer.from(
-              header.slice(6),
-              'base64',
-            ).toString();
-
-            const separatorIndex =
-              decoded.indexOf(':');
-
-            const user =
-              separatorIndex >= 0
-                ? decoded.slice(
-                    0,
-                    separatorIndex,
-                  )
-                : '';
-
-            const password =
-              separatorIndex >= 0
-                ? decoded.slice(
-                    separatorIndex + 1,
-                  )
-                : '';
-
-            if (
-              user === swaggerUser &&
-              password === swaggerPassword
-            ) {
-              return next();
-            }
-          }
-
-          res.set(
-            'WWW-Authenticate',
-            'Basic realm="Ehte API Docs"',
-          );
-
-          return res
-            .status(401)
-            .send('Authentication required');
-        },
+      logger.log(
+        'Swagger Basic Authentication enabled',
       );
     } else {
       logger.warn(
