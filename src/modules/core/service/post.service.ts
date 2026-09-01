@@ -34,7 +34,10 @@ import {
   UpdatePostDto,
   RequestPostChangesDto,
   ApprovePostDto,
+  RejectPostDto,
+  AdminCreatePostDto,
   AdminPostQueryDto,
+  PublishedPostsQueryDto,
 } from '../dto/post.dto';
 
 // Added — statuses the owner is allowed to edit or submit from.
@@ -138,6 +141,112 @@ export class PostService {
   }
 
   // ─────────────────────────────────────────────
+  // Added — ADMIN — CREATE OFFICIAL POST
+  //
+  // PRD §13: "Authorized administrators can create
+  // official Posts." Attributed to the admin as
+  // author (userId = admin's id). Admin authorship
+  // is itself the review step, so by default this
+  // skips straight to APPROVED rather than PENDING —
+  // an explicit /publish call is still required, so
+  // an official post never goes live without a
+  // deliberate second action.
+  //
+  // publishImmediately=false opts back into the
+  // normal PENDING flow (approve/reject/request-
+  // changes), for an admin drafting on someone else's
+  // behalf who still wants a second reviewer's
+  // sign-off — in that case NEW_POST fires, exactly
+  // as it does for submitMyPost.
+  // ─────────────────────────────────────────────
+
+  async createOfficial(
+    actor: CurrentUserDto,
+    data: AdminCreatePostDto,
+  ) {
+    const publishImmediately =
+      data.publishImmediately ?? true;
+
+    const status = publishImmediately
+      ? PostStatus.APPROVED
+      : PostStatus.PENDING;
+
+    const post =
+      await this.prisma.post.create({
+        data: {
+          userId: actor.id,
+
+          title:
+            data.title ?? null,
+
+          content:
+            data.content,
+
+          type:
+            data.type,
+
+          involvesChild:
+            data.involvesChild ?? false,
+
+          status,
+
+          photo:
+            data.photo ?? [],
+
+          video:
+            data.video ?? [],
+
+          audio:
+            data.audio ?? [],
+
+          pdf:
+            data.pdf ?? [],
+
+          document:
+            data.document ?? [],
+
+          other:
+            data.other ?? [],
+        },
+      });
+
+    this.eventEmitter.emit(
+      AuditEventEnum.POST_CREATED,
+      {
+        userId: actor.id,
+        actorType: resolveActorType(
+          actor.roles ?? [],
+        ),
+        action:
+          AuditEventEnum.POST_CREATED,
+        entity: 'Post',
+        entityId: post.id,
+        diff: {
+          official: true,
+          status,
+          result: 'success',
+        },
+      } as AuditEventPayload,
+    );
+
+    if (!publishImmediately) {
+      /*
+       * Routed through normal review — notify admins
+       * the same way a user-submitted post would.
+       */
+      this.eventEmitter.emit(
+        NotificationEventEnum.NEW_POST,
+        {
+          postId: post.id,
+          userId: actor.id,
+        } as NewPostEvent,
+      );
+    }
+
+    return post;
+  }
+
+  // ─────────────────────────────────────────────
   // GET MY POSTS
   // ─────────────────────────────────────────────
 
@@ -188,6 +297,13 @@ export class PostService {
   // must call submitMyPost() explicitly, so "save
   // my edits" and "send this back to review" stay
   // two distinct actions.
+  //
+  // Fixed — the audit diff previously logged
+  // previousStatus/newStatus even though this method
+  // never changes status (that's submitMyPost's job),
+  // so the two values were always identical and
+  // implied a transition that didn't happen. Now logs
+  // which fields were actually changed instead.
   // ─────────────────────────────────────────────
 
   async updateMyPost(
@@ -218,6 +334,10 @@ export class PostService {
         'post_cannot_be_edited_in_current_status',
       );
     }
+
+    const updatedFields = Object.keys(data).filter(
+      (key) => data[key as keyof UpdatePostDto] !== undefined,
+    );
 
     const post =
       await this.prisma.post.update({
@@ -277,8 +397,7 @@ export class PostService {
         entity: 'Post',
         entityId: post.id,
         diff: {
-          previousStatus: existing.status,
-          newStatus: post.status,
+          updatedFields,
           result: 'success',
         },
       } as AuditEventPayload,
@@ -373,22 +492,43 @@ export class PostService {
   // Modified — optional `type` filter separates
   // Incident Posts (PRD §12) from Awareness Posts
   // (§13) on the public feed.
+  //
+  // Modified — now paginated (PRD §30). Returns the
+  // same { items, total, page, limit, totalPages }
+  // shape as the admin findAll, for consistency.
   // ─────────────────────────────────────────────
 
   async findPublishedPosts(
-    type?: PostType,
+    query: PublishedPostsQueryDto,
   ) {
-    return this.prisma.post.findMany({
-      where: {
-        status:
-          PostStatus.PUBLISHED,
-        ...(type ? { type } : {}),
-      },
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 20;
 
-      orderBy: {
-        createdAt: 'desc',
-      },
-    });
+    const where: Prisma.PostWhereInput = {
+      status: PostStatus.PUBLISHED,
+      ...(query.type ? { type: query.type } : {}),
+    };
+
+    const [items, total] =
+      await this.prisma.$transaction([
+        this.prisma.post.findMany({
+          where,
+          orderBy: {
+            createdAt: 'desc',
+          },
+          skip: (page - 1) * limit,
+          take: limit,
+        }),
+        this.prisma.post.count({ where }),
+      ]);
+
+    return {
+      items,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit),
+    };
   }
 
   // ─────────────────────────────────────────────
@@ -768,11 +908,18 @@ export class PostService {
 
   // ─────────────────────────────────────────────
   // ADMIN — REJECT POST
+  //
+  // Modified — now takes RejectPostDto so the owner
+  // is always told why, mirroring requestChanges and
+  // PRD §40's transparency principle. Reason is
+  // carried in both the audit diff and the
+  // notification payload.
   // ─────────────────────────────────────────────
 
   async reject(
     user: CurrentUserDto,
     postId: string,
+    data: RejectPostDto,
   ) {
     const post =
       await this.findOne(postId);
@@ -817,6 +964,8 @@ export class PostService {
             post.status,
           newStatus:
             PostStatus.REJECTED,
+          reason:
+            data.reason,
           result: 'success',
         },
       } as AuditEventPayload,
@@ -830,6 +979,7 @@ export class PostService {
       {
         postId,
         userId: post.userId,
+        reason: data.reason,
       } as PostRejectedEvent,
     );
 
