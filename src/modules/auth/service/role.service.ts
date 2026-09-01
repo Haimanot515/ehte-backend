@@ -22,12 +22,16 @@ import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
 import { CreateRoleDto, UpdateRoleDto } from '../dto/role.dto';
 
 import { AuditEventEnum } from 'src/common/enums/shared/audit-events.enum';
+import { RolesEnum } from 'src/common/enums/roles.enum';
 
 // Role names seeded by RolesSeeder that must always exist and must
 // never be renamed or deleted through this API — doing so would
-// silently break every @Roles('super_admin') / @Roles('admin')
-// check across the app. Confirm this list against RolesSeeder.
-const PROTECTED_ROLE_NAMES = ['super_admin', 'admin'];
+// silently break every @Roles(RolesEnum.SUPER_ADMIN) /
+// @Roles(RolesEnum.ADMIN) check across the app.
+const PROTECTED_ROLE_NAMES: string[] = [
+  RolesEnum.SUPER_ADMIN,
+  RolesEnum.ADMIN,
+];
 
 @Injectable()
 export class RoleService {
@@ -85,8 +89,46 @@ export class RoleService {
   }
 
   // ─────────────────────────────────────────────
+  // GET USERS HOLDING THIS ROLE
+  // GET /roles/:id/users
+  // Restricted to SUPER_ADMIN at the controller (Roles guard)
+  // ─────────────────────────────────────────────
+
+  async findUsersWithRole(id: string) {
+    const role = await this.prisma.role.findUnique({
+      where: {
+        id,
+      },
+    });
+
+    if (!role) {
+      throw new NotFoundException('role_not_found');
+    }
+
+    const userRoles = await this.prisma.userRole.findMany({
+      where: {
+        roleId: id,
+      },
+
+      select: {
+        user: {
+          select: {
+            id: true,
+            name: true,
+            phone: true,
+            isActive: true,
+            createdAt: true,
+          },
+        },
+      },
+    });
+
+    return userRoles.map((userRole) => userRole.user);
+  }
+
+  // ─────────────────────────────────────────────
   // CREATE ROLE
-  // Restricted to super_admin at the controller (Roles guard)
+  // Restricted to SUPER_ADMIN at the controller (Roles guard)
   // PRD 23/24/36: Admin Portal > Roles and Permissions
   // ─────────────────────────────────────────────
 
@@ -129,7 +171,7 @@ export class RoleService {
 
   // ─────────────────────────────────────────────
   // UPDATE ROLE
-  // Restricted to super_admin at the controller (Roles guard)
+  // Restricted to SUPER_ADMIN at the controller (Roles guard)
   // Seeded protected roles (PROTECTED_ROLE_NAMES) cannot be renamed,
   // since @Roles() checks elsewhere in the app depend on their name.
   // ─────────────────────────────────────────────
@@ -196,7 +238,7 @@ export class RoleService {
 
   // ─────────────────────────────────────────────
   // DELETE ROLE
-  // Restricted to super_admin at the controller (Roles guard)
+  // Restricted to SUPER_ADMIN at the controller (Roles guard)
   // Blocked for seeded protected roles, and blocked while any user
   // still holds the role (delete would silently strip their access).
   // ─────────────────────────────────────────────

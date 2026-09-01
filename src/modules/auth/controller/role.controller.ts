@@ -24,14 +24,8 @@ import { FetchQuery } from 'src/common/fetch-query/crud.types';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
 
-// ASSUMPTION — same as flagged before: not yet provided:
-// src/common/guards/roles.guard.ts and its matching decorator.
-// Guessed to live alongside public.decorator.ts /
-// current-user.decorator.ts as
-// src/common/decorators/roles.decorator.ts, exporting
-// Roles(...roles: string[]), read by the globally-registered
-// RolesGuard in AppModule.
 import { Roles } from 'src/common/decorators/roles.decorator';
+import { RolesEnum } from 'src/common/enums/roles.enum';
 
 import { CreateRoleDto, UpdateRoleDto } from '../dto/role.dto';
 
@@ -46,8 +40,8 @@ export class RoleController {
   // ─────────────────────────────────────────────
   // GET ALL ROLES
   // Left open to any authenticated admin-side user — unrestricted
-  // beyond the global AuthGuard, same as before. If you want listing
-  // itself locked to super_admin too, add @Roles('super_admin') here.
+  // beyond the global AuthGuard. If you want listing itself locked
+  // to SUPER_ADMIN too, add @Roles(RolesEnum.SUPER_ADMIN) here.
   // ─────────────────────────────────────────────
 
   @Get()
@@ -84,13 +78,38 @@ export class RoleController {
   }
 
   // ─────────────────────────────────────────────
+  // GET USERS HOLDING THIS ROLE
+  // GET /roles/:id/users
+  // Restricted to SUPER_ADMIN
+  // PRD 23/24: Admin Portal > Roles and Permissions
+  //
+  // Useful before renaming or deleting a role, to see who is
+  // actually affected — remove() only ever exposed a count.
+  // ─────────────────────────────────────────────
+
+  @Get(':id/users')
+  @Roles(RolesEnum.SUPER_ADMIN)
+  @ApiOperation({
+    summary: 'List users currently holding this role',
+  })
+  @ApiParam({
+    name: 'id',
+    type: 'string',
+  })
+  async findUsersWithRole(
+    @Param('id') id: string,
+  ) {
+    return await this.service.findUsersWithRole(id);
+  }
+
+  // ─────────────────────────────────────────────
   // CREATE ROLE
-  // Restricted to super_admin
+  // Restricted to SUPER_ADMIN
   // PRD 23/24/36: Admin Portal > Roles and Permissions
   // ─────────────────────────────────────────────
 
   @Post()
-  @Roles('super_admin')
+  @Roles(RolesEnum.SUPER_ADMIN)
   @ApiOperation({
     summary: 'Create a new role',
   })
@@ -103,12 +122,12 @@ export class RoleController {
 
   // ─────────────────────────────────────────────
   // UPDATE ROLE
-  // Restricted to super_admin
-  // Protected seeded roles (super_admin, admin) cannot be renamed.
+  // Restricted to SUPER_ADMIN
+  // Protected seeded roles (SUPER_ADMIN, ADMIN) cannot be renamed.
   // ─────────────────────────────────────────────
 
   @Patch(':id')
-  @Roles('super_admin')
+  @Roles(RolesEnum.SUPER_ADMIN)
   @ApiOperation({
     summary: 'Rename a role',
   })
@@ -126,12 +145,12 @@ export class RoleController {
 
   // ─────────────────────────────────────────────
   // DELETE ROLE
-  // Restricted to super_admin
+  // Restricted to SUPER_ADMIN
   // Blocked for protected seeded roles and roles still in use.
   // ─────────────────────────────────────────────
 
   @Delete(':id')
-  @Roles('super_admin')
+  @Roles(RolesEnum.SUPER_ADMIN)
   @ApiOperation({
     summary: 'Delete a role (must be unused and unprotected)',
   })
