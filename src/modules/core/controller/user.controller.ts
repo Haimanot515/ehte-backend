@@ -5,6 +5,7 @@ import {
   Get,
   Param,
   Patch,
+  Post,
   Query,
 } from '@nestjs/common';
 import {
@@ -146,6 +147,9 @@ export class UserController {
   // GET /users/stats
   // Restricted to SUPER_ADMIN
   // PRD 23: Admin Portal > Dashboard (user-related figures)
+  //
+  // Registered before ':id' so this literal route is never
+  // swallowed by the param route below.
   // ─────────────────────────────────────────────
   @Get('stats')
   @Roles(RolesEnum.SUPER_ADMIN)
@@ -155,6 +159,33 @@ export class UserController {
   })
   async getDashboardStats() {
     return this.userService.getDashboardStats();
+  }
+
+  // ─────────────────────────────────────────────
+  // ADMIN — GET USER BY ID
+  // GET /users/:id
+  // Restricted to SUPER_ADMIN
+  // PRD 23: Admin Portal > Users
+  //
+  // Registered after 'stats' so the literal route above is never
+  // swallowed by this param route.
+  // ─────────────────────────────────────────────
+  @Get(':id')
+  @Roles(RolesEnum.SUPER_ADMIN)
+  @ApiOperation({
+    summary: 'Get a single user by id (admin)',
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Id of the user to fetch',
+  })
+  async getUserById(
+    @Param('id')
+    id: string,
+  ) {
+    return this.userService.getUserById(
+      id,
+    );
   }
 
   // ─────────────────────────────────────────────
@@ -221,6 +252,90 @@ export class UserController {
       actor,
       id,
       role,
+    );
+  }
+
+  // ─────────────────────────────────────────────
+  // ADMIN — DEACTIVATE USER
+  // PATCH /users/:id/deactivate
+  // Restricted to SUPER_ADMIN
+  // PRD 24: Admin Responsibilities > Users
+  // Blocked at the service level if it would deactivate the
+  // last active super admin.
+  // ─────────────────────────────────────────────
+  @Patch(':id/deactivate')
+  @Roles(RolesEnum.SUPER_ADMIN)
+  @ApiOperation({
+    summary: "Deactivate a user's account (admin)",
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Id of the user being deactivated',
+  })
+  async deactivateUser(
+    @CurrentUser()
+    actor: CurrentUserDto,
+    @Param('id')
+    id: string,
+  ) {
+    return this.userService.deactivateUser(
+      actor,
+      id,
+    );
+  }
+
+  // ─────────────────────────────────────────────
+  // ADMIN — REACTIVATE USER
+  // PATCH /users/:id/reactivate
+  // Restricted to SUPER_ADMIN
+  // PRD 24: Admin Responsibilities > Users
+  // ─────────────────────────────────────────────
+  @Patch(':id/reactivate')
+  @Roles(RolesEnum.SUPER_ADMIN)
+  @ApiOperation({
+    summary: "Reactivate a user's account (admin)",
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Id of the user being reactivated',
+  })
+  async reactivateUser(
+    @CurrentUser()
+    actor: CurrentUserDto,
+    @Param('id')
+    id: string,
+  ) {
+    return this.userService.reactivateUser(
+      actor,
+      id,
+    );
+  }
+
+  // ─────────────────────────────────────────────
+  // ADMIN — FORCE LOGOUT
+  // POST /users/:id/force-logout
+  // Restricted to SUPER_ADMIN
+  // PRD 31/34: Security Requirements / Incident Response
+  // Revokes all active sessions without deactivating the account.
+  // ─────────────────────────────────────────────
+  @Post(':id/force-logout')
+  @Roles(RolesEnum.SUPER_ADMIN)
+  @ApiOperation({
+    summary: "Revoke all of a user's active sessions (admin)",
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Id of the user whose sessions are being revoked',
+  })
+  async forceLogout(
+    @CurrentUser()
+    actor: CurrentUserDto,
+    @Param('id')
+    id: string,
+  ) {
+    return this.userService.forceLogout(
+      actor,
+      id,
     );
   }
 }

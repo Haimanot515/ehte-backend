@@ -85,6 +85,67 @@ export class UserService {
   }
 
   // ─────────────────────────────────────────────
+  // ADMIN — GET USER BY ID
+  // GET /users/:id
+  // Restricted to SUPER_ADMIN at the controller (Roles guard)
+  // PRD 23: Admin Portal > Users
+  // ─────────────────────────────────────────────
+
+  async getUserById(id: string) {
+    const user =
+      await this.prisma.user.findUnique({
+        where: {
+          id,
+        },
+
+        select: {
+          id: true,
+          name: true,
+          phone: true,
+          isActive: true,
+
+          discreetModeEnabled: true,
+          discreetModeUpdatedAt: true,
+
+          createdAt: true,
+          updatedAt: true,
+
+          userRoles: {
+            select: {
+              role: {
+                select: {
+                  id: true,
+                  name: true,
+                },
+              },
+            },
+          },
+        },
+      });
+
+    if (!user) {
+      throw new NotFoundException(
+        'user_not_found',
+      );
+    }
+
+    const roles =
+      user.userRoles.map(
+        (userRole) => userRole.role,
+      );
+
+    const {
+      userRoles,
+      ...userData
+    } = user;
+
+    return {
+      ...userData,
+      roles,
+    };
+  }
+
+  // ─────────────────────────────────────────────
   // UPDATE PROFILE
   // ─────────────────────────────────────────────
 
@@ -337,6 +398,229 @@ export class UserService {
 
     return {
       message: 'account_deactivated',
+    };
+  }
+
+  // ─────────────────────────────────────────────
+  // ADMIN — DEACTIVATE USER
+  // PATCH /users/:id/deactivate
+  // Restricted to SUPER_ADMIN at the controller (Roles guard)
+  // Blocks deactivating the last active super admin, mirroring
+  // the same protection revokeRole applies.
+  // ─────────────────────────────────────────────
+
+  async deactivateUser(
+    actor: CurrentUserDto,
+    targetUserId: string,
+  ) {
+    const targetUser =
+      await this.prisma.user.findUnique({
+        where: {
+          id: targetUserId,
+        },
+
+        select: {
+          id: true,
+          isActive: true,
+
+          userRoles: {
+            select: {
+              role: {
+                select: {
+                  name: true,
+                },
+              },
+            },
+          },
+        },
+      });
+
+    if (!targetUser) {
+      throw new NotFoundException(
+        'user_not_found',
+      );
+    }
+
+    if (!targetUser.isActive) {
+      throw new BadRequestException(
+        'account_already_inactive',
+      );
+    }
+
+    const isSuperAdmin =
+      targetUser.userRoles.some(
+        (userRole) =>
+          userRole.role.name ===
+          RolesEnum.SUPER_ADMIN,
+      );
+
+    if (isSuperAdmin) {
+      const otherActiveSuperAdmins =
+        await this.prisma.user.count({
+          where: {
+            id: { not: targetUserId },
+            isActive: true,
+
+            userRoles: {
+              some: {
+                role: {
+                  name: RolesEnum.SUPER_ADMIN,
+                },
+              },
+            },
+          },
+        });
+
+      if (otherActiveSuperAdmins === 0) {
+        throw new ForbiddenException(
+          'cannot_deactivate_last_super_admin',
+        );
+      }
+    }
+
+    await this.prisma.$transaction([
+      this.prisma.user.update({
+        where: {
+          id: targetUserId,
+        },
+
+        data: {
+          isActive: false,
+        },
+      }),
+
+      this.prisma.session.deleteMany({
+        where: {
+          userId: targetUserId,
+        },
+      }),
+    ]);
+
+    // ───────────────────────────────────────────
+    // AUDIT LOG
+    // ───────────────────────────────────────────
+
+    this.eventEmitter.emit(
+      AuditEventEnum.USER_DEACTIVATED_BY_ADMIN,
+      {
+        userId: actor.id,
+        entityId: targetUserId,
+        entityType: 'USER',
+      },
+    );
+
+    return this.getUserById(targetUserId);
+  }
+
+  // ─────────────────────────────────────────────
+  // ADMIN — REACTIVATE USER
+  // PATCH /users/:id/reactivate
+  // Restricted to SUPER_ADMIN at the controller (Roles guard)
+  // ─────────────────────────────────────────────
+
+  async reactivateUser(
+    actor: CurrentUserDto,
+    targetUserId: string,
+  ) {
+    const targetUser =
+      await this.prisma.user.findUnique({
+        where: {
+          id: targetUserId,
+        },
+
+        select: {
+          id: true,
+          isActive: true,
+        },
+      });
+
+    if (!targetUser) {
+      throw new NotFoundException(
+        'user_not_found',
+      );
+    }
+
+    if (targetUser.isActive) {
+      throw new BadRequestException(
+        'account_already_active',
+      );
+    }
+
+    await this.prisma.user.update({
+      where: {
+        id: targetUserId,
+      },
+
+      data: {
+        isActive: true,
+      },
+    });
+
+    // ───────────────────────────────────────────
+    // AUDIT LOG
+    // ───────────────────────────────────────────
+
+    this.eventEmitter.emit(
+      AuditEventEnum.USER_REACTIVATED,
+      {
+        userId: actor.id,
+        entityId: targetUserId,
+        entityType: 'USER',
+      },
+    );
+
+    return this.getUserById(targetUserId);
+  }
+
+  // ─────────────────────────────────────────────
+  // ADMIN — FORCE LOGOUT
+  // POST /users/:id/force-logout
+  // Restricted to SUPER_ADMIN at the controller (Roles guard)
+  // Revokes all sessions without touching isActive.
+  // ─────────────────────────────────────────────
+
+  async forceLogout(
+    actor: CurrentUserDto,
+    targetUserId: string,
+  ): Promise<{ message: string }> {
+    const targetUser =
+      await this.prisma.user.findUnique({
+        where: {
+          id: targetUserId,
+        },
+
+        select: {
+          id: true,
+        },
+      });
+
+    if (!targetUser) {
+      throw new NotFoundException(
+        'user_not_found',
+      );
+    }
+
+    await this.prisma.session.deleteMany({
+      where: {
+        userId: targetUserId,
+      },
+    });
+
+    // ───────────────────────────────────────────
+    // AUDIT LOG
+    // ───────────────────────────────────────────
+
+    this.eventEmitter.emit(
+      AuditEventEnum.USER_SESSIONS_REVOKED,
+      {
+        userId: actor.id,
+        entityId: targetUserId,
+        entityType: 'USER',
+      },
+    );
+
+    return {
+      message: 'sessions_revoked',
     };
   }
 
@@ -687,6 +971,9 @@ export class UserService {
       newUsersLast7Days,
       newUsersLast30Days,
       roles,
+      superAdminCount,
+      adminCount,
+      regularUserCount,
     ] = await this.prisma.$transaction([
       this.prisma.user.count(),
 
@@ -736,6 +1023,56 @@ export class UserService {
           name: 'asc',
         },
       }),
+
+      // ───────────────────────────────────────────
+      // SUPER_ADMIN — number of users holding this role
+      // ───────────────────────────────────────────
+      this.prisma.user.count({
+        where: {
+          userRoles: {
+            some: {
+              role: {
+                name: RolesEnum.SUPER_ADMIN,
+              },
+            },
+          },
+        },
+      }),
+
+      // ───────────────────────────────────────────
+      // ADMIN — number of users holding this role
+      // ───────────────────────────────────────────
+      this.prisma.user.count({
+        where: {
+          userRoles: {
+            some: {
+              role: {
+                name: RolesEnum.ADMIN,
+              },
+            },
+          },
+        },
+      }),
+
+      // ───────────────────────────────────────────
+      // REGULAR USERS — hold neither admin role
+      // ───────────────────────────────────────────
+      this.prisma.user.count({
+        where: {
+          userRoles: {
+            none: {
+              role: {
+                name: {
+                  in: [
+                    RolesEnum.ADMIN,
+                    RolesEnum.SUPER_ADMIN,
+                  ],
+                },
+              },
+            },
+          },
+        },
+      }),
     ]);
 
     return {
@@ -746,6 +1083,10 @@ export class UserService {
 
       newUsersLast7Days,
       newUsersLast30Days,
+
+      superAdminCount,
+      adminCount,
+      regularUserCount,
 
       usersByRole: roles.map((role) => ({
         roleId: role.id,
