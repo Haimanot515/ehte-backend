@@ -5,6 +5,7 @@ import {
   Get,
   Param,
   Patch,
+  Post,
   Query,
 } from '@nestjs/common';
 
@@ -19,6 +20,7 @@ import {
 import { NotificationService } from '../service/notification.service';
 
 import {
+  CreateNotificationDto,
   MarkBulkReadDto,
   NotificationQueryDto,
 } from '../dto/notification.dto';
@@ -34,6 +36,8 @@ import {
 import {
   Roles,
 } from 'src/common/decorators/roles.decorator';
+
+import { RolesEnum } from 'src/common/enums/roles.enum';
 
 @Controller('notifications')
 @ApiTags('Notifications')
@@ -123,6 +127,27 @@ export class NotificationController {
   }
 
   // ─────────────────────────────────────────────
+  // ADMIN — CREATE
+  // POST /notifications/admin
+  //
+  // Omit userId to broadcast to everyone, or set it
+  // to target a single user.
+  //
+  // ADMIN / SUPER_ADMIN
+  // ─────────────────────────────────────────────
+
+  @Post('admin')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @ApiOperation({
+    summary: 'Admin: create a notification (targeted or broadcast)',
+  })
+  async createNotification(
+    @Body() dto: CreateNotificationDto,
+  ) {
+    return this.notificationService.create(dto);
+  }
+
+  // ─────────────────────────────────────────────
   // ADMIN — LIST
   // GET /notifications/admin/list
   //
@@ -137,7 +162,7 @@ export class NotificationController {
   // ─────────────────────────────────────────────
 
   @Get('admin/list')
-  @Roles('ADMIN', 'SUPER_ADMIN')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @ApiOperation({
     summary: 'Admin: get broadcast notifications',
   })
@@ -158,12 +183,36 @@ export class NotificationController {
   // ─────────────────────────────────────────────
 
   @Get('admin/unread-count')
-  @Roles('ADMIN', 'SUPER_ADMIN')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @ApiOperation({
     summary: 'Admin: get unread broadcast notification count',
   })
   async getAdminUnreadCount() {
     return this.notificationService.getAdminUnreadCount();
+  }
+
+  // ─────────────────────────────────────────────
+  // ADMIN — GET ONE
+  // GET /notifications/admin/:id
+  //
+  // Registered before 'admin/:id/read' so this literal
+  // shape isn't ambiguous — NestJS distinguishes these
+  // fine since they have different segment counts, but
+  // kept here in admin-list order for readability.
+  //
+  // ADMIN / SUPER_ADMIN
+  // ─────────────────────────────────────────────
+
+  @Get('admin/:id')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @ApiOperation({
+    summary: 'Admin: get one broadcast notification',
+  })
+  @ApiParam({ name: 'id', description: 'Notification ID' })
+  async getAdminNotificationById(
+    @Param('id') id: string,
+  ) {
+    return this.notificationService.getAdminNotificationById(id);
   }
 
   // ─────────────────────────────────────────────
@@ -180,7 +229,7 @@ export class NotificationController {
   // ─────────────────────────────────────────────
 
   @Patch('admin/:id/read')
-  @Roles('ADMIN', 'SUPER_ADMIN')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @ApiOperation({
     summary: 'Admin: mark broadcast notification as read',
   })
@@ -198,7 +247,7 @@ export class NotificationController {
   // ─────────────────────────────────────────────
 
   @Patch('admin/bulk/read')
-  @Roles('ADMIN', 'SUPER_ADMIN')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @ApiOperation({
     summary: 'Admin: mark multiple broadcast notifications as read',
   })
@@ -215,7 +264,7 @@ export class NotificationController {
   // ─────────────────────────────────────────────
 
   @Patch('admin/read-all')
-  @Roles('ADMIN', 'SUPER_ADMIN')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @ApiOperation({
     summary: 'Admin: mark all broadcast notifications as read',
   })
@@ -235,7 +284,7 @@ export class NotificationController {
   // ─────────────────────────────────────────────
 
   @Delete('admin/:id')
-  @Roles('ADMIN', 'SUPER_ADMIN')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @ApiOperation({
     summary: 'Admin: delete a broadcast notification',
   })

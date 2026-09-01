@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -25,6 +26,8 @@ export type AuditLogStats = {
 
 @Injectable()
 export class AuditLogService {
+  private static readonly MAX_EXPORT_ROWS = 50_000;
+
   constructor(
     private readonly prisma: PrismaService,
   ) {}
@@ -226,6 +229,176 @@ export class AuditLogService {
     return {
       data,
       meta: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    };
+  }
+
+  /**
+   * Distinct action values currently in use.
+   * Powers filter dropdowns in the admin portal without
+   * hardcoding action names client-side.
+   */
+  async findDistinctActions(): Promise<string[]> {
+    const rows = await this.prisma.auditLog.findMany({
+      distinct: ['action'],
+      select: { action: true },
+      orderBy: { action: 'asc' },
+    });
+
+    return rows.map((row) => row.action);
+  }
+
+  /**
+   * Distinct entity values currently in use.
+   * Same purpose as findDistinctActions, for the
+   * 'entity' filter dropdown.
+   */
+  async findDistinctEntities(): Promise<string[]> {
+    const rows = await this.prisma.auditLog.findMany({
+      distinct: ['entity'],
+      select: { entity: true },
+      orderBy: { entity: 'asc' },
+    });
+
+    return rows.map((row) => row.entity);
+  }
+
+  /**
+   * CSV export of audit logs matching the given filters,
+   * for compliance/audit handoffs without needing to
+   * script against the JSON API.
+   *
+   * Reuses the same filter surface as findAll but ignores
+   * page/limit and pulls every matching row instead —
+   * capped at MAX_EXPORT_ROWS so a huge unfiltered export
+   * doesn't take down the process.
+   */
+  async exportCsv(
+    dto: Omit<GetAuditLogsDto, 'page' | 'limit'>,
+  ): Promise<string> {
+    const {
+      action,
+      entity,
+      entityId,
+      actorType,
+      userId,
+      startDate,
+      endDate,
+    } = dto;
+
+    const where: Prisma.AuditLogWhereInput = {
+      ...(action && { action }),
+      ...(entity && { entity }),
+      ...(entityId && { entityId }),
+      ...(actorType && { actorType }),
+      ...(userId && { userId }),
+      ...((startDate || endDate) && {
+        createdAt: {
+          ...(startDate && { gte: new Date(startDate) }),
+          ...(endDate && { lte: new Date(endDate) }),
+        },
+      }),
+    };
+
+    const logs = await this.prisma.auditLog.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      take: AuditLogService.MAX_EXPORT_ROWS,
+      include: {
+        user: {
+          select: { id: true, name: true, phone: true },
+        },
+      },
+    });
+
+    const header = [
+      'id',
+      'createdAt',
+      'action',
+      'entity',
+      'entityId',
+      'actorType',
+      'userId',
+      'userName',
+      'userPhone',
+      'diff',
+    ];
+
+    const escapeCsv = (value: unknown): string => {
+      if (value === null || value === undefined) {
+        return '';
+      }
+
+      const str =
+        typeof value === 'string'
+          ? value
+          : JSON.stringify(value);
+
+      // Wrap in quotes and escape embedded quotes whenever
+      // the value could break CSV structure.
+      if (/[",\n]/.test(str)) {
+        return `"${str.replace(/"/g, '""')}"`;
+      }
+
+      return str;
+    };
+
+    const rows = logs.map((log) =>
+      [
+        log.id,
+        log.createdAt.toISOString(),
+        log.action,
+        log.entity,
+        log.entityId,
+        log.actorType,
+        log.userId,
+        log.user?.name ?? '',
+        log.user?.phone ?? '',
+        log.diff,
+      ]
+        .map(escapeCsv)
+        .join(','),
+    );
+
+    return [header.join(','), ...rows].join('\n');
+  }
+
+  /**
+   * Retention cleanup. Deletes all audit log rows
+   * created strictly before the given date.
+   *
+   * Deliberately strict: rejects a missing/invalid date
+   * instead of silently deleting everything, and returns
+   * the deleted count so the SUPER_ADMIN caller/UI can
+   * confirm exactly what happened.
+   */
+  async purgeOlderThan(
+    olderThan: string,
+  ): Promise<{ deletedCount: number; olderThan: string }> {
+    if (!olderThan) {
+      throw new BadRequestException(
+        'olderThan_query_param_required',
+      );
+    }
+
+    const cutoff = new Date(olderThan);
+
+    if (isNaN(cutoff.getTime())) {
+      throw new BadRequestException(
+        'invalid_olderThan_date',
+      );
+    }
+
+    const result = await this.prisma.auditLog.deleteMany({
+      where: {
+        createdAt: {
+          lt: cutoff,
+        },
+      },
+    });
+
+    return {
+      deletedCount: result.count,
+      olderThan: cutoff.toISOString(),
     };
   }
 

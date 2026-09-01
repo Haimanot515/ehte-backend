@@ -295,6 +295,23 @@ export class NotificationService {
     return { count };
   }
 
+  /**
+   * Get a single broadcast notification (admin view).
+   */
+  async getAdminNotificationById(
+    id: string,
+  ) {
+    const notification = await this.prisma.notification.findFirst({
+      where: { id, userId: null },
+    });
+
+    if (!notification) {
+      throw new NotFoundException('Notification not found');
+    }
+
+    return notification;
+  }
+
   async markAdminNotificationAsRead(
     id: string,
   ) {
