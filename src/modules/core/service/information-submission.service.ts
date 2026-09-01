@@ -1,6 +1,6 @@
-
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -30,6 +30,10 @@ export class InformationSubmissionService {
 
   // ─────────────────────────────────────────────
   // CREATE INFORMATION
+  // Only allowed against APPROVED (publicly visible) cases.
+  // Using an allowlist here (rather than excluding REJECTED/
+  // FOUND) means any future MissingPersonStatus value is
+  // submission-blocked by default until explicitly allowed.
   // ─────────────────────────────────────────────
 
   async create(
@@ -50,12 +54,9 @@ export class InformationSubmissionService {
       );
     }
 
-    // Do not allow submissions for closed cases
     if (
-      missingPerson.status ===
-        MissingPersonStatus.REJECTED ||
-      missingPerson.status ===
-        MissingPersonStatus.FOUND
+      missingPerson.status !==
+      MissingPersonStatus.APPROVED
     ) {
       throw new BadRequestException(
         'information_submission_not_allowed',
@@ -231,7 +232,7 @@ export class InformationSubmissionService {
     if (
       submission.userId !== userId
     ) {
-      throw new BadRequestException(
+      throw new ForbiddenException(
         'not_authorized',
       );
     }

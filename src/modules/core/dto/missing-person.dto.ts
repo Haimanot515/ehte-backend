@@ -1,13 +1,21 @@
 import {
+  ArrayMaxSize,
   IsArray,
   IsDateString,
   IsEnum,
+  IsInt,
   IsOptional,
   IsString,
+  IsUrl,
+  Max,
   MaxLength,
+  Min,
 } from 'class-validator';
+import { Type } from 'class-transformer';
 
-import { MissingPersonType } from '@prisma/client';
+import { MissingPersonType, MissingPersonStatus } from '@prisma/client';
+
+const MAX_MEDIA_ITEMS = 10;
 
 // ─────────────────────────────────────────────
 // CREATE MISSING PERSON DTO
@@ -35,32 +43,38 @@ export class CreateMissingPersonDto {
 
   @IsOptional()
   @IsArray()
-  @IsString({ each: true })
+  @ArrayMaxSize(MAX_MEDIA_ITEMS)
+  @IsUrl({}, { each: true })
   photo?: string[];
 
   @IsOptional()
   @IsArray()
-  @IsString({ each: true })
+  @ArrayMaxSize(MAX_MEDIA_ITEMS)
+  @IsUrl({}, { each: true })
   video?: string[];
 
   @IsOptional()
   @IsArray()
-  @IsString({ each: true })
+  @ArrayMaxSize(MAX_MEDIA_ITEMS)
+  @IsUrl({}, { each: true })
   audio?: string[];
 
   @IsOptional()
   @IsArray()
-  @IsString({ each: true })
+  @ArrayMaxSize(MAX_MEDIA_ITEMS)
+  @IsUrl({}, { each: true })
   pdf?: string[];
 
   @IsOptional()
   @IsArray()
-  @IsString({ each: true })
+  @ArrayMaxSize(MAX_MEDIA_ITEMS)
+  @IsUrl({}, { each: true })
   document?: string[];
 
   @IsOptional()
   @IsArray()
-  @IsString({ each: true })
+  @ArrayMaxSize(MAX_MEDIA_ITEMS)
+  @IsUrl({}, { each: true })
   other?: string[];
 }
 
@@ -94,31 +108,79 @@ export class UpdateMissingPersonDto {
 
   @IsOptional()
   @IsArray()
-  @IsString({ each: true })
+  @ArrayMaxSize(MAX_MEDIA_ITEMS)
+  @IsUrl({}, { each: true })
   photo?: string[];
 
   @IsOptional()
   @IsArray()
-  @IsString({ each: true })
+  @ArrayMaxSize(MAX_MEDIA_ITEMS)
+  @IsUrl({}, { each: true })
   video?: string[];
 
   @IsOptional()
   @IsArray()
-  @IsString({ each: true })
+  @ArrayMaxSize(MAX_MEDIA_ITEMS)
+  @IsUrl({}, { each: true })
   audio?: string[];
 
   @IsOptional()
   @IsArray()
-  @IsString({ each: true })
+  @ArrayMaxSize(MAX_MEDIA_ITEMS)
+  @IsUrl({}, { each: true })
   pdf?: string[];
 
   @IsOptional()
   @IsArray()
-  @IsString({ each: true })
+  @ArrayMaxSize(MAX_MEDIA_ITEMS)
+  @IsUrl({}, { each: true })
   document?: string[];
 
   @IsOptional()
   @IsArray()
-  @IsString({ each: true })
+  @ArrayMaxSize(MAX_MEDIA_ITEMS)
+  @IsUrl({}, { each: true })
   other?: string[];
+}
+
+// ─────────────────────────────────────────────
+// LIST QUERY DTOs (pagination)
+// ─────────────────────────────────────────────
+
+export class ListMissingPersonsQueryDto {
+  @IsOptional()
+  @IsEnum(MissingPersonType)
+  type?: MissingPersonType;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number = 1;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  limit?: number = 20;
+}
+
+export class ListMissingPersonsAdminQueryDto {
+  @IsOptional()
+  @IsEnum(MissingPersonStatus)
+  status?: MissingPersonStatus;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number = 1;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  limit?: number = 20;
 }

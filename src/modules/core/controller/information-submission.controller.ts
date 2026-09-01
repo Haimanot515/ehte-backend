@@ -1,4 +1,3 @@
-
 import {
   Body,
   Controller,
@@ -20,6 +19,7 @@ import { InformationStatus } from '@prisma/client';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
 import { Roles } from 'src/common/decorators/roles.decorator';
+import { RolesEnum } from 'src/common/enums/roles.enum';
 
 import { InformationSubmissionService } from '../service/information-submission.service';
 
@@ -124,10 +124,13 @@ export class InformationSubmissionController {
   // ─────────────────────────────────────────────
   // ADMIN — ALL
   // GET /information-submissions/admin/all
+  //
+  // Registered before ':id' so this literal route is never
+  // swallowed by the param route above.
   // ─────────────────────────────────────────────
 
   @Get('admin/all')
-  @Roles('ADMIN')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @ApiOperation({
     summary:
       'Admin: list information submissions',
@@ -147,7 +150,7 @@ export class InformationSubmissionController {
   // ─────────────────────────────────────────────
 
   @Patch('admin/:id/status')
-  @Roles('ADMIN')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @ApiOperation({
     summary:
       'Admin: update information submission status',
@@ -171,7 +174,7 @@ export class InformationSubmissionController {
   // ─────────────────────────────────────────────
 
   @Patch('admin/:id/review')
-  @Roles('ADMIN')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @ApiOperation({
     summary:
       'Admin: review information submission',

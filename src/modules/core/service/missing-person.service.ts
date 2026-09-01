@@ -1,12 +1,11 @@
 import {
-  BadRequestException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 
 import {
   MissingPersonStatus,
-  MissingPersonType,
 } from '@prisma/client';
 
 import { EventEmitter2 } from '@nestjs/event-emitter';
@@ -22,6 +21,8 @@ import { NotificationEventEnum } from 'src/common/enums/shared/notification-even
 
 import {
   CreateMissingPersonDto,
+  ListMissingPersonsAdminQueryDto,
+  ListMissingPersonsQueryDto,
   UpdateMissingPersonDto,
 } from '../dto/missing-person.dto';
 
@@ -117,7 +118,7 @@ export class MissingPersonService {
   }
 
   // ─────────────────────────────────────────────
-  // FIND ONE
+  // FIND ONE (public — approved only)
   // ─────────────────────────────────────────────
 
   async findOne(id: string) {
@@ -126,13 +127,13 @@ export class MissingPersonService {
         where: {
           id,
         },
-
-        include: {
-          informationSubmissions: true,
-        },
       });
 
-    if (!missingPerson) {
+    if (
+      !missingPerson ||
+      missingPerson.status !==
+        MissingPersonStatus.APPROVED
+    ) {
       throw new NotFoundException(
         'missing_person_not_found',
       );
@@ -142,27 +143,50 @@ export class MissingPersonService {
   }
 
   // ─────────────────────────────────────────────
-  // FIND ALL PUBLIC
+  // FIND ALL PUBLIC (paginated)
   // ─────────────────────────────────────────────
 
   async findAll(
-    type?: MissingPersonType,
+    query: ListMissingPersonsQueryDto,
   ) {
-    return this.prisma.missingPerson.findMany({
-      where: {
-        status: MissingPersonStatus.APPROVED,
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 20;
 
-        ...(type !== undefined
-          ? {
-              personType: type,
-            }
-          : {}),
-      },
+    const where = {
+      status: MissingPersonStatus.APPROVED,
 
-      orderBy: {
-        createdAt: 'desc',
+      ...(query.type !== undefined
+        ? { personType: query.type }
+        : {}),
+    };
+
+    const [data, total] =
+      await this.prisma.$transaction([
+        this.prisma.missingPerson.findMany({
+          where,
+
+          orderBy: {
+            createdAt: 'desc',
+          },
+
+          skip: (page - 1) * limit,
+          take: limit,
+        }),
+
+        this.prisma.missingPerson.count({
+          where,
+        }),
+      ]);
+
+    return {
+      data,
+      meta: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
       },
-    });
+    };
   }
 
   // ─────────────────────────────────────────────
@@ -185,6 +209,9 @@ export class MissingPersonService {
 
   // ─────────────────────────────────────────────
   // UPDATE
+  // Resets status back to PENDING if the submission
+  // had already been APPROVED, so edited content goes
+  // through admin review again before showing publicly.
   // ─────────────────────────────────────────────
 
   async update(
@@ -210,10 +237,14 @@ export class MissingPersonService {
     // ─────────────────────────────────────────
 
     if (existing.userId !== user.id) {
-      throw new BadRequestException(
+      throw new ForbiddenException(
         'not_authorized_to_update',
       );
     }
+
+    const shouldResetToPending =
+      existing.status ===
+      MissingPersonStatus.APPROVED;
 
     const updated =
       await this.prisma.missingPerson.update({
@@ -292,6 +323,13 @@ export class MissingPersonService {
                 other: data.other,
               }
             : {}),
+
+          ...(shouldResetToPending
+            ? {
+                status:
+                  MissingPersonStatus.PENDING,
+              }
+            : {}),
         },
       });
 
@@ -316,6 +354,7 @@ export class MissingPersonService {
         entityId: updated.id,
 
         diff: {
+          resetToPending: shouldResetToPending,
           result: 'success',
         },
       } as AuditEventPayload,
@@ -367,7 +406,7 @@ export class MissingPersonService {
     // ─────────────────────────────────────────
 
     if (existing.userId !== user.id) {
-      throw new BadRequestException(
+      throw new ForbiddenException(
         'not_authorized_to_delete',
       );
     }
@@ -396,29 +435,52 @@ export class MissingPersonService {
   }
 
   // ─────────────────────────────────────────────
-  // ADMIN — FIND ALL
+  // ADMIN — FIND ALL (paginated, includes submissions)
   // ─────────────────────────────────────────────
 
   async findAllForAdmin(
-    status?: MissingPersonStatus,
+    query: ListMissingPersonsAdminQueryDto,
   ) {
-    return this.prisma.missingPerson.findMany({
-      where: {
-        ...(status !== undefined
-          ? {
-              status,
-            }
-          : {}),
-      },
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 20;
 
-      include: {
-        informationSubmissions: true,
-      },
+    const where = {
+      ...(query.status !== undefined
+        ? { status: query.status }
+        : {}),
+    };
 
-      orderBy: {
-        createdAt: 'desc',
+    const [data, total] =
+      await this.prisma.$transaction([
+        this.prisma.missingPerson.findMany({
+          where,
+
+          include: {
+            informationSubmissions: true,
+          },
+
+          orderBy: {
+            createdAt: 'desc',
+          },
+
+          skip: (page - 1) * limit,
+          take: limit,
+        }),
+
+        this.prisma.missingPerson.count({
+          where,
+        }),
+      ]);
+
+    return {
+      data,
+      meta: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
       },
-    });
+    };
   }
 
   // ─────────────────────────────────────────────

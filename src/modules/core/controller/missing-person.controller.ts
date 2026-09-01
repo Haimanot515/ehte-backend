@@ -16,18 +16,18 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 
-import {
-  MissingPersonStatus,
-  MissingPersonType,
-} from '@prisma/client';
+import { MissingPersonStatus } from '@prisma/client';
 
 import { AllowAnonymous } from 'src/common/decorators/public.decorator';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
 import { Roles } from 'src/common/decorators/roles.decorator';
+import { RolesEnum } from 'src/common/enums/roles.enum';
 
 import {
   CreateMissingPersonDto,
+  ListMissingPersonsAdminQueryDto,
+  ListMissingPersonsQueryDto,
   UpdateMissingPersonDto,
 } from '../dto/missing-person.dto';
 
@@ -91,16 +91,14 @@ export class MissingPersonController {
   @ApiOperation({
     summary: 'Get approved missing persons',
   })
-  @ApiQuery({
-    name: 'type',
-    required: false,
-    enum: MissingPersonType,
-  })
+  @ApiQuery({ name: 'type', required: false })
+  @ApiQuery({ name: 'page', required: false })
+  @ApiQuery({ name: 'limit', required: false })
   async findAll(
-    @Query('type') type?: MissingPersonType,
+    @Query() query: ListMissingPersonsQueryDto,
   ) {
     return this.missingPersonService.findAll(
-      type,
+      query,
     );
   }
 
@@ -108,32 +106,33 @@ export class MissingPersonController {
   // ADMIN — GET ALL
   // GET /missing-persons/admin/all
   // ADMIN / SUPER_ADMIN
+  //
+  // Registered before ':id' so this literal route is never
+  // swallowed by the param route below.
   // ─────────────────────────────────────────────
 
   @Get('admin/all')
   @ApiBearerAuth('access-token')
-  @Roles('ADMIN', 'SUPER_ADMIN')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @ApiOperation({
     summary:
       'Admin: get all missing person submissions',
   })
-  @ApiQuery({
-    name: 'status',
-    required: false,
-    enum: MissingPersonStatus,
-  })
+  @ApiQuery({ name: 'status', required: false, enum: MissingPersonStatus })
+  @ApiQuery({ name: 'page', required: false })
+  @ApiQuery({ name: 'limit', required: false })
   async findAllForAdmin(
-    @Query('status') status?: MissingPersonStatus,
+    @Query() query: ListMissingPersonsAdminQueryDto,
   ) {
     return this.missingPersonService.findAllForAdmin(
-      status,
+      query,
     );
   }
 
   // ─────────────────────────────────────────────
   // PUBLIC ONE
   // GET /missing-persons/:id
-  // Anonymous
+  // Anonymous — only ever returns APPROVED records
   // ─────────────────────────────────────────────
 
   @Get(':id')
@@ -203,7 +202,7 @@ export class MissingPersonController {
 
   @Patch('admin/:id/status')
   @ApiBearerAuth('access-token')
-  @Roles('ADMIN', 'SUPER_ADMIN')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @ApiOperation({
     summary:
       'Admin: update missing person status',
