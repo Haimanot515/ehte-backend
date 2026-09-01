@@ -15,21 +15,28 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 
-import {
-  VictimProfileStatus,
-} from '@prisma/client';
-
 import { AllowAnonymous } from 'src/common/decorators/public.decorator';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
+
+import { Roles } from 'src/common/decorators/roles.decorator';
+import { RolesEnum } from 'src/common/enums/roles.enum';
 
 import { VictimProfileService } from '../service/victim-profile.service';
 
 import {
   CreateVictimProfileDto,
+  FindAllVictimProfilesQueryDto,
   UpdateVictimGateDto,
   UpdateVictimProfileDto,
 } from '../dto/victim-profile.dto';
+
+// ─────────────────────────────────────────────
+// PRD §19: "Authorized administrators can create or manage a
+// Victim/Survivor Profile." Every mutating and single-record read
+// route below is admin-only. The only public-facing route is
+// GET /victim-profiles/public.
+// ─────────────────────────────────────────────
 
 @ApiTags('Victim Profiles')
 @Controller('victim-profiles')
@@ -41,13 +48,15 @@ export class VictimProfileController {
   // ─────────────────────────────────────────────
   // CREATE
   // POST /victim-profiles
+  // Restricted to ADMIN / SUPER_ADMIN (PRD §19, §24)
   // ─────────────────────────────────────────────
 
   @Post()
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @ApiBearerAuth('access-token')
   @ApiOperation({
     summary:
-      'Create a victim/survivor support profile',
+      'Admin: create a victim/survivor support profile',
   })
   async create(
     @CurrentUser()
@@ -65,6 +74,7 @@ export class VictimProfileController {
   // ─────────────────────────────────────────────
   // PUBLIC PROFILES
   // GET /victim-profiles/public
+  // Only route accessible to the public app (PRD §20)
   // ─────────────────────────────────────────────
 
   @Get('public')
@@ -80,13 +90,16 @@ export class VictimProfileController {
   // ─────────────────────────────────────────────
   // GET ONE
   // GET /victim-profiles/:id
+  // Restricted to ADMIN / SUPER_ADMIN — pre-approval profiles
+  // contain unreviewed sensitive detail (PRD §19/§20).
   // ─────────────────────────────────────────────
 
   @Get(':id')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @ApiBearerAuth('access-token')
   @ApiOperation({
     summary:
-      'Get a victim profile',
+      'Admin: get a victim profile',
   })
   async findOne(
     @Param('id')
@@ -100,13 +113,15 @@ export class VictimProfileController {
   // ─────────────────────────────────────────────
   // UPDATE
   // PATCH /victim-profiles/:id
+  // Restricted to ADMIN / SUPER_ADMIN (PRD §24)
   // ─────────────────────────────────────────────
 
   @Patch(':id')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @ApiBearerAuth('access-token')
   @ApiOperation({
     summary:
-      'Update a victim profile',
+      'Admin: update a victim profile',
   })
   async update(
     @CurrentUser()
@@ -128,13 +143,15 @@ export class VictimProfileController {
   // ─────────────────────────────────────────────
   // DELETE
   // DELETE /victim-profiles/:id
+  // Restricted to ADMIN / SUPER_ADMIN (PRD §24)
   // ─────────────────────────────────────────────
 
   @Delete(':id')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @ApiBearerAuth('access-token')
   @ApiOperation({
     summary:
-      'Delete a victim profile',
+      'Admin: delete a victim profile',
   })
   async remove(
     @CurrentUser()
@@ -155,17 +172,17 @@ export class VictimProfileController {
   // ─────────────────────────────────────────────
 
   @Get('admin/all')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @ApiBearerAuth('access-token')
   @ApiOperation({
-    summary:
-      'Admin: list victim profiles',
+    summary: 'Admin: list victim profiles',
   })
   async findAllForAdmin(
-    @Query('status')
-    status?: VictimProfileStatus,
+    @Query()
+    query: FindAllVictimProfilesQueryDto,
   ) {
     return this.victimProfileService.findAllForAdmin(
-      status,
+      query,
     );
   }
 
@@ -175,6 +192,7 @@ export class VictimProfileController {
   // ─────────────────────────────────────────────
 
   @Patch('admin/:id/gates')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @ApiBearerAuth('access-token')
   @ApiOperation({
     summary:
@@ -203,6 +221,7 @@ export class VictimProfileController {
   // ─────────────────────────────────────────────
 
   @Patch('admin/:id/publish')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @ApiBearerAuth('access-token')
   @ApiOperation({
     summary:
@@ -227,6 +246,7 @@ export class VictimProfileController {
   // ─────────────────────────────────────────────
 
   @Patch('admin/:id/unpublish')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @ApiBearerAuth('access-token')
   @ApiOperation({
     summary:
@@ -251,6 +271,7 @@ export class VictimProfileController {
   // ─────────────────────────────────────────────
 
   @Patch('admin/:id/reject')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @ApiBearerAuth('access-token')
   @ApiOperation({
     summary:

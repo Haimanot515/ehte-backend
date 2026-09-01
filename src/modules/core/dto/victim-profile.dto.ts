@@ -5,11 +5,13 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  Min,
   MaxLength,
   MinLength,
 } from 'class-validator';
+import { Type } from 'class-transformer';
 
-import { SupportType } from '@prisma/client';
+import { SupportType, VictimProfileStatus } from '@prisma/client';
 
 export class CreateVictimProfileDto {
   @IsOptional()
@@ -22,17 +24,18 @@ export class CreateVictimProfileDto {
   @MinLength(10)
   description?: string;
 
-  @IsOptional()
+  // Required — an empty profile has nothing to review or approve.
   @IsString()
   @MinLength(10)
-  story?: string;
+  story: string;
 
-  @IsOptional()
+  // Required — drives the Support Button flow (§21).
   @IsEnum(SupportType)
-  supportType?: SupportType;
+  supportType: SupportType;
 
   @IsOptional()
   @IsNumber()
+  @Min(0)
   supportGoal?: number;
 
   @IsOptional()
@@ -92,6 +95,7 @@ export class UpdateVictimProfileDto {
 
   @IsOptional()
   @IsNumber()
+  @Min(0)
   supportGoal?: number;
 
   @IsOptional()
@@ -146,7 +150,26 @@ export class UpdateVictimGateDto {
   @IsBoolean()
   isPrivacyReviewed?: boolean;
 
+  // §32 — only meaningful/enforced when the profile has involvesChild = true.
+  @IsOptional()
+  @IsBoolean()
+  isChildSafetyReviewed?: boolean;
+
   @IsOptional()
   @IsBoolean()
   isAdminApproved?: boolean;
+}
+
+export class FindAllVictimProfilesQueryDto {
+  @IsOptional()
+  @Type(() => Number)
+  page?: number = 1;
+
+  @IsOptional()
+  @Type(() => Number)
+  limit?: number = 20;
+
+  @IsOptional()
+  @IsEnum(VictimProfileStatus)
+  status?: VictimProfileStatus;
 }

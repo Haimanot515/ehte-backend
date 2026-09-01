@@ -15,6 +15,7 @@ import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
 
 import {
   CreateVictimProfileDto,
+  FindAllVictimProfilesQueryDto,
   UpdateVictimGateDto,
   UpdateVictimProfileDto,
 } from '../dto/victim-profile.dto';
@@ -41,29 +42,15 @@ export class VictimProfileService {
           description: data.description,
           story: data.story,
 
-          supportType:
-            data.supportType,
+          supportType: data.supportType,
+          supportGoal: data.supportGoal,
 
-          supportGoal:
-            data.supportGoal,
-
-          photo:
-            data.photo ?? [],
-
-          video:
-            data.video ?? [],
-
-          audio:
-            data.audio ?? [],
-
-          pdf:
-            data.pdf ?? [],
-
-          document:
-            data.document ?? [],
-
-          other:
-            data.other ?? [],
+          photo: data.photo ?? [],
+          video: data.video ?? [],
+          audio: data.audio ?? [],
+          pdf: data.pdf ?? [],
+          document: data.document ?? [],
+          other: data.other ?? [],
 
           involvesChild:
             data.involvesChild ?? false,
@@ -74,15 +61,13 @@ export class VictimProfileService {
           isVerified: false,
           isSafetyReviewed: false,
           hasConsent: false,
+          consentAt: null,
+          consentRecordedBy: null,
           isPrivacyReviewed: false,
           isAdminApproved: false,
           isPublished: false,
         },
       });
-
-    // ─────────────────────────────────────────────
-    // AUDIT LOG EVENT
-    // ─────────────────────────────────────────────
 
     this.eventEmitter.emit(
       'victim_profile.created',
@@ -93,10 +78,6 @@ export class VictimProfileService {
         entity: 'VictimProfile',
       },
     );
-
-    // ─────────────────────────────────────────────
-    // NOTIFICATION EVENT
-    // ─────────────────────────────────────────────
 
     this.eventEmitter.emit(
       'notification.victim_profile.created',
@@ -113,9 +94,7 @@ export class VictimProfileService {
   // GET ONE
   // ─────────────────────────────────────────────
 
-  async findOne(
-    id: string,
-  ) {
+  async findOne(id: string) {
     const profile =
       await this.prisma.victimProfile.findUnique({
         where: {
@@ -158,53 +137,52 @@ export class VictimProfileService {
   // ─────────────────────────────────────────────
 
   async findPublic() {
-    return this.prisma.victimProfile.findMany({
-      where: {
-        status:
-          VictimProfileStatus.PUBLISHED,
+    const profiles =
+      await this.prisma.victimProfile.findMany({
+        where: {
+          status:
+            VictimProfileStatus.PUBLISHED,
 
-        isPublished: true,
+          isPublished: true,
 
-        isVerified: true,
+          isVerified: true,
+          isSafetyReviewed: true,
+          hasConsent: true,
+          isPrivacyReviewed: true,
+          isAdminApproved: true,
+        },
 
-        isSafetyReviewed: true,
+        select: {
+          id: true,
+          name: true,
+          story: true,
 
-        hasConsent: true,
+          supportType: true,
+          supportGoal: true,
 
-        isPrivacyReviewed: true,
+          photo: true,
+          involvesChild: true,
 
-        isAdminApproved: true,
-      },
+          createdAt: true,
+        },
 
-      select: {
-        id: true,
-        name: true,
-        description: true,
-        story: true,
+        orderBy: {
+          createdAt: 'desc',
+        },
+      });
 
-        supportType: true,
-        supportGoal: true,
+    return profiles.map((profile) => ({
+      id: profile.id,
+      name: profile.name,
+      story: profile.story,
+      supportType: profile.supportType,
+      supportGoal: profile.supportGoal,
 
-        photo: true,
-        video: true,
-        audio: true,
-        pdf: true,
-        document: true,
-        other: true,
-
-        involvesChild: true,
-
-        status: true,
-        isPublished: true,
-
-        createdAt: true,
-        updatedAt: true,
-      },
-
-      orderBy: {
-        createdAt: 'desc',
-      },
-    });
+      // Child profiles never expose photos publicly.
+      photo: profile.involvesChild
+        ? []
+        : profile.photo,
+    }));
   }
 
   // ─────────────────────────────────────────────
@@ -236,67 +214,39 @@ export class VictimProfileService {
         },
 
         data: {
-          name:
-            data.name,
+          name: data.name,
+          description: data.description,
+          story: data.story,
 
-          description:
-            data.description,
+          supportType: data.supportType,
+          supportGoal: data.supportGoal,
 
-          story:
-            data.story,
-
-          supportType:
-            data.supportType,
-
-          supportGoal:
-            data.supportGoal,
-
-          photo:
-            data.photo,
-
-          video:
-            data.video,
-
-          audio:
-            data.audio,
-
-          pdf:
-            data.pdf,
-
-          document:
-            data.document,
-
-          other:
-            data.other,
+          photo: data.photo,
+          video: data.video,
+          audio: data.audio,
+          pdf: data.pdf,
+          document: data.document,
+          other: data.other,
 
           involvesChild:
             data.involvesChild,
 
-          // Reset approval pipeline
+          // Reset approval pipeline after editing.
           status:
             VictimProfileStatus.PENDING,
 
           isVerified: false,
-
           isSafetyReviewed: false,
-
           hasConsent: false,
 
           consentAt: null,
-
           consentRecordedBy: null,
 
           isPrivacyReviewed: false,
-
           isAdminApproved: false,
-
           isPublished: false,
         },
       });
-
-    // ─────────────────────────────────────────────
-    // AUDIT LOG EVENT
-    // ─────────────────────────────────────────────
 
     this.eventEmitter.emit(
       'victim_profile.updated',
@@ -305,14 +255,14 @@ export class VictimProfileService {
         victimProfileId: id,
         action: 'UPDATE',
         entity: 'VictimProfile',
-        previousStatus: profile.status,
-        newStatus: VictimProfileStatus.PENDING,
+
+        previousStatus:
+          profile.status,
+
+        newStatus:
+          VictimProfileStatus.PENDING,
       },
     );
-
-    // ─────────────────────────────────────────────
-    // NOTIFICATION EVENT
-    // ─────────────────────────────────────────────
 
     this.eventEmitter.emit(
       'notification.victim_profile.updated',
@@ -327,6 +277,7 @@ export class VictimProfileService {
 
   // ─────────────────────────────────────────────
   // DELETE
+  // DELETE /victim-profiles/:id
   // ─────────────────────────────────────────────
 
   async remove(
@@ -352,10 +303,6 @@ export class VictimProfileService {
       },
     });
 
-    // ─────────────────────────────────────────────
-    // AUDIT LOG EVENT
-    // ─────────────────────────────────────────────
-
     this.eventEmitter.emit(
       'victim_profile.deleted',
       {
@@ -363,12 +310,11 @@ export class VictimProfileService {
         victimProfileId: id,
         action: 'DELETE',
         entity: 'VictimProfile',
+
+        previousStatus:
+          profile.status,
       },
     );
-
-    // ─────────────────────────────────────────────
-    // NOTIFICATION EVENT
-    // ─────────────────────────────────────────────
 
     this.eventEmitter.emit(
       'notification.victim_profile.deleted',
@@ -381,6 +327,7 @@ export class VictimProfileService {
     return {
       message:
         'victim_profile_deleted',
+      id,
     };
   }
 
@@ -389,33 +336,75 @@ export class VictimProfileService {
   // ─────────────────────────────────────────────
 
   async findAllForAdmin(
-    status?: VictimProfileStatus,
+    query: FindAllVictimProfilesQueryDto,
   ) {
-    return this.prisma.victimProfile.findMany({
-      where: {
-        ...(status !== undefined
-          ? {
-              status,
-            }
-          : {}),
-      },
+    const page =
+      query.page && query.page > 0
+        ? query.page
+        : 1;
 
-      include: {
-        supports: {
+    const limit =
+      query.limit && query.limit > 0
+        ? query.limit
+        : 20;
+
+    const where =
+      query.status !== undefined
+        ? {
+            status: query.status,
+          }
+        : {};
+
+    const [profiles, total] =
+      await this.prisma.$transaction([
+        this.prisma.victimProfile.findMany({
+          where,
+
+          include: {
+            supports: {
+              orderBy: {
+                createdAt: 'desc',
+              },
+            },
+          },
+
           orderBy: {
             createdAt: 'desc',
           },
-        },
-      },
 
-      orderBy: {
-        createdAt: 'desc',
+          skip:
+            (page - 1) * limit,
+
+          take: limit,
+        }),
+
+        this.prisma.victimProfile.count({
+          where,
+        }),
+      ]);
+
+    return {
+      data: profiles,
+
+      meta: {
+        page,
+        limit,
+        total,
+        totalPages:
+          Math.ceil(total / limit),
       },
-    });
+    };
   }
 
   // ─────────────────────────────────────────────
   // ADMIN — UPDATE APPROVAL GATES
+  //
+  // Five gates:
+  // 1. Verification
+  // 2. Safety review
+  // 3. Consent
+  // 4. Privacy review
+  // 5. Admin approval
   // ─────────────────────────────────────────────
 
   async updateGates(
@@ -456,17 +445,24 @@ export class VictimProfileService {
       data.isAdminApproved ??
       profile.isAdminApproved;
 
-    // ─────────────────────────────────────────────
-    // ADMIN APPROVAL REQUIRES ALL GATES
-    // ─────────────────────────────────────────────
+    // There is no isChildSafetyReviewed field
+    // in the current Prisma model.
+    //
+    // For child profiles, the existing safety review
+    // gate must be completed before approval.
+    const childSafetySatisfied =
+      !profile.involvesChild ||
+      isSafetyReviewed;
 
+    // Admin approval requires all gates.
     if (
       isAdminApproved &&
       (
         !isVerified ||
         !isSafetyReviewed ||
         !hasConsent ||
-        !isPrivacyReviewed
+        !isPrivacyReviewed ||
+        !childSafetySatisfied
       )
     ) {
       throw new BadRequestException(
@@ -478,7 +474,8 @@ export class VictimProfileService {
     // DETERMINE STATUS
     // ─────────────────────────────────────────────
 
-    let status: VictimProfileStatus =
+    let status:
+      VictimProfileStatus =
       VictimProfileStatus.UNDER_REVIEW;
 
     if (!isVerified) {
@@ -501,67 +498,26 @@ export class VictimProfileService {
         VictimProfileStatus.APPROVED;
     }
 
-    // ─────────────────────────────────────────────
-    // UPDATE DATA
-    // ─────────────────────────────────────────────
-
-    const updateData: {
-      isVerified: boolean;
-      isSafetyReviewed: boolean;
-      hasConsent: boolean;
-      isPrivacyReviewed: boolean;
-      isAdminApproved: boolean;
-      status: VictimProfileStatus;
-      consentAt?: Date | null;
-      consentRecordedBy?: string | null;
-      isPublished?: boolean;
-    } = {
+    const updateData = {
       isVerified,
-
       isSafetyReviewed,
-
       hasConsent,
-
       isPrivacyReviewed,
-
       isAdminApproved,
-
       status,
-    };
 
-    // ─────────────────────────────────────────────
-    // RECORD CONSENT
-    // ─────────────────────────────────────────────
+      // A gate change must never automatically publish.
+      isPublished: false,
 
-    if (
-      data.hasConsent === true &&
+      ...(data.hasConsent === true &&
       !profile.hasConsent
-    ) {
-      updateData.consentAt =
-        new Date();
-
-      updateData.consentRecordedBy =
-        adminId;
-    }
-
-    // ─────────────────────────────────────────────
-    // REVOKING GATE STOPS PUBLICATION
-    // ─────────────────────────────────────────────
-
-    if (
-      !isVerified ||
-      !isSafetyReviewed ||
-      !hasConsent ||
-      !isPrivacyReviewed ||
-      !isAdminApproved
-    ) {
-      updateData.isPublished =
-        false;
-    }
-
-    // ─────────────────────────────────────────────
-    // SAVE
-    // ─────────────────────────────────────────────
+        ? {
+            consentAt: new Date(),
+            consentRecordedBy:
+              adminId,
+          }
+        : {}),
+    };
 
     const updatedProfile =
       await this.prisma.victimProfile.update({
@@ -572,23 +528,19 @@ export class VictimProfileService {
         data: updateData,
       });
 
-    // ─────────────────────────────────────────────
-    // AUDIT LOG EVENT
-    // ─────────────────────────────────────────────
-
     this.eventEmitter.emit(
       'victim_profile.gates_updated',
       {
         actorId: adminId,
         victimProfileId: id,
-        action: 'UPDATE_APPROVAL_GATES',
+        action:
+          'UPDATE_APPROVAL_GATES',
         entity: 'VictimProfile',
 
         previousStatus:
           profile.status,
 
-        newStatus:
-          status,
+        newStatus: status,
 
         previousGates: {
           isVerified:
@@ -609,21 +561,13 @@ export class VictimProfileService {
 
         newGates: {
           isVerified,
-
           isSafetyReviewed,
-
           hasConsent,
-
           isPrivacyReviewed,
-
           isAdminApproved,
         },
       },
     );
-
-    // ─────────────────────────────────────────────
-    // NOTIFICATION EVENT
-    // ─────────────────────────────────────────────
 
     this.eventEmitter.emit(
       'notification.victim_profile.gates_updated',
@@ -658,17 +602,14 @@ export class VictimProfileService {
       );
     }
 
-    // ─────────────────────────────────────────────
-    // ALL GATES MUST PASS
-    // ─────────────────────────────────────────────
+    const allGatesSatisfied =
+      profile.isVerified &&
+      profile.isSafetyReviewed &&
+      profile.hasConsent &&
+      profile.isPrivacyReviewed &&
+      profile.isAdminApproved;
 
-    if (
-      !profile.isVerified ||
-      !profile.isSafetyReviewed ||
-      !profile.hasConsent ||
-      !profile.isPrivacyReviewed ||
-      !profile.isAdminApproved
-    ) {
+    if (!allGatesSatisfied) {
       throw new BadRequestException(
         'all_approval_gates_required',
       );
@@ -688,10 +629,6 @@ export class VictimProfileService {
         },
       });
 
-    // ─────────────────────────────────────────────
-    // AUDIT LOG EVENT
-    // ─────────────────────────────────────────────
-
     this.eventEmitter.emit(
       'victim_profile.published',
       {
@@ -707,10 +644,6 @@ export class VictimProfileService {
           VictimProfileStatus.PUBLISHED,
       },
     );
-
-    // ─────────────────────────────────────────────
-    // NOTIFICATION EVENT
-    // ─────────────────────────────────────────────
 
     this.eventEmitter.emit(
       'notification.victim_profile.published',
@@ -744,6 +677,12 @@ export class VictimProfileService {
       );
     }
 
+    if (!profile.isPublished) {
+      throw new BadRequestException(
+        'victim_profile_not_published',
+      );
+    }
+
     const updatedProfile =
       await this.prisma.victimProfile.update({
         where: {
@@ -751,16 +690,12 @@ export class VictimProfileService {
         },
 
         data: {
-          isPublished: false,
-
           status:
             VictimProfileStatus.UNPUBLISHED,
+
+          isPublished: false,
         },
       });
-
-    // ─────────────────────────────────────────────
-    // AUDIT LOG EVENT
-    // ─────────────────────────────────────────────
 
     this.eventEmitter.emit(
       'victim_profile.unpublished',
@@ -777,10 +712,6 @@ export class VictimProfileService {
           VictimProfileStatus.UNPUBLISHED,
       },
     );
-
-    // ─────────────────────────────────────────────
-    // NOTIFICATION EVENT
-    // ─────────────────────────────────────────────
 
     this.eventEmitter.emit(
       'notification.victim_profile.unpublished',
@@ -814,6 +745,12 @@ export class VictimProfileService {
       );
     }
 
+    if (profile.isPublished) {
+      throw new BadRequestException(
+        'published_profile_cannot_be_rejected',
+      );
+    }
+
     const updatedProfile =
       await this.prisma.victimProfile.update({
         where: {
@@ -825,14 +762,8 @@ export class VictimProfileService {
             VictimProfileStatus.REJECTED,
 
           isPublished: false,
-
-          isAdminApproved: false,
         },
       });
-
-    // ─────────────────────────────────────────────
-    // AUDIT LOG EVENT
-    // ─────────────────────────────────────────────
 
     this.eventEmitter.emit(
       'victim_profile.rejected',
@@ -849,10 +780,6 @@ export class VictimProfileService {
           VictimProfileStatus.REJECTED,
       },
     );
-
-    // ─────────────────────────────────────────────
-    // NOTIFICATION EVENT
-    // ─────────────────────────────────────────────
 
     this.eventEmitter.emit(
       'notification.victim_profile.rejected',
