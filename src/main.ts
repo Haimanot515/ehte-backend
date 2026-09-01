@@ -313,6 +313,7 @@ Use the **Authorize** button and enter:
 
         // TAG ORDER
         .addTag('Authentication')
+        .addTag('Admin Authentication')
         .addTag('Reports')
         .addTag('Posts')
         .addTag('Missing Persons')
