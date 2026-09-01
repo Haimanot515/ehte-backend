@@ -16,15 +16,8 @@ import {
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
 
-// ASSUMPTION — please confirm the real path/export name, same as
-// flagged last time: not yet provided:
-// src/common/guards/roles.guard.ts and its matching decorator.
-// Guessed to live alongside public.decorator.ts /
-// current-user.decorator.ts as
-// src/common/decorators/roles.decorator.ts, exporting
-// Roles(...roles: string[]), read by the globally-registered
-// RolesGuard in AppModule.
 import { Roles } from 'src/common/decorators/roles.decorator';
+import { RolesEnum } from 'src/common/enums/roles.enum';
 
 import {
   AssignUserRoleDto,
@@ -128,14 +121,14 @@ export class UserController {
   // ─────────────────────────────────────────────
   // ADMIN — LIST USERS
   // GET /users
-  // Restricted to super_admin
+  // Restricted to SUPER_ADMIN
   // PRD 23: Admin Portal > Users
   //
   // Registered before ':id'-shaped routes are ever added at this
   // level so a literal path is never swallowed by a param route.
   // ─────────────────────────────────────────────
   @Get()
-  @Roles('super_admin')
+  @Roles(RolesEnum.SUPER_ADMIN)
   @ApiOperation({
     summary: 'List all users (admin)',
   })
@@ -151,11 +144,11 @@ export class UserController {
   // ─────────────────────────────────────────────
   // ADMIN — DASHBOARD STATS
   // GET /users/stats
-  // Restricted to super_admin
+  // Restricted to SUPER_ADMIN
   // PRD 23: Admin Portal > Dashboard (user-related figures)
   // ─────────────────────────────────────────────
   @Get('stats')
-  @Roles('super_admin')
+  @Roles(RolesEnum.SUPER_ADMIN)
   @ApiOperation({
     summary:
       'User-related dashboard stats (totals, active/inactive, by role, growth)',
@@ -167,11 +160,11 @@ export class UserController {
   // ─────────────────────────────────────────────
   // ADMIN — ASSIGN ROLE
   // PATCH /users/:id/role
-  // Restricted to super_admin
+  // Restricted to SUPER_ADMIN
   // PRD 23/24: Admin Portal > Users / Roles and Permissions
   // ─────────────────────────────────────────────
   @Patch(':id/role')
-  @Roles('super_admin')
+  @Roles(RolesEnum.SUPER_ADMIN)
   @ApiOperation({
     summary:
       "Grant an admin or super_admin role to a user's account",
@@ -198,12 +191,12 @@ export class UserController {
   // ─────────────────────────────────────────────
   // ADMIN — REVOKE ROLE
   // DELETE /users/:id/role/:role
-  // Restricted to super_admin
+  // Restricted to SUPER_ADMIN
   // Blocked at the service level if it would remove the
-  // last active super_admin.
+  // last active super admin.
   // ─────────────────────────────────────────────
   @Delete(':id/role/:role')
-  @Roles('super_admin')
+  @Roles(RolesEnum.SUPER_ADMIN)
   @ApiOperation({
     summary:
       "Revoke an admin or super_admin role from a user's account",
@@ -214,7 +207,7 @@ export class UserController {
   })
   @ApiParam({
     name: 'role',
-    enum: ['admin', 'super_admin'],
+    enum: [RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN],
   })
   async revokeRole(
     @CurrentUser()
@@ -222,7 +215,7 @@ export class UserController {
     @Param('id')
     id: string,
     @Param('role')
-    role: 'admin' | 'super_admin',
+    role: RolesEnum.ADMIN | RolesEnum.SUPER_ADMIN,
   ) {
     return this.userService.revokeRole(
       actor,

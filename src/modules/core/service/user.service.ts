@@ -18,11 +18,7 @@ import {
 } from '../dto/user.dto';
 
 import { AuditEventEnum } from 'src/common/enums/shared/audit-events.enum';
-
-// Fixed role names this endpoint is allowed to grant/revoke.
-// Confirm these match the names seeded by RolesSeeder.
-const SUPER_ADMIN_ROLE_NAME = 'super_admin';
-
+import { RolesEnum } from 'src/common/enums/roles.enum';
 @Injectable()
 export class UserService {
   constructor(
@@ -347,7 +343,7 @@ export class UserService {
   // ─────────────────────────────────────────────
   // ADMIN — ASSIGN ROLE
   // PATCH /users/:id/role
-  // Restricted to super_admin at the controller (Roles guard)
+  // Restricted to SUPER_ADMIN at the controller (Roles guard)
   // Grants the target user the given role. Does not remove any
   // other role the user already holds — pass the same role again
   // to no-op, or see revokeRole below to remove one.
@@ -428,15 +424,15 @@ export class UserService {
   // ─────────────────────────────────────────────
   // ADMIN — REVOKE ROLE
   // DELETE /users/:id/role/:role
-  // Restricted to super_admin at the controller (Roles guard)
-  // Blocks removing the last active super_admin so the platform
+  // Restricted to SUPER_ADMIN at the controller (Roles guard)
+  // Blocks removing the last active super admin so the platform
   // is never left without one.
   // ─────────────────────────────────────────────
 
   async revokeRole(
     actor: CurrentUserDto,
     targetUserId: string,
-    role: 'admin' | 'super_admin',
+    role: RolesEnum.ADMIN | RolesEnum.SUPER_ADMIN,
   ) {
     const targetUser =
       await this.prisma.user.findUnique({
@@ -477,7 +473,7 @@ export class UserService {
       );
     }
 
-    if (role === SUPER_ADMIN_ROLE_NAME) {
+    if (role === RolesEnum.SUPER_ADMIN) {
       const otherActiveSuperAdmins =
         await this.prisma.user.count({
           where: {
@@ -487,7 +483,7 @@ export class UserService {
             userRoles: {
               some: {
                 role: {
-                  name: SUPER_ADMIN_ROLE_NAME,
+                  name: RolesEnum.SUPER_ADMIN,
                 },
               },
             },
@@ -533,7 +529,7 @@ export class UserService {
   // ─────────────────────────────────────────────
   // ADMIN — LIST USERS
   // GET /users
-  // Restricted to super_admin at the controller (Roles guard)
+  // Restricted to SUPER_ADMIN at the controller (Roles guard)
   // PRD 23: Admin Portal > Users
   // ─────────────────────────────────────────────
 
@@ -662,7 +658,7 @@ export class UserService {
   // ─────────────────────────────────────────────
   // ADMIN — DASHBOARD STATS
   // GET /users/stats
-  // Restricted to super_admin at the controller (Roles guard)
+  // Restricted to SUPER_ADMIN at the controller (Roles guard)
   // PRD 23: Admin Portal > Dashboard
   //
   // Only user-related figures live here, matching this file's

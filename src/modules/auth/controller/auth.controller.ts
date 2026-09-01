@@ -32,6 +32,7 @@ import { AllowAnonymous } from 'src/common/decorators/public.decorator';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
 import { Roles } from 'src/common/decorators/roles.decorator';
+import { RolesEnum } from 'src/common/enums/roles.enum';
 
 @ApiTags('Authentication')
 @Controller('auth')
@@ -261,7 +262,7 @@ export class AdminAuthController {
 
   @Post('register')
   @ApiBearerAuth('access-token')
-  @Roles('ADMIN', 'SUPER_ADMIN')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @ApiOperation({
     summary:
       'Register a new admin and send OTP to their phone',
@@ -299,7 +300,7 @@ export class AdminAuthController {
 
   @Post('verify/:id')
   @ApiBearerAuth('access-token')
-  @Roles('ADMIN', 'SUPER_ADMIN')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @ApiOperation({
     summary:
       'Verify OTP for newly registered admin',

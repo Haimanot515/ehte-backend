@@ -18,6 +18,7 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
 import { normalizePhoneNumber } from 'src/common/utils/phone.util';
 import { resolveActorType } from 'src/common/utils/actor-type.util';
+import { RolesEnum } from 'src/common/enums/roles.enum';
 
 import { sendSms } from 'src/common/sms/afro-message.service';
 
@@ -128,6 +129,10 @@ export class AuthService {
        * Treat it as a resend: send a fresh OTP for the
        * existing account rather than creating a second
        * one or blocking them outright.
+       *
+       * issueAndSendOtp() never throws on cooldown — if
+       * one is active it just hands back the still-valid
+       * verificationId from the last send.
        */
       const { verificationId } =
         await this.issueAndSendOtp(
@@ -144,7 +149,7 @@ export class AuthService {
     const userRole =
       await this.prisma.role.findUnique({
         where: {
-          name: 'USER',
+          name: RolesEnum.USER,
         },
       });
 
@@ -872,7 +877,11 @@ export class AuthService {
        * check the DB, send a fresh OTP, and hand the
        * client a verificationId so it can route straight
        * to the OTP screen. issueAndSendOtp() invalidates
-       * any stale unused OTP and applies a resend cooldown.
+       * any stale unused OTP and applies a resend cooldown
+       * — and never throws on that cooldown, so a user who
+       * hits login twice in quick succession while
+       * unverified still gets a clean, usable
+       * verificationId back both times.
        */
       const { verificationId } =
         await this.issueAndSendOtp(
@@ -1656,21 +1665,13 @@ export class AuthService {
     }
 
     /*
-     * CurrentUserDto may or may not
-     * expose roles.
-     *
-     * TODO: this cast is a workaround for
-     * CurrentUserDto not reliably carrying roles.
-     * Prefer fixing the DTO/JWT payload shape so
-     * `roles` is a first-class typed field instead
-     * of reaching for it via an unknown cast here.
+     * CurrentUserDto now carries roles as a real,
+     * required field (populated by JwtStrategy.validate()
+     * from the JWT payload), so this can read straight
+     * off `user.roles` — the old unknown-cast workaround
+     * is no longer needed here.
      */
-    const roles =
-      (
-        user as unknown as {
-          roles?: string[];
-        }
-      ).roles ?? [];
+    const roles = user.roles ?? [];
 
     this.eventEmitter.emit(
       AuditEventEnum.LOGOUT,
@@ -1736,23 +1737,21 @@ export class AuthService {
   }> {
     /*
      * Defense-in-depth: don't rely solely on the
-     * controller's @Roles guard. Same stopgap cast as
-     * adminVerify() / logout() until CurrentUserDto
-     * exposes roles as a first-class field.
+     * controller's @Roles guard. CurrentUserDto now
+     * carries roles as a real, required field
+     * (JwtStrategy.validate() populates it from the JWT
+     * payload), so this reads straight off
+     * `creator.roles` rather than an unknown-cast
+     * workaround.
      */
-    const creatorRoles =
-      (
-        creator as unknown as {
-          roles?: string[];
-        }
-      ).roles ?? [];
+    const creatorRoles = creator.roles ?? [];
 
     if (
       !creatorRoles.some((role) =>
         [
-          'ADMIN',
-          'SUPER_ADMIN',
-        ].includes(role),
+          RolesEnum.ADMIN,
+          RolesEnum.SUPER_ADMIN,
+        ].includes(role as RolesEnum),
       )
     ) {
       throw new UnauthorizedException(
@@ -1787,7 +1786,7 @@ export class AuthService {
     const adminRole =
       await this.prisma.role.findUnique({
         where: {
-          name: 'ADMIN',
+          name: RolesEnum.ADMIN,
         },
       });
 
@@ -1912,7 +1911,7 @@ export class AuthService {
 
         actorType:
           resolveActorType([
-            'ADMIN',
+            RolesEnum.ADMIN,
           ]),
 
         action:
@@ -1925,7 +1924,7 @@ export class AuthService {
 
         diff: {
           result: 'success',
-          role: 'ADMIN',
+          role: RolesEnum.ADMIN,
           createdBy: creator.id,
         },
       } as AuditEventPayload,
@@ -1963,24 +1962,18 @@ export class AuthService {
      * assume that will always be true — a future
      * refactor of the controller/guard shouldn't be
      * able to silently turn this into an anonymous
-     * write. Same TODO as logout(): CurrentUserDto
-     * doesn't reliably carry roles yet, so this cast
-     * is a stopgap until the DTO/JWT payload exposes
-     * roles as a first-class field.
+     * write. CurrentUserDto carries roles as a real,
+     * required field, so this reads straight off
+     * `verifier.roles`.
      */
-    const verifierRoles =
-      (
-        verifier as unknown as {
-          roles?: string[];
-        }
-      ).roles ?? [];
+    const verifierRoles = verifier.roles ?? [];
 
     if (
       !verifierRoles.some((role) =>
         [
-          'ADMIN',
-          'SUPER_ADMIN',
-        ].includes(role),
+          RolesEnum.ADMIN,
+          RolesEnum.SUPER_ADMIN,
+        ].includes(role as RolesEnum),
       )
     ) {
       throw new UnauthorizedException(
@@ -2013,9 +2006,9 @@ export class AuthService {
       !admin ||
       !roles.some((role) =>
         [
-          'ADMIN',
-          'SUPER_ADMIN',
-        ].includes(role),
+          RolesEnum.ADMIN,
+          RolesEnum.SUPER_ADMIN,
+        ].includes(role as RolesEnum),
       )
     ) {
       throw new NotFoundException(
@@ -2262,6 +2255,18 @@ export class AuthService {
   // could in principle still call /auth/login, but
   // that's a separate decision from this endpoint's
   // job of gating access to admin-only clients).
+  //
+  // NOTE: unlike login(), this does not check
+  // isPhoneVerified — only isActive. This is
+  // intentional: an admin only ever becomes isActive
+  // via adminVerify(), which sets isPhoneVerified and
+  // isActive together in one transaction, so in the
+  // normal flow the two facts already move in lockstep.
+  // The seeded SUPER_ADMIN account (AdminSeeder) is
+  // created isActive: true without ever going through
+  // adminVerify(), so it may not have isPhoneVerified
+  // set — adding that check here would lock the seeded
+  // super-admin out of their own system.
   // ─────────────────────────────────────────────
 
   async adminLogin(
@@ -2296,9 +2301,9 @@ export class AuthService {
     const isAdmin = roles.some(
       (role) =>
         [
-          'ADMIN',
-          'SUPER_ADMIN',
-        ].includes(role),
+          RolesEnum.ADMIN,
+          RolesEnum.SUPER_ADMIN,
+        ].includes(role as RolesEnum),
     );
 
     if (
@@ -2701,6 +2706,19 @@ export class AuthService {
   // The global ThrottlerGuard (app.module.ts) also
   // covers this at the request-rate level; this is a
   // second, per-user/per-purpose guard on top of that.
+  //
+  // FIX: previously this threw BadRequestException
+  // ('otp_recently_sent') when called again inside the
+  // cooldown window, but none of its callers (signup,
+  // login, forgotPassword) caught that exception — so a
+  // legitimate, ordinary retry (e.g. a user hitting
+  // login twice in a row while unverified) surfaced as
+  // a raw, unhandled 400 instead of a clean response.
+  // Now, when the cooldown is active, this simply
+  // returns the existing, still-valid verificationId
+  // without regenerating the OTP or re-sending SMS —
+  // every caller gets a normal, usable response either
+  // way.
   // ─────────────────────────────────────────────
 
   private async issueAndSendOtp(
@@ -2714,6 +2732,12 @@ export class AuthService {
         60,
       );
 
+    const otpExpiresInMinutes =
+      this.configService.get<number>(
+        'otp.expiresInMinutes',
+        10,
+      );
+
     const otp =
       this.generateOtp();
 
@@ -2721,12 +2745,6 @@ export class AuthService {
       await bcrypt.hash(
         otp,
         12,
-      );
-
-    const otpExpiresInMinutes =
-      this.configService.get<number>(
-        'otp.expiresInMinutes',
-        10,
       );
 
     /*
@@ -2745,7 +2763,7 @@ export class AuthService {
      * SELECT ... FOR UPDATE via a raw query) — add
      * one of those once the schema is available.
      */
-    const userOtp =
+    const result =
       await this.prisma.$transaction(
         async (tx) => {
           const latestOtp =
@@ -2760,15 +2778,26 @@ export class AuthService {
               },
             });
 
-          if (
-            latestOtp &&
+          const cooldownActive =
+            !!latestOtp &&
+            !latestOtp.usedAt &&
             Date.now() -
               latestOtp.createdAt.getTime() <
-              cooldownSeconds * 1000
-          ) {
-            throw new BadRequestException(
-              'otp_recently_sent',
-            );
+              cooldownSeconds * 1000;
+
+          if (cooldownActive) {
+            /*
+             * Reuse the existing OTP/verificationId
+             * rather than throwing. Nothing is
+             * regenerated and no SMS is sent — the
+             * client already has (or can look up) the
+             * code tied to this verificationId from
+             * the earlier send.
+             */
+            return {
+              reused: true as const,
+              verificationId: latestOtp!.id,
+            };
           }
 
           await tx.userOtp.updateMany({
@@ -2783,24 +2812,40 @@ export class AuthService {
             },
           });
 
-          return tx.userOtp.create({
-            data: {
-              userId,
-              otpHash,
+          const created =
+            await tx.userOtp.create({
+              data: {
+                userId,
+                otpHash,
 
-              expiresAt:
-                new Date(
-                  Date.now() +
-                    otpExpiresInMinutes *
-                      60 *
-                      1000,
-                ),
+                expiresAt:
+                  new Date(
+                    Date.now() +
+                      otpExpiresInMinutes *
+                        60 *
+                        1000,
+                  ),
 
-              purpose,
-            },
-          });
+                purpose,
+              },
+            });
+
+          return {
+            reused: false as const,
+            verificationId: created.id,
+          };
         },
       );
+
+    if (result.reused) {
+      /*
+       * Cooldown still active — don't resend SMS or
+       * log a dev OTP, since no new code was generated.
+       */
+      return {
+        verificationId: result.verificationId,
+      };
+    }
 
     const smsMessage =
       renderOtpSms({
@@ -2836,8 +2881,7 @@ export class AuthService {
     }
 
     return {
-      verificationId:
-        userOtp.id,
+      verificationId: result.verificationId,
     };
   }
 

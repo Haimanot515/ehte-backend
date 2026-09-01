@@ -10,6 +10,8 @@ import {
 } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
 
+import { RolesEnum } from 'src/common/enums/roles.enum';
+
 export class UpdateUserDto {
   @ApiPropertyOptional({
     example: 'Haimanot',
@@ -35,22 +37,22 @@ export class UpdateDiscreetModeDto {
 // ADMIN — ASSIGN ROLE
 // PRD 23/24: Admin Portal > Users / Roles and Permissions
 //
-// Kept as a fixed enum of role names ('admin', 'super_admin') rather
-// than accepting an arbitrary role id, matching how Ehte's roles are
-// referred to elsewhere ('super_admin' checks in the service). If
-// your Role table grows beyond these two admin-side names, swap this
-// for a roleId lookup instead.
+// Kept as a fixed enum of role names (RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+// rather than accepting an arbitrary role id, matching RolesEnum
+// (src/common/enums/roles.enum.ts) and the names seeded by
+// RolesSeeder. If your Role table grows beyond these two admin-side
+// names, swap this for a roleId lookup instead.
 // ─────────────────────────────────────────────
 
 export class AssignUserRoleDto {
   @ApiProperty({
-    example: 'admin',
+    example: RolesEnum.ADMIN,
     description: 'Role to grant the user',
-    enum: ['admin', 'super_admin'],
+    enum: [RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN],
   })
   @IsString()
-  @IsIn(['admin', 'super_admin'])
-  role: 'admin' | 'super_admin';
+  @IsIn([RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN])
+  role: RolesEnum.ADMIN | RolesEnum.SUPER_ADMIN;
 }
 
 // ─────────────────────────────────────────────
