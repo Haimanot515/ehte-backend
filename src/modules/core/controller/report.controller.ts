@@ -33,6 +33,7 @@ import {
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
 import { Roles } from 'src/common/decorators/roles.decorator';
+import { RolesEnum } from 'src/common/enums/roles.enum';
 
 @ApiTags('Reports')
 @ApiBearerAuth('access-token')
@@ -99,7 +100,7 @@ export class ReportController {
   // ─────────────────────────────────────────────
 
   @Get()
-  @Roles('admin', 'super_admin')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @ApiOperation({
     summary: 'List all reports (admin)',
   })
@@ -177,7 +178,7 @@ export class ReportController {
   // ─────────────────────────────────────────────
 
   @Get(':id/admin')
-  @Roles('admin', 'super_admin')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @ApiOperation({
     summary:
       'Get full report detail including reporter information (admin)',
@@ -200,7 +201,7 @@ export class ReportController {
   // ─────────────────────────────────────────────
 
   @Patch(':id/status')
-  @Roles('admin', 'super_admin')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @ApiOperation({
     summary: 'Update report status (admin)',
   })
@@ -224,7 +225,7 @@ export class ReportController {
   // ─────────────────────────────────────────────
 
   @Patch(':id/request-information')
-  @Roles('admin', 'super_admin')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @ApiOperation({
     summary:
       'Request more information from reporter (admin)',
@@ -249,7 +250,7 @@ export class ReportController {
   // ─────────────────────────────────────────────
 
   @Patch(':id/assign')
-  @Roles('super_admin')
+  @Roles(RolesEnum.SUPER_ADMIN)
   @ApiOperation({
     summary: 'Assign report to an administrator (super admin)',
   })
@@ -273,7 +274,7 @@ export class ReportController {
   // ─────────────────────────────────────────────
 
   @Patch(':id/escalate')
-  @Roles('admin', 'super_admin')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @ApiOperation({
     summary: 'Escalate an urgent report (admin)',
   })

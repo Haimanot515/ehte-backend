@@ -92,16 +92,13 @@ export class ReportService {
         },
       });
 
-    const roles =
-      (user as unknown as {
-        roles?: string[];
-      }).roles ?? [];
-
     this.eventEmitter.emit(
       AuditEventEnum.REPORT_CREATED,
       {
         userId: user.id,
-        actorType: resolveActorType(roles),
+        actorType: resolveActorType(
+          this.getRoles(user),
+        ),
         action: AuditEventEnum.REPORT_CREATED,
         entity: 'Report',
         entityId: report.id,
@@ -258,16 +255,13 @@ export class ReportService {
         },
       });
 
-    const roles =
-      (user as unknown as {
-        roles?: string[];
-      }).roles ?? [];
-
     this.eventEmitter.emit(
       AuditEventEnum.REPORT_UPDATED,
       {
         userId: user.id,
-        actorType: resolveActorType(roles),
+        actorType: resolveActorType(
+          this.getRoles(user),
+        ),
         action: AuditEventEnum.REPORT_UPDATED,
         entity: 'Report',
         entityId: report.id,
@@ -292,6 +286,11 @@ export class ReportService {
 
   // ─────────────────────────────────────────────
   // LIST REPORTS (ADMIN)
+  //
+  // NOTE: query.assignedTo is accepted and documented
+  // but not yet applied — Report has no assignedToId
+  // column in the current schema (see assign() below).
+  // Wire this into `where` once that column exists.
   // ─────────────────────────────────────────────
 
   async findAllForAdmin(
@@ -358,16 +357,15 @@ export class ReportService {
       );
     }
 
-    const roles =
-      (admin as unknown as {
-        roles?: string[];
-      }).roles ?? [];
+    const actorType = resolveActorType(
+      this.getRoles(admin),
+    );
 
     this.eventEmitter.emit(
       AuditEventEnum.REPORT_OPENED,
       {
         userId: admin.id,
-        actorType: resolveActorType(roles),
+        actorType,
         action: AuditEventEnum.REPORT_OPENED,
         entity: 'Report',
         entityId: reportId,
@@ -379,7 +377,7 @@ export class ReportService {
       AuditEventEnum.REPORTER_INFORMATION_OPENED,
       {
         userId: admin.id,
-        actorType: resolveActorType(roles),
+        actorType,
         action:
           AuditEventEnum.REPORTER_INFORMATION_OPENED,
         entity: 'Report',
@@ -416,16 +414,13 @@ export class ReportService {
       data: { status: data.status },
     });
 
-    const roles =
-      (admin as unknown as {
-        roles?: string[];
-      }).roles ?? [];
-
     this.eventEmitter.emit(
       AuditEventEnum.REPORT_STATUS_CHANGED,
       {
         userId: admin.id,
-        actorType: resolveActorType(roles),
+        actorType: resolveActorType(
+          this.getRoles(admin),
+        ),
         action: AuditEventEnum.REPORT_STATUS_CHANGED,
         entity: 'Report',
         entityId: reportId,
@@ -469,16 +464,13 @@ export class ReportService {
       );
     }
 
-    const roles =
-      (admin as unknown as {
-        roles?: string[];
-      }).roles ?? [];
-
     this.eventEmitter.emit(
       AuditEventEnum.REPORT_MORE_INFORMATION_REQUESTED,
       {
         userId: admin.id,
-        actorType: resolveActorType(roles),
+        actorType: resolveActorType(
+          this.getRoles(admin),
+        ),
         action:
           AuditEventEnum.REPORT_MORE_INFORMATION_REQUESTED,
         entity: 'Report',
@@ -527,16 +519,13 @@ export class ReportService {
       );
     }
 
-    const roles =
-      (admin as unknown as {
-        roles?: string[];
-      }).roles ?? [];
-
     this.eventEmitter.emit(
       AuditEventEnum.REPORT_ASSIGNED,
       {
         userId: admin.id,
-        actorType: resolveActorType(roles),
+        actorType: resolveActorType(
+          this.getRoles(admin),
+        ),
         action: AuditEventEnum.REPORT_ASSIGNED,
         entity: 'Report',
         entityId: reportId,
@@ -579,16 +568,13 @@ export class ReportService {
       data: { status: ReportStatus.ESCALATED },
     });
 
-    const roles =
-      (admin as unknown as {
-        roles?: string[];
-      }).roles ?? [];
-
     this.eventEmitter.emit(
       AuditEventEnum.REPORT_ESCALATED,
       {
         userId: admin.id,
-        actorType: resolveActorType(roles),
+        actorType: resolveActorType(
+          this.getRoles(admin),
+        ),
         action: AuditEventEnum.REPORT_ESCALATED,
         entity: 'Report',
         entityId: reportId,
@@ -621,5 +607,24 @@ export class ReportService {
       .slice(2, 8)
       .toUpperCase();
     return `EHT-${year}-${random}`;
+  }
+
+  // ─────────────────────────────────────────────
+  // Centralizes the unsafe roles extraction that was
+  // previously repeated (with an `as unknown as` cast)
+  // in every method that emits an audit event. Ideally
+  // CurrentUserDto declares `roles` directly so this
+  // cast can be removed entirely — it currently doesn't,
+  // so this keeps the workaround in exactly one place.
+  // ─────────────────────────────────────────────
+
+  private getRoles(
+    user: CurrentUserDto,
+  ): string[] {
+    return (
+      (user as unknown as {
+        roles?: string[];
+      }).roles ?? []
+    );
   }
 }
