@@ -12,7 +12,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { UserOtpPurposeEnum } from '@prisma/client';
 
 import * as bcrypt from 'bcrypt';
-import { randomInt } from 'crypto';
+import { randomInt, createHmac, randomUUID } from 'crypto';
 
 import { PrismaService } from 'src/prisma/prisma.service';
 import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
@@ -40,6 +40,9 @@ import {
   ResetPasswordDto,
   SignupDto,
   SignupVerifyDto,
+  AdminRegisterDto,
+  AdminVerifyDto,
+  AdminLoginDto,
 } from '../dto/auth.dto';
 
 type TokenPair = {
@@ -492,8 +495,15 @@ export class AuthService {
     }
 
     /*
-     * Mark OTP as used AND flip the user to
-     * phone-verified in the same transaction, so
+     * Atomically CLAIM the OTP before trusting it's
+     * still ours to use: updateMany with usedAt: null
+     * in the where-clause means only one of two
+     * concurrent requests can ever flip it to used —
+     * the loser gets count === 0 and is rejected, even
+     * though both requests may have passed the earlier
+     * bcrypt.compare() check on the same still-unused
+     * row. Wrapping the claim and the phone-verified
+     * flip in one interactive transaction also means
      * the two facts can never drift apart (e.g. OTP
      * marked used but the verification flag failing
      * to persist, or vice versa).
@@ -502,27 +512,51 @@ export class AuthService {
      * above login()) — this is the ONLY place that
      * should ever set it to true.
      */
-    await this.prisma.$transaction([
-      this.prisma.userOtp.update({
-        where: {
-          id: otpRecord.id,
-        },
+    await this.prisma.$transaction(
+      async (tx) => {
+        const claimed =
+          await tx.userOtp.updateMany({
+            where: {
+              id: otpRecord.id,
+              usedAt: null,
 
-        data: {
-          usedAt: new Date(),
-        },
-      }),
+              attempts: {
+                lt: 5,
+              },
 
-      this.prisma.user.update({
-        where: {
-          id: otpRecord.user.id,
-        },
+              expiresAt: {
+                gt: new Date(),
+              },
+            },
 
-        data: {
-          isPhoneVerified: true,
-        },
-      }),
-    ]);
+            data: {
+              usedAt: new Date(),
+            },
+          });
+
+        if (claimed.count === 0) {
+          /*
+           * Lost the race — another request already
+           * consumed this OTP, pushed its attempts to
+           * 5, or it expired between our read and this
+           * claim attempt.
+           */
+          throw new BadRequestException(
+            'invalid_or_expired_otp',
+          );
+        }
+
+        await tx.user.update({
+          where: {
+            id: otpRecord.user.id,
+          },
+
+          data: {
+            isPhoneVerified: true,
+          },
+        });
+      },
+    );
 
     /*
      * Successful OTP verification.
@@ -705,52 +739,21 @@ export class AuthService {
           userRole.role.name,
       );
 
-    if (!user.isActive) {
-      this.eventEmitter.emit(
-        AuditEventEnum.LOGIN_FAILED,
-        {
-          userId:
-            user.id,
-
-          actorType:
-            resolveActorType(
-              roles,
-            ),
-
-          action:
-            AuditEventEnum.LOGIN_FAILED,
-
-          entity: 'User',
-
-          entityId:
-            user.id,
-
-          diff: {
-            method:
-              'password',
-
-            result:
-              'failed',
-
-            reason:
-              'account_inactive',
-          },
-        } as AuditEventPayload,
-      );
-
-      throw new UnauthorizedException(
-        'account_inactive',
-      );
-    }
-
     /*
-     * Password is checked BEFORE the phone-verification
-     * gate below on purpose: that gate now triggers an
-     * OTP SMS send. Checking the password first means an
-     * OTP can only be triggered by someone who actually
-     * knows the account's password — not just its phone
-     * number — which prevents this endpoint from being
-     * used as a free SMS-bombing vector.
+     * Password is checked BEFORE both the isActive
+     * gate and the phone-verification gate below, on
+     * purpose. An attacker who only knows a phone
+     * number and guesses the wrong password should
+     * always get the same generic invalid_credentials
+     * — checking isActive first would leak whether that
+     * phone number belongs to an inactive account to
+     * someone who hasn't even proven they know the
+     * password. Checking password first also means the
+     * phone-verification OTP send further below can
+     * only be triggered by someone who actually knows
+     * the account's password, which prevents this
+     * endpoint from being used as a free SMS-bombing
+     * vector.
      */
     const validPassword =
       await bcrypt.compare(
@@ -790,6 +793,44 @@ export class AuthService {
 
       throw new UnauthorizedException(
         'invalid_credentials',
+      );
+    }
+
+    if (!user.isActive) {
+      this.eventEmitter.emit(
+        AuditEventEnum.LOGIN_FAILED,
+        {
+          userId:
+            user.id,
+
+          actorType:
+            resolveActorType(
+              roles,
+            ),
+
+          action:
+            AuditEventEnum.LOGIN_FAILED,
+
+          entity: 'User',
+
+          entityId:
+            user.id,
+
+          diff: {
+            method:
+              'password',
+
+            result:
+              'failed',
+
+            reason:
+              'account_inactive',
+          },
+        } as AuditEventPayload,
+      );
+
+      throw new UnauthorizedException(
+        'account_inactive',
       );
     }
 
@@ -1121,39 +1162,64 @@ export class AuthService {
         10,
       );
 
-    await this.prisma.$transaction([
-      this.prisma.userOtp.update({
-        where: {
-          id: data.verificationId,
-        },
+    /*
+     * Same atomic-claim pattern as verifySignupOtp():
+     * updateMany with usedAt: null in the where-clause
+     * ensures only one of two concurrent requests can
+     * consume this OTP, even if both already passed
+     * bcrypt.compare() on the same still-unused row.
+     */
+    await this.prisma.$transaction(
+      async (tx) => {
+        const claimed =
+          await tx.userOtp.updateMany({
+            where: {
+              id: data.verificationId,
+              usedAt: null,
 
-        data: {
-          usedAt: new Date(),
-        },
-      }),
+              attempts: {
+                lt: 5,
+              },
 
-      this.prisma.user.update({
-        where: {
-          id: otpRecord.user.id,
-        },
+              expiresAt: {
+                gt: new Date(),
+              },
+            },
 
-        data: {
-          password:
-            hashedPassword,
-        },
-      }),
+            data: {
+              usedAt: new Date(),
+            },
+          });
 
-      /*
-       * Invalidate every
-       * existing session.
-       */
-      this.prisma.session.deleteMany({
-        where: {
-          userId:
-            otpRecord.user.id,
-        },
-      }),
-    ]);
+        if (claimed.count === 0) {
+          throw new BadRequestException(
+            'invalid_or_expired_otp',
+          );
+        }
+
+        await tx.user.update({
+          where: {
+            id: otpRecord.user.id,
+          },
+
+          data: {
+            password:
+              hashedPassword,
+          },
+        });
+
+        /*
+         * Invalidate every
+         * existing session.
+         */
+        await tx.session.deleteMany({
+          where: {
+            userId:
+              otpRecord.user.id,
+          },
+        });
+      },
+    );
 
     /*
      * Audit AFTER successful transaction.
@@ -1257,6 +1323,11 @@ export class AuthService {
       );
     }
 
+    const refreshTokenHash =
+      this.hashRefreshToken(
+        data.refreshToken,
+      );
+
     const session =
       await this.prisma.session.findFirst({
         where: {
@@ -1264,7 +1335,7 @@ export class AuthService {
             payload.sub,
 
           refreshToken:
-            data.refreshToken,
+            refreshTokenHash,
 
           expiresAt: {
             gt: new Date(),
@@ -1313,25 +1384,47 @@ export class AuthService {
       );
     }
 
-    /*
-     * Rotate refresh token.
-     */
-    await this.prisma.session.delete({
-      where: {
-        id: session.id,
-      },
-    });
-
     const roles =
       user.userRoles.map(
         (userRole) =>
           userRole.role.name,
       );
 
-    return this.issueTokens(
-      user.id,
-      user.phone,
-      roles,
+    /*
+     * Rotate refresh token atomically: the old
+     * session's deletion and the new session's
+     * creation now happen in one transaction, so
+     * there's no window where the old session is gone
+     * but the replacement hasn't landed yet. deleteMany
+     * (scoped to this exact session id) + a count check
+     * still guards against two concurrent refresh()
+     * calls both passing the earlier findFirst and both
+     * trying to rotate the same session — the loser
+     * gets count === 0 and is rejected rather than
+     * silently minting a second token pair.
+     */
+    return this.prisma.$transaction(
+      async (tx) => {
+        const rotated =
+          await tx.session.deleteMany({
+            where: {
+              id: session.id,
+            },
+          });
+
+        if (rotated.count === 0) {
+          throw new UnauthorizedException(
+            'session_expired_or_invalid',
+          );
+        }
+
+        return this.issueTokens(
+          user.id,
+          user.phone,
+          roles,
+          tx,
+        );
+      },
     );
   }
 
@@ -1548,7 +1641,10 @@ export class AuthService {
       await this.prisma.session.deleteMany({
         where: {
           userId: user.id,
-          refreshToken,
+          refreshToken:
+            this.hashRefreshToken(
+              refreshToken,
+            ),
         },
       });
     } else {
@@ -1609,6 +1705,766 @@ export class AuthService {
   }
 
   // ─────────────────────────────────────────────
+  // ADMIN — REGISTER
+  //
+  // Only reachable by an authenticated ADMIN /
+  // SUPER_ADMIN (enforced by @Roles on the
+  // controller — `creator` is that admin).
+  //
+  // Creates a PENDING admin: isPhoneVerified: false,
+  // isActive: false. Both stay false until the
+  // creating admin submits the OTP via adminVerify().
+  // login() already rejects inactive accounts before
+  // it ever checks the password, so a pending admin
+  // cannot log in — and because this issues an OTP
+  // with a dedicated purpose (admin_verification, NOT
+  // phone_verification), the pending admin also can't
+  // self-verify through /auth/signup/verify.
+  //
+  // REQUIRES a Prisma schema change:
+  //   UserOtpPurposeEnum needs an `admin_verification`
+  //   value added alongside the existing
+  //   `phone_verification` / `password_reset`.
+  // ─────────────────────────────────────────────
+
+  async adminRegister(
+    creator: CurrentUserDto,
+    data: AdminRegisterDto,
+  ): Promise<{
+    adminId: string;
+    verificationId: string;
+  }> {
+    /*
+     * Defense-in-depth: don't rely solely on the
+     * controller's @Roles guard. Same stopgap cast as
+     * adminVerify() / logout() until CurrentUserDto
+     * exposes roles as a first-class field.
+     */
+    const creatorRoles =
+      (
+        creator as unknown as {
+          roles?: string[];
+        }
+      ).roles ?? [];
+
+    if (
+      !creatorRoles.some((role) =>
+        [
+          'ADMIN',
+          'SUPER_ADMIN',
+        ].includes(role),
+      )
+    ) {
+      throw new UnauthorizedException(
+        'insufficient_permissions',
+      );
+    }
+
+    const phone =
+      this.normalizePhoneOrThrow(
+        data.phone,
+      );
+
+    const existingUser =
+      await this.prisma.user.findUnique({
+        where: {
+          phone,
+        },
+      });
+
+    if (existingUser) {
+      throw new BadRequestException(
+        'phone_already_registered',
+      );
+    }
+
+    /*
+     * Creator can provision ADMIN accounts only.
+     * Promoting to SUPER_ADMIN is a separate,
+     * deliberate action — not something this
+     * self-service registration flow should grant.
+     */
+    const adminRole =
+      await this.prisma.role.findUnique({
+        where: {
+          name: 'ADMIN',
+        },
+      });
+
+    if (!adminRole) {
+      throw new BadRequestException(
+        'admin_role_not_configured',
+      );
+    }
+
+    const hashedPassword =
+      await bcrypt.hash(
+        data.password,
+        10,
+      );
+
+    const result =
+      await this.prisma.$transaction(
+        async (tx) => {
+          const admin =
+            await tx.user.create({
+              data: {
+                name: data.name,
+                phone,
+                password: hashedPassword,
+
+                isPhoneVerified: false,
+                isActive: false,
+
+                userRoles: {
+                  create: {
+                    roleId: adminRole.id,
+                  },
+                },
+              },
+            });
+
+          const otp =
+            this.generateOtp();
+
+          const otpHash =
+            await bcrypt.hash(
+              otp,
+              12,
+            );
+
+          const otpExpiresInMinutes =
+            this.configService.get<number>(
+              'otp.expiresInMinutes',
+              10,
+            );
+
+          const adminOtp =
+            await tx.userOtp.create({
+              data: {
+                userId: admin.id,
+                otpHash,
+
+                expiresAt:
+                  new Date(
+                    Date.now() +
+                      otpExpiresInMinutes *
+                        60 *
+                        1000,
+                  ),
+
+                purpose:
+                  UserOtpPurposeEnum.admin_verification,
+              },
+            });
+
+          return {
+            adminId: admin.id,
+            verificationId:
+              adminOtp.id,
+            otp,
+            phone: admin.phone,
+          };
+        },
+      );
+
+    const smsMessage =
+      renderOtpSms({
+        otp: result.otp,
+        expiresInMinutes:
+          this.configService.get<number>(
+            'otp.expiresInMinutes',
+            10,
+          ),
+      });
+
+    try {
+      await sendSms(
+        result.phone,
+        smsMessage,
+      );
+    } catch (error) {
+      console.error(
+        `[EHTE SMS] Failed to send admin registration OTP to ${result.phone}`,
+        error,
+      );
+    }
+
+    /*
+     * DEVELOPMENT ONLY
+     */
+    if (
+      this.configService.get<boolean>(
+        'app.debug',
+        false,
+      )
+    ) {
+      console.log(
+        `[EHTE DEV] Admin registration OTP for ${result.phone}: ${result.otp}`,
+      );
+    }
+
+    this.eventEmitter.emit(
+      AuditEventEnum.USER_CREATED,
+      {
+        userId:
+          result.adminId,
+
+        actorType:
+          resolveActorType([
+            'ADMIN',
+          ]),
+
+        action:
+          AuditEventEnum.USER_CREATED,
+
+        entity: 'User',
+
+        entityId:
+          result.adminId,
+
+        diff: {
+          result: 'success',
+          role: 'ADMIN',
+          createdBy: creator.id,
+        },
+      } as AuditEventPayload,
+    );
+
+    return {
+      adminId: result.adminId,
+      verificationId:
+        result.verificationId,
+    };
+  }
+
+  // ─────────────────────────────────────────────
+  // ADMIN — VERIFY REGISTRATION
+  //
+  // Only reachable by an authenticated ADMIN /
+  // SUPER_ADMIN (`verifier`). Looks up the pending
+  // admin by adminId (the :id route param) — never
+  // trusts a phone number from the request body — and
+  // compares the submitted OTP against that admin's
+  // own stored, unused admin_verification OTP.
+  // ─────────────────────────────────────────────
+
+  async adminVerify(
+    verifier: CurrentUserDto,
+    adminId: string,
+    data: AdminVerifyDto,
+  ): Promise<{
+    message: string;
+  }> {
+    /*
+     * Defense-in-depth: the controller's @Roles guard
+     * is expected to already restrict this route to
+     * ADMIN/SUPER_ADMIN, but the service shouldn't
+     * assume that will always be true — a future
+     * refactor of the controller/guard shouldn't be
+     * able to silently turn this into an anonymous
+     * write. Same TODO as logout(): CurrentUserDto
+     * doesn't reliably carry roles yet, so this cast
+     * is a stopgap until the DTO/JWT payload exposes
+     * roles as a first-class field.
+     */
+    const verifierRoles =
+      (
+        verifier as unknown as {
+          roles?: string[];
+        }
+      ).roles ?? [];
+
+    if (
+      !verifierRoles.some((role) =>
+        [
+          'ADMIN',
+          'SUPER_ADMIN',
+        ].includes(role),
+      )
+    ) {
+      throw new UnauthorizedException(
+        'insufficient_permissions',
+      );
+    }
+
+    const admin =
+      await this.prisma.user.findUnique({
+        where: {
+          id: adminId,
+        },
+
+        include: {
+          userRoles: {
+            include: {
+              role: true,
+            },
+          },
+        },
+      });
+
+    const roles =
+      admin?.userRoles.map(
+        (userRole) =>
+          userRole.role.name,
+      ) ?? [];
+
+    if (
+      !admin ||
+      !roles.some((role) =>
+        [
+          'ADMIN',
+          'SUPER_ADMIN',
+        ].includes(role),
+      )
+    ) {
+      throw new NotFoundException(
+        'admin_not_found',
+      );
+    }
+
+    if (admin.isActive) {
+      throw new BadRequestException(
+        'admin_already_verified',
+      );
+    }
+
+    /*
+     * Look up the OTP by the exact verificationId the
+     * client was handed by adminRegister(), rather than
+     * "whatever's newest and unused" — that avoids the
+     * verify endpoint implicitly guessing which OTP the
+     * caller means, and closes the door on a stale
+     * verificationId being silently matched against a
+     * newer OTP for the same admin. AdminVerifyDto must
+     * carry `verificationId` alongside `otp` for this.
+     */
+    const otpRecord =
+      await this.prisma.userOtp.findUnique({
+        where: {
+          id: data.verificationId,
+        },
+      });
+
+    if (
+      !otpRecord ||
+      otpRecord.userId !== admin.id ||
+      otpRecord.purpose !==
+        UserOtpPurposeEnum.admin_verification ||
+      otpRecord.usedAt ||
+      otpRecord.expiresAt < new Date()
+    ) {
+      throw new BadRequestException(
+        'invalid_or_expired_otp',
+      );
+    }
+
+    if (
+      otpRecord.attempts >= 5
+    ) {
+      this.eventEmitter.emit(
+        AuditEventEnum.SECURITY_ALERT,
+        {
+          userId: admin.id,
+
+          actorType:
+            resolveActorType(
+              roles,
+            ),
+
+          action:
+            AuditEventEnum.SECURITY_ALERT,
+
+          entity: 'UserOtp',
+
+          entityId:
+            otpRecord.id,
+
+          diff: {
+            reason:
+              'too_many_otp_attempts',
+
+            purpose:
+              'admin_verification',
+
+            verifiedBy:
+              verifier.id,
+          },
+        } as AuditEventPayload,
+      );
+
+      throw new BadRequestException(
+        'too_many_otp_attempts',
+      );
+    }
+
+    const validOtp =
+      await bcrypt.compare(
+        data.otp,
+        otpRecord.otpHash,
+      );
+
+    if (!validOtp) {
+      const updatedOtp =
+        await this.prisma.userOtp.update({
+          where: {
+            id: otpRecord.id,
+          },
+
+          data: {
+            attempts: {
+              increment: 1,
+            },
+          },
+
+          select: {
+            attempts: true,
+          },
+        });
+
+      if (
+        updatedOtp.attempts >= 5
+      ) {
+        this.eventEmitter.emit(
+          AuditEventEnum.SECURITY_ALERT,
+          {
+            userId: admin.id,
+
+            actorType:
+              resolveActorType(
+                roles,
+              ),
+
+            action:
+              AuditEventEnum.SECURITY_ALERT,
+
+            entity: 'UserOtp',
+
+            entityId:
+              otpRecord.id,
+
+            diff: {
+              reason:
+                'too_many_otp_attempts',
+
+              purpose:
+                'admin_verification',
+
+              verifiedBy:
+                verifier.id,
+            },
+          } as AuditEventPayload,
+        );
+      }
+
+      throw new BadRequestException(
+        'invalid_or_expired_otp',
+      );
+    }
+
+    /*
+     * Same atomic-claim pattern as verifySignupOtp():
+     * updateMany with usedAt: null in the where-clause
+     * ensures only one of two concurrent verify
+     * requests can consume this OTP, even if both
+     * already passed bcrypt.compare() on the same
+     * still-unused row. Activating the admin inside
+     * the same transaction means the OTP-used and
+     * account-active facts can never drift apart.
+     */
+    await this.prisma.$transaction(
+      async (tx) => {
+        const claimed =
+          await tx.userOtp.updateMany({
+            where: {
+              id: otpRecord.id,
+              userId: admin.id,
+              usedAt: null,
+
+              attempts: {
+                lt: 5,
+              },
+
+              expiresAt: {
+                gt: new Date(),
+              },
+            },
+
+            data: {
+              usedAt: new Date(),
+            },
+          });
+
+        if (claimed.count === 0) {
+          throw new BadRequestException(
+            'invalid_or_expired_otp',
+          );
+        }
+
+        await tx.user.update({
+          where: {
+            id: admin.id,
+          },
+
+          data: {
+            isPhoneVerified: true,
+            isActive: true,
+          },
+        });
+      },
+    );
+
+    this.eventEmitter.emit(
+      AuditEventEnum.OTP_VERIFIED,
+      {
+        userId: admin.id,
+
+        actorType:
+          resolveActorType(
+            roles,
+          ),
+
+        action:
+          AuditEventEnum.OTP_VERIFIED,
+
+        entity: 'UserOtp',
+
+        entityId:
+          otpRecord.id,
+
+        diff: {
+          purpose:
+            'admin_verification',
+
+          result:
+            'success',
+
+          verifiedBy:
+            verifier.id,
+        },
+      } as AuditEventPayload,
+    );
+
+    return {
+      message:
+        'admin_verified',
+    };
+  }
+
+  // ─────────────────────────────────────────────
+  // ADMIN — LOGIN
+  //
+  // Same phone + password check as login(), but
+  // restricted to accounts holding ADMIN or
+  // SUPER_ADMIN — a regular user's credentials
+  // should not authenticate against this endpoint,
+  // and vice versa is left to the client (an admin
+  // could in principle still call /auth/login, but
+  // that's a separate decision from this endpoint's
+  // job of gating access to admin-only clients).
+  // ─────────────────────────────────────────────
+
+  async adminLogin(
+    data: AdminLoginDto,
+  ): Promise<TokenPair> {
+    const phone =
+      this.normalizePhoneOrThrow(
+        data.phone,
+      );
+
+    const user =
+      await this.prisma.user.findUnique({
+        where: {
+          phone,
+        },
+
+        include: {
+          userRoles: {
+            include: {
+              role: true,
+            },
+          },
+        },
+      });
+
+    const roles =
+      user?.userRoles.map(
+        (userRole) =>
+          userRole.role.name,
+      ) ?? [];
+
+    const isAdmin = roles.some(
+      (role) =>
+        [
+          'ADMIN',
+          'SUPER_ADMIN',
+        ].includes(role),
+    );
+
+    if (
+      !user ||
+      !user.password ||
+      !isAdmin
+    ) {
+      this.eventEmitter.emit(
+        AuditEventEnum.LOGIN_FAILED,
+        {
+          userId:
+            user?.id ?? null,
+
+          actorType:
+            resolveActorType(
+              roles,
+            ),
+
+          action:
+            AuditEventEnum.LOGIN_FAILED,
+
+          entity: 'User',
+
+          entityId:
+            user?.id ?? null,
+
+          diff: {
+            method:
+              'password',
+
+            context: 'admin_login',
+
+            result:
+              'failed',
+          },
+        } as AuditEventPayload,
+      );
+
+      throw new UnauthorizedException(
+        'invalid_credentials',
+      );
+    }
+
+    if (!user.isActive) {
+      this.eventEmitter.emit(
+        AuditEventEnum.LOGIN_FAILED,
+        {
+          userId: user.id,
+
+          actorType:
+            resolveActorType(
+              roles,
+            ),
+
+          action:
+            AuditEventEnum.LOGIN_FAILED,
+
+          entity: 'User',
+
+          entityId: user.id,
+
+          diff: {
+            method:
+              'password',
+
+            context: 'admin_login',
+
+            result:
+              'failed',
+
+            reason:
+              'account_inactive',
+          },
+        } as AuditEventPayload,
+      );
+
+      /*
+       * Covers both a deactivated admin AND a
+       * pending admin that hasn't been verified by
+       * its creator yet — either way, no OTP is
+       * sent from here. Admin activation only ever
+       * happens through adminVerify().
+       */
+      throw new UnauthorizedException(
+        'account_inactive',
+      );
+    }
+
+    const validPassword =
+      await bcrypt.compare(
+        data.password,
+        user.password,
+      );
+
+    if (!validPassword) {
+      this.eventEmitter.emit(
+        AuditEventEnum.LOGIN_FAILED,
+        {
+          userId: user.id,
+
+          actorType:
+            resolveActorType(
+              roles,
+            ),
+
+          action:
+            AuditEventEnum.LOGIN_FAILED,
+
+          entity: 'User',
+
+          entityId: user.id,
+
+          diff: {
+            method:
+              'password',
+
+            context: 'admin_login',
+
+            result:
+              'failed',
+          },
+        } as AuditEventPayload,
+      );
+
+      throw new UnauthorizedException(
+        'invalid_credentials',
+      );
+    }
+
+    this.eventEmitter.emit(
+      AuditEventEnum.LOGIN_SUCCESS,
+      {
+        userId: user.id,
+
+        actorType:
+          resolveActorType(
+            roles,
+          ),
+
+        action:
+          AuditEventEnum.LOGIN_SUCCESS,
+
+        entity: 'User',
+
+        entityId: user.id,
+
+        diff: {
+          method:
+            'password',
+
+          context: 'admin_login',
+
+          result:
+            'success',
+        },
+      } as AuditEventPayload,
+    );
+
+    return this.issueTokens(
+      user.id,
+      user.phone,
+      roles,
+    );
+  }
+
+  // ─────────────────────────────────────────────
   // ISSUE TOKENS
   // ─────────────────────────────────────────────
 
@@ -1616,6 +2472,20 @@ export class AuthService {
     userId: string,
     phone: string,
     roles: string[],
+    /*
+     * Optional Prisma transaction client. Passed by
+     * refresh() so the new session is created inside
+     * the same transaction as the old session's
+     * deletion — otherwise there'd be a brief window
+     * where the old session is gone and the new one
+     * doesn't exist yet. Every other caller (login,
+     * verifySignupOtp, adminLogin, ...) omits this and
+     * gets the default top-level `this.prisma` client.
+     */
+    tx: Pick<
+      typeof this.prisma,
+      'session'
+    > = this.prisma,
   ): Promise<TokenPair> {
     let expiresInStr =
       this.configService.get<string>(
@@ -1684,6 +2554,15 @@ export class AuthService {
           phone,
           roles,
           type: 'refresh',
+          /*
+           * jti gives each refresh token a unique
+           * identity independent of its payload, so
+           * two tokens minted in the same second for
+           * the same user (e.g. concurrent logins)
+           * are still distinguishable — useful for
+           * future reuse-detection/tombstoning work.
+           */
+          jti: randomUUID(),
         },
         {
           secret: refreshSecret,
@@ -1691,20 +2570,35 @@ export class AuthService {
         },
       );
 
-    await this.prisma.session.create({
+    await tx.session.create({
       data: {
         userId,
 
-        refreshToken,
+        /*
+         * Store a hash of the refresh token, not the
+         * raw token. If the sessions table is ever
+         * read (a DB dump, a misconfigured backup, an
+         * insider with read access), a hash can't be
+         * replayed the way a raw refresh token could.
+         * Lookups still work because the hash is
+         * deterministic (HMAC-SHA256 keyed on the
+         * refresh secret) — hash the incoming token the
+         * same way and compare by equality; see
+         * hashRefreshToken() below. The raw token is
+         * still returned to the client here — only
+         * server-side storage changes.
+         */
+        refreshToken:
+          this.hashRefreshToken(
+            refreshToken,
+          ),
 
         expiresAt:
           new Date(
             Date.now() +
-              7 *
-                24 *
-                60 *
-                60 *
-                1000,
+              this.parseDurationToMs(
+                refreshExpiresIn,
+              ),
           ),
       },
     });
@@ -1713,6 +2607,81 @@ export class AuthService {
       accessToken,
       refreshToken,
     };
+  }
+
+  // ─────────────────────────────────────────────
+  // HASH REFRESH TOKEN
+  //
+  // Deterministic HMAC-SHA256 keyed on the refresh
+  // secret, so the same raw token always hashes to the
+  // same value and can be looked up by equality — unlike
+  // bcrypt, which salts per-call and can't be queried
+  // directly. This is specifically for indexing/lookup,
+  // not password-style storage; the refresh token itself
+  // is already a high-entropy signed JWT, so HMAC is
+  // sufficient to prevent a DB-read from yielding a
+  // replayable token.
+  // ─────────────────────────────────────────────
+
+  private hashRefreshToken(
+    token: string,
+  ): string {
+    const refreshSecret =
+      this.configService.get<string>(
+        'jwt.refreshSecret',
+      ) ??
+      this.configService.getOrThrow<string>(
+        'jwt.secret',
+      );
+
+    return createHmac(
+      'sha256',
+      refreshSecret,
+    )
+      .update(token)
+      .digest('hex');
+  }
+
+  // ─────────────────────────────────────────────
+  // PARSE DURATION STRING
+  //
+  // Converts a config duration like "7d", "24h",
+  // "30m", "45s", or a bare number of seconds ("3600")
+  // into milliseconds. Used so the DB session's
+  // expiresAt always matches whatever jwt.refreshExpiresIn
+  // is actually configured to, instead of a value
+  // hard-coded separately from it — the two must never
+  // be able to drift apart.
+  // ─────────────────────────────────────────────
+
+  private parseDurationToMs(
+    duration: string,
+  ): number {
+    const match =
+      /^(\d+)\s*(d|h|m|s)?$/.exec(
+        duration.trim(),
+      );
+
+    if (!match) {
+      throw new BadRequestException(
+        'invalid_duration_config',
+      );
+    }
+
+    const value = Number(match[1]);
+    const unit = match[2] ?? 's';
+
+    const unitMs: Record<
+      string,
+      number
+    > = {
+      d: 24 * 60 * 60 * 1000,
+      h: 60 * 60 * 1000,
+      m: 60 * 1000,
+      s: 1000,
+    };
+
+    return value * unitMs[unit];
   }
 
   // ─────────────────────────────────────────────
@@ -1745,29 +2714,6 @@ export class AuthService {
         60,
       );
 
-    const latestOtp =
-      await this.prisma.userOtp.findFirst({
-        where: {
-          userId,
-          purpose,
-        },
-
-        orderBy: {
-          createdAt: 'desc',
-        },
-      });
-
-    if (
-      latestOtp &&
-      Date.now() -
-        latestOtp.createdAt.getTime() <
-        cooldownSeconds * 1000
-    ) {
-      throw new BadRequestException(
-        'otp_recently_sent',
-      );
-    }
-
     const otp =
       this.generateOtp();
 
@@ -1783,9 +2729,48 @@ export class AuthService {
         10,
       );
 
+    /*
+     * The cooldown check and the create+invalidate
+     * step are wrapped in one interactive transaction
+     * so the window between "read the latest OTP" and
+     * "write the new one" is as small as it can be at
+     * the application layer. This narrows the race
+     * significantly but does not fully close it —
+     * Prisma's default transaction isolation lets two
+     * concurrent transactions both read the same
+     * "no recent OTP" state before either commits its
+     * write. Fully closing it requires a DB-level
+     * guard (e.g. a partial unique index on
+     * (userId, purpose) where usedAt IS NULL, or
+     * SELECT ... FOR UPDATE via a raw query) — add
+     * one of those once the schema is available.
+     */
     const userOtp =
       await this.prisma.$transaction(
         async (tx) => {
+          const latestOtp =
+            await tx.userOtp.findFirst({
+              where: {
+                userId,
+                purpose,
+              },
+
+              orderBy: {
+                createdAt: 'desc',
+              },
+            });
+
+          if (
+            latestOtp &&
+            Date.now() -
+              latestOtp.createdAt.getTime() <
+              cooldownSeconds * 1000
+          ) {
+            throw new BadRequestException(
+              'otp_recently_sent',
+            );
+          }
+
           await tx.userOtp.updateMany({
             where: {
               userId,

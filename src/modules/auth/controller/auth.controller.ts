@@ -23,11 +23,15 @@ import {
   ResetPasswordDto,
   ChangePasswordDto,
   RefreshTokenDto,
+  AdminRegisterDto,
+  AdminVerifyDto,
+  AdminLoginDto,
 } from '../dto/auth.dto';
 
 import { AllowAnonymous } from 'src/common/decorators/public.decorator';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
+import { Roles } from 'src/common/decorators/roles.decorator';
 
 @ApiTags('Authentication')
 @Controller('auth')
@@ -225,5 +229,107 @@ export class AuthController {
       user,
       req,
     );
+  }
+}
+
+// ─────────────────────────────────────────────
+// ADMIN AUTHENTICATION
+// ─────────────────────────────────────────────
+
+@ApiTags('Admin Authentication')
+@Controller('admin/auth')
+export class AdminAuthController {
+  constructor(
+    private readonly authService: AuthService,
+  ) {}
+
+  // ─────────────────────────────────────────────
+  // ADMIN — REGISTER
+  // POST /admin/auth/register
+  //
+  // ADMIN / SUPER_ADMIN
+  //
+  // An authorized admin creates a new admin.
+  // OTP is sent to the new admin's phone.
+  // ─────────────────────────────────────────────
+
+  @Post('register')
+  @ApiBearerAuth('access-token')
+  @Roles('ADMIN', 'SUPER_ADMIN')
+  @ApiOperation({
+    summary:
+      'Register a new admin and send OTP to their phone',
+  })
+  async register(
+    @CurrentUser() user: CurrentUserDto,
+    @Body() data: AdminRegisterDto,
+  ) {
+    return this.authService.adminRegister(
+      user,
+      data,
+    );
+  }
+
+  // ─────────────────────────────────────────────
+  // ADMIN — VERIFY REGISTRATION
+  // POST /admin/auth/verify/:id
+  //
+  // ADMIN / SUPER_ADMIN
+  //
+  // The new admin receives the OTP on their phone
+  // and tells the OTP to the admin who created them.
+  //
+  // The creating admin enters the OTP.
+  //
+  // The system verifies:
+  // - Admin ID
+  // - Phone number
+  // - OTP
+  // - OTP expiration
+  // - OTP purpose
+  //
+  // Successful verification activates the new admin.
+  // ─────────────────────────────────────────────
+
+  @Post('verify/:id')
+  @ApiBearerAuth('access-token')
+  @Roles('ADMIN', 'SUPER_ADMIN')
+  @ApiOperation({
+    summary:
+      'Verify OTP for newly registered admin',
+  })
+  async verify(
+    @CurrentUser() user: CurrentUserDto,
+    @Param('id') adminId: string,
+    @Body() data: AdminVerifyDto,
+  ) {
+    return this.authService.adminVerify(
+      user,
+      adminId,
+      data,
+    );
+  }
+
+  // ─────────────────────────────────────────────
+  // ADMIN — LOGIN
+  // POST /admin/auth/login
+  //
+  // ANONYMOUS
+  //
+  // Admin logs in using:
+  // - Phone number
+  // - Password
+  // ─────────────────────────────────────────────
+
+  @AllowAnonymous()
+  @Post('login')
+  @ApiOperation({
+    summary:
+      'Admin login with phone number and password',
+  })
+  async login(
+    @Body() data: AdminLoginDto,
+  ) {
+    return this.authService.adminLogin(data);
   }
 }
