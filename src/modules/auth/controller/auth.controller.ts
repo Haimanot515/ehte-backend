@@ -234,9 +234,15 @@ export class AuthController {
 
 // ─────────────────────────────────────────────
 // ADMIN AUTHENTICATION
+//
+// Kept as a separate controller/class for routing
+// (/admin/auth/...) and role separation, but grouped
+// under the same 'Authentication' Swagger tag as
+// AuthController rather than its own tag — there is
+// only one Authentication category in the docs.
 // ─────────────────────────────────────────────
 
-@ApiTags('Admin Authentication')
+@ApiTags('Authentication')
 @Controller('admin/auth')
 export class AdminAuthController {
   constructor(
