@@ -45,6 +45,12 @@ model Support {
   organizationAmount Decimal? @db.Decimal(12, 2)
   platformAmount     Decimal? @db.Decimal(12, 2)
 
+  // Free-text evidence of the off-platform transfer (bank reference
+  // number, transaction id, etc). Not verified programmatically in
+  // v1 — an admin checks it manually before moving status to
+  // CONFIRMED. See SupportService.confirm().
+  transferReference String?
+
   message String?
 
   createdAt DateTime @default(now())

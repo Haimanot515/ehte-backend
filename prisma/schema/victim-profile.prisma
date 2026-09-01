@@ -25,6 +25,14 @@ model VictimProfile {
   supportType SupportType?
   supportGoal Decimal?     @db.Decimal(12, 2)
 
+  // Off-platform transfer destination (v1: no payment gateway —
+  // supporters transfer directly using these details). Required
+  // before isAdminApproved can be set to true — see updateGates()
+  // and publish() in the service.
+  bankAccountName   String?
+  bankAccountNumber String?
+  bankName          String?
+
   photo    String[]
   video    String[]
   audio    String[]

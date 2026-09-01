@@ -24,12 +24,10 @@ export class CreateVictimProfileDto {
   @MinLength(10)
   description?: string;
 
-  // Required — an empty profile has nothing to review or approve.
   @IsString()
   @MinLength(10)
   story: string;
 
-  // Required — drives the Support Button flow (§21).
   @IsEnum(SupportType)
   supportType: SupportType;
 
@@ -37,6 +35,24 @@ export class CreateVictimProfileDto {
   @IsNumber()
   @Min(0)
   supportGoal?: number;
+
+  // ─── Off-platform transfer destination ───
+  // Not required at creation (draft profiles may not have these yet),
+  // but enforced at the gate stage — see UpdateVictimGateDto handling.
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  bankAccountName?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  bankAccountNumber?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  bankName?: string;
 
   @IsOptional()
   @IsArray()
@@ -97,6 +113,21 @@ export class UpdateVictimProfileDto {
   @IsNumber()
   @Min(0)
   supportGoal?: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  bankAccountName?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  bankAccountNumber?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  bankName?: string;
 
   @IsOptional()
   @IsArray()

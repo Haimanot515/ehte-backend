@@ -6,9 +6,7 @@ import {
 
 import { EventEmitter2 } from '@nestjs/event-emitter';
 
-import {
-  VictimProfileStatus,
-} from '@prisma/client';
+import { VictimProfileStatus } from '@prisma/client';
 
 import { PrismaService } from 'src/prisma/prisma.service';
 import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
@@ -35,57 +33,52 @@ export class VictimProfileService {
     currentUser: CurrentUserDto,
     data: CreateVictimProfileDto,
   ) {
-    const profile =
-      await this.prisma.victimProfile.create({
-        data: {
-          name: data.name,
-          description: data.description,
-          story: data.story,
+    const profile = await this.prisma.victimProfile.create({
+      data: {
+        name: data.name,
+        description: data.description,
+        story: data.story,
 
-          supportType: data.supportType,
-          supportGoal: data.supportGoal,
+        supportType: data.supportType,
+        supportGoal: data.supportGoal,
 
-          photo: data.photo ?? [],
-          video: data.video ?? [],
-          audio: data.audio ?? [],
-          pdf: data.pdf ?? [],
-          document: data.document ?? [],
-          other: data.other ?? [],
+        bankAccountName: data.bankAccountName,
+        bankAccountNumber: data.bankAccountNumber,
+        bankName: data.bankName,
 
-          involvesChild:
-            data.involvesChild ?? false,
+        photo: data.photo ?? [],
+        video: data.video ?? [],
+        audio: data.audio ?? [],
+        pdf: data.pdf ?? [],
+        document: data.document ?? [],
+        other: data.other ?? [],
 
-          status:
-            VictimProfileStatus.PENDING,
+        involvesChild: data.involvesChild ?? false,
 
-          isVerified: false,
-          isSafetyReviewed: false,
-          hasConsent: false,
-          consentAt: null,
-          consentRecordedBy: null,
-          isPrivacyReviewed: false,
-          isAdminApproved: false,
-          isPublished: false,
-        },
-      });
+        status: VictimProfileStatus.PENDING,
 
-    this.eventEmitter.emit(
-      'victim_profile.created',
-      {
-        actorId: currentUser.id,
-        victimProfileId: profile.id,
-        action: 'CREATE',
-        entity: 'VictimProfile',
+        isVerified: false,
+        isSafetyReviewed: false,
+        hasConsent: false,
+        consentAt: null,
+        consentRecordedBy: null,
+        isPrivacyReviewed: false,
+        isAdminApproved: false,
+        isPublished: false,
       },
-    );
+    });
 
-    this.eventEmitter.emit(
-      'notification.victim_profile.created',
-      {
-        actorId: currentUser.id,
-        victimProfileId: profile.id,
-      },
-    );
+    this.eventEmitter.emit('victim_profile.created', {
+      actorId: currentUser.id,
+      victimProfileId: profile.id,
+      action: 'CREATE',
+      entity: 'VictimProfile',
+    });
+
+    this.eventEmitter.emit('notification.victim_profile.created', {
+      actorId: currentUser.id,
+      victimProfileId: profile.id,
+    });
 
     return profile;
   }
@@ -95,38 +88,31 @@ export class VictimProfileService {
   // ─────────────────────────────────────────────
 
   async findOne(id: string) {
-    const profile =
-      await this.prisma.victimProfile.findUnique({
-        where: {
-          id,
-        },
+    const profile = await this.prisma.victimProfile.findUnique({
+      where: { id },
 
-        include: {
-          supports: {
-            where: {
-              status: 'CONFIRMED',
-            },
+      include: {
+        supports: {
+          where: { status: 'CONFIRMED' },
 
-            select: {
-              id: true,
-              type: true,
-              status: true,
-              agreementType: true,
-              amount: true,
-              recipientAmount: true,
-              organizationAmount: true,
-              platformAmount: true,
-              message: true,
-              createdAt: true,
-            },
+          select: {
+            id: true,
+            type: true,
+            status: true,
+            agreementType: true,
+            amount: true,
+            recipientAmount: true,
+            organizationAmount: true,
+            platformAmount: true,
+            message: true,
+            createdAt: true,
           },
         },
-      });
+      },
+    });
 
     if (!profile) {
-      throw new NotFoundException(
-        'victim_profile_not_found',
-      );
+      throw new NotFoundException('victim_profile_not_found');
     }
 
     return profile;
@@ -137,39 +123,39 @@ export class VictimProfileService {
   // ─────────────────────────────────────────────
 
   async findPublic() {
-    const profiles =
-      await this.prisma.victimProfile.findMany({
-        where: {
-          status:
-            VictimProfileStatus.PUBLISHED,
+    const profiles = await this.prisma.victimProfile.findMany({
+      where: {
+        status: VictimProfileStatus.PUBLISHED,
 
-          isPublished: true,
+        isPublished: true,
 
-          isVerified: true,
-          isSafetyReviewed: true,
-          hasConsent: true,
-          isPrivacyReviewed: true,
-          isAdminApproved: true,
-        },
+        isVerified: true,
+        isSafetyReviewed: true,
+        hasConsent: true,
+        isPrivacyReviewed: true,
+        isAdminApproved: true,
+      },
 
-        select: {
-          id: true,
-          name: true,
-          story: true,
+      select: {
+        id: true,
+        name: true,
+        story: true,
 
-          supportType: true,
-          supportGoal: true,
+        supportType: true,
+        supportGoal: true,
 
-          photo: true,
-          involvesChild: true,
+        bankAccountName: true,
+        bankAccountNumber: true,
+        bankName: true,
 
-          createdAt: true,
-        },
+        photo: true,
+        involvesChild: true,
 
-        orderBy: {
-          createdAt: 'desc',
-        },
-      });
+        createdAt: true,
+      },
+
+      orderBy: { createdAt: 'desc' },
+    });
 
     return profiles.map((profile) => ({
       id: profile.id,
@@ -178,10 +164,12 @@ export class VictimProfileService {
       supportType: profile.supportType,
       supportGoal: profile.supportGoal,
 
+      bankAccountName: profile.bankAccountName,
+      bankAccountNumber: profile.bankAccountNumber,
+      bankName: profile.bankName,
+
       // Child profiles never expose photos publicly.
-      photo: profile.involvesChild
-        ? []
-        : profile.photo,
+      photo: profile.involvesChild ? [] : profile.photo,
     }));
   }
 
@@ -194,194 +182,133 @@ export class VictimProfileService {
     id: string,
     data: UpdateVictimProfileDto,
   ) {
-    const profile =
-      await this.prisma.victimProfile.findUnique({
-        where: {
-          id,
-        },
-      });
+    const profile = await this.prisma.victimProfile.findUnique({
+      where: { id },
+    });
 
     if (!profile) {
-      throw new NotFoundException(
-        'victim_profile_not_found',
-      );
+      throw new NotFoundException('victim_profile_not_found');
     }
 
-    const updatedProfile =
-      await this.prisma.victimProfile.update({
-        where: {
-          id,
-        },
+    const updatedProfile = await this.prisma.victimProfile.update({
+      where: { id },
 
-        data: {
-          name: data.name,
-          description: data.description,
-          story: data.story,
+      data: {
+        name: data.name,
+        description: data.description,
+        story: data.story,
 
-          supportType: data.supportType,
-          supportGoal: data.supportGoal,
+        supportType: data.supportType,
+        supportGoal: data.supportGoal,
 
-          photo: data.photo,
-          video: data.video,
-          audio: data.audio,
-          pdf: data.pdf,
-          document: data.document,
-          other: data.other,
+        bankAccountName: data.bankAccountName,
+        bankAccountNumber: data.bankAccountNumber,
+        bankName: data.bankName,
 
-          involvesChild:
-            data.involvesChild,
+        photo: data.photo,
+        video: data.video,
+        audio: data.audio,
+        pdf: data.pdf,
+        document: data.document,
+        other: data.other,
 
-          // Reset approval pipeline after editing.
-          status:
-            VictimProfileStatus.PENDING,
+        involvesChild: data.involvesChild,
 
-          isVerified: false,
-          isSafetyReviewed: false,
-          hasConsent: false,
+        // Reset approval pipeline after editing.
+        status: VictimProfileStatus.PENDING,
 
-          consentAt: null,
-          consentRecordedBy: null,
+        isVerified: false,
+        isSafetyReviewed: false,
+        hasConsent: false,
 
-          isPrivacyReviewed: false,
-          isAdminApproved: false,
-          isPublished: false,
-        },
-      });
+        consentAt: null,
+        consentRecordedBy: null,
 
-    this.eventEmitter.emit(
-      'victim_profile.updated',
-      {
-        actorId: currentUser.id,
-        victimProfileId: id,
-        action: 'UPDATE',
-        entity: 'VictimProfile',
-
-        previousStatus:
-          profile.status,
-
-        newStatus:
-          VictimProfileStatus.PENDING,
+        isPrivacyReviewed: false,
+        isAdminApproved: false,
+        isPublished: false,
       },
-    );
+    });
 
-    this.eventEmitter.emit(
-      'notification.victim_profile.updated',
-      {
-        actorId: currentUser.id,
-        victimProfileId: id,
-      },
-    );
+    this.eventEmitter.emit('victim_profile.updated', {
+      actorId: currentUser.id,
+      victimProfileId: id,
+      action: 'UPDATE',
+      entity: 'VictimProfile',
+
+      previousStatus: profile.status,
+      newStatus: VictimProfileStatus.PENDING,
+    });
+
+    this.eventEmitter.emit('notification.victim_profile.updated', {
+      actorId: currentUser.id,
+      victimProfileId: id,
+    });
 
     return updatedProfile;
   }
 
   // ─────────────────────────────────────────────
   // DELETE
-  // DELETE /victim-profiles/:id
   // ─────────────────────────────────────────────
 
-  async remove(
-    currentUser: CurrentUserDto,
-    id: string,
-  ) {
-    const profile =
-      await this.prisma.victimProfile.findUnique({
-        where: {
-          id,
-        },
-      });
-
-    if (!profile) {
-      throw new NotFoundException(
-        'victim_profile_not_found',
-      );
-    }
-
-    await this.prisma.victimProfile.delete({
-      where: {
-        id,
-      },
+  async remove(currentUser: CurrentUserDto, id: string) {
+    const profile = await this.prisma.victimProfile.findUnique({
+      where: { id },
     });
 
-    this.eventEmitter.emit(
-      'victim_profile.deleted',
-      {
-        actorId: currentUser.id,
-        victimProfileId: id,
-        action: 'DELETE',
-        entity: 'VictimProfile',
+    if (!profile) {
+      throw new NotFoundException('victim_profile_not_found');
+    }
 
-        previousStatus:
-          profile.status,
-      },
-    );
+    await this.prisma.victimProfile.delete({ where: { id } });
 
-    this.eventEmitter.emit(
-      'notification.victim_profile.deleted',
-      {
-        actorId: currentUser.id,
-        victimProfileId: id,
-      },
-    );
+    this.eventEmitter.emit('victim_profile.deleted', {
+      actorId: currentUser.id,
+      victimProfileId: id,
+      action: 'DELETE',
+      entity: 'VictimProfile',
 
-    return {
-      message:
-        'victim_profile_deleted',
-      id,
-    };
+      previousStatus: profile.status,
+    });
+
+    this.eventEmitter.emit('notification.victim_profile.deleted', {
+      actorId: currentUser.id,
+      victimProfileId: id,
+    });
+
+    return { message: 'victim_profile_deleted', id };
   }
 
   // ─────────────────────────────────────────────
   // ADMIN — GET ALL
   // ─────────────────────────────────────────────
 
-  async findAllForAdmin(
-    query: FindAllVictimProfilesQueryDto,
-  ) {
-    const page =
-      query.page && query.page > 0
-        ? query.page
-        : 1;
-
-    const limit =
-      query.limit && query.limit > 0
-        ? query.limit
-        : 20;
+  async findAllForAdmin(query: FindAllVictimProfilesQueryDto) {
+    const page = query.page && query.page > 0 ? query.page : 1;
+    const limit = query.limit && query.limit > 0 ? query.limit : 20;
 
     const where =
-      query.status !== undefined
-        ? {
-            status: query.status,
-          }
-        : {};
+      query.status !== undefined ? { status: query.status } : {};
 
-    const [profiles, total] =
-      await this.prisma.$transaction([
-        this.prisma.victimProfile.findMany({
-          where,
+    const [profiles, total] = await this.prisma.$transaction([
+      this.prisma.victimProfile.findMany({
+        where,
 
-          include: {
-            supports: {
-              orderBy: {
-                createdAt: 'desc',
-              },
-            },
+        include: {
+          supports: {
+            orderBy: { createdAt: 'desc' },
           },
+        },
 
-          orderBy: {
-            createdAt: 'desc',
-          },
+        orderBy: { createdAt: 'desc' },
 
-          skip:
-            (page - 1) * limit,
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
 
-          take: limit,
-        }),
-
-        this.prisma.victimProfile.count({
-          where,
-        }),
-      ]);
+      this.prisma.victimProfile.count({ where }),
+    ]);
 
     return {
       data: profiles,
@@ -390,8 +317,7 @@ export class VictimProfileService {
         page,
         limit,
         total,
-        totalPages:
-          Math.ceil(total / limit),
+        totalPages: Math.ceil(total / limit),
       },
     };
   }
@@ -405,6 +331,10 @@ export class VictimProfileService {
   // 3. Consent
   // 4. Privacy review
   // 5. Admin approval
+  //
+  // Admin approval additionally requires the bank transfer
+  // destination to be populated — otherwise a published profile
+  // would have no way for supporters to actually send money.
   // ─────────────────────────────────────────────
 
   async updateGates(
@@ -412,90 +342,57 @@ export class VictimProfileService {
     data: UpdateVictimGateDto,
     adminId: string,
   ) {
-    const profile =
-      await this.prisma.victimProfile.findUnique({
-        where: {
-          id,
-        },
-      });
+    const profile = await this.prisma.victimProfile.findUnique({
+      where: { id },
+    });
 
     if (!profile) {
-      throw new NotFoundException(
-        'victim_profile_not_found',
-      );
+      throw new NotFoundException('victim_profile_not_found');
     }
 
-    const isVerified =
-      data.isVerified ??
-      profile.isVerified;
-
+    const isVerified = data.isVerified ?? profile.isVerified;
     const isSafetyReviewed =
-      data.isSafetyReviewed ??
-      profile.isSafetyReviewed;
-
-    const hasConsent =
-      data.hasConsent ??
-      profile.hasConsent;
-
+      data.isSafetyReviewed ?? profile.isSafetyReviewed;
+    const hasConsent = data.hasConsent ?? profile.hasConsent;
     const isPrivacyReviewed =
-      data.isPrivacyReviewed ??
-      profile.isPrivacyReviewed;
-
+      data.isPrivacyReviewed ?? profile.isPrivacyReviewed;
     const isAdminApproved =
-      data.isAdminApproved ??
-      profile.isAdminApproved;
+      data.isAdminApproved ?? profile.isAdminApproved;
 
-    // There is no isChildSafetyReviewed field
-    // in the current Prisma model.
-    //
-    // For child profiles, the existing safety review
-    // gate must be completed before approval.
     const childSafetySatisfied =
-      !profile.involvesChild ||
-      isSafetyReviewed;
+      !profile.involvesChild || isSafetyReviewed;
 
-    // Admin approval requires all gates.
+    const hasBankDetails =
+      !!profile.bankAccountName &&
+      !!profile.bankAccountNumber &&
+      !!profile.bankName;
+
     if (
       isAdminApproved &&
-      (
-        !isVerified ||
+      (!isVerified ||
         !isSafetyReviewed ||
         !hasConsent ||
         !isPrivacyReviewed ||
-        !childSafetySatisfied
-      )
+        !childSafetySatisfied ||
+        !hasBankDetails)
     ) {
-      throw new BadRequestException(
-        'all_approval_gates_required',
-      );
+      throw new BadRequestException('all_approval_gates_required');
     }
 
-    // ─────────────────────────────────────────────
-    // DETERMINE STATUS
-    // ─────────────────────────────────────────────
-
-    let status:
-      VictimProfileStatus =
-      VictimProfileStatus.UNDER_REVIEW;
+    let status: VictimProfileStatus = VictimProfileStatus.UNDER_REVIEW;
 
     if (!isVerified) {
-      status =
-        VictimProfileStatus.PENDING;
+      status = VictimProfileStatus.PENDING;
     } else if (!isSafetyReviewed) {
-      status =
-        VictimProfileStatus.UNDER_REVIEW;
+      status = VictimProfileStatus.UNDER_REVIEW;
     } else if (!hasConsent) {
-      status =
-        VictimProfileStatus.CONSENT_PENDING;
+      status = VictimProfileStatus.CONSENT_PENDING;
     } else if (!isPrivacyReviewed) {
-      status =
-        VictimProfileStatus.UNDER_REVIEW;
+      status = VictimProfileStatus.UNDER_REVIEW;
     } else if (!isAdminApproved) {
-      status =
-        VictimProfileStatus.VERIFIED;
+      status = VictimProfileStatus.VERIFIED;
     } else {
-      status =
-        VictimProfileStatus.APPROVED;
+      status = VictimProfileStatus.APPROVED;
     }
 
     const updateData = {
@@ -506,77 +403,49 @@ export class VictimProfileService {
       isAdminApproved,
       status,
 
-      // A gate change must never automatically publish.
       isPublished: false,
 
-      ...(data.hasConsent === true &&
-      !profile.hasConsent
-        ? {
-            consentAt: new Date(),
-            consentRecordedBy:
-              adminId,
-          }
+      ...(data.hasConsent === true && !profile.hasConsent
+        ? { consentAt: new Date(), consentRecordedBy: adminId }
         : {}),
     };
 
-    const updatedProfile =
-      await this.prisma.victimProfile.update({
-        where: {
-          id,
-        },
+    const updatedProfile = await this.prisma.victimProfile.update({
+      where: { id },
+      data: updateData,
+    });
 
-        data: updateData,
-      });
+    this.eventEmitter.emit('victim_profile.gates_updated', {
+      actorId: adminId,
+      victimProfileId: id,
+      action: 'UPDATE_APPROVAL_GATES',
+      entity: 'VictimProfile',
 
-    this.eventEmitter.emit(
-      'victim_profile.gates_updated',
-      {
-        actorId: adminId,
-        victimProfileId: id,
-        action:
-          'UPDATE_APPROVAL_GATES',
-        entity: 'VictimProfile',
+      previousStatus: profile.status,
+      newStatus: status,
 
-        previousStatus:
-          profile.status,
-
-        newStatus: status,
-
-        previousGates: {
-          isVerified:
-            profile.isVerified,
-
-          isSafetyReviewed:
-            profile.isSafetyReviewed,
-
-          hasConsent:
-            profile.hasConsent,
-
-          isPrivacyReviewed:
-            profile.isPrivacyReviewed,
-
-          isAdminApproved:
-            profile.isAdminApproved,
-        },
-
-        newGates: {
-          isVerified,
-          isSafetyReviewed,
-          hasConsent,
-          isPrivacyReviewed,
-          isAdminApproved,
-        },
+      previousGates: {
+        isVerified: profile.isVerified,
+        isSafetyReviewed: profile.isSafetyReviewed,
+        hasConsent: profile.hasConsent,
+        isPrivacyReviewed: profile.isPrivacyReviewed,
+        isAdminApproved: profile.isAdminApproved,
       },
-    );
 
-    this.eventEmitter.emit(
-      'notification.victim_profile.gates_updated',
-      {
-        actorId: adminId,
-        victimProfileId: id,
-        status,
+      newGates: {
+        isVerified,
+        isSafetyReviewed,
+        hasConsent,
+        isPrivacyReviewed,
+        isAdminApproved,
       },
-    );
+    });
+
+    this.eventEmitter.emit('notification.victim_profile.gates_updated', {
+      actorId: adminId,
+      victimProfileId: id,
+      status,
+    });
 
     return updatedProfile;
   }
@@ -585,73 +454,55 @@ export class VictimProfileService {
   // ADMIN — PUBLISH
   // ─────────────────────────────────────────────
 
-  async publish(
-    id: string,
-    adminId: string,
-  ) {
-    const profile =
-      await this.prisma.victimProfile.findUnique({
-        where: {
-          id,
-        },
-      });
+  async publish(id: string, adminId: string) {
+    const profile = await this.prisma.victimProfile.findUnique({
+      where: { id },
+    });
 
     if (!profile) {
-      throw new NotFoundException(
-        'victim_profile_not_found',
-      );
+      throw new NotFoundException('victim_profile_not_found');
     }
+
+    const hasBankDetails =
+      !!profile.bankAccountName &&
+      !!profile.bankAccountNumber &&
+      !!profile.bankName;
 
     const allGatesSatisfied =
       profile.isVerified &&
       profile.isSafetyReviewed &&
       profile.hasConsent &&
       profile.isPrivacyReviewed &&
-      profile.isAdminApproved;
+      profile.isAdminApproved &&
+      hasBankDetails;
 
     if (!allGatesSatisfied) {
-      throw new BadRequestException(
-        'all_approval_gates_required',
-      );
+      throw new BadRequestException('all_approval_gates_required');
     }
 
-    const updatedProfile =
-      await this.prisma.victimProfile.update({
-        where: {
-          id,
-        },
+    const updatedProfile = await this.prisma.victimProfile.update({
+      where: { id },
 
-        data: {
-          status:
-            VictimProfileStatus.PUBLISHED,
-
-          isPublished: true,
-        },
-      });
-
-    this.eventEmitter.emit(
-      'victim_profile.published',
-      {
-        actorId: adminId,
-        victimProfileId: id,
-        action: 'PUBLISH',
-        entity: 'VictimProfile',
-
-        previousStatus:
-          profile.status,
-
-        newStatus:
-          VictimProfileStatus.PUBLISHED,
+      data: {
+        status: VictimProfileStatus.PUBLISHED,
+        isPublished: true,
       },
-    );
+    });
 
-    this.eventEmitter.emit(
-      'notification.victim_profile.published',
-      {
-        actorId: adminId,
-        victimProfileId: id,
-      },
-    );
+    this.eventEmitter.emit('victim_profile.published', {
+      actorId: adminId,
+      victimProfileId: id,
+      action: 'PUBLISH',
+      entity: 'VictimProfile',
+
+      previousStatus: profile.status,
+      newStatus: VictimProfileStatus.PUBLISHED,
+    });
+
+    this.eventEmitter.emit('notification.victim_profile.published', {
+      actorId: adminId,
+      victimProfileId: id,
+    });
 
     return updatedProfile;
   }
@@ -660,66 +511,42 @@ export class VictimProfileService {
   // ADMIN — UNPUBLISH
   // ─────────────────────────────────────────────
 
-  async unpublish(
-    id: string,
-    adminId: string,
-  ) {
-    const profile =
-      await this.prisma.victimProfile.findUnique({
-        where: {
-          id,
-        },
-      });
+  async unpublish(id: string, adminId: string) {
+    const profile = await this.prisma.victimProfile.findUnique({
+      where: { id },
+    });
 
     if (!profile) {
-      throw new NotFoundException(
-        'victim_profile_not_found',
-      );
+      throw new NotFoundException('victim_profile_not_found');
     }
 
     if (!profile.isPublished) {
-      throw new BadRequestException(
-        'victim_profile_not_published',
-      );
+      throw new BadRequestException('victim_profile_not_published');
     }
 
-    const updatedProfile =
-      await this.prisma.victimProfile.update({
-        where: {
-          id,
-        },
+    const updatedProfile = await this.prisma.victimProfile.update({
+      where: { id },
 
-        data: {
-          status:
-            VictimProfileStatus.UNPUBLISHED,
-
-          isPublished: false,
-        },
-      });
-
-    this.eventEmitter.emit(
-      'victim_profile.unpublished',
-      {
-        actorId: adminId,
-        victimProfileId: id,
-        action: 'UNPUBLISH',
-        entity: 'VictimProfile',
-
-        previousStatus:
-          profile.status,
-
-        newStatus:
-          VictimProfileStatus.UNPUBLISHED,
+      data: {
+        status: VictimProfileStatus.UNPUBLISHED,
+        isPublished: false,
       },
-    );
+    });
 
-    this.eventEmitter.emit(
-      'notification.victim_profile.unpublished',
-      {
-        actorId: adminId,
-        victimProfileId: id,
-      },
-    );
+    this.eventEmitter.emit('victim_profile.unpublished', {
+      actorId: adminId,
+      victimProfileId: id,
+      action: 'UNPUBLISH',
+      entity: 'VictimProfile',
+
+      previousStatus: profile.status,
+      newStatus: VictimProfileStatus.UNPUBLISHED,
+    });
+
+    this.eventEmitter.emit('notification.victim_profile.unpublished', {
+      actorId: adminId,
+      victimProfileId: id,
+    });
 
     return updatedProfile;
   }
@@ -728,21 +555,13 @@ export class VictimProfileService {
   // ADMIN — REJECT
   // ─────────────────────────────────────────────
 
-  async reject(
-    id: string,
-    adminId: string,
-  ) {
-    const profile =
-      await this.prisma.victimProfile.findUnique({
-        where: {
-          id,
-        },
-      });
+  async reject(id: string, adminId: string) {
+    const profile = await this.prisma.victimProfile.findUnique({
+      where: { id },
+    });
 
     if (!profile) {
-      throw new NotFoundException(
-        'victim_profile_not_found',
-      );
+      throw new NotFoundException('victim_profile_not_found');
     }
 
     if (profile.isPublished) {
@@ -751,43 +570,29 @@ export class VictimProfileService {
       );
     }
 
-    const updatedProfile =
-      await this.prisma.victimProfile.update({
-        where: {
-          id,
-        },
+    const updatedProfile = await this.prisma.victimProfile.update({
+      where: { id },
 
-        data: {
-          status:
-            VictimProfileStatus.REJECTED,
-
-          isPublished: false,
-        },
-      });
-
-    this.eventEmitter.emit(
-      'victim_profile.rejected',
-      {
-        actorId: adminId,
-        victimProfileId: id,
-        action: 'REJECT',
-        entity: 'VictimProfile',
-
-        previousStatus:
-          profile.status,
-
-        newStatus:
-          VictimProfileStatus.REJECTED,
+      data: {
+        status: VictimProfileStatus.REJECTED,
+        isPublished: false,
       },
-    );
+    });
 
-    this.eventEmitter.emit(
-      'notification.victim_profile.rejected',
-      {
-        actorId: adminId,
-        victimProfileId: id,
-      },
-    );
+    this.eventEmitter.emit('victim_profile.rejected', {
+      actorId: adminId,
+      victimProfileId: id,
+      action: 'REJECT',
+      entity: 'VictimProfile',
+
+      previousStatus: profile.status,
+      newStatus: VictimProfileStatus.REJECTED,
+    });
+
+    this.eventEmitter.emit('notification.victim_profile.rejected', {
+      actorId: adminId,
+      victimProfileId: id,
+    });
 
     return updatedProfile;
   }
