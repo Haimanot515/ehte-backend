@@ -1,21 +1,6 @@
-import {
-  Body,
-  Controller,
-  Delete,
-  Get,
-  Param,
-  Patch,
-  Post,
-  Query,
-} from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
 
-import {
-  ApiBearerAuth,
-  ApiOperation,
-  ApiParam,
-  ApiQuery,
-  ApiTags,
-} from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiParam, ApiQuery, ApiTags } from '@nestjs/swagger';
 
 import { NotificationService } from '../service/notification.service';
 
@@ -25,17 +10,11 @@ import {
   NotificationQueryDto,
 } from '../dto/notification.dto';
 
-import {
-  CurrentUser,
-} from 'src/common/decorators/current-user.decorator';
+import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 
-import {
-  CurrentUserDto,
-} from 'src/common/dtos/current-user.dto';
+import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
 
-import {
-  Roles,
-} from 'src/common/decorators/roles.decorator';
+import { Roles } from 'src/common/decorators/roles.decorator';
 
 import { RolesEnum } from 'src/common/enums/roles.enum';
 
@@ -43,9 +22,7 @@ import { RolesEnum } from 'src/common/enums/roles.enum';
 @ApiTags('Notifications')
 @ApiBearerAuth('access-token')
 export class NotificationController {
-  constructor(
-    private readonly notificationService: NotificationService,
-  ) {}
+  constructor(private readonly notificationService: NotificationService) {}
 
   // ─────────────────────────────────────────────
   // USER — LIST
@@ -78,9 +55,7 @@ export class NotificationController {
   @ApiOperation({
     summary: 'Get my unread notification count',
   })
-  async getMyUnreadCount(
-    @CurrentUser() user: CurrentUserDto,
-  ) {
+  async getMyUnreadCount(@CurrentUser() user: CurrentUserDto) {
     return this.notificationService.getMyUnreadCount(user);
   }
 
@@ -99,10 +74,7 @@ export class NotificationController {
   @ApiOperation({
     summary: 'Mark multiple notifications as read',
   })
-  async markBulkAsRead(
-    @Body() dto: MarkBulkReadDto,
-    @CurrentUser() user: CurrentUserDto,
-  ) {
+  async markBulkAsRead(@Body() dto: MarkBulkReadDto, @CurrentUser() user: CurrentUserDto) {
     return this.notificationService.markBulkAsRead(dto.ids, user);
   }
 
@@ -120,9 +92,7 @@ export class NotificationController {
   @ApiOperation({
     summary: 'Mark all my notifications as read',
   })
-  async markAllAsRead(
-    @CurrentUser() user: CurrentUserDto,
-  ) {
+  async markAllAsRead(@CurrentUser() user: CurrentUserDto) {
     return this.notificationService.markAllAsRead(user);
   }
 
@@ -141,9 +111,7 @@ export class NotificationController {
   @ApiOperation({
     summary: 'Admin: create a notification (targeted or broadcast)',
   })
-  async createNotification(
-    @Body() dto: CreateNotificationDto,
-  ) {
+  async createNotification(@Body() dto: CreateNotificationDto) {
     return this.notificationService.create(dto);
   }
 
@@ -170,9 +138,7 @@ export class NotificationController {
   @ApiQuery({ name: 'isRead', required: false })
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
-  async getAdminNotifications(
-    @Query() query: NotificationQueryDto,
-  ) {
+  async getAdminNotifications(@Query() query: NotificationQueryDto) {
     return this.notificationService.getAdminNotifications(query);
   }
 
@@ -209,9 +175,7 @@ export class NotificationController {
     summary: 'Admin: get one broadcast notification',
   })
   @ApiParam({ name: 'id', description: 'Notification ID' })
-  async getAdminNotificationById(
-    @Param('id') id: string,
-  ) {
+  async getAdminNotificationById(@Param('id') id: string) {
     return this.notificationService.getAdminNotificationById(id);
   }
 
@@ -234,9 +198,7 @@ export class NotificationController {
     summary: 'Admin: mark broadcast notification as read',
   })
   @ApiParam({ name: 'id', description: 'Notification ID' })
-  async markAdminNotificationAsRead(
-    @Param('id') id: string,
-  ) {
+  async markAdminNotificationAsRead(@Param('id') id: string) {
     return this.notificationService.markAdminNotificationAsRead(id);
   }
 
@@ -251,9 +213,7 @@ export class NotificationController {
   @ApiOperation({
     summary: 'Admin: mark multiple broadcast notifications as read',
   })
-  async markBulkAdminNotificationsAsRead(
-    @Body() dto: MarkBulkReadDto,
-  ) {
+  async markBulkAdminNotificationsAsRead(@Body() dto: MarkBulkReadDto) {
     return this.notificationService.markBulkAdminNotificationsAsRead(dto.ids);
   }
 
@@ -289,9 +249,7 @@ export class NotificationController {
     summary: 'Admin: delete a broadcast notification',
   })
   @ApiParam({ name: 'id', description: 'Notification ID' })
-  async deleteAdminNotification(
-    @Param('id') id: string,
-  ) {
+  async deleteAdminNotification(@Param('id') id: string) {
     return this.notificationService.deleteAdminNotification(id);
   }
 
@@ -313,10 +271,7 @@ export class NotificationController {
     summary: 'Get one of my notifications',
   })
   @ApiParam({ name: 'id', description: 'Notification ID' })
-  async getMyNotificationById(
-    @Param('id') id: string,
-    @CurrentUser() user: CurrentUserDto,
-  ) {
+  async getMyNotificationById(@Param('id') id: string, @CurrentUser() user: CurrentUserDto) {
     return this.notificationService.getMyNotificationById(id, user);
   }
 
@@ -334,10 +289,7 @@ export class NotificationController {
     summary: 'Mark notification as read',
   })
   @ApiParam({ name: 'id', description: 'Notification ID' })
-  async markOneAsRead(
-    @Param('id') id: string,
-    @CurrentUser() user: CurrentUserDto,
-  ) {
+  async markOneAsRead(@Param('id') id: string, @CurrentUser() user: CurrentUserDto) {
     return this.notificationService.markOneAsRead(id, user);
   }
 
@@ -355,10 +307,7 @@ export class NotificationController {
     summary: 'Delete/dismiss one of my notifications',
   })
   @ApiParam({ name: 'id', description: 'Notification ID' })
-  async deleteMyNotification(
-    @Param('id') id: string,
-    @CurrentUser() user: CurrentUserDto,
-  ) {
+  async deleteMyNotification(@Param('id') id: string, @CurrentUser() user: CurrentUserDto) {
     return this.notificationService.deleteMyNotification(id, user);
   }
 }

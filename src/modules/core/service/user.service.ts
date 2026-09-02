@@ -31,52 +31,43 @@ export class UserService {
   // ─────────────────────────────────────────────
 
   async getMe(currentUser: CurrentUserDto) {
-    const user =
-      await this.prisma.user.findUnique({
-        where: {
-          id: currentUser.id,
-        },
+    const user = await this.prisma.user.findUnique({
+      where: {
+        id: currentUser.id,
+      },
 
-        select: {
-          id: true,
-          name: true,
-          phone: true,
-          isActive: true,
+      select: {
+        id: true,
+        name: true,
+        phone: true,
+        isActive: true,
 
-          discreetModeEnabled: true,
-          discreetModeUpdatedAt: true,
+        discreetModeEnabled: true,
+        discreetModeUpdatedAt: true,
 
-          createdAt: true,
-          updatedAt: true,
+        createdAt: true,
+        updatedAt: true,
 
-          userRoles: {
-            select: {
-              role: {
-                select: {
-                  id: true,
-                  name: true,
-                },
+        userRoles: {
+          select: {
+            role: {
+              select: {
+                id: true,
+                name: true,
               },
             },
           },
         },
-      });
+      },
+    });
 
     if (!user) {
-      throw new NotFoundException(
-        'user_not_found',
-      );
+      throw new NotFoundException('user_not_found');
     }
 
-    const roles =
-      user.userRoles.map(
-        (userRole) => userRole.role,
-      );
+    const roles = user.userRoles.map((userRole) => userRole.role);
 
-    const {
-      userRoles,
-      ...userData
-    } = user;
+    const { userRoles, ...userData } = user;
 
     return {
       ...userData,
@@ -92,52 +83,43 @@ export class UserService {
   // ─────────────────────────────────────────────
 
   async getUserById(id: string) {
-    const user =
-      await this.prisma.user.findUnique({
-        where: {
-          id,
-        },
+    const user = await this.prisma.user.findUnique({
+      where: {
+        id,
+      },
 
-        select: {
-          id: true,
-          name: true,
-          phone: true,
-          isActive: true,
+      select: {
+        id: true,
+        name: true,
+        phone: true,
+        isActive: true,
 
-          discreetModeEnabled: true,
-          discreetModeUpdatedAt: true,
+        discreetModeEnabled: true,
+        discreetModeUpdatedAt: true,
 
-          createdAt: true,
-          updatedAt: true,
+        createdAt: true,
+        updatedAt: true,
 
-          userRoles: {
-            select: {
-              role: {
-                select: {
-                  id: true,
-                  name: true,
-                },
+        userRoles: {
+          select: {
+            role: {
+              select: {
+                id: true,
+                name: true,
               },
             },
           },
         },
-      });
+      },
+    });
 
     if (!user) {
-      throw new NotFoundException(
-        'user_not_found',
-      );
+      throw new NotFoundException('user_not_found');
     }
 
-    const roles =
-      user.userRoles.map(
-        (userRole) => userRole.role,
-      );
+    const roles = user.userRoles.map((userRole) => userRole.role);
 
-    const {
-      userRoles,
-      ...userData
-    } = user;
+    const { userRoles, ...userData } = user;
 
     return {
       ...userData,
@@ -149,82 +131,66 @@ export class UserService {
   // UPDATE PROFILE
   // ─────────────────────────────────────────────
 
-  async updateMe(
-    currentUser: CurrentUserDto,
-    data: UpdateUserDto,
-  ) {
-    const user =
-      await this.prisma.user.findUnique({
-        where: {
-          id: currentUser.id,
-        },
-      });
+  async updateMe(currentUser: CurrentUserDto, data: UpdateUserDto) {
+    const user = await this.prisma.user.findUnique({
+      where: {
+        id: currentUser.id,
+      },
+    });
 
     if (!user) {
-      throw new NotFoundException(
-        'user_not_found',
-      );
+      throw new NotFoundException('user_not_found');
     }
 
-    const updatedUser =
-      await this.prisma.user.update({
-        where: {
-          id: currentUser.id,
-        },
+    const updatedUser = await this.prisma.user.update({
+      where: {
+        id: currentUser.id,
+      },
 
-        data: {
-          ...(data.name !== undefined && {
-            name: data.name.trim(),
-          }),
-        },
+      data: {
+        ...(data.name !== undefined && {
+          name: data.name.trim(),
+        }),
+      },
 
-        select: {
-          id: true,
-          name: true,
-          phone: true,
-          isActive: true,
+      select: {
+        id: true,
+        name: true,
+        phone: true,
+        isActive: true,
 
-          discreetModeEnabled: true,
-          discreetModeUpdatedAt: true,
+        discreetModeEnabled: true,
+        discreetModeUpdatedAt: true,
 
-          createdAt: true,
-          updatedAt: true,
+        createdAt: true,
+        updatedAt: true,
 
-          userRoles: {
-            select: {
-              role: {
-                select: {
-                  id: true,
-                  name: true,
-                },
+        userRoles: {
+          select: {
+            role: {
+              select: {
+                id: true,
+                name: true,
               },
             },
           },
         },
-      });
+      },
+    });
 
     // ───────────────────────────────────────────
     // AUDIT LOG
     // ───────────────────────────────────────────
 
-    this.eventEmitter.emit(
-      AuditEventEnum.USER_UPDATED,
-      {
-        userId: currentUser.id,
-        entityId: currentUser.id,
-        entityType: 'USER',
-      },
-    );
+    this.eventEmitter.emit(AuditEventEnum.USER_UPDATED, {
+      userId: currentUser.id,
+      entityId: currentUser.id,
+      entityType: 'USER',
+    });
 
-    const roles =
-      updatedUser.userRoles.map(
-        (userRole) => userRole.role,
-      );
+    const roles = updatedUser.userRoles.map((userRole) => userRole.role);
 
-    const {
-      userRoles,
-      ...userData
-    } = updatedUser;
+    const { userRoles, ...userData } = updatedUser;
 
     return {
       ...userData,
@@ -236,86 +202,65 @@ export class UserService {
   // DISCREET MODE
   // ─────────────────────────────────────────────
 
-  async updateDiscreetMode(
-    currentUser: CurrentUserDto,
-    data: UpdateDiscreetModeDto,
-  ) {
-    const user =
-      await this.prisma.user.findUnique({
-        where: {
-          id: currentUser.id,
-        },
+  async updateDiscreetMode(currentUser: CurrentUserDto, data: UpdateDiscreetModeDto) {
+    const user = await this.prisma.user.findUnique({
+      where: {
+        id: currentUser.id,
+      },
 
-        select: {
-          id: true,
-          isActive: true,
-          discreetModeEnabled: true,
-        },
-      });
+      select: {
+        id: true,
+        isActive: true,
+        discreetModeEnabled: true,
+      },
+    });
 
     if (!user) {
-      throw new NotFoundException(
-        'user_not_found',
-      );
+      throw new NotFoundException('user_not_found');
     }
 
     if (!user.isActive) {
-      throw new BadRequestException(
-        'account_inactive',
-      );
+      throw new BadRequestException('account_inactive');
     }
 
     // ───────────────────────────────────────────
     // NO CHANGE
     // ───────────────────────────────────────────
 
-    if (
-      user.discreetModeEnabled ===
-      data.enabled
-    ) {
+    if (user.discreetModeEnabled === data.enabled) {
       return {
-        message:
-          data.enabled
-            ? 'discreet_mode_enabled'
-            : 'discreet_mode_disabled',
+        message: data.enabled ? 'discreet_mode_enabled' : 'discreet_mode_disabled',
 
-        discreetModeEnabled:
-          user.discreetModeEnabled,
+        discreetModeEnabled: user.discreetModeEnabled,
 
-        discreetModeUpdatedAt:
-          undefined,
+        discreetModeUpdatedAt: undefined,
       };
     }
 
-    const updatedUser =
-      await this.prisma.user.update({
-        where: {
-          id: currentUser.id,
-        },
+    const updatedUser = await this.prisma.user.update({
+      where: {
+        id: currentUser.id,
+      },
 
-        data: {
-          discreetModeEnabled:
-            data.enabled,
+      data: {
+        discreetModeEnabled: data.enabled,
 
-          discreetModeUpdatedAt:
-            new Date(),
-        },
+        discreetModeUpdatedAt: new Date(),
+      },
 
-        select: {
-          id: true,
-          discreetModeEnabled: true,
-          discreetModeUpdatedAt: true,
-        },
-      });
+      select: {
+        id: true,
+        discreetModeEnabled: true,
+        discreetModeUpdatedAt: true,
+      },
+    });
 
     // ───────────────────────────────────────────
     // AUDIT LOG
     // ───────────────────────────────────────────
 
     this.eventEmitter.emit(
-      data.enabled
-        ? AuditEventEnum.DISCREET_MODE_ENABLED
-        : AuditEventEnum.DISCREET_MODE_DISABLED,
+      data.enabled ? AuditEventEnum.DISCREET_MODE_ENABLED : AuditEventEnum.DISCREET_MODE_DISABLED,
       {
         userId: currentUser.id,
         entityId: currentUser.id,
@@ -326,16 +271,11 @@ export class UserService {
     );
 
     return {
-      message:
-        data.enabled
-          ? 'discreet_mode_enabled'
-          : 'discreet_mode_disabled',
+      message: data.enabled ? 'discreet_mode_enabled' : 'discreet_mode_disabled',
 
-      discreetModeEnabled:
-        updatedUser.discreetModeEnabled,
+      discreetModeEnabled: updatedUser.discreetModeEnabled,
 
-      discreetModeUpdatedAt:
-        updatedUser.discreetModeUpdatedAt,
+      discreetModeUpdatedAt: updatedUser.discreetModeUpdatedAt,
     };
   }
 
@@ -343,26 +283,19 @@ export class UserService {
   // DEACTIVATE ACCOUNT
   // ─────────────────────────────────────────────
 
-  async deactivateMe(
-    currentUser: CurrentUserDto,
-  ): Promise<{ message: string }> {
-    const user =
-      await this.prisma.user.findUnique({
-        where: {
-          id: currentUser.id,
-        },
-      });
+  async deactivateMe(currentUser: CurrentUserDto): Promise<{ message: string }> {
+    const user = await this.prisma.user.findUnique({
+      where: {
+        id: currentUser.id,
+      },
+    });
 
     if (!user) {
-      throw new NotFoundException(
-        'user_not_found',
-      );
+      throw new NotFoundException('user_not_found');
     }
 
     if (!user.isActive) {
-      throw new BadRequestException(
-        'account_already_inactive',
-      );
+      throw new BadRequestException('account_already_inactive');
     }
 
     await this.prisma.$transaction([
@@ -387,14 +320,11 @@ export class UserService {
     // AUDIT LOG
     // ───────────────────────────────────────────
 
-    this.eventEmitter.emit(
-      AuditEventEnum.USER_DEACTIVATED,
-      {
-        userId: currentUser.id,
-        entityId: currentUser.id,
-        entityType: 'USER',
-      },
-    );
+    this.eventEmitter.emit(AuditEventEnum.USER_DEACTIVATED, {
+      userId: currentUser.id,
+      entityId: currentUser.id,
+      entityType: 'USER',
+    });
 
     return {
       message: 'account_deactivated',
@@ -409,72 +339,58 @@ export class UserService {
   // the same protection revokeRole applies.
   // ─────────────────────────────────────────────
 
-  async deactivateUser(
-    actor: CurrentUserDto,
-    targetUserId: string,
-  ) {
-    const targetUser =
-      await this.prisma.user.findUnique({
-        where: {
-          id: targetUserId,
-        },
+  async deactivateUser(actor: CurrentUserDto, targetUserId: string) {
+    const targetUser = await this.prisma.user.findUnique({
+      where: {
+        id: targetUserId,
+      },
 
-        select: {
-          id: true,
+      select: {
+        id: true,
+        isActive: true,
+
+        userRoles: {
+          select: {
+            role: {
+              select: {
+                name: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    if (!targetUser) {
+      throw new NotFoundException('user_not_found');
+    }
+
+    if (!targetUser.isActive) {
+      throw new BadRequestException('account_already_inactive');
+    }
+
+    const isSuperAdmin = targetUser.userRoles.some(
+      (userRole) => userRole.role.name === RolesEnum.SUPER_ADMIN,
+    );
+
+    if (isSuperAdmin) {
+      const otherActiveSuperAdmins = await this.prisma.user.count({
+        where: {
+          id: { not: targetUserId },
           isActive: true,
 
           userRoles: {
-            select: {
+            some: {
               role: {
-                select: {
-                  name: true,
-                },
+                name: RolesEnum.SUPER_ADMIN,
               },
             },
           },
         },
       });
 
-    if (!targetUser) {
-      throw new NotFoundException(
-        'user_not_found',
-      );
-    }
-
-    if (!targetUser.isActive) {
-      throw new BadRequestException(
-        'account_already_inactive',
-      );
-    }
-
-    const isSuperAdmin =
-      targetUser.userRoles.some(
-        (userRole) =>
-          userRole.role.name ===
-          RolesEnum.SUPER_ADMIN,
-      );
-
-    if (isSuperAdmin) {
-      const otherActiveSuperAdmins =
-        await this.prisma.user.count({
-          where: {
-            id: { not: targetUserId },
-            isActive: true,
-
-            userRoles: {
-              some: {
-                role: {
-                  name: RolesEnum.SUPER_ADMIN,
-                },
-              },
-            },
-          },
-        });
-
       if (otherActiveSuperAdmins === 0) {
-        throw new ForbiddenException(
-          'cannot_deactivate_last_super_admin',
-        );
+        throw new ForbiddenException('cannot_deactivate_last_super_admin');
       }
     }
 
@@ -500,14 +416,11 @@ export class UserService {
     // AUDIT LOG
     // ───────────────────────────────────────────
 
-    this.eventEmitter.emit(
-      AuditEventEnum.USER_DEACTIVATED_BY_ADMIN,
-      {
-        userId: actor.id,
-        entityId: targetUserId,
-        entityType: 'USER',
-      },
-    );
+    this.eventEmitter.emit(AuditEventEnum.USER_DEACTIVATED_BY_ADMIN, {
+      userId: actor.id,
+      entityId: targetUserId,
+      entityType: 'USER',
+    });
 
     return this.getUserById(targetUserId);
   }
@@ -518,32 +431,24 @@ export class UserService {
   // Restricted to SUPER_ADMIN at the controller (Roles guard)
   // ─────────────────────────────────────────────
 
-  async reactivateUser(
-    actor: CurrentUserDto,
-    targetUserId: string,
-  ) {
-    const targetUser =
-      await this.prisma.user.findUnique({
-        where: {
-          id: targetUserId,
-        },
+  async reactivateUser(actor: CurrentUserDto, targetUserId: string) {
+    const targetUser = await this.prisma.user.findUnique({
+      where: {
+        id: targetUserId,
+      },
 
-        select: {
-          id: true,
-          isActive: true,
-        },
-      });
+      select: {
+        id: true,
+        isActive: true,
+      },
+    });
 
     if (!targetUser) {
-      throw new NotFoundException(
-        'user_not_found',
-      );
+      throw new NotFoundException('user_not_found');
     }
 
     if (targetUser.isActive) {
-      throw new BadRequestException(
-        'account_already_active',
-      );
+      throw new BadRequestException('account_already_active');
     }
 
     await this.prisma.user.update({
@@ -560,14 +465,11 @@ export class UserService {
     // AUDIT LOG
     // ───────────────────────────────────────────
 
-    this.eventEmitter.emit(
-      AuditEventEnum.USER_REACTIVATED,
-      {
-        userId: actor.id,
-        entityId: targetUserId,
-        entityType: 'USER',
-      },
-    );
+    this.eventEmitter.emit(AuditEventEnum.USER_REACTIVATED, {
+      userId: actor.id,
+      entityId: targetUserId,
+      entityType: 'USER',
+    });
 
     return this.getUserById(targetUserId);
   }
@@ -579,25 +481,19 @@ export class UserService {
   // Revokes all sessions without touching isActive.
   // ─────────────────────────────────────────────
 
-  async forceLogout(
-    actor: CurrentUserDto,
-    targetUserId: string,
-  ): Promise<{ message: string }> {
-    const targetUser =
-      await this.prisma.user.findUnique({
-        where: {
-          id: targetUserId,
-        },
+  async forceLogout(actor: CurrentUserDto, targetUserId: string): Promise<{ message: string }> {
+    const targetUser = await this.prisma.user.findUnique({
+      where: {
+        id: targetUserId,
+      },
 
-        select: {
-          id: true,
-        },
-      });
+      select: {
+        id: true,
+      },
+    });
 
     if (!targetUser) {
-      throw new NotFoundException(
-        'user_not_found',
-      );
+      throw new NotFoundException('user_not_found');
     }
 
     await this.prisma.session.deleteMany({
@@ -610,14 +506,11 @@ export class UserService {
     // AUDIT LOG
     // ───────────────────────────────────────────
 
-    this.eventEmitter.emit(
-      AuditEventEnum.USER_SESSIONS_REVOKED,
-      {
-        userId: actor.id,
-        entityId: targetUserId,
-        entityType: 'USER',
-      },
-    );
+    this.eventEmitter.emit(AuditEventEnum.USER_SESSIONS_REVOKED, {
+      userId: actor.id,
+      entityId: targetUserId,
+      entityType: 'USER',
+    });
 
     return {
       message: 'sessions_revoked',
@@ -633,40 +526,30 @@ export class UserService {
   // to no-op, or see revokeRole below to remove one.
   // ─────────────────────────────────────────────
 
-  async assignRole(
-    actor: CurrentUserDto,
-    targetUserId: string,
-    data: AssignUserRoleDto,
-  ) {
-    const targetUser =
-      await this.prisma.user.findUnique({
-        where: {
-          id: targetUserId,
-        },
+  async assignRole(actor: CurrentUserDto, targetUserId: string, data: AssignUserRoleDto) {
+    const targetUser = await this.prisma.user.findUnique({
+      where: {
+        id: targetUserId,
+      },
 
-        select: {
-          id: true,
-          isActive: true,
-        },
-      });
+      select: {
+        id: true,
+        isActive: true,
+      },
+    });
 
     if (!targetUser) {
-      throw new NotFoundException(
-        'user_not_found',
-      );
+      throw new NotFoundException('user_not_found');
     }
 
-    const role =
-      await this.prisma.role.findUnique({
-        where: {
-          name: data.role,
-        },
-      });
+    const role = await this.prisma.role.findUnique({
+      where: {
+        name: data.role,
+      },
+    });
 
     if (!role) {
-      throw new BadRequestException(
-        'role_not_found',
-      );
+      throw new BadRequestException('role_not_found');
     }
 
     await this.prisma.userRole.upsert({
@@ -689,16 +572,13 @@ export class UserService {
     // AUDIT LOG
     // ───────────────────────────────────────────
 
-    this.eventEmitter.emit(
-      AuditEventEnum.USER_ROLE_ASSIGNED,
-      {
-        userId: actor.id,
-        entityId: targetUserId,
-        entityType: 'USER',
+    this.eventEmitter.emit(AuditEventEnum.USER_ROLE_ASSIGNED, {
+      userId: actor.id,
+      entityId: targetUserId,
+      entityType: 'USER',
 
-        role: data.role,
-      },
-    );
+      role: data.role,
+    });
 
     return this.getMe({
       id: targetUserId,
@@ -718,66 +598,54 @@ export class UserService {
     targetUserId: string,
     role: RolesEnum.ADMIN | RolesEnum.SUPER_ADMIN,
   ) {
-    const targetUser =
-      await this.prisma.user.findUnique({
-        where: {
-          id: targetUserId,
-        },
+    const targetUser = await this.prisma.user.findUnique({
+      where: {
+        id: targetUserId,
+      },
 
-        select: {
-          id: true,
+      select: {
+        id: true,
+        userRoles: {
+          select: {
+            role: {
+              select: {
+                id: true,
+                name: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    if (!targetUser) {
+      throw new NotFoundException('user_not_found');
+    }
+
+    const roleToRevoke = targetUser.userRoles.find((userRole) => userRole.role.name === role)?.role;
+
+    if (!roleToRevoke) {
+      throw new BadRequestException('user_does_not_have_role');
+    }
+
+    if (role === RolesEnum.SUPER_ADMIN) {
+      const otherActiveSuperAdmins = await this.prisma.user.count({
+        where: {
+          id: { not: targetUserId },
+          isActive: true,
+
           userRoles: {
-            select: {
+            some: {
               role: {
-                select: {
-                  id: true,
-                  name: true,
-                },
+                name: RolesEnum.SUPER_ADMIN,
               },
             },
           },
         },
       });
 
-    if (!targetUser) {
-      throw new NotFoundException(
-        'user_not_found',
-      );
-    }
-
-    const roleToRevoke =
-      targetUser.userRoles.find(
-        (userRole) =>
-          userRole.role.name === role,
-      )?.role;
-
-    if (!roleToRevoke) {
-      throw new BadRequestException(
-        'user_does_not_have_role',
-      );
-    }
-
-    if (role === RolesEnum.SUPER_ADMIN) {
-      const otherActiveSuperAdmins =
-        await this.prisma.user.count({
-          where: {
-            id: { not: targetUserId },
-            isActive: true,
-
-            userRoles: {
-              some: {
-                role: {
-                  name: RolesEnum.SUPER_ADMIN,
-                },
-              },
-            },
-          },
-        });
-
       if (otherActiveSuperAdmins === 0) {
-        throw new ForbiddenException(
-          'cannot_remove_last_super_admin',
-        );
+        throw new ForbiddenException('cannot_remove_last_super_admin');
       }
     }
 
@@ -794,16 +662,13 @@ export class UserService {
     // AUDIT LOG
     // ───────────────────────────────────────────
 
-    this.eventEmitter.emit(
-      AuditEventEnum.USER_ROLE_REVOKED,
-      {
-        userId: actor.id,
-        entityId: targetUserId,
-        entityType: 'USER',
+    this.eventEmitter.emit(AuditEventEnum.USER_ROLE_REVOKED, {
+      userId: actor.id,
+      entityId: targetUserId,
+      entityType: 'USER',
 
-        role,
-      },
-    );
+      role,
+    });
 
     return this.getMe({
       id: targetUserId,
@@ -818,15 +683,9 @@ export class UserService {
   // ─────────────────────────────────────────────
 
   async listUsers(query: ListUsersQueryDto) {
-    const page =
-      query.page && query.page > 0
-        ? query.page
-        : 1;
+    const page = query.page && query.page > 0 ? query.page : 1;
 
-    const limit =
-      query.limit && query.limit > 0
-        ? query.limit
-        : 20;
+    const limit = query.limit && query.limit > 0 ? query.limit : 20;
 
     const where: any = {};
 
@@ -851,12 +710,8 @@ export class UserService {
       where.isActive = query.isActive;
     }
 
-    if (
-      query.discreetModeEnabled !==
-      undefined
-    ) {
-      where.discreetModeEnabled =
-        query.discreetModeEnabled;
+    if (query.discreetModeEnabled !== undefined) {
+      where.discreetModeEnabled = query.discreetModeEnabled;
     }
 
     if (query.roleId) {
@@ -867,60 +722,52 @@ export class UserService {
       };
     }
 
-    const [users, total] =
-      await this.prisma.$transaction([
-        this.prisma.user.findMany({
-          where,
+    const [users, total] = await this.prisma.$transaction([
+      this.prisma.user.findMany({
+        where,
 
-          select: {
-            id: true,
-            name: true,
-            phone: true,
-            isActive: true,
+        select: {
+          id: true,
+          name: true,
+          phone: true,
+          isActive: true,
 
-            discreetModeEnabled: true,
-            discreetModeUpdatedAt: true,
+          discreetModeEnabled: true,
+          discreetModeUpdatedAt: true,
 
-            createdAt: true,
-            updatedAt: true,
+          createdAt: true,
+          updatedAt: true,
 
-            userRoles: {
-              select: {
-                role: {
-                  select: {
-                    id: true,
-                    name: true,
-                  },
+          userRoles: {
+            select: {
+              role: {
+                select: {
+                  id: true,
+                  name: true,
                 },
               },
             },
           },
+        },
 
-          orderBy: {
-            createdAt: 'desc',
-          },
+        orderBy: {
+          createdAt: 'desc',
+        },
 
-          skip: (page - 1) * limit,
-          take: limit,
-        }),
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
 
-        this.prisma.user.count({
-          where,
-        }),
-      ]);
+      this.prisma.user.count({
+        where,
+      }),
+    ]);
 
     return {
       data: users.map((user) => {
-        const roles =
-          user.userRoles.map(
-            (userRole) =>
-              userRole.role,
-          );
+        const roles = user.userRoles.map((userRole) => userRole.role);
 
-        const {
-          userRoles,
-          ...userData
-        } = user;
+        const { userRoles, ...userData } = user;
 
         return {
           ...userData,
@@ -932,9 +779,7 @@ export class UserService {
         page,
         limit,
         total,
-        totalPages: Math.ceil(
-          total / limit,
-        ),
+        totalPages: Math.ceil(total / limit),
       },
     };
   }
@@ -954,14 +799,10 @@ export class UserService {
 
   async getDashboardStats() {
     const sevenDaysAgo = new Date();
-    sevenDaysAgo.setDate(
-      sevenDaysAgo.getDate() - 7,
-    );
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
 
     const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(
-      thirtyDaysAgo.getDate() - 30,
-    );
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
     const [
       totalUsers,
@@ -1063,10 +904,7 @@ export class UserService {
             none: {
               role: {
                 name: {
-                  in: [
-                    RolesEnum.ADMIN,
-                    RolesEnum.SUPER_ADMIN,
-                  ],
+                  in: [RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN],
                 },
               },
             },

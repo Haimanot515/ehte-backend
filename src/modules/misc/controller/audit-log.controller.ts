@@ -1,20 +1,7 @@
-import {
-  Controller,
-  Delete,
-  Get,
-  Param,
-  Query,
-  Res,
-} from '@nestjs/common';
+import { Controller, Delete, Get, Param, Query, Res } from '@nestjs/common';
 import { Response } from 'express';
 
-import {
-  ApiBearerAuth,
-  ApiOperation,
-  ApiParam,
-  ApiQuery,
-  ApiTags,
-} from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiParam, ApiQuery, ApiTags } from '@nestjs/swagger';
 
 import { AuditLogService } from '../service/audit-log.service';
 import { GetAuditLogsDto } from '../dto/audit-log.dto';
@@ -26,9 +13,7 @@ import { RolesEnum } from 'src/common/enums/roles.enum';
 @ApiBearerAuth('access-token')
 @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
 export class AuditLogController {
-  constructor(
-    private readonly auditLogService: AuditLogService,
-  ) {}
+  constructor(private readonly auditLogService: AuditLogService) {}
 
   // ─────────────────────────────────────────────
   // LIST
@@ -40,8 +25,7 @@ export class AuditLogController {
   @Get()
   @ApiOperation({
     summary: 'Get audit logs',
-    description:
-      'Returns audit logs for authorized administrators.',
+    description: 'Returns audit logs for authorized administrators.',
   })
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
@@ -52,9 +36,7 @@ export class AuditLogController {
   @ApiQuery({ name: 'userId', required: false })
   @ApiQuery({ name: 'startDate', required: false })
   @ApiQuery({ name: 'endDate', required: false })
-  async getAuditLogs(
-    @Query() dto: GetAuditLogsDto,
-  ) {
+  async getAuditLogs(@Query() dto: GetAuditLogsDto) {
     return this.auditLogService.findAll(dto);
   }
 
@@ -141,17 +123,11 @@ export class AuditLogController {
   @ApiQuery({ name: 'userId', required: false })
   @ApiQuery({ name: 'startDate', required: false })
   @ApiQuery({ name: 'endDate', required: false })
-  async exportAuditLogs(
-    @Query() dto: GetAuditLogsDto,
-    @Res() res: Response,
-  ) {
+  async exportAuditLogs(@Query() dto: GetAuditLogsDto, @Res() res: Response) {
     const csv = await this.auditLogService.exportCsv(dto);
 
     res.setHeader('Content-Type', 'text/csv');
-    res.setHeader(
-      'Content-Disposition',
-      `attachment; filename="audit-logs-${Date.now()}.csv"`,
-    );
+    res.setHeader('Content-Disposition', `attachment; filename="audit-logs-${Date.now()}.csv"`);
     res.send(csv);
   }
 
@@ -201,10 +177,7 @@ export class AuditLogController {
   @ApiParam({ name: 'userId', description: 'User ID' })
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
-  async getAuditLogsForUser(
-    @Param('userId') userId: string,
-    @Query() dto: GetAuditLogsDto,
-  ) {
+  async getAuditLogsForUser(@Param('userId') userId: string, @Query() dto: GetAuditLogsDto) {
     return this.auditLogService.findByUser(userId, dto);
   }
 
@@ -233,9 +206,7 @@ export class AuditLogController {
     required: true,
     description: 'ISO date — logs created before this are deleted',
   })
-  async purgeOldLogs(
-    @Query('olderThan') olderThan: string,
-  ) {
+  async purgeOldLogs(@Query('olderThan') olderThan: string) {
     return this.auditLogService.purgeOlderThan(olderThan);
   }
 
@@ -257,9 +228,7 @@ export class AuditLogController {
     summary: 'Get one audit log entry',
   })
   @ApiParam({ name: 'id', description: 'Audit log ID' })
-  async getAuditLogById(
-    @Param('id') id: string,
-  ) {
+  async getAuditLogById(@Param('id') id: string) {
     return this.auditLogService.findOne(id);
   }
 }

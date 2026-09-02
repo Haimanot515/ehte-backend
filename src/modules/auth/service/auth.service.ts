@@ -125,10 +125,7 @@ export class AuthService {
       const otp = this.generateOtp();
       const otpHash = await bcrypt.hash(otp, 12);
 
-      const otpExpiresInMinutes = this.configService.get<number>(
-        'otp.expiresInMinutes',
-        10,
-      );
+      const otpExpiresInMinutes = this.configService.get<number>('otp.expiresInMinutes', 10);
 
       const userOtp = await tx.userOtp.create({
         data: {
@@ -150,20 +147,14 @@ export class AuthService {
     // Send signup OTP SMS
     const smsMessage = renderOtpSms({
       otp: result.otp,
-      expiresInMinutes: this.configService.get<number>(
-        'otp.expiresInMinutes',
-        10,
-      ),
+      expiresInMinutes: this.configService.get<number>('otp.expiresInMinutes', 10),
     });
 
     try {
       await sendSms(result.phone, smsMessage);
     } catch (error) {
       // Log failure only; user/OTP already persisted, client can use resendSignupOtp()
-      console.error(
-        `[EHTE SMS] Failed to send signup OTP to ${result.phone}`,
-        error,
-      );
+      console.error(`[EHTE SMS] Failed to send signup OTP to ${result.phone}`, error);
     }
 
     // DEV ONLY: remove before production
@@ -179,7 +170,7 @@ export class AuthService {
       entity: 'User',
       entityId: result.userId,
       diff: { result: 'success' },
-    } as AuditEventPayload);
+    });
 
     return { verificationId: result.verificationId };
   }
@@ -230,7 +221,7 @@ export class AuthService {
           reason: 'too_many_otp_attempts',
           purpose: 'phone_verification',
         },
-      } as AuditEventPayload);
+      });
 
       throw new BadRequestException('too_many_otp_attempts');
     }
@@ -256,7 +247,7 @@ export class AuthService {
             reason: 'too_many_otp_attempts',
             purpose: 'phone_verification',
           },
-        } as AuditEventPayload);
+        });
       }
 
       throw new BadRequestException('invalid_or_expired_otp');
@@ -293,25 +284,20 @@ export class AuthService {
       entity: 'UserOtp',
       entityId: otpRecord.id,
       diff: { purpose: 'phone_verification', result: 'success' },
-    } as AuditEventPayload);
+    });
 
     return this.issueTokens(otpRecord.user.id, otpRecord.user.phone, roles);
   }
 
   // RESEND SIGNUP OTP
 
-  async resendSignupOtp(
-    verificationId: string,
-  ): Promise<{ verificationId: string }> {
+  async resendSignupOtp(verificationId: string): Promise<{ verificationId: string }> {
     const oldOtp = await this.prisma.userOtp.findUnique({
       where: { id: verificationId },
       include: { user: true },
     });
 
-    if (
-      !oldOtp ||
-      oldOtp.purpose !== UserOtpPurposeEnum.phone_verification
-    ) {
+    if (!oldOtp || oldOtp.purpose !== UserOtpPurposeEnum.phone_verification) {
       throw new BadRequestException('invalid_verification');
     }
 
@@ -350,7 +336,7 @@ export class AuthService {
         entity: 'User',
         entityId: user?.id ?? null,
         diff: { method: 'password', result: 'failed' },
-      } as AuditEventPayload);
+      });
 
       throw new UnauthorizedException('invalid_credentials');
     }
@@ -372,7 +358,7 @@ export class AuthService {
           result: 'failed',
           reason: 'account_locked',
         },
-      } as AuditEventPayload);
+      });
       throw err;
     }
 
@@ -390,7 +376,7 @@ export class AuthService {
         entity: 'User',
         entityId: user.id,
         diff: { method: 'password', result: 'failed' },
-      } as AuditEventPayload);
+      });
 
       throw new UnauthorizedException('invalid_credentials');
     }
@@ -410,7 +396,7 @@ export class AuthService {
           result: 'failed',
           reason: 'account_inactive',
         },
-      } as AuditEventPayload);
+      });
 
       throw new UnauthorizedException('account_inactive');
     }
@@ -427,7 +413,7 @@ export class AuthService {
           result: 'failed',
           reason: 'phone_not_verified',
         },
-      } as AuditEventPayload);
+      });
 
       // Unverified: send fresh OTP and route client to verification instead of dead-ending
       const { verificationId } = await this.issueAndSendOtp(
@@ -450,16 +436,14 @@ export class AuthService {
       entity: 'User',
       entityId: user.id,
       diff: { method: 'password', result: 'success' },
-    } as AuditEventPayload);
+    });
 
     return this.issueTokens(user.id, user.phone, roles);
   }
 
   // FORGOT PASSWORD: Unverified accounts get a phone_verification OTP instead of password_reset; only "no account" is masked
 
-  async forgotPassword(
-    data: ForgotPasswordDto,
-  ): Promise<ForgotPasswordResult> {
+  async forgotPassword(data: ForgotPasswordDto): Promise<ForgotPasswordResult> {
     const phone = this.normalizePhoneOrThrow(data.phone);
 
     const user = await this.prisma.user.findUnique({
@@ -528,7 +512,7 @@ export class AuthService {
           reason: 'too_many_otp_attempts',
           purpose: 'password_reset',
         },
-      } as AuditEventPayload);
+      });
 
       throw new BadRequestException('too_many_otp_attempts');
     }
@@ -553,7 +537,7 @@ export class AuthService {
             reason: 'too_many_otp_attempts',
             purpose: 'password_reset',
           },
-        } as AuditEventPayload);
+        });
       }
 
       throw new BadRequestException('invalid_or_expired_otp');
@@ -596,12 +580,12 @@ export class AuthService {
       entity: 'User',
       entityId: otpRecord.user.id,
       diff: { method: 'otp', result: 'success' },
-    } as AuditEventPayload);
+    });
 
     // Notify after successful transaction
     this.eventEmitter.emit(NotificationEventEnum.PASSWORD_RESET, {
       userId: otpRecord.user.id,
-    } as PasswordResetEvent);
+    });
 
     return { message: 'password_reset_successful' };
   }
@@ -665,7 +649,7 @@ export class AuthService {
         entity: 'Session',
         entityId: session.id,
         diff: { reason: 'refresh_token_reuse_detected' },
-      } as AuditEventPayload);
+      });
 
       throw new UnauthorizedException('session_expired_or_invalid');
     }
@@ -757,10 +741,7 @@ export class AuthService {
       throw new BadRequestException('password_not_set');
     }
 
-    const validPassword = await bcrypt.compare(
-      data.currentPassword,
-      dbUser.password,
-    );
+    const validPassword = await bcrypt.compare(data.currentPassword, dbUser.password);
 
     if (!validPassword) {
       throw new BadRequestException('wrong_current_password');
@@ -790,12 +771,12 @@ export class AuthService {
       entity: 'User',
       entityId: user.id,
       diff: { result: 'success' },
-    } as AuditEventPayload);
+    });
 
     // Notify after successful transaction
     this.eventEmitter.emit(NotificationEventEnum.PASSWORD_CHANGED, {
       userId: user.id,
-    } as PasswordChangedEvent);
+    });
 
     return { message: 'password_changed' };
   }
@@ -803,8 +784,7 @@ export class AuthService {
   // LOGOUT
 
   async logout(user: CurrentUserDto, req: any): Promise<{ message: string }> {
-    const refreshToken =
-      req?.body?.refreshToken || req?.headers?.['x-refresh-token'];
+    const refreshToken = req?.body?.refreshToken || req?.headers?.['x-refresh-token'];
 
     if (refreshToken) {
       await this.prisma.session.deleteMany({
@@ -829,7 +809,7 @@ export class AuthService {
       entity: 'User',
       entityId: user.id,
       diff: { result: 'success' },
-    } as AuditEventPayload);
+    });
 
     return { message: 'logout_successful' };
   }
@@ -889,10 +869,7 @@ export class AuthService {
       const otp = this.generateOtp();
       const otpHash = await bcrypt.hash(otp, 12);
 
-      const otpExpiresInMinutes = this.configService.get<number>(
-        'otp.expiresInMinutes',
-        10,
-      );
+      const otpExpiresInMinutes = this.configService.get<number>('otp.expiresInMinutes', 10);
 
       const adminOtp = await tx.userOtp.create({
         data: {
@@ -913,26 +890,18 @@ export class AuthService {
 
     const smsMessage = renderOtpSms({
       otp: result.otp,
-      expiresInMinutes: this.configService.get<number>(
-        'otp.expiresInMinutes',
-        10,
-      ),
+      expiresInMinutes: this.configService.get<number>('otp.expiresInMinutes', 10),
     });
 
     try {
       await sendSms(result.phone, smsMessage);
     } catch (error) {
-      console.error(
-        `[EHTE SMS] Failed to send admin registration OTP to ${result.phone}`,
-        error,
-      );
+      console.error(`[EHTE SMS] Failed to send admin registration OTP to ${result.phone}`, error);
     }
 
     // DEV ONLY
     if (this.configService.get<boolean>('app.debug', false)) {
-      console.log(
-        `[EHTE DEV] Admin registration OTP for ${result.phone}: ${result.otp}`,
-      );
+      console.log(`[EHTE DEV] Admin registration OTP for ${result.phone}: ${result.otp}`);
     }
 
     this.eventEmitter.emit(AuditEventEnum.USER_CREATED, {
@@ -946,7 +915,7 @@ export class AuthService {
         role: RolesEnum.ADMIN,
         createdBy: creator.id,
       },
-    } as AuditEventPayload);
+    });
 
     return {
       adminId: result.adminId,
@@ -983,9 +952,7 @@ export class AuthService {
 
     if (
       !admin ||
-      !roles.some((role) =>
-        [RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN].includes(role as RolesEnum),
-      )
+      !roles.some((role) => [RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN].includes(role as RolesEnum))
     ) {
       throw new NotFoundException('admin_not_found');
     }
@@ -1021,7 +988,7 @@ export class AuthService {
           purpose: 'admin_verification',
           verifiedBy: verifier.id,
         },
-      } as AuditEventPayload);
+      });
 
       throw new BadRequestException('too_many_otp_attempts');
     }
@@ -1047,7 +1014,7 @@ export class AuthService {
             purpose: 'admin_verification',
             verifiedBy: verifier.id,
           },
-        } as AuditEventPayload);
+        });
       }
 
       throw new BadRequestException('invalid_or_expired_otp');
@@ -1087,7 +1054,7 @@ export class AuthService {
         result: 'success',
         verifiedBy: verifier.id,
       },
-    } as AuditEventPayload);
+    });
 
     return { message: 'admin_verified' };
   }
@@ -1122,7 +1089,7 @@ export class AuthService {
           context: 'admin_login',
           result: 'failed',
         },
-      } as AuditEventPayload);
+      });
 
       throw new UnauthorizedException('invalid_credentials');
     }
@@ -1143,7 +1110,7 @@ export class AuthService {
           result: 'failed',
           reason: 'account_locked',
         },
-      } as AuditEventPayload);
+      });
       throw err;
     }
 
@@ -1160,7 +1127,7 @@ export class AuthService {
           result: 'failed',
           reason: 'account_inactive',
         },
-      } as AuditEventPayload);
+      });
 
       // Covers deactivated and not-yet-verified admins; activation only via adminVerify()
       throw new UnauthorizedException('account_inactive');
@@ -1183,7 +1150,7 @@ export class AuthService {
           context: 'admin_login',
           result: 'failed',
         },
-      } as AuditEventPayload);
+      });
 
       throw new UnauthorizedException('invalid_credentials');
     }
@@ -1202,7 +1169,7 @@ export class AuthService {
         context: 'admin_login',
         result: 'success',
       },
-    } as AuditEventPayload);
+    });
 
     return this.issueTokens(user.id, user.phone, roles);
   }
@@ -1218,15 +1185,9 @@ export class AuthService {
   // LOCKOUT — RECORD FAILED ATTEMPT: increments failedLoginAttempts; sets lockedUntil once the threshold is hit
 
   private async recordFailedLogin(userId: string): Promise<void> {
-    const maxAttempts = this.configService.get<number>(
-      'security.maxLoginAttempts',
-      5,
-    );
+    const maxAttempts = this.configService.get<number>('security.maxLoginAttempts', 5);
 
-    const lockoutMinutes = this.configService.get<number>(
-      'security.lockoutDurationMinutes',
-      15,
-    );
+    const lockoutMinutes = this.configService.get<number>('security.lockoutDurationMinutes', 15);
 
     const updated = await this.prisma.user.update({
       where: { id: userId },
@@ -1278,20 +1239,14 @@ export class AuthService {
 
     const expiresIn = expiresInStr as any;
 
-    const accessToken = this.jwtService.sign(
-      { sub: userId, phone, roles },
-      { expiresIn },
-    );
+    const accessToken = this.jwtService.sign({ sub: userId, phone, roles }, { expiresIn });
 
     // Refresh tokens use a dedicated secret/TTL so a leaked access secret can't forge them
     const refreshSecret =
       this.configService.get<string>('jwt.refreshSecret') ??
       this.configService.getOrThrow<string>('jwt.secret');
 
-    const refreshExpiresIn = this.configService.get<string>(
-      'jwt.refreshExpiresIn',
-      '7d',
-    );
+    const refreshExpiresIn = this.configService.get<string>('jwt.refreshExpiresIn', '7d');
 
     const refreshToken = this.jwtService.sign(
       {
@@ -1313,9 +1268,7 @@ export class AuthService {
         userId,
         // Store an HMAC hash, not the raw token, so a DB read can't be replayed
         refreshToken: this.hashRefreshToken(refreshToken),
-        expiresAt: new Date(
-          Date.now() + this.parseDurationToMs(refreshExpiresIn),
-        ),
+        expiresAt: new Date(Date.now() + this.parseDurationToMs(refreshExpiresIn)),
       },
     });
 
@@ -1361,15 +1314,9 @@ export class AuthService {
     phone: string,
     purpose: UserOtpPurposeEnum,
   ): Promise<{ verificationId: string }> {
-    const cooldownSeconds = this.configService.get<number>(
-      'otp.resendCooldownSeconds',
-      60,
-    );
+    const cooldownSeconds = this.configService.get<number>('otp.resendCooldownSeconds', 60);
 
-    const otpExpiresInMinutes = this.configService.get<number>(
-      'otp.expiresInMinutes',
-      10,
-    );
+    const otpExpiresInMinutes = this.configService.get<number>('otp.expiresInMinutes', 10);
 
     const otp = this.generateOtp();
     const otpHash = await bcrypt.hash(otp, 12);
@@ -1388,7 +1335,7 @@ export class AuthService {
 
       if (cooldownActive) {
         // Reuse existing OTP/verificationId; nothing regenerated, no SMS sent
-        return { reused: true as const, verificationId: latestOtp!.id };
+        return { reused: true as const, verificationId: latestOtp.id };
       }
 
       await tx.userOtp.updateMany({
@@ -1418,10 +1365,7 @@ export class AuthService {
     try {
       await sendSms(phone, smsMessage);
     } catch (error) {
-      console.error(
-        `[EHTE SMS] Failed to send OTP (${purpose}) to ${phone}`,
-        error,
-      );
+      console.error(`[EHTE SMS] Failed to send OTP (${purpose}) to ${phone}`, error);
     }
 
     // DEV ONLY

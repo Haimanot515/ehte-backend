@@ -1,20 +1,6 @@
-import {
-  Body,
-  Controller,
-  Delete,
-  Get,
-  Param,
-  Patch,
-  Post,
-  Query,
-} from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
 
-import {
-  ApiBearerAuth,
-  ApiOperation,
-  ApiQuery,
-  ApiTags,
-} from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 
 import { MissingPersonStatus } from '@prisma/client';
 
@@ -36,9 +22,7 @@ import { MissingPersonService } from '../service/missing-person.service';
 @ApiTags('Missing Persons')
 @Controller('missing-persons')
 export class MissingPersonController {
-  constructor(
-    private readonly missingPersonService: MissingPersonService,
-  ) {}
+  constructor(private readonly missingPersonService: MissingPersonService) {}
 
   // ─────────────────────────────────────────────
   // CREATE
@@ -51,14 +35,8 @@ export class MissingPersonController {
   @ApiOperation({
     summary: 'Submit a missing person report',
   })
-  async create(
-    @CurrentUser() user: CurrentUserDto,
-    @Body() data: CreateMissingPersonDto,
-  ) {
-    return this.missingPersonService.create(
-      user,
-      data,
-    );
+  async create(@CurrentUser() user: CurrentUserDto, @Body() data: CreateMissingPersonDto) {
+    return this.missingPersonService.create(user, data);
   }
 
   // ─────────────────────────────────────────────
@@ -72,12 +50,8 @@ export class MissingPersonController {
   @ApiOperation({
     summary: 'Get my missing person submissions',
   })
-  async findMine(
-    @CurrentUser() user: CurrentUserDto,
-  ) {
-    return this.missingPersonService.findMine(
-      user,
-    );
+  async findMine(@CurrentUser() user: CurrentUserDto) {
+    return this.missingPersonService.findMine(user);
   }
 
   // ─────────────────────────────────────────────
@@ -94,12 +68,8 @@ export class MissingPersonController {
   @ApiQuery({ name: 'type', required: false })
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
-  async findAll(
-    @Query() query: ListMissingPersonsQueryDto,
-  ) {
-    return this.missingPersonService.findAll(
-      query,
-    );
+  async findAll(@Query() query: ListMissingPersonsQueryDto) {
+    return this.missingPersonService.findAll(query);
   }
 
   // ─────────────────────────────────────────────
@@ -115,18 +85,13 @@ export class MissingPersonController {
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @ApiOperation({
-    summary:
-      'Admin: get all missing person submissions',
+    summary: 'Admin: get all missing person submissions',
   })
   @ApiQuery({ name: 'status', required: false, enum: MissingPersonStatus })
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
-  async findAllForAdmin(
-    @Query() query: ListMissingPersonsAdminQueryDto,
-  ) {
-    return this.missingPersonService.findAllForAdmin(
-      query,
-    );
+  async findAllForAdmin(@Query() query: ListMissingPersonsAdminQueryDto) {
+    return this.missingPersonService.findAllForAdmin(query);
   }
 
   // ─────────────────────────────────────────────
@@ -140,12 +105,8 @@ export class MissingPersonController {
   @ApiOperation({
     summary: 'Get one approved missing person',
   })
-  async findOne(
-    @Param('id') id: string,
-  ) {
-    return this.missingPersonService.findOne(
-      id,
-    );
+  async findOne(@Param('id') id: string) {
+    return this.missingPersonService.findOne(id);
   }
 
   // ─────────────────────────────────────────────
@@ -157,19 +118,14 @@ export class MissingPersonController {
   @Patch(':id')
   @ApiBearerAuth('access-token')
   @ApiOperation({
-    summary:
-      'Update my missing person submission',
+    summary: 'Update my missing person submission',
   })
   async update(
     @CurrentUser() user: CurrentUserDto,
     @Param('id') id: string,
     @Body() data: UpdateMissingPersonDto,
   ) {
-    return this.missingPersonService.update(
-      user,
-      id,
-      data,
-    );
+    return this.missingPersonService.update(user, id, data);
   }
 
   // ─────────────────────────────────────────────
@@ -181,17 +137,10 @@ export class MissingPersonController {
   @Delete(':id')
   @ApiBearerAuth('access-token')
   @ApiOperation({
-    summary:
-      'Delete my missing person submission',
+    summary: 'Delete my missing person submission',
   })
-  async remove(
-    @CurrentUser() user: CurrentUserDto,
-    @Param('id') id: string,
-  ) {
-    return this.missingPersonService.remove(
-      user,
-      id,
-    );
+  async remove(@CurrentUser() user: CurrentUserDto, @Param('id') id: string) {
+    return this.missingPersonService.remove(user, id);
   }
 
   // ─────────────────────────────────────────────
@@ -204,18 +153,13 @@ export class MissingPersonController {
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @ApiOperation({
-    summary:
-      'Admin: update missing person status',
+    summary: 'Admin: update missing person status',
   })
   async updateStatus(
     @CurrentUser() admin: CurrentUserDto,
     @Param('id') id: string,
     @Body('status') status: MissingPersonStatus,
   ) {
-    return this.missingPersonService.updateStatus(
-      admin,
-      id,
-      status,
-    );
+    return this.missingPersonService.updateStatus(admin, id, status);
   }
 }

@@ -1,27 +1,10 @@
-import {
-  Body,
-  Controller,
-  Get,
-  Header,
-  Param,
-  Patch,
-  Post,
-  Query,
-} from '@nestjs/common';
+import { Body, Controller, Get, Header, Param, Patch, Post, Query } from '@nestjs/common';
 
-import {
-  ApiBearerAuth,
-  ApiOperation,
-  ApiQuery,
-  ApiTags,
-} from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 
 import { ReportService } from '../service/report.service';
 
-import {
-  CreateReportDto,
-  UpdateReportDto,
-} from '../dto/report.dto';
+import { CreateReportDto, UpdateReportDto } from '../dto/report.dto';
 
 import {
   AdminReportQueryDto,
@@ -41,9 +24,7 @@ import { RequireReauthentication } from 'src/common/decorators/reauth.decorator'
 @ApiBearerAuth('access-token')
 @Controller('reports')
 export class ReportController {
-  constructor(
-    private readonly reportService: ReportService,
-  ) {}
+  constructor(private readonly reportService: ReportService) {}
 
   // ─────────────────────────────────────────────
   // CREATE REPORT
@@ -58,14 +39,8 @@ export class ReportController {
   @ApiOperation({
     summary: 'Submit a new report',
   })
-  async create(
-    @CurrentUser() user: CurrentUserDto,
-    @Body() data: CreateReportDto,
-  ) {
-    return this.reportService.create(
-      user,
-      data,
-    );
+  async create(@CurrentUser() user: CurrentUserDto, @Body() data: CreateReportDto) {
+    return this.reportService.create(user, data);
   }
 
   // ─────────────────────────────────────────────
@@ -86,15 +61,10 @@ export class ReportController {
   @RequireReauthentication()
   @Header('Cache-Control', 'no-store')
   @ApiOperation({
-    summary:
-      'Get reports submitted by the current user',
+    summary: 'Get reports submitted by the current user',
   })
-  async findMyReports(
-    @CurrentUser() user: CurrentUserDto,
-  ) {
-    return this.reportService.findMyReports(
-      user,
-    );
+  async findMyReports(@CurrentUser() user: CurrentUserDto) {
+    return this.reportService.findMyReports(user);
   }
 
   // ─────────────────────────────────────────────
@@ -118,12 +88,8 @@ export class ReportController {
   @ApiQuery({ name: 'assignedTo', required: false })
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
-  async findAll(
-    @Query() query: AdminReportQueryDto,
-  ) {
-    return this.reportService.findAllForAdmin(
-      query,
-    );
+  async findAll(@Query() query: AdminReportQueryDto) {
+    return this.reportService.findAllForAdmin(query);
   }
 
   // ─────────────────────────────────────────────
@@ -140,14 +106,8 @@ export class ReportController {
   @ApiOperation({
     summary: 'Get one of my reports',
   })
-  async findOne(
-    @CurrentUser() user: CurrentUserDto,
-    @Param('id') reportId: string,
-  ) {
-    return this.reportService.findOne(
-      user,
-      reportId,
-    );
+  async findOne(@CurrentUser() user: CurrentUserDto, @Param('id') reportId: string) {
+    return this.reportService.findOne(user, reportId);
   }
 
   // ─────────────────────────────────────────────
@@ -169,11 +129,7 @@ export class ReportController {
     @Param('id') reportId: string,
     @Body() data: UpdateReportDto,
   ) {
-    return this.reportService.update(
-      user,
-      reportId,
-      data,
-    );
+    return this.reportService.update(user, reportId, data);
   }
 
   // ─────────────────────────────────────────────
@@ -189,17 +145,10 @@ export class ReportController {
   @Get(':id/admin')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @ApiOperation({
-    summary:
-      'Get full report detail including reporter information (admin)',
+    summary: 'Get full report detail including reporter information (admin)',
   })
-  async findOneForAdmin(
-    @CurrentUser() admin: CurrentUserDto,
-    @Param('id') reportId: string,
-  ) {
-    return this.reportService.findOneForAdmin(
-      admin,
-      reportId,
-    );
+  async findOneForAdmin(@CurrentUser() admin: CurrentUserDto, @Param('id') reportId: string) {
+    return this.reportService.findOneForAdmin(admin, reportId);
   }
 
   // ─────────────────────────────────────────────
@@ -219,11 +168,7 @@ export class ReportController {
     @Param('id') reportId: string,
     @Body() data: UpdateReportStatusDto,
   ) {
-    return this.reportService.updateStatus(
-      admin,
-      reportId,
-      data,
-    );
+    return this.reportService.updateStatus(admin, reportId, data);
   }
 
   // ─────────────────────────────────────────────
@@ -236,19 +181,14 @@ export class ReportController {
   @Patch(':id/request-information')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @ApiOperation({
-    summary:
-      'Request more information from reporter (admin)',
+    summary: 'Request more information from reporter (admin)',
   })
   async requestMoreInformation(
     @CurrentUser() admin: CurrentUserDto,
     @Param('id') reportId: string,
     @Body() data: RequestMoreInformationDto,
   ) {
-    return this.reportService.requestMoreInformation(
-      admin,
-      reportId,
-      data,
-    );
+    return this.reportService.requestMoreInformation(admin, reportId, data);
   }
 
   // ─────────────────────────────────────────────
@@ -268,11 +208,7 @@ export class ReportController {
     @Param('id') reportId: string,
     @Body() data: AssignReportDto,
   ) {
-    return this.reportService.assign(
-      admin,
-      reportId,
-      data,
-    );
+    return this.reportService.assign(admin, reportId, data);
   }
 
   // ─────────────────────────────────────────────
@@ -292,10 +228,6 @@ export class ReportController {
     @Param('id') reportId: string,
     @Body() data: EscalateReportDto,
   ) {
-    return this.reportService.escalate(
-      admin,
-      reportId,
-      data,
-    );
+    return this.reportService.escalate(admin, reportId, data);
   }
 }

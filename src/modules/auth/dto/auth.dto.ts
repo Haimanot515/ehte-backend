@@ -1,15 +1,6 @@
-import {
-  ApiProperty,
-  ApiPropertyOptional,
-} from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
-import {
-  IsNotEmpty,
-  IsOptional,
-  IsString,
-  Length,
-  MinLength,
-} from 'class-validator';
+import { IsNotEmpty, IsOptional, IsString, Length, MinLength } from 'class-validator';
 
 // ─────────────────────────────────────────────
 // SIGN UP
@@ -102,8 +93,7 @@ export class LoginDto {
 
 export class RefreshTokenDto {
   @ApiProperty({
-    description:
-      'Refresh token issued after successful authentication',
+    description: 'Refresh token issued after successful authentication',
   })
   @IsString()
   @IsNotEmpty()
@@ -116,8 +106,7 @@ export class RefreshTokenDto {
 
 export class ForgotPasswordDto {
   @ApiProperty({
-    description:
-      'Registered phone number to receive the password reset OTP',
+    description: 'Registered phone number to receive the password reset OTP',
     example: '+251943257078',
   })
   @IsString()
@@ -131,8 +120,7 @@ export class ForgotPasswordDto {
 
 export class ResetPasswordDto {
   @ApiProperty({
-    description:
-      'Verification ID returned from forgot-password',
+    description: 'Verification ID returned from forgot-password',
     example: '550e8400-e29b-41d4-a716-446655440000',
   })
   @IsString()
@@ -165,8 +153,7 @@ export class ResetPasswordDto {
 
 export class ChangePasswordDto {
   @ApiProperty({
-    description:
-      'Current password of the authenticated user',
+    description: 'Current password of the authenticated user',
   })
   @IsString()
   @IsNotEmpty()
@@ -189,8 +176,7 @@ export class ChangePasswordDto {
 
 export class LogoutDto {
   @ApiPropertyOptional({
-    description:
-      'Refresh token to revoke. If omitted, all sessions are revoked.',
+    description: 'Refresh token to revoke. If omitted, all sessions are revoked.',
   })
   @IsOptional()
   @IsString()
@@ -248,8 +234,7 @@ export class AdminRegisterDto {
 
 export class AdminVerifyDto {
   @ApiProperty({
-    description:
-      'Verification ID returned from admin registration',
+    description: 'Verification ID returned from admin registration',
     example: '550e8400-e29b-41d4-a716-446655440000',
   })
   @IsString()

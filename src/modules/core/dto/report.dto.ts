@@ -1,12 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import {
-  IsArray,
-  IsDateString,
-  IsOptional,
-  IsString,
-  MaxLength,
-  MinLength,
-} from 'class-validator';
+import { IsArray, IsDateString, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
 
 export class CreateReportDto {
   @ApiProperty({
@@ -19,8 +12,7 @@ export class CreateReportDto {
   category: string;
 
   @ApiProperty({
-    example:
-      'The incident happened at approximately 8 PM...',
+    example: 'The incident happened at approximately 8 PM...',
     description: 'Detailed description of the incident',
   })
   @IsString()

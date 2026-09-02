@@ -1,15 +1,8 @@
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
-import {
-  ValidationPipe,
-  VersioningType,
-} from '@nestjs/common';
+import { ValidationPipe, VersioningType } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import {
-  SwaggerModule,
-  DocumentBuilder,
-  SwaggerCustomOptions,
-} from '@nestjs/swagger';
+import { SwaggerModule, DocumentBuilder, SwaggerCustomOptions } from '@nestjs/swagger';
 import helmet from 'helmet';
 import compression from 'compression';
 import { json, urlencoded } from 'express';
@@ -24,27 +17,15 @@ import { ResponseInterceptor } from './common/interceptors/response.interceptor'
 // PROCESS-LEVEL SAFETY NETS
 // ─────────────────────────────────────────────
 
-process.on(
-  'unhandledRejection',
-  (reason) => {
-    console.error(
-      '[EHTE] Unhandled promise rejection:',
-      reason,
-    );
-  },
-);
+process.on('unhandledRejection', (reason) => {
+  console.error('[EHTE] Unhandled promise rejection:', reason);
+});
 
-process.on(
-  'uncaughtException',
-  (error) => {
-    console.error(
-      '[EHTE] Uncaught exception:',
-      error,
-    );
+process.on('uncaughtException', (error) => {
+  console.error('[EHTE] Uncaught exception:', error);
 
-    process.exit(1);
-  },
-);
+  process.exit(1);
+});
 
 async function bootstrap() {
   // ─────────────────────────────────────────────
@@ -53,17 +34,11 @@ async function bootstrap() {
 
   if (process.env.RUN_MIGRATIONS !== 'false') {
     try {
-      execSync(
-        'npx prisma migrate deploy --schema=./prisma/schema',
-        {
-          stdio: 'inherit',
-        },
-      );
+      execSync('npx prisma migrate deploy --schema=./prisma/schema', {
+        stdio: 'inherit',
+      });
     } catch (error) {
-      console.error(
-        '[EHTE] Database migration failed — aborting startup.',
-        error,
-      );
+      console.error('[EHTE] Database migration failed — aborting startup.', error);
 
       throw error;
     }
@@ -81,42 +56,30 @@ async function bootstrap() {
   // APPLICATION CONFIGURATION
   // ─────────────────────────────────────────────
 
-  const port =
-    configService.getOrThrow<number>('app.port');
+  const port = configService.getOrThrow<number>('app.port');
 
-  const appName =
-    configService.getOrThrow<string>('app.name');
+  const appName = configService.getOrThrow<string>('app.name');
 
-  const nodeEnv =
-    configService.getOrThrow<string>('app.env');
+  const nodeEnv = configService.getOrThrow<string>('app.env');
 
-  const corsOriginRaw =
-    configService.getOrThrow<string>('cors.origin');
+  const corsOriginRaw = configService.getOrThrow<string>('cors.origin');
 
   const corsOrigin = corsOriginRaw
     .split(',')
     .map((origin) => origin.trim())
     .filter(Boolean);
 
-  const corsCredentials =
-    configService.getOrThrow<boolean>(
-      'cors.credentials',
-    );
+  const corsCredentials = configService.getOrThrow<boolean>('cors.credentials');
 
   // ─────────────────────────────────────────────
   // SWAGGER CONFIGURATION
   // ─────────────────────────────────────────────
 
-  const swaggerEnabled =
-    configService.get<boolean>(
-      'swagger.enabled',
-    ) ?? false;
+  const swaggerEnabled = configService.get<boolean>('swagger.enabled') ?? false;
 
-  const swaggerUser =
-    configService.get<string>('SWAGGER_USER');
+  const swaggerUser = configService.get<string>('SWAGGER_USER');
 
-  const swaggerPassword =
-    configService.get<string>('SWAGGER_PASSWORD');
+  const swaggerPassword = configService.get<string>('SWAGGER_PASSWORD');
 
   const shouldEnableSwagger = swaggerEnabled;
 
@@ -205,17 +168,13 @@ async function bootstrap() {
   // GLOBAL EXCEPTION FILTER
   // ─────────────────────────────────────────────
 
-  app.useGlobalFilters(
-    new GlobalExceptionFilter(),
-  );
+  app.useGlobalFilters(new GlobalExceptionFilter());
 
   // ─────────────────────────────────────────────
   // GLOBAL RESPONSE INTERCEPTOR
   // ─────────────────────────────────────────────
 
-  app.useGlobalInterceptors(
-    new ResponseInterceptor(),
-  );
+  app.useGlobalInterceptors(new ResponseInterceptor());
 
   // ─────────────────────────────────────────────
   // SWAGGER DOCUMENTATION
@@ -237,9 +196,7 @@ async function bootstrap() {
         }),
       );
 
-      logger.log(
-        'Swagger Basic Authentication enabled',
-      );
+      logger.log('Swagger Basic Authentication enabled');
     } else {
       logger.warn(
         `Swagger is enabled but SWAGGER_USER/SWAGGER_PASSWORD are not configured. /docs is UNPROTECTED. Environment: ${nodeEnv}`,
@@ -250,11 +207,10 @@ async function bootstrap() {
     // SWAGGER CONFIG
     // ───────────────────────────────────────────
 
-    const swaggerConfig =
-      new DocumentBuilder()
-        .setTitle('Ehte API')
-        .setDescription(
-          `
+    const swaggerConfig = new DocumentBuilder()
+      .setTitle('Ehte API')
+      .setDescription(
+        `
 **Safe Reporting, Public Awareness, Missing Persons and Victim Support Platform**
 
 Ehte provides secure APIs for:
@@ -281,105 +237,78 @@ Use the **Authorize** button and enter:
 
 \`Bearer <access_token>\`
 `,
-        )
-        .setVersion('1.0.0')
-        .setContact(
-          'Pitron Technology Solutions',
-          '',
-          '',
-        )
-        .setLicense(
-          'Proprietary',
-          '',
-        )
+      )
+      .setVersion('1.0.0')
+      .setContact('Pitron Technology Solutions', '', '')
+      .setLicense('Proprietary', '')
 
-        // JWT AUTHENTICATION
-        .addBearerAuth(
-          {
-            type: 'http',
-            scheme: 'bearer',
-            bearerFormat: 'JWT',
-            description:
-              'Enter your JWT access token',
-          },
-          'access-token',
-        )
+      // JWT AUTHENTICATION
+      .addBearerAuth(
+        {
+          type: 'http',
+          scheme: 'bearer',
+          bearerFormat: 'JWT',
+          description: 'Enter your JWT access token',
+        },
+        'access-token',
+      )
 
-        // LOCAL SERVER
-        .addServer(
-          'http://localhost:3000',
-          'Local Development',
-        )
+      // LOCAL SERVER
+      .addServer('http://localhost:3000', 'Local Development')
 
-        // TAG ORDER
-        .addTag('Authentication')
-        .addTag('Reports')
-        .addTag('Posts')
-        .addTag('Missing Persons')
-        .addTag('Information Submissions')
-        .addTag('Victim Profiles')
-        .addTag('Support')
-        .addTag('Notifications')
-        .addTag('Users')
-        .addTag('Roles')
-        .addTag('Audit Logs')
+      // TAG ORDER
+      .addTag('Authentication')
+      .addTag('Reports')
+      .addTag('Posts')
+      .addTag('Missing Persons')
+      .addTag('Information Submissions')
+      .addTag('Victim Profiles')
+      .addTag('Support')
+      .addTag('Notifications')
+      .addTag('Users')
+      .addTag('Roles')
+      .addTag('Audit Logs')
 
-        .build();
+      .build();
 
     // ───────────────────────────────────────────
     // CREATE SWAGGER DOCUMENT
     // ───────────────────────────────────────────
 
-    const document =
-      SwaggerModule.createDocument(
-        app,
-        swaggerConfig,
-      );
+    const document = SwaggerModule.createDocument(app, swaggerConfig);
 
     // ───────────────────────────────────────────
     // SWAGGER UI OPTIONS
     // ───────────────────────────────────────────
 
-    const customOptions: SwaggerCustomOptions =
-      {
-        customSiteTitle:
-          'Ehte API Documentation',
+    const customOptions: SwaggerCustomOptions = {
+      customSiteTitle: 'Ehte API Documentation',
 
-        customfavIcon:
-          'https://nestjs.com/img/logo-small.svg',
+      customfavIcon: 'https://nestjs.com/img/logo-small.svg',
 
-        swaggerOptions: {
-          docExpansion: 'none',
-          filter: true,
-          persistAuthorization: true,
-          displayRequestDuration: true,
-          deepLinking: true,
-          tryItOutEnabled: true,
-          displayOperationId: false,
-          defaultModelsExpandDepth: 1,
-          defaultModelExpandDepth: 2,
-          operationsSorter: 'alpha',
-        },
-      };
+      swaggerOptions: {
+        docExpansion: 'none',
+        filter: true,
+        persistAuthorization: true,
+        displayRequestDuration: true,
+        deepLinking: true,
+        tryItOutEnabled: true,
+        displayOperationId: false,
+        defaultModelsExpandDepth: 1,
+        defaultModelExpandDepth: 2,
+        operationsSorter: 'alpha',
+      },
+    };
 
     // ───────────────────────────────────────────
     // SWAGGER SETUP
     // ───────────────────────────────────────────
 
-    SwaggerModule.setup(
-      'docs',
-      app,
-      document,
-      customOptions,
-    );
+    SwaggerModule.setup('docs', app, document, customOptions);
 
-    logger.log(
-      `Swagger documentation enabled at /docs [env: ${nodeEnv}]`,
-    );
+    logger.log(`Swagger documentation enabled at /docs [env: ${nodeEnv}]`);
   } else {
-    logger.log(
-      `Swagger documentation is disabled [env: ${nodeEnv}]`,
-    );
+    logger.log(`Swagger documentation is disabled [env: ${nodeEnv}]`);
   }
 
   // ─────────────────────────────────────────────
@@ -388,16 +317,11 @@ Use the **Authorize** button and enter:
 
   await app.listen(port);
 
-  logger.log(
-    `${appName} running on port ${port} [env: ${nodeEnv}]`,
-  );
+  logger.log(`${appName} running on port ${port} [env: ${nodeEnv}]`);
 }
 
 bootstrap().catch((error) => {
-  console.error(
-    '[EHTE] Fatal error during bootstrap — process will exit.',
-    error,
-  );
+  console.error('[EHTE] Fatal error during bootstrap — process will exit.', error);
 
   process.exit(1);
 });

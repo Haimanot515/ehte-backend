@@ -1,13 +1,7 @@
 import { FetchQuery, Order, Where } from './crud.types';
 
 export const buildFindManyArgs = (query: FetchQuery): any => {
-  const {
-    page = 1,
-    limit = 10,
-    select,
-    orderBy,
-    where,
-  } = query;
+  const { page = 1, limit = 10, select, orderBy, where } = query;
 
   const args: any = {
     skip: (page - 1) * limit,
@@ -15,13 +9,10 @@ export const buildFindManyArgs = (query: FetchQuery): any => {
   };
 
   if (select?.length) {
-    args.select = select.reduce(
-      (acc: Record<string, boolean>, field: string) => {
-        acc[field] = true;
-        return acc;
-      },
-      {},
-    );
+    args.select = select.reduce((acc: Record<string, boolean>, field: string) => {
+      acc[field] = true;
+      return acc;
+    }, {});
   }
 
   if (orderBy?.length) {
@@ -66,10 +57,7 @@ const buildWhere = (groups: Where[][]): any => {
 const mapCondition = (condition: Where): any => {
   const { column, operator, value } = condition;
 
-  const nested = (
-    field: string,
-    filter: any,
-  ): Record<string, any> => {
+  const nested = (field: string, filter: any): Record<string, any> => {
     const result: Record<string, any> = {};
     const parts = field.split('.');
 
@@ -120,9 +108,7 @@ const mapCondition = (condition: Where): any => {
 
     case 'between':
       if (!Array.isArray(value) || value.length !== 2) {
-        throw new Error(
-          'BETWEEN requires exactly two values',
-        );
+        throw new Error('BETWEEN requires exactly two values');
       }
 
       return nested(column, {

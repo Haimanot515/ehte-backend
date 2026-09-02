@@ -1,19 +1,5 @@
-import {
-  Body,
-  Controller,
-  Delete,
-  Get,
-  Param,
-  Patch,
-  Post,
-  Query,
-} from '@nestjs/common';
-import {
-  ApiBearerAuth,
-  ApiOperation,
-  ApiParam,
-  ApiTags,
-} from '@nestjs/swagger';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { ApiBearerAuth, ApiOperation, ApiParam, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
 
@@ -32,9 +18,7 @@ import { UserService } from '../service/user.service';
 @ApiBearerAuth('access-token')
 @Controller('users')
 export class UserController {
-  constructor(
-    private readonly userService: UserService,
-  ) {}
+  constructor(private readonly userService: UserService) {}
 
   // ─────────────────────────────────────────────
   // GET CURRENT USER
@@ -50,9 +34,7 @@ export class UserController {
     @CurrentUser()
     user: CurrentUserDto,
   ) {
-    return this.userService.getMe(
-      user,
-    );
+    return this.userService.getMe(user);
   }
 
   // ─────────────────────────────────────────────
@@ -71,10 +53,7 @@ export class UserController {
     @Body()
     data: UpdateUserDto,
   ) {
-    return this.userService.updateMe(
-      user,
-      data,
-    );
+    return this.userService.updateMe(user, data);
   }
 
   // ─────────────────────────────────────────────
@@ -85,8 +64,7 @@ export class UserController {
   // ─────────────────────────────────────────────
   @Patch('me/discreet-mode')
   @ApiOperation({
-    summary:
-      'Enable or disable discreet mode',
+    summary: 'Enable or disable discreet mode',
   })
   async updateDiscreetMode(
     @CurrentUser()
@@ -94,10 +72,7 @@ export class UserController {
     @Body()
     data: UpdateDiscreetModeDto,
   ) {
-    return this.userService.updateDiscreetMode(
-      user,
-      data,
-    );
+    return this.userService.updateDiscreetMode(user, data);
   }
 
   // ─────────────────────────────────────────────
@@ -114,9 +89,7 @@ export class UserController {
     @CurrentUser()
     user: CurrentUserDto,
   ) {
-    return this.userService.deactivateMe(
-      user,
-    );
+    return this.userService.deactivateMe(user);
   }
 
   // ─────────────────────────────────────────────
@@ -137,9 +110,7 @@ export class UserController {
     @Query()
     query: ListUsersQueryDto,
   ) {
-    return this.userService.listUsers(
-      query,
-    );
+    return this.userService.listUsers(query);
   }
 
   // ─────────────────────────────────────────────
@@ -154,8 +125,7 @@ export class UserController {
   @Get('stats')
   @Roles(RolesEnum.SUPER_ADMIN)
   @ApiOperation({
-    summary:
-      'User-related dashboard stats (totals, active/inactive, by role, growth)',
+    summary: 'User-related dashboard stats (totals, active/inactive, by role, growth)',
   })
   async getDashboardStats() {
     return this.userService.getDashboardStats();
@@ -183,9 +153,7 @@ export class UserController {
     @Param('id')
     id: string,
   ) {
-    return this.userService.getUserById(
-      id,
-    );
+    return this.userService.getUserById(id);
   }
 
   // ─────────────────────────────────────────────
@@ -197,8 +165,7 @@ export class UserController {
   @Patch(':id/role')
   @Roles(RolesEnum.SUPER_ADMIN)
   @ApiOperation({
-    summary:
-      "Grant an admin or super_admin role to a user's account",
+    summary: "Grant an admin or super_admin role to a user's account",
   })
   @ApiParam({
     name: 'id',
@@ -212,11 +179,7 @@ export class UserController {
     @Body()
     data: AssignUserRoleDto,
   ) {
-    return this.userService.assignRole(
-      actor,
-      id,
-      data,
-    );
+    return this.userService.assignRole(actor, id, data);
   }
 
   // ─────────────────────────────────────────────
@@ -229,8 +192,7 @@ export class UserController {
   @Delete(':id/role/:role')
   @Roles(RolesEnum.SUPER_ADMIN)
   @ApiOperation({
-    summary:
-      "Revoke an admin or super_admin role from a user's account",
+    summary: "Revoke an admin or super_admin role from a user's account",
   })
   @ApiParam({
     name: 'id',
@@ -248,11 +210,7 @@ export class UserController {
     @Param('role')
     role: RolesEnum.ADMIN | RolesEnum.SUPER_ADMIN,
   ) {
-    return this.userService.revokeRole(
-      actor,
-      id,
-      role,
-    );
+    return this.userService.revokeRole(actor, id, role);
   }
 
   // ─────────────────────────────────────────────
@@ -278,10 +236,7 @@ export class UserController {
     @Param('id')
     id: string,
   ) {
-    return this.userService.deactivateUser(
-      actor,
-      id,
-    );
+    return this.userService.deactivateUser(actor, id);
   }
 
   // ─────────────────────────────────────────────
@@ -305,10 +260,7 @@ export class UserController {
     @Param('id')
     id: string,
   ) {
-    return this.userService.reactivateUser(
-      actor,
-      id,
-    );
+    return this.userService.reactivateUser(actor, id);
   }
 
   // ─────────────────────────────────────────────
@@ -333,9 +285,6 @@ export class UserController {
     @Param('id')
     id: string,
   ) {
-    return this.userService.forceLogout(
-      actor,
-      id,
-    );
+    return this.userService.forceLogout(actor, id);
   }
 }

@@ -1,7 +1,4 @@
-import {
-  ApiProperty,
-  ApiPropertyOptional,
-} from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 import {
   IsArray,
@@ -17,15 +14,12 @@ import {
 
 import { Type } from 'class-transformer';
 
-import {
-  NotificationType,
-} from '@prisma/client';
+import { NotificationType } from '@prisma/client';
 
 export class CreateNotificationDto {
   @ApiPropertyOptional({
     example: 'uuid',
-    description:
-      'User ID. Leave empty for a broadcast notification.',
+    description: 'User ID. Leave empty for a broadcast notification.',
   })
   @IsOptional()
   @IsUUID()
@@ -45,8 +39,7 @@ export class CreateNotificationDto {
   title: string;
 
   @ApiProperty({
-    example:
-      'Your report has been received successfully.',
+    example: 'Your report has been received successfully.',
   })
   @IsString()
   body: string;
@@ -55,10 +48,7 @@ export class CreateNotificationDto {
 export class MarkBulkReadDto {
   @ApiProperty({
     type: [String],
-    example: [
-      'notification-id-1',
-      'notification-id-2',
-    ],
+    example: ['notification-id-1', 'notification-id-2'],
   })
   @IsArray()
   @ArrayNotEmpty()

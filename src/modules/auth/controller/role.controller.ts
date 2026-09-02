@@ -1,20 +1,6 @@
-import {
-  Body,
-  Controller,
-  Delete,
-  Get,
-  Param,
-  Patch,
-  Post,
-} from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post } from '@nestjs/common';
 
-import {
-  ApiBearerAuth,
-  ApiOperation,
-  ApiParam,
-  ApiQuery,
-  ApiTags,
-} from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiParam, ApiQuery, ApiTags } from '@nestjs/swagger';
 
 import { RoleService } from '../service/role.service';
 
@@ -33,9 +19,7 @@ import { CreateRoleDto, UpdateRoleDto } from '../dto/role.dto';
 @ApiTags('Roles')
 @ApiBearerAuth('access-token')
 export class RoleController {
-  constructor(
-    public readonly service: RoleService,
-  ) {}
+  constructor(public readonly service: RoleService) {}
 
   // ─────────────────────────────────────────────
   // GET ALL ROLES
@@ -53,9 +37,7 @@ export class RoleController {
     required: false,
     type: 'string',
   })
-  async findAll(
-    @FetchQueryParam() query: FetchQuery,
-  ) {
+  async findAll(@FetchQueryParam() query: FetchQuery) {
     return await this.service.findAll(query);
   }
 
@@ -71,9 +53,7 @@ export class RoleController {
     name: 'id',
     type: 'string',
   })
-  async findOne(
-    @Param('id') id: string,
-  ) {
+  async findOne(@Param('id') id: string) {
     return await this.service.findOne(id);
   }
 
@@ -96,9 +76,7 @@ export class RoleController {
     name: 'id',
     type: 'string',
   })
-  async findUsersWithRole(
-    @Param('id') id: string,
-  ) {
+  async findUsersWithRole(@Param('id') id: string) {
     return await this.service.findUsersWithRole(id);
   }
 
@@ -113,10 +91,7 @@ export class RoleController {
   @ApiOperation({
     summary: 'Create a new role',
   })
-  async create(
-    @CurrentUser() actor: CurrentUserDto,
-    @Body() data: CreateRoleDto,
-  ) {
+  async create(@CurrentUser() actor: CurrentUserDto, @Body() data: CreateRoleDto) {
     return await this.service.create(actor, data);
   }
 
@@ -158,10 +133,7 @@ export class RoleController {
     name: 'id',
     type: 'string',
   })
-  async remove(
-    @CurrentUser() actor: CurrentUserDto,
-    @Param('id') id: string,
-  ) {
+  async remove(@CurrentUser() actor: CurrentUserDto, @Param('id') id: string) {
     return await this.service.remove(actor, id);
   }
 }

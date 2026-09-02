@@ -1,23 +1,6 @@
-import {
-  Body,
-  Controller,
-  Get,
-  Header,
-  Param,
-  Patch,
-  Post,
-  Query,
-} from '@nestjs/common';
-import {
-  ApiBearerAuth,
-  ApiOperation,
-  ApiQuery,
-  ApiTags,
-} from '@nestjs/swagger';
-import {
-  PostStatus,
-  PostType,
-} from '@prisma/client';
+import { Body, Controller, Get, Header, Param, Patch, Post, Query } from '@nestjs/common';
+import { ApiBearerAuth, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
+import { PostStatus, PostType } from '@prisma/client';
 import { AllowAnonymous } from 'src/common/decorators/public.decorator';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
@@ -38,9 +21,7 @@ import { PostService } from '../service/post.service';
 @ApiTags('Posts')
 @Controller('posts')
 export class PostController {
-  constructor(
-    private readonly postService: PostService,
-  ) {}
+  constructor(private readonly postService: PostService) {}
   // ─────────────────────────────────────────────
   // CREATE POST
   // POST /posts
@@ -53,14 +34,8 @@ export class PostController {
   @ApiOperation({
     summary: 'Create a new post',
   })
-  async create(
-    @CurrentUser() user: CurrentUserDto,
-    @Body() data: CreatePostDto,
-  ) {
-    return this.postService.create(
-      user.id,
-      data,
-    );
+  async create(@CurrentUser() user: CurrentUserDto, @Body() data: CreatePostDto) {
+    return this.postService.create(user.id, data);
   }
   // ─────────────────────────────────────────────
   // MY POSTS
@@ -77,12 +52,8 @@ export class PostController {
   @ApiOperation({
     summary: 'Get posts created by current user',
   })
-  async findMyPosts(
-    @CurrentUser() user: CurrentUserDto,
-  ) {
-    return this.postService.findMyPosts(
-      user.id,
-    );
+  async findMyPosts(@CurrentUser() user: CurrentUserDto) {
+    return this.postService.findMyPosts(user.id);
   }
   // ─────────────────────────────────────────────
   // MY POST
@@ -92,17 +63,10 @@ export class PostController {
   @Get('me/:id')
   @ApiBearerAuth('access-token')
   @ApiOperation({
-    summary:
-      'Get one post created by current user',
+    summary: 'Get one post created by current user',
   })
-  async findMyPost(
-    @CurrentUser() user: CurrentUserDto,
-    @Param('id') postId: string,
-  ) {
-    return this.postService.findMyPost(
-      user.id,
-      postId,
-    );
+  async findMyPost(@CurrentUser() user: CurrentUserDto, @Param('id') postId: string) {
+    return this.postService.findMyPost(user.id, postId);
   }
   // ─────────────────────────────────────────────
   // Added — UPDATE MY POST
@@ -123,11 +87,7 @@ export class PostController {
     @Param('id') postId: string,
     @Body() data: UpdatePostDto,
   ) {
-    return this.postService.updateMyPost(
-      user.id,
-      postId,
-      data,
-    );
+    return this.postService.updateMyPost(user.id, postId, data);
   }
   // ─────────────────────────────────────────────
   // Added — SUBMIT MY POST
@@ -145,14 +105,8 @@ export class PostController {
   @ApiOperation({
     summary: 'Submit own post for admin review',
   })
-  async submitMyPost(
-    @CurrentUser() user: CurrentUserDto,
-    @Param('id') postId: string,
-  ) {
-    return this.postService.submitMyPost(
-      user.id,
-      postId,
-    );
+  async submitMyPost(@CurrentUser() user: CurrentUserDto, @Param('id') postId: string) {
+    return this.postService.submitMyPost(user.id, postId);
   }
   // ─────────────────────────────────────────────
   // PUBLIC POSTS
@@ -178,9 +132,7 @@ export class PostController {
   @ApiQuery({ name: 'type', required: false, enum: PostType })
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
-  async findPublishedPosts(
-    @Query() query: PublishedPostsQueryDto,
-  ) {
+  async findPublishedPosts(@Query() query: PublishedPostsQueryDto) {
     return this.postService.findPublishedPosts(query);
   }
   // ─────────────────────────────────────────────
@@ -193,12 +145,8 @@ export class PostController {
   @ApiOperation({
     summary: 'Get one published public post',
   })
-  async findPublishedPost(
-    @Param('id') postId: string,
-  ) {
-    return this.postService.findPublishedPost(
-      postId,
-    );
+  async findPublishedPost(@Param('id') postId: string) {
+    return this.postService.findPublishedPost(postId);
   }
   // ─────────────────────────────────────────────
   // Added — ADMIN — CREATE OFFICIAL POST
@@ -224,14 +172,8 @@ export class PostController {
   @ApiOperation({
     summary: 'Admin: create an official post',
   })
-  async createOfficial(
-    @CurrentUser() user: CurrentUserDto,
-    @Body() data: AdminCreatePostDto,
-  ) {
-    return this.postService.createOfficial(
-      user,
-      data,
-    );
+  async createOfficial(@CurrentUser() user: CurrentUserDto, @Body() data: AdminCreatePostDto) {
+    return this.postService.createOfficial(user, data);
   }
   // ─────────────────────────────────────────────
   // ADMIN — ALL POSTS
@@ -254,9 +196,7 @@ export class PostController {
   @ApiQuery({ name: 'involvesChild', required: false })
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
-  async findAll(
-    @Query() query: AdminPostQueryDto,
-  ) {
+  async findAll(@Query() query: AdminPostQueryDto) {
     return this.postService.findAll(query);
   }
   // ─────────────────────────────────────────────
@@ -270,12 +210,8 @@ export class PostController {
   @ApiOperation({
     summary: 'Admin: get one post',
   })
-  async findOne(
-    @Param('id') postId: string,
-  ) {
-    return this.postService.findOne(
-      postId,
-    );
+  async findOne(@Param('id') postId: string) {
+    return this.postService.findOne(postId);
   }
   // ─────────────────────────────────────────────
   // ADMIN — UPDATE STATUS
@@ -301,11 +237,7 @@ export class PostController {
     @Param('id') postId: string,
     @Body('status') status: PostStatus,
   ) {
-    return this.postService.updateStatus(
-      user,
-      postId,
-      status,
-    );
+    return this.postService.updateStatus(user, postId, status);
   }
   // ─────────────────────────────────────────────
   // ADMIN — APPROVE
@@ -328,11 +260,7 @@ export class PostController {
     @Param('id') postId: string,
     @Body() data: ApprovePostDto,
   ) {
-    return this.postService.approve(
-      user,
-      postId,
-      data,
-    );
+    return this.postService.approve(user, postId, data);
   }
   // ─────────────────────────────────────────────
   // Added — ADMIN — REQUEST CHANGES
@@ -353,11 +281,7 @@ export class PostController {
     @Param('id') postId: string,
     @Body() data: RequestPostChangesDto,
   ) {
-    return this.postService.requestChanges(
-      user,
-      postId,
-      data,
-    );
+    return this.postService.requestChanges(user, postId, data);
   }
   // ─────────────────────────────────────────────
   // ADMIN — PUBLISH
@@ -370,14 +294,8 @@ export class PostController {
   @ApiOperation({
     summary: 'Admin: publish an approved post',
   })
-  async publish(
-    @CurrentUser() user: CurrentUserDto,
-    @Param('id') postId: string,
-  ) {
-    return this.postService.publish(
-      user,
-      postId,
-    );
+  async publish(@CurrentUser() user: CurrentUserDto, @Param('id') postId: string) {
+    return this.postService.publish(user, postId);
   }
   // ─────────────────────────────────────────────
   // ADMIN — REJECT
@@ -400,11 +318,7 @@ export class PostController {
     @Param('id') postId: string,
     @Body() data: RejectPostDto,
   ) {
-    return this.postService.reject(
-      user,
-      postId,
-      data,
-    );
+    return this.postService.reject(user, postId, data);
   }
   // ─────────────────────────────────────────────
   // ADMIN — UNPUBLISH
@@ -417,13 +331,7 @@ export class PostController {
   @ApiOperation({
     summary: 'Admin: unpublish a post',
   })
-  async unpublish(
-    @CurrentUser() user: CurrentUserDto,
-    @Param('id') postId: string,
-  ) {
-    return this.postService.unpublish(
-      user,
-      postId,
-    );
+  async unpublish(@CurrentUser() user: CurrentUserDto, @Param('id') postId: string) {
+    return this.postService.unpublish(user, postId);
   }
 }

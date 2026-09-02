@@ -1,4 +1,3 @@
-
 import { OtpTemplateParams } from 'src/common/types/messages.type';
 
 export function renderOtpSms(params: OtpTemplateParams): string {

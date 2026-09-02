@@ -1,15 +1,7 @@
-import {
-  PipeTransform,
-  Injectable,
-  BadRequestException,
-} from '@nestjs/common';
+import { PipeTransform, Injectable, BadRequestException } from '@nestjs/common';
 
 import { FetchQuery } from './crud.types';
-import {
-  parseFields,
-  parseSort,
-  parseFilter,
-} from './fetch-query.parser';
+import { parseFields, parseSort, parseFilter } from './fetch-query.parser';
 
 @Injectable()
 export class FetchQueryPipe implements PipeTransform<string, FetchQuery> {
@@ -70,9 +62,7 @@ export class FetchQueryPipe implements PipeTransform<string, FetchQuery> {
     } catch (e) {
       const message = e instanceof Error ? e.message : 'Invalid query';
 
-      throw new BadRequestException(
-        `Invalid query string: ${message}`,
-      );
+      throw new BadRequestException(`Invalid query string: ${message}`);
     }
   }
 }

@@ -1,19 +1,11 @@
-import {
-  BadRequestException,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma, AuditLog } from '@prisma/client';
 
 import { PrismaService } from 'src/prisma/prisma.service';
 
-import {
-  AuditEventPayload,
-} from '../events/audit.events';
+import { AuditEventPayload } from '../events/audit.events';
 
-import {
-  GetAuditLogsDto,
-} from '../dto/audit-log.dto';
+import { GetAuditLogsDto } from '../dto/audit-log.dto';
 
 export type AuditLogStats = {
   totalEvents: number;
@@ -28,9 +20,7 @@ export type AuditLogStats = {
 export class AuditLogService {
   private static readonly MAX_EXPORT_ROWS = 50_000;
 
-  constructor(
-    private readonly prisma: PrismaService,
-  ) {}
+  constructor(private readonly prisma: PrismaService) {}
 
   /**
    * Record an audit event.
@@ -38,9 +28,7 @@ export class AuditLogService {
    * This method is called by AuditLogListener
    * whenever an audit event is emitted.
    */
-  async record(
-    payload: AuditEventPayload,
-  ): Promise<AuditLog> {
+  async record(payload: AuditEventPayload): Promise<AuditLog> {
     return this.prisma.auditLog.create({
       data: {
         userId: payload.userId ?? null,
@@ -48,9 +36,7 @@ export class AuditLogService {
         action: payload.action,
         entity: payload.entity,
         entityId: payload.entityId ?? null,
-        diff: payload.diff
-          ? (payload.diff as Prisma.InputJsonValue)
-          : undefined,
+        diff: payload.diff ? (payload.diff as Prisma.InputJsonValue) : undefined,
       },
     });
   }
@@ -202,10 +188,7 @@ export class AuditLogService {
   /**
    * Full audit trail for a specific user/actor.
    */
-  async findByUser(
-    userId: string,
-    dto: Pick<GetAuditLogsDto, 'page' | 'limit'> = {},
-  ) {
+  async findByUser(userId: string, dto: Pick<GetAuditLogsDto, 'page' | 'limit'> = {}) {
     const { page = 1, limit = 20 } = dto;
     const skip = (page - 1) * limit;
 
@@ -272,18 +255,8 @@ export class AuditLogService {
    * capped at MAX_EXPORT_ROWS so a huge unfiltered export
    * doesn't take down the process.
    */
-  async exportCsv(
-    dto: Omit<GetAuditLogsDto, 'page' | 'limit'>,
-  ): Promise<string> {
-    const {
-      action,
-      entity,
-      entityId,
-      actorType,
-      userId,
-      startDate,
-      endDate,
-    } = dto;
+  async exportCsv(dto: Omit<GetAuditLogsDto, 'page' | 'limit'>): Promise<string> {
+    const { action, entity, entityId, actorType, userId, startDate, endDate } = dto;
 
     const where: Prisma.AuditLogWhereInput = {
       ...(action && { action }),
@@ -328,10 +301,7 @@ export class AuditLogService {
         return '';
       }
 
-      const str =
-        typeof value === 'string'
-          ? value
-          : JSON.stringify(value);
+      const str = typeof value === 'string' ? value : JSON.stringify(value);
 
       // Wrap in quotes and escape embedded quotes whenever
       // the value could break CSV structure.
@@ -371,21 +341,15 @@ export class AuditLogService {
    * the deleted count so the SUPER_ADMIN caller/UI can
    * confirm exactly what happened.
    */
-  async purgeOlderThan(
-    olderThan: string,
-  ): Promise<{ deletedCount: number; olderThan: string }> {
+  async purgeOlderThan(olderThan: string): Promise<{ deletedCount: number; olderThan: string }> {
     if (!olderThan) {
-      throw new BadRequestException(
-        'olderThan_query_param_required',
-      );
+      throw new BadRequestException('olderThan_query_param_required');
     }
 
     const cutoff = new Date(olderThan);
 
     if (isNaN(cutoff.getTime())) {
-      throw new BadRequestException(
-        'invalid_olderThan_date',
-      );
+      throw new BadRequestException('invalid_olderThan_date');
     }
 
     const result = await this.prisma.auditLog.deleteMany({
@@ -412,57 +376,49 @@ export class AuditLogService {
     startOfToday.setHours(0, 0, 0, 0);
 
     const startOfWeek = new Date(now);
-    startOfWeek.setDate(
-      startOfWeek.getDate() - 7,
-    );
+    startOfWeek.setDate(startOfWeek.getDate() - 7);
 
-    const [
-      totalEvents,
-      eventsToday,
-      eventsThisWeek,
-      actionGroups,
-      entityGroups,
-      actorTypeGroups,
-    ] = await Promise.all([
-      this.prisma.auditLog.count(),
+    const [totalEvents, eventsToday, eventsThisWeek, actionGroups, entityGroups, actorTypeGroups] =
+      await Promise.all([
+        this.prisma.auditLog.count(),
 
-      this.prisma.auditLog.count({
-        where: {
-          createdAt: {
-            gte: startOfToday,
+        this.prisma.auditLog.count({
+          where: {
+            createdAt: {
+              gte: startOfToday,
+            },
           },
-        },
-      }),
+        }),
 
-      this.prisma.auditLog.count({
-        where: {
-          createdAt: {
-            gte: startOfWeek,
+        this.prisma.auditLog.count({
+          where: {
+            createdAt: {
+              gte: startOfWeek,
+            },
           },
-        },
-      }),
+        }),
 
-      this.prisma.auditLog.groupBy({
-        by: ['action'],
-        _count: {
-          action: true,
-        },
-      }),
+        this.prisma.auditLog.groupBy({
+          by: ['action'],
+          _count: {
+            action: true,
+          },
+        }),
 
-      this.prisma.auditLog.groupBy({
-        by: ['entity'],
-        _count: {
-          entity: true,
-        },
-      }),
+        this.prisma.auditLog.groupBy({
+          by: ['entity'],
+          _count: {
+            entity: true,
+          },
+        }),
 
-      this.prisma.auditLog.groupBy({
-        by: ['actorType'],
-        _count: {
-          actorType: true,
-        },
-      }),
-    ]);
+        this.prisma.auditLog.groupBy({
+          by: ['actorType'],
+          _count: {
+            actorType: true,
+          },
+        }),
+      ]);
 
     return {
       totalEvents,
@@ -472,24 +428,15 @@ export class AuditLogService {
       eventsThisWeek,
 
       eventsByAction: Object.fromEntries(
-        actionGroups.map((group) => [
-          group.action,
-          group._count.action,
-        ]),
+        actionGroups.map((group) => [group.action, group._count.action]),
       ),
 
       eventsByEntity: Object.fromEntries(
-        entityGroups.map((group) => [
-          group.entity,
-          group._count.entity,
-        ]),
+        entityGroups.map((group) => [group.entity, group._count.entity]),
       ),
 
       eventsByActorType: Object.fromEntries(
-        actorTypeGroups.map((group) => [
-          group.actorType,
-          group._count.actorType,
-        ]),
+        actorTypeGroups.map((group) => [group.actorType, group._count.actorType]),
       ),
     };
   }

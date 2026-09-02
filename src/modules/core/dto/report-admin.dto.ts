@@ -1,10 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import {
-  IsEnum,
-  IsOptional,
-  IsString,
-  IsUUID,
-} from 'class-validator';
+import { IsEnum, IsOptional, IsString, IsUUID } from 'class-validator';
 import { Type } from 'class-transformer';
 
 import { ReportStatus } from '@prisma/client';
@@ -28,8 +23,7 @@ export class AdminReportQueryDto {
   // is added.
   // ─────────────────────────────────────────────
   @ApiPropertyOptional({
-    description:
-      'Not yet implemented — Report has no assignedToId column yet',
+    description: 'Not yet implemented — Report has no assignedToId column yet',
   })
   @IsOptional()
   @IsUUID()
@@ -64,8 +58,7 @@ export class UpdateReportStatusDto {
 
 export class RequestMoreInformationDto {
   @ApiProperty({
-    example:
-      'Could you clarify the exact time and location of the incident?',
+    example: 'Could you clarify the exact time and location of the incident?',
     description: 'Message sent to the reporter requesting more detail',
   })
   @IsString()

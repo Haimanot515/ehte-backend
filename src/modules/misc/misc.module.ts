@@ -1,4 +1,3 @@
-
 import { Module } from '@nestjs/common';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 
@@ -14,27 +13,12 @@ import { AuditLogListener } from './listeners/audit-log.listener';
 import { NotificationListener } from './listeners/notification.listener';
 
 @Module({
-  imports: [
-    PrismaModule,
-    EventEmitterModule,
-  ],
+  imports: [PrismaModule, EventEmitterModule],
 
-  controllers: [
-    AuditLogController,
-    NotificationController,
-  ],
+  controllers: [AuditLogController, NotificationController],
 
-  providers: [
-    AuditLogService,
-    NotificationService,
+  providers: [AuditLogService, NotificationService, AuditLogListener, NotificationListener],
 
-    AuditLogListener,
-    NotificationListener,
-  ],
-
-  exports: [
-    AuditLogService,
-    NotificationService,
-  ],
+  exports: [AuditLogService, NotificationService],
 })
 export class MiscModule {}

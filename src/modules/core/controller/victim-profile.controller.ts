@@ -1,19 +1,6 @@
-import {
-  Body,
-  Controller,
-  Delete,
-  Get,
-  Param,
-  Patch,
-  Post,
-  Query,
-} from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
 
-import {
-  ApiBearerAuth,
-  ApiOperation,
-  ApiTags,
-} from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 
 import { AllowAnonymous } from 'src/common/decorators/public.decorator';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
@@ -41,9 +28,7 @@ import {
 @ApiTags('Victim Profiles')
 @Controller('victim-profiles')
 export class VictimProfileController {
-  constructor(
-    private readonly victimProfileService: VictimProfileService,
-  ) {}
+  constructor(private readonly victimProfileService: VictimProfileService) {}
 
   // ─────────────────────────────────────────────
   // CREATE
@@ -55,8 +40,7 @@ export class VictimProfileController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @ApiBearerAuth('access-token')
   @ApiOperation({
-    summary:
-      'Admin: create a victim/survivor support profile',
+    summary: 'Admin: create a victim/survivor support profile',
   })
   async create(
     @CurrentUser()
@@ -65,10 +49,7 @@ export class VictimProfileController {
     @Body()
     data: CreateVictimProfileDto,
   ) {
-    return this.victimProfileService.create(
-      user,
-      data,
-    );
+    return this.victimProfileService.create(user, data);
   }
 
   // ─────────────────────────────────────────────
@@ -80,8 +61,7 @@ export class VictimProfileController {
   @Get('public')
   @AllowAnonymous()
   @ApiOperation({
-    summary:
-      'Get published victim profiles',
+    summary: 'Get published victim profiles',
   })
   async findPublic() {
     return this.victimProfileService.findPublic();
@@ -98,16 +78,13 @@ export class VictimProfileController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @ApiBearerAuth('access-token')
   @ApiOperation({
-    summary:
-      'Admin: get a victim profile',
+    summary: 'Admin: get a victim profile',
   })
   async findOne(
     @Param('id')
     id: string,
   ) {
-    return this.victimProfileService.findOne(
-      id,
-    );
+    return this.victimProfileService.findOne(id);
   }
 
   // ─────────────────────────────────────────────
@@ -120,8 +97,7 @@ export class VictimProfileController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @ApiBearerAuth('access-token')
   @ApiOperation({
-    summary:
-      'Admin: update a victim profile',
+    summary: 'Admin: update a victim profile',
   })
   async update(
     @CurrentUser()
@@ -133,11 +109,7 @@ export class VictimProfileController {
     @Body()
     data: UpdateVictimProfileDto,
   ) {
-    return this.victimProfileService.update(
-      user,
-      id,
-      data,
-    );
+    return this.victimProfileService.update(user, id, data);
   }
 
   // ─────────────────────────────────────────────
@@ -150,8 +122,7 @@ export class VictimProfileController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @ApiBearerAuth('access-token')
   @ApiOperation({
-    summary:
-      'Admin: delete a victim profile',
+    summary: 'Admin: delete a victim profile',
   })
   async remove(
     @CurrentUser()
@@ -160,10 +131,7 @@ export class VictimProfileController {
     @Param('id')
     id: string,
   ) {
-    return this.victimProfileService.remove(
-      user,
-      id,
-    );
+    return this.victimProfileService.remove(user, id);
   }
 
   // ─────────────────────────────────────────────
@@ -181,9 +149,7 @@ export class VictimProfileController {
     @Query()
     query: FindAllVictimProfilesQueryDto,
   ) {
-    return this.victimProfileService.findAllForAdmin(
-      query,
-    );
+    return this.victimProfileService.findAllForAdmin(query);
   }
 
   // ─────────────────────────────────────────────
@@ -195,8 +161,7 @@ export class VictimProfileController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @ApiBearerAuth('access-token')
   @ApiOperation({
-    summary:
-      'Admin: update victim profile approval gates',
+    summary: 'Admin: update victim profile approval gates',
   })
   async updateGates(
     @Param('id')
@@ -208,11 +173,7 @@ export class VictimProfileController {
     @Body()
     data: UpdateVictimGateDto,
   ) {
-    return this.victimProfileService.updateGates(
-      id,
-      data,
-      user.id,
-    );
+    return this.victimProfileService.updateGates(id, data, user.id);
   }
 
   // ─────────────────────────────────────────────
@@ -224,8 +185,7 @@ export class VictimProfileController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @ApiBearerAuth('access-token')
   @ApiOperation({
-    summary:
-      'Admin: publish approved victim profile',
+    summary: 'Admin: publish approved victim profile',
   })
   async publish(
     @CurrentUser()
@@ -234,10 +194,7 @@ export class VictimProfileController {
     @Param('id')
     id: string,
   ) {
-    return this.victimProfileService.publish(
-      id,
-      user.id,
-    );
+    return this.victimProfileService.publish(id, user.id);
   }
 
   // ─────────────────────────────────────────────
@@ -249,8 +206,7 @@ export class VictimProfileController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @ApiBearerAuth('access-token')
   @ApiOperation({
-    summary:
-      'Admin: unpublish victim profile',
+    summary: 'Admin: unpublish victim profile',
   })
   async unpublish(
     @CurrentUser()
@@ -259,10 +215,7 @@ export class VictimProfileController {
     @Param('id')
     id: string,
   ) {
-    return this.victimProfileService.unpublish(
-      id,
-      user.id,
-    );
+    return this.victimProfileService.unpublish(id, user.id);
   }
 
   // ─────────────────────────────────────────────
@@ -274,8 +227,7 @@ export class VictimProfileController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @ApiBearerAuth('access-token')
   @ApiOperation({
-    summary:
-      'Admin: reject victim profile',
+    summary: 'Admin: reject victim profile',
   })
   async reject(
     @CurrentUser()
@@ -284,9 +236,6 @@ export class VictimProfileController {
     @Param('id')
     id: string,
   ) {
-    return this.victimProfileService.reject(
-      id,
-      user.id,
-    );
+    return this.victimProfileService.reject(id, user.id);
   }
 }

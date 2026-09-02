@@ -1,13 +1,10 @@
-
 import { Injectable } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 import { NotificationType } from '@prisma/client';
 
 import { NotificationService } from '../service/notification.service';
 
-import {
-  NotificationEventEnum,
-} from 'src/common/enums/shared/notification-events.enum';
+import { NotificationEventEnum } from 'src/common/enums/shared/notification-events.enum';
 
 import {
   ReportReceivedEvent,
@@ -21,14 +18,10 @@ import {
 
 @Injectable()
 export class NotificationListener {
-  constructor(
-    private readonly notificationService: NotificationService,
-  ) {}
+  constructor(private readonly notificationService: NotificationService) {}
 
   @OnEvent(NotificationEventEnum.REPORT_RECEIVED)
-  async handleReportReceived(
-    event: ReportReceivedEvent,
-  ) {
+  async handleReportReceived(event: ReportReceivedEvent) {
     await this.notificationService.create({
       userId: event.userId,
       type: NotificationType.REPORT_RECEIVED,
@@ -38,9 +31,7 @@ export class NotificationListener {
   }
 
   @OnEvent(NotificationEventEnum.REPORT_UPDATED)
-  async handleReportUpdated(
-    event: ReportUpdatedEvent,
-  ) {
+  async handleReportUpdated(event: ReportUpdatedEvent) {
     await this.notificationService.create({
       userId: event.userId,
       type: NotificationType.REPORT_UPDATED,
@@ -49,12 +40,8 @@ export class NotificationListener {
     });
   }
 
-  @OnEvent(
-    NotificationEventEnum.MORE_INFORMATION_REQUESTED,
-  )
-  async handleMoreInformationRequested(
-    event: ReportMoreInformationRequestedEvent,
-  ) {
+  @OnEvent(NotificationEventEnum.MORE_INFORMATION_REQUESTED)
+  async handleMoreInformationRequested(event: ReportMoreInformationRequestedEvent) {
     await this.notificationService.create({
       userId: event.userId,
       type: NotificationType.MORE_INFORMATION_REQUESTED,
@@ -64,9 +51,7 @@ export class NotificationListener {
   }
 
   @OnEvent(NotificationEventEnum.POST_APPROVED)
-  async handlePostApproved(
-    event: PostApprovedEvent,
-  ) {
+  async handlePostApproved(event: PostApprovedEvent) {
     await this.notificationService.create({
       userId: event.userId,
       type: NotificationType.POST_APPROVED,
@@ -78,9 +63,7 @@ export class NotificationListener {
   }
 
   @OnEvent(NotificationEventEnum.POST_REJECTED)
-  async handlePostRejected(
-    event: PostRejectedEvent,
-  ) {
+  async handlePostRejected(event: PostRejectedEvent) {
     await this.notificationService.create({
       userId: event.userId,
       type: NotificationType.POST_REJECTED,
@@ -91,12 +74,8 @@ export class NotificationListener {
     });
   }
 
-  @OnEvent(
-    NotificationEventEnum.MISSING_PERSON_UPDATED,
-  )
-  async handleMissingPersonUpdated(
-    event: MissingPersonRequestUpdatedEvent,
-  ) {
+  @OnEvent(NotificationEventEnum.MISSING_PERSON_UPDATED)
+  async handleMissingPersonUpdated(event: MissingPersonRequestUpdatedEvent) {
     await this.notificationService.create({
       userId: event.userId,
       type: NotificationType.MISSING_PERSON_UPDATED,
@@ -105,12 +84,8 @@ export class NotificationListener {
     });
   }
 
-  @OnEvent(
-    NotificationEventEnum.SUPPORT_PAYMENT_CONFIRMED,
-  )
-  async handleSupportPaymentConfirmed(
-    event: SupportPaymentConfirmedEvent,
-  ) {
+  @OnEvent(NotificationEventEnum.SUPPORT_PAYMENT_CONFIRMED)
+  async handleSupportPaymentConfirmed(event: SupportPaymentConfirmedEvent) {
     await this.notificationService.create({
       userId: event.userId,
       type: NotificationType.SUPPORT_PAYMENT_CONFIRMED,

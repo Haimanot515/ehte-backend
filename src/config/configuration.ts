@@ -22,8 +22,7 @@ export default () => ({
     // whether JWT_REFRESH_SECRET was set in the environment.
     refreshSecret: process.env.JWT_REFRESH_SECRET,
 
-    refreshExpiresIn:
-      process.env.JWT_REFRESH_EXPIRES_IN || '7d',
+    refreshExpiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '7d',
   },
 
   cors: {
@@ -39,77 +38,46 @@ export default () => ({
   },
 
   rateLimit: {
-    ttl: parseInt(
-      process.env.RATE_LIMIT_TTL ?? '60',
-      10,
-    ),
-    limit: parseInt(
-      process.env.RATE_LIMIT_LIMIT ?? '100',
-      10,
-    ),
+    ttl: parseInt(process.env.RATE_LIMIT_TTL ?? '60', 10),
+    limit: parseInt(process.env.RATE_LIMIT_LIMIT ?? '100', 10),
   },
 
   otp: {
-    expiresInMinutes: parseInt(
-      process.env.OTP_EXPIRES_IN_MINUTES ?? '10',
-      10,
-    ),
+    expiresInMinutes: parseInt(process.env.OTP_EXPIRES_IN_MINUTES ?? '10', 10),
 
     // Minimum time between OTP resends for the same purpose/user,
     // enforced in AuthService.issueAndSendOtp().
-    resendCooldownSeconds: parseInt(
-      process.env.OTP_RESEND_COOLDOWN_SECONDS ?? '60',
-      10,
-    ),
+    resendCooldownSeconds: parseInt(process.env.OTP_RESEND_COOLDOWN_SECONDS ?? '60', 10),
   },
 
   minio: {
-    endpoint:
-      process.env.MINIO_ENDPOINT || 'localhost',
+    endpoint: process.env.MINIO_ENDPOINT || 'localhost',
 
-    port: Number(
-      process.env.MINIO_PORT || 9000,
-    ),
+    port: Number(process.env.MINIO_PORT || 9000),
 
-    accessKey:
-      process.env.MINIO_ACCESS_KEY,
+    accessKey: process.env.MINIO_ACCESS_KEY,
 
-    secretKey:
-      process.env.MINIO_SECRET_KEY,
+    secretKey: process.env.MINIO_SECRET_KEY,
 
-    bucket:
-      process.env.MINIO_BUCKET || 'ehte',
+    bucket: process.env.MINIO_BUCKET || 'ehte',
 
-    useSSL:
-      process.env.MINIO_USE_SSL === 'true',
+    useSSL: process.env.MINIO_USE_SSL === 'true',
   },
 
   security: {
-    encryptionKey:
-      process.env.ENCRYPTION_KEY,
+    encryptionKey: process.env.ENCRYPTION_KEY,
 
-    encryptionIv:
-      process.env.ENCRYPTION_IV,
+    encryptionIv: process.env.ENCRYPTION_IV,
 
     // Login lockout, enforced in AuthService.recordFailedLogin() /
     // assertNotLocked() — used by both login() and adminLogin().
-    maxLoginAttempts: parseInt(
-      process.env.MAX_LOGIN_ATTEMPTS ?? '5',
-      10,
-    ),
+    maxLoginAttempts: parseInt(process.env.MAX_LOGIN_ATTEMPTS ?? '5', 10),
 
-    lockoutDurationMinutes: parseInt(
-      process.env.LOCKOUT_DURATION_MINUTES ?? '15',
-      10,
-    ),
+    lockoutDurationMinutes: parseInt(process.env.LOCKOUT_DURATION_MINUTES ?? '15', 10),
   },
 
   media: {
-    maxFileSize: parseInt(
-      process.env.MEDIA_MAX_FILE_SIZE ??
-        '10485760',
-      10,
-    ),
+    maxFileSize: parseInt(process.env.MEDIA_MAX_FILE_SIZE ?? '10485760', 10),
 
     allowedMimeTypes:
       process.env.MEDIA_ALLOWED_MIME_TYPES ||
@@ -117,22 +85,16 @@ export default () => ({
   },
 
   support: {
-    currency:
-      process.env.SUPPORT_CURRENCY || 'ETB',
+    currency: process.env.SUPPORT_CURRENCY || 'ETB',
 
-    enabled:
-      process.env.SUPPORT_ENABLED !== 'false',
+    enabled: process.env.SUPPORT_ENABLED !== 'false',
   },
 
   missingPersons: {
-    enabled:
-      process.env.MISSING_PERSONS_ENABLED !==
-      'false',
+    enabled: process.env.MISSING_PERSONS_ENABLED !== 'false',
   },
 
   victimSupport: {
-    enabled:
-      process.env.VICTIM_SUPPORT_ENABLED !==
-      'false',
+    enabled: process.env.VICTIM_SUPPORT_ENABLED !== 'false',
   },
 });

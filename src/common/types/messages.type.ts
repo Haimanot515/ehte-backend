@@ -1,4 +1,3 @@
-
 import { MessageTypeEnum } from '../enums/shared/message-types.enum';
 
 export type OtpTemplateParams = {

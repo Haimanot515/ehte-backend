@@ -1,17 +1,6 @@
-import {
-  Body,
-  Controller,
-  Get,
-  Param,
-  Patch,
-  Post,
-} from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
 
-import {
-  ApiBearerAuth,
-  ApiOperation,
-  ApiTags,
-} from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 
 import { SupportService } from '../service/support.service';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
@@ -50,10 +39,7 @@ export class SupportController {
       'Payment is not processed by EHTE at this stage. The supporter declares the support ' +
       'and any off-platform payment information. The support is created with PENDING status.',
   })
-  async create(
-    @CurrentUser() user: CurrentUserDto,
-    @Body() data: CreateSupportDto,
-  ) {
+  async create(@CurrentUser() user: CurrentUserDto, @Body() data: CreateSupportDto) {
     return this.supportService.create(user, data);
   }
 
@@ -105,9 +91,7 @@ export class SupportController {
       'Returns support records associated with the specified victim profile. ' +
       'This endpoint currently has no explicit role restriction in the controller.',
   })
-  async findForVictimProfile(
-    @Param('victimProfileId') victimProfileId: string,
-  ) {
+  async findForVictimProfile(@Param('victimProfileId') victimProfileId: string) {
     return this.supportService.findForVictimProfile(victimProfileId);
   }
 
@@ -216,10 +200,7 @@ export class SupportController {
       'Admin and Super Admin users can cancel support requests as well. ' +
       'A normal user cannot cancel a support that has already been confirmed.',
   })
-  async cancel(
-    @CurrentUser() user: CurrentUserDto,
-    @Param('id') id: string,
-  ) {
+  async cancel(@CurrentUser() user: CurrentUserDto, @Param('id') id: string) {
     return this.supportService.cancel(id, user);
   }
 }

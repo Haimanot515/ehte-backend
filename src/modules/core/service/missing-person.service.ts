@@ -1,12 +1,6 @@
-import {
-  ForbiddenException,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
+import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 
-import {
-  MissingPersonStatus,
-} from '@prisma/client';
+import { MissingPersonStatus } from '@prisma/client';
 
 import { EventEmitter2 } from '@nestjs/event-emitter';
 
@@ -37,82 +31,64 @@ export class MissingPersonService {
   // CREATE
   // ─────────────────────────────────────────────
 
-  async create(
-    user: CurrentUserDto,
-    data: CreateMissingPersonDto,
-  ) {
-    const missingPerson =
-      await this.prisma.missingPerson.create({
-        data: {
-          userId: user.id,
+  async create(user: CurrentUserDto, data: CreateMissingPersonDto) {
+    const missingPerson = await this.prisma.missingPerson.create({
+      data: {
+        userId: user.id,
 
-          personType: data.personType,
+        personType: data.personType,
 
-          name: data.name,
-          description: data.description,
+        name: data.name,
+        description: data.description,
 
-          dateLastSeen: new Date(
-            data.dateLastSeen,
-          ),
+        dateLastSeen: new Date(data.dateLastSeen),
 
-          lastKnownArea: data.lastKnownArea,
+        lastKnownArea: data.lastKnownArea,
 
-          photo: data.photo ?? [],
-          video: data.video ?? [],
-          audio: data.audio ?? [],
-          pdf: data.pdf ?? [],
-          document: data.document ?? [],
-          other: data.other ?? [],
+        photo: data.photo ?? [],
+        video: data.video ?? [],
+        audio: data.audio ?? [],
+        pdf: data.pdf ?? [],
+        document: data.document ?? [],
+        other: data.other ?? [],
 
-          status: MissingPersonStatus.PENDING,
-        },
-      });
+        status: MissingPersonStatus.PENDING,
+      },
+    });
 
     // ─────────────────────────────────────────
     // AUDIT
     // ─────────────────────────────────────────
 
-    this.eventEmitter.emit(
-      AuditEventEnum.MISSING_PERSON_CREATED,
-      {
-        userId: user.id,
+    this.eventEmitter.emit(AuditEventEnum.MISSING_PERSON_CREATED, {
+      userId: user.id,
 
-        actorType: resolveActorType(
-          user.roles ?? [],
-        ),
+      actorType: resolveActorType(user.roles ?? []),
 
-        action:
-          AuditEventEnum.MISSING_PERSON_CREATED,
+      action: AuditEventEnum.MISSING_PERSON_CREATED,
 
-        entity: 'MissingPerson',
+      entity: 'MissingPerson',
 
-        entityId: missingPerson.id,
+      entityId: missingPerson.id,
 
-        diff: {
-          personType:
-            missingPerson.personType,
+      diff: {
+        personType: missingPerson.personType,
 
-          status:
-            missingPerson.status,
+        status: missingPerson.status,
 
-          result: 'success',
-        },
-      } as AuditEventPayload,
-    );
+        result: 'success',
+      },
+    });
 
     // ─────────────────────────────────────────
     // NOTIFICATION
     // ─────────────────────────────────────────
 
-    this.eventEmitter.emit(
-      NotificationEventEnum.NEW_MISSING_PERSON_REQUEST,
-      {
-        userId: user.id,
+    this.eventEmitter.emit(NotificationEventEnum.NEW_MISSING_PERSON_REQUEST, {
+      userId: user.id,
 
-        missingPersonId:
-          missingPerson.id,
-      },
-    );
+      missingPersonId: missingPerson.id,
+    });
 
     return missingPerson;
   }
@@ -122,21 +98,14 @@ export class MissingPersonService {
   // ─────────────────────────────────────────────
 
   async findOne(id: string) {
-    const missingPerson =
-      await this.prisma.missingPerson.findUnique({
-        where: {
-          id,
-        },
-      });
+    const missingPerson = await this.prisma.missingPerson.findUnique({
+      where: {
+        id,
+      },
+    });
 
-    if (
-      !missingPerson ||
-      missingPerson.status !==
-        MissingPersonStatus.APPROVED
-    ) {
-      throw new NotFoundException(
-        'missing_person_not_found',
-      );
+    if (!missingPerson || missingPerson.status !== MissingPersonStatus.APPROVED) {
+      throw new NotFoundException('missing_person_not_found');
     }
 
     return missingPerson;
@@ -146,37 +115,32 @@ export class MissingPersonService {
   // FIND ALL PUBLIC (paginated)
   // ─────────────────────────────────────────────
 
-  async findAll(
-    query: ListMissingPersonsQueryDto,
-  ) {
+  async findAll(query: ListMissingPersonsQueryDto) {
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
 
     const where = {
       status: MissingPersonStatus.APPROVED,
 
-      ...(query.type !== undefined
-        ? { personType: query.type }
-        : {}),
+      ...(query.type !== undefined ? { personType: query.type } : {}),
     };
 
-    const [data, total] =
-      await this.prisma.$transaction([
-        this.prisma.missingPerson.findMany({
-          where,
+    const [data, total] = await this.prisma.$transaction([
+      this.prisma.missingPerson.findMany({
+        where,
 
-          orderBy: {
-            createdAt: 'desc',
-          },
+        orderBy: {
+          createdAt: 'desc',
+        },
 
-          skip: (page - 1) * limit,
-          take: limit,
-        }),
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
 
-        this.prisma.missingPerson.count({
-          where,
-        }),
-      ]);
+      this.prisma.missingPerson.count({
+        where,
+      }),
+    ]);
 
     return {
       data,
@@ -193,9 +157,7 @@ export class MissingPersonService {
   // FIND MINE
   // ─────────────────────────────────────────────
 
-  async findMine(
-    user: CurrentUserDto,
-  ) {
+  async findMine(user: CurrentUserDto) {
     return this.prisma.missingPerson.findMany({
       where: {
         userId: user.id,
@@ -214,22 +176,15 @@ export class MissingPersonService {
   // through admin review again before showing publicly.
   // ─────────────────────────────────────────────
 
-  async update(
-    user: CurrentUserDto,
-    id: string,
-    data: UpdateMissingPersonDto,
-  ) {
-    const existing =
-      await this.prisma.missingPerson.findUnique({
-        where: {
-          id,
-        },
-      });
+  async update(user: CurrentUserDto, id: string, data: UpdateMissingPersonDto) {
+    const existing = await this.prisma.missingPerson.findUnique({
+      where: {
+        id,
+      },
+    });
 
     if (!existing) {
-      throw new NotFoundException(
-        'missing_person_not_found',
-      );
+      throw new NotFoundException('missing_person_not_found');
     }
 
     // ─────────────────────────────────────────
@@ -237,145 +192,123 @@ export class MissingPersonService {
     // ─────────────────────────────────────────
 
     if (existing.userId !== user.id) {
-      throw new ForbiddenException(
-        'not_authorized_to_update',
-      );
+      throw new ForbiddenException('not_authorized_to_update');
     }
 
-    const shouldResetToPending =
-      existing.status ===
-      MissingPersonStatus.APPROVED;
+    const shouldResetToPending = existing.status === MissingPersonStatus.APPROVED;
 
-    const updated =
-      await this.prisma.missingPerson.update({
-        where: {
-          id,
-        },
+    const updated = await this.prisma.missingPerson.update({
+      where: {
+        id,
+      },
 
-        data: {
-          ...(data.personType !== undefined
-            ? {
-                personType:
-                  data.personType,
-              }
-            : {}),
+      data: {
+        ...(data.personType !== undefined
+          ? {
+              personType: data.personType,
+            }
+          : {}),
 
-          ...(data.name !== undefined
-            ? {
-                name: data.name,
-              }
-            : {}),
+        ...(data.name !== undefined
+          ? {
+              name: data.name,
+            }
+          : {}),
 
-          ...(data.description !== undefined
-            ? {
-                description:
-                  data.description,
-              }
-            : {}),
+        ...(data.description !== undefined
+          ? {
+              description: data.description,
+            }
+          : {}),
 
-          ...(data.dateLastSeen !== undefined
-            ? {
-                dateLastSeen: new Date(
-                  data.dateLastSeen,
-                ),
-              }
-            : {}),
+        ...(data.dateLastSeen !== undefined
+          ? {
+              dateLastSeen: new Date(data.dateLastSeen),
+            }
+          : {}),
 
-          ...(data.lastKnownArea !== undefined
-            ? {
-                lastKnownArea:
-                  data.lastKnownArea,
-              }
-            : {}),
+        ...(data.lastKnownArea !== undefined
+          ? {
+              lastKnownArea: data.lastKnownArea,
+            }
+          : {}),
 
-          ...(data.photo !== undefined
-            ? {
-                photo: data.photo,
-              }
-            : {}),
+        ...(data.photo !== undefined
+          ? {
+              photo: data.photo,
+            }
+          : {}),
 
-          ...(data.video !== undefined
-            ? {
-                video: data.video,
-              }
-            : {}),
+        ...(data.video !== undefined
+          ? {
+              video: data.video,
+            }
+          : {}),
 
-          ...(data.audio !== undefined
-            ? {
-                audio: data.audio,
-              }
-            : {}),
+        ...(data.audio !== undefined
+          ? {
+              audio: data.audio,
+            }
+          : {}),
 
-          ...(data.pdf !== undefined
-            ? {
-                pdf: data.pdf,
-              }
-            : {}),
+        ...(data.pdf !== undefined
+          ? {
+              pdf: data.pdf,
+            }
+          : {}),
 
-          ...(data.document !== undefined
-            ? {
-                document: data.document,
-              }
-            : {}),
+        ...(data.document !== undefined
+          ? {
+              document: data.document,
+            }
+          : {}),
 
-          ...(data.other !== undefined
-            ? {
-                other: data.other,
-              }
-            : {}),
+        ...(data.other !== undefined
+          ? {
+              other: data.other,
+            }
+          : {}),
 
-          ...(shouldResetToPending
-            ? {
-                status:
-                  MissingPersonStatus.PENDING,
-              }
-            : {}),
-        },
-      });
+        ...(shouldResetToPending
+          ? {
+              status: MissingPersonStatus.PENDING,
+            }
+          : {}),
+      },
+    });
 
     // ─────────────────────────────────────────
     // AUDIT
     // ─────────────────────────────────────────
 
-    this.eventEmitter.emit(
-      AuditEventEnum.MISSING_PERSON_UPDATED,
-      {
-        userId: user.id,
+    this.eventEmitter.emit(AuditEventEnum.MISSING_PERSON_UPDATED, {
+      userId: user.id,
 
-        actorType: resolveActorType(
-          user.roles ?? [],
-        ),
+      actorType: resolveActorType(user.roles ?? []),
 
-        action:
-          AuditEventEnum.MISSING_PERSON_UPDATED,
+      action: AuditEventEnum.MISSING_PERSON_UPDATED,
 
-        entity: 'MissingPerson',
+      entity: 'MissingPerson',
 
-        entityId: updated.id,
+      entityId: updated.id,
 
-        diff: {
-          resetToPending: shouldResetToPending,
-          result: 'success',
-        },
-      } as AuditEventPayload,
-    );
+      diff: {
+        resetToPending: shouldResetToPending,
+        result: 'success',
+      },
+    });
 
     // ─────────────────────────────────────────
     // NOTIFICATION
     // ─────────────────────────────────────────
 
-    this.eventEmitter.emit(
-      NotificationEventEnum.MISSING_PERSON_UPDATED,
-      {
-        userId: existing.userId,
+    this.eventEmitter.emit(NotificationEventEnum.MISSING_PERSON_UPDATED, {
+      userId: existing.userId,
 
-        missingPersonId:
-          updated.id,
+      missingPersonId: updated.id,
 
-        status:
-          updated.status,
-      },
-    );
+      status: updated.status,
+    });
 
     return updated;
   }
@@ -384,21 +317,15 @@ export class MissingPersonService {
   // DELETE
   // ─────────────────────────────────────────────
 
-  async remove(
-    user: CurrentUserDto,
-    id: string,
-  ) {
-    const existing =
-      await this.prisma.missingPerson.findUnique({
-        where: {
-          id,
-        },
-      });
+  async remove(user: CurrentUserDto, id: string) {
+    const existing = await this.prisma.missingPerson.findUnique({
+      where: {
+        id,
+      },
+    });
 
     if (!existing) {
-      throw new NotFoundException(
-        'missing_person_not_found',
-      );
+      throw new NotFoundException('missing_person_not_found');
     }
 
     // ─────────────────────────────────────────
@@ -406,9 +333,7 @@ export class MissingPersonService {
     // ─────────────────────────────────────────
 
     if (existing.userId !== user.id) {
-      throw new ForbiddenException(
-        'not_authorized_to_delete',
-      );
+      throw new ForbiddenException('not_authorized_to_delete');
     }
 
     await this.prisma.missingPerson.delete({
@@ -429,8 +354,7 @@ export class MissingPersonService {
      */
 
     return {
-      message:
-        'missing_person_deleted',
+      message: 'missing_person_deleted',
     };
   }
 
@@ -438,39 +362,34 @@ export class MissingPersonService {
   // ADMIN — FIND ALL (paginated, includes submissions)
   // ─────────────────────────────────────────────
 
-  async findAllForAdmin(
-    query: ListMissingPersonsAdminQueryDto,
-  ) {
+  async findAllForAdmin(query: ListMissingPersonsAdminQueryDto) {
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
 
     const where = {
-      ...(query.status !== undefined
-        ? { status: query.status }
-        : {}),
+      ...(query.status !== undefined ? { status: query.status } : {}),
     };
 
-    const [data, total] =
-      await this.prisma.$transaction([
-        this.prisma.missingPerson.findMany({
-          where,
+    const [data, total] = await this.prisma.$transaction([
+      this.prisma.missingPerson.findMany({
+        where,
 
-          include: {
-            informationSubmissions: true,
-          },
+        include: {
+          informationSubmissions: true,
+        },
 
-          orderBy: {
-            createdAt: 'desc',
-          },
+        orderBy: {
+          createdAt: 'desc',
+        },
 
-          skip: (page - 1) * limit,
-          take: limit,
-        }),
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
 
-        this.prisma.missingPerson.count({
-          where,
-        }),
-      ]);
+      this.prisma.missingPerson.count({
+        where,
+      }),
+    ]);
 
     return {
       data,
@@ -487,22 +406,15 @@ export class MissingPersonService {
   // ADMIN — UPDATE STATUS
   // ─────────────────────────────────────────────
 
-  async updateStatus(
-    admin: CurrentUserDto,
-    id: string,
-    status: MissingPersonStatus,
-  ) {
-    const existing =
-      await this.prisma.missingPerson.findUnique({
-        where: {
-          id,
-        },
-      });
+  async updateStatus(admin: CurrentUserDto, id: string, status: MissingPersonStatus) {
+    const existing = await this.prisma.missingPerson.findUnique({
+      where: {
+        id,
+      },
+    });
 
     if (!existing) {
-      throw new NotFoundException(
-        'missing_person_not_found',
-      );
+      throw new NotFoundException('missing_person_not_found');
     }
 
     // ─────────────────────────────────────────
@@ -513,16 +425,15 @@ export class MissingPersonService {
       return existing;
     }
 
-    const updated =
-      await this.prisma.missingPerson.update({
-        where: {
-          id,
-        },
+    const updated = await this.prisma.missingPerson.update({
+      where: {
+        id,
+      },
 
-        data: {
-          status,
-        },
-      });
+      data: {
+        status,
+      },
+    });
 
     // ─────────────────────────────────────────
     // DETERMINE AUDIT EVENT
@@ -532,23 +443,19 @@ export class MissingPersonService {
 
     switch (status) {
       case MissingPersonStatus.APPROVED:
-        auditEvent =
-          AuditEventEnum.MISSING_PERSON_APPROVED;
+        auditEvent = AuditEventEnum.MISSING_PERSON_APPROVED;
         break;
 
       case MissingPersonStatus.REJECTED:
-        auditEvent =
-          AuditEventEnum.MISSING_PERSON_REJECTED;
+        auditEvent = AuditEventEnum.MISSING_PERSON_REJECTED;
         break;
 
       case MissingPersonStatus.FOUND:
-        auditEvent =
-          AuditEventEnum.MISSING_PERSON_FOUND;
+        auditEvent = AuditEventEnum.MISSING_PERSON_FOUND;
         break;
 
       default:
-        auditEvent =
-          AuditEventEnum.MISSING_PERSON_UPDATED;
+        auditEvent = AuditEventEnum.MISSING_PERSON_UPDATED;
         break;
     }
 
@@ -556,52 +463,39 @@ export class MissingPersonService {
     // AUDIT
     // ─────────────────────────────────────────
 
-    this.eventEmitter.emit(
-      auditEvent,
-      {
-        userId: admin.id,
+    this.eventEmitter.emit(auditEvent, {
+      userId: admin.id,
 
-        actorType: resolveActorType(
-          admin.roles ?? [],
-        ),
+      actorType: resolveActorType(admin.roles ?? []),
 
-        action: auditEvent,
+      action: auditEvent,
 
-        entity: 'MissingPerson',
+      entity: 'MissingPerson',
 
-        entityId: updated.id,
+      entityId: updated.id,
 
-        diff: {
-          previousStatus:
-            existing.status,
+      diff: {
+        previousStatus: existing.status,
 
-          newStatus:
-            updated.status,
+        newStatus: updated.status,
 
-          result: 'success',
-        },
-      } as AuditEventPayload,
-    );
+        result: 'success',
+      },
+    });
 
     // ─────────────────────────────────────────
     // NOTIFICATION
     // ─────────────────────────────────────────
 
-    this.eventEmitter.emit(
-      NotificationEventEnum.MISSING_PERSON_UPDATED,
-      {
-        userId: existing.userId,
+    this.eventEmitter.emit(NotificationEventEnum.MISSING_PERSON_UPDATED, {
+      userId: existing.userId,
 
-        missingPersonId:
-          updated.id,
+      missingPersonId: updated.id,
 
-        previousStatus:
-          existing.status,
+      previousStatus: existing.status,
 
-        status:
-          updated.status,
-      },
-    );
+      status: updated.status,
+    });
 
     return updated;
   }

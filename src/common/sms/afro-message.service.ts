@@ -11,13 +11,9 @@ export type SendSmsResponse = {
 
 @Injectable()
 export class AfroMessageService implements OnModuleInit {
-  private readonly logger = new Logger(
-    AfroMessageService.name,
-  );
+  private readonly logger = new Logger(AfroMessageService.name);
 
-  constructor(
-    private readonly configService: ConfigService,
-  ) {}
+  constructor(private readonly configService: ConfigService) {}
 
   /*
    * Registers this instance with the module-level
@@ -38,12 +34,8 @@ export class AfroMessageService implements OnModuleInit {
     initializeSmsService(this);
   }
 
-  async sendSms(
-    phone: string,
-    message: string,
-  ): Promise<SendSmsResponse> {
-    const normalizedPhone =
-      normalizePhoneNumber(phone);
+  async sendSms(phone: string, message: string): Promise<SendSmsResponse> {
+    const normalizedPhone = normalizePhoneNumber(phone);
 
     /*
      * Single flag controls all sensitive logging
@@ -57,41 +49,23 @@ export class AfroMessageService implements OnModuleInit {
      * or unpropagated env var must never fail open into
      * logging OTPs and phone numbers.
      */
-    const debugLoggingEnabled =
-      this.configService.get<boolean>(
-        'app.debug',
-        false,
-      );
+    const debugLoggingEnabled = this.configService.get<boolean>('app.debug', false);
 
-    const apiUrl =
-      this.configService.get<string>(
-        'sms.afroMessage.apiUrl',
-      );
+    const apiUrl = this.configService.get<string>('sms.afroMessage.apiUrl');
 
-    const apiKey =
-      this.configService.get<string>(
-        'sms.afroMessage.apiKey',
-      );
+    const apiKey = this.configService.get<string>('sms.afroMessage.apiKey');
 
-    const senderName =
-      this.configService.get<string>(
-        'sms.afroMessage.senderName',
-        'Ehte',
-      );
+    const senderName = this.configService.get<string>('sms.afroMessage.senderName', 'Ehte');
 
     /*
      * Validate AfroMessage configuration.
      */
     if (!apiUrl) {
-      throw new Error(
-        'AfroMessage API URL is not configured',
-      );
+      throw new Error('AfroMessage API URL is not configured');
     }
 
     if (!apiKey) {
-      throw new Error(
-        'AfroMessage API key is not configured',
-      );
+      throw new Error('AfroMessage API key is not configured');
     }
 
     /*
@@ -103,51 +77,34 @@ export class AfroMessageService implements OnModuleInit {
      * Never enable app.debug in production.
      */
     if (debugLoggingEnabled) {
-      this.logger.debug(
-        `[DEBUG] SMS recipient: ${normalizedPhone}`,
-      );
+      this.logger.debug(`[DEBUG] SMS recipient: ${normalizedPhone}`);
 
-      this.logger.debug(
-        `[DEBUG] SMS message: ${message}`,
-      );
+      this.logger.debug(`[DEBUG] SMS message: ${message}`);
     }
 
     try {
-      const response = await fetch(
-        apiUrl,
-        {
-          method: 'POST',
+      const response = await fetch(apiUrl, {
+        method: 'POST',
 
-          headers: {
-            'Content-Type':
-              'application/json',
+        headers: {
+          'Content-Type': 'application/json',
 
-            Authorization:
-              `Bearer ${apiKey}`,
-          },
-
-          body: JSON.stringify({
-            from: senderName,
-            to: normalizedPhone,
-            message,
-          }),
+          Authorization: `Bearer ${apiKey}`,
         },
-      );
 
-      const data =
-        await response
-          .json()
-          .catch(() => null);
+        body: JSON.stringify({
+          from: senderName,
+          to: normalizedPhone,
+          message,
+        }),
+      });
+
+      const data = await response.json().catch(() => null);
 
       if (!response.ok) {
-        this.logger.error(
-          `AfroMessage SMS failed: ${response.status}`,
-        );
+        this.logger.error(`AfroMessage SMS failed: ${response.status}`);
 
-        throw new Error(
-          data?.message ||
-            `AfroMessage returned HTTP ${response.status}`,
-        );
+        throw new Error(data?.message || `AfroMessage returned HTTP ${response.status}`);
       }
 
       /*
@@ -156,20 +113,14 @@ export class AfroMessageService implements OnModuleInit {
        * We only log the phone number.
        * We NEVER log the SMS body here.
        */
-      this.logger.log(
-        `SMS sent successfully to ${normalizedPhone}`,
-      );
+      this.logger.log(`SMS sent successfully to ${normalizedPhone}`);
 
       return {
         success: true,
 
-        messageId:
-          data?.messageId ??
-          data?.id,
+        messageId: data?.messageId ?? data?.id,
 
-        message:
-          data?.message ??
-          'SMS sent successfully',
+        message: data?.message ?? 'SMS sent successfully',
       };
     } catch (error) {
       /*
@@ -187,9 +138,7 @@ export class AfroMessageService implements OnModuleInit {
       this.logger.error(
         `Failed to send SMS to ${normalizedPhone}`,
 
-        error instanceof Error
-          ? error.stack
-          : String(error),
+        error instanceof Error ? error.stack : String(error),
       );
 
       throw error;
@@ -222,19 +171,13 @@ export class AfroMessageService implements OnModuleInit {
  * instead of relying on module load order.
  */
 
-let smsService:
-  AfroMessageService | null = null;
+let smsService: AfroMessageService | null = null;
 
-export function initializeSmsService(
-  service: AfroMessageService,
-): void {
+export function initializeSmsService(service: AfroMessageService): void {
   smsService = service;
 }
 
-export async function sendSms(
-  phone: string,
-  message: string,
-): Promise<SendSmsResponse> {
+export async function sendSms(phone: string, message: string): Promise<SendSmsResponse> {
   if (!smsService) {
     /*
      * This should be loud, not swallowed. If it fires,
@@ -252,8 +195,5 @@ export async function sendSms(
     );
   }
 
-  return smsService.sendSms(
-    phone,
-    message,
-  );
+  return smsService.sendSms(phone, message);
 }

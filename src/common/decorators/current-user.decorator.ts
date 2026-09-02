@@ -5,4 +5,3 @@ export const CurrentUser = createParamDecorator<any>((data: unknown, ctx: Execut
 
   return request.user;
 });
- 

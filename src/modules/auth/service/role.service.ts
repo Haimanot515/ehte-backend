@@ -9,10 +9,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 
 import { Role } from '@prisma/client';
 
-import {
-  FetchQuery,
-  PaginatedResult,
-} from 'src/common/fetch-query/crud.types';
+import { FetchQuery, PaginatedResult } from 'src/common/fetch-query/crud.types';
 
 import { buildFindManyArgs } from 'src/common/fetch-query/fetch-query.helper';
 
@@ -28,10 +25,7 @@ import { RolesEnum } from 'src/common/enums/roles.enum';
 // never be renamed or deleted through this API — doing so would
 // silently break every @Roles(RolesEnum.SUPER_ADMIN) /
 // @Roles(RolesEnum.ADMIN) check across the app.
-const PROTECTED_ROLE_NAMES: string[] = [
-  RolesEnum.SUPER_ADMIN,
-  RolesEnum.ADMIN,
-];
+const PROTECTED_ROLE_NAMES: string[] = [RolesEnum.SUPER_ADMIN, RolesEnum.ADMIN];
 
 @Injectable()
 export class RoleService {
@@ -44,9 +38,7 @@ export class RoleService {
   // GET ALL ROLES
   // ─────────────────────────────────────────────
 
-  async findAll(
-    query: FetchQuery,
-  ): Promise<PaginatedResult<Role>> {
+  async findAll(query: FetchQuery): Promise<PaginatedResult<Role>> {
     const args = buildFindManyArgs(query);
 
     const [items, total] = await Promise.all([
@@ -132,10 +124,7 @@ export class RoleService {
   // PRD 23/24/36: Admin Portal > Roles and Permissions
   // ─────────────────────────────────────────────
 
-  async create(
-    actor: CurrentUserDto,
-    data: CreateRoleDto,
-  ): Promise<Role> {
+  async create(actor: CurrentUserDto, data: CreateRoleDto): Promise<Role> {
     const existingRole = await this.prisma.role.findUnique({
       where: {
         name: data.name,
@@ -176,11 +165,7 @@ export class RoleService {
   // since @Roles() checks elsewhere in the app depend on their name.
   // ─────────────────────────────────────────────
 
-  async update(
-    actor: CurrentUserDto,
-    id: string,
-    data: UpdateRoleDto,
-  ): Promise<Role> {
+  async update(actor: CurrentUserDto, id: string, data: UpdateRoleDto): Promise<Role> {
     const role = await this.prisma.role.findUnique({
       where: {
         id,
@@ -243,10 +228,7 @@ export class RoleService {
   // still holds the role (delete would silently strip their access).
   // ─────────────────────────────────────────────
 
-  async remove(
-    actor: CurrentUserDto,
-    id: string,
-  ): Promise<{ message: string }> {
+  async remove(actor: CurrentUserDto, id: string): Promise<{ message: string }> {
     const role = await this.prisma.role.findUnique({
       where: {
         id,

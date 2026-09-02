@@ -24,26 +24,16 @@ import { RoleService } from './service/role.service';
         secret: config.getOrThrow<string>('jwt.secret'),
 
         signOptions: {
-          expiresIn: config.get('jwt.expiresIn', '1d') as any,
+          expiresIn: config.get('jwt.expiresIn', '1d'),
         },
       }),
     }),
   ],
 
-  controllers: [
-    AuthController,
-    AdminAuthController,
-    RoleController,
-  ],
+  controllers: [AuthController, AdminAuthController, RoleController],
 
-  providers: [
-    AuthService,
-    RoleService,
-  ],
+  providers: [AuthService, RoleService],
 
-  exports: [
-    AuthService,
-    RoleService,
-  ],
+  exports: [AuthService, RoleService],
 })
 export class AuthModule {}

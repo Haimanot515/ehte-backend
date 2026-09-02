@@ -1,17 +1,6 @@
-import {
-  Body,
-  Controller,
-  Get,
-  Param,
-  Post,
-  Req,
-} from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Req } from '@nestjs/common';
 
-import {
-  ApiBearerAuth,
-  ApiOperation,
-  ApiTags,
-} from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 
 import { Throttle } from '@nestjs/throttler';
 
@@ -39,9 +28,7 @@ import { RolesEnum } from 'src/common/enums/roles.enum';
 @ApiTags('Authentication')
 @Controller('auth')
 export class AuthController {
-  constructor(
-    private readonly authService: AuthService,
-  ) {}
+  constructor(private readonly authService: AuthService) {}
 
   // SIGN UP — REQUEST OTP
   // FIX: tighter throttle — account creation + SMS cost per request
@@ -50,12 +37,9 @@ export class AuthController {
   @Throttle({ default: { limit: 3, ttl: 60000 } })
   @Post('signup')
   @ApiOperation({
-    summary:
-      'Create signup request and send OTP to phone',
+    summary: 'Create signup request and send OTP to phone',
   })
-  async signup(
-    @Body() data: SignupDto,
-  ) {
+  async signup(@Body() data: SignupDto) {
     return this.authService.signup(data);
   }
 
@@ -66,12 +50,9 @@ export class AuthController {
   @Throttle({ default: { limit: 5, ttl: 60000 } })
   @Post('signup/verify')
   @ApiOperation({
-    summary:
-      'Verify signup OTP and activate the user account',
+    summary: 'Verify signup OTP and activate the user account',
   })
-  async verifySignupOtp(
-    @Body() data: SignupVerifyDto,
-  ) {
+  async verifySignupOtp(@Body() data: SignupVerifyDto) {
     return this.authService.verifySignupOtp(data);
   }
 
@@ -80,9 +61,7 @@ export class AuthController {
 
   @AllowAnonymous()
   @Throttle({ default: { limit: 2, ttl: 60000 } })
-  @Post(
-    'signup/resend-otp/:verificationId',
-  )
+  @Post('signup/resend-otp/:verificationId')
   @ApiOperation({
     summary: 'Resend signup OTP',
   })
@@ -90,9 +69,7 @@ export class AuthController {
     @Param('verificationId')
     verificationId: string,
   ) {
-    return this.authService.resendSignupOtp(
-      verificationId,
-    );
+    return this.authService.resendSignupOtp(verificationId);
   }
 
   // LOGIN
@@ -102,12 +79,9 @@ export class AuthController {
   @Throttle({ default: { limit: 5, ttl: 60000 } })
   @Post('login')
   @ApiOperation({
-    summary:
-      'Login with phone number and password',
+    summary: 'Login with phone number and password',
   })
-  async login(
-    @Body() data: LoginDto,
-  ) {
+  async login(@Body() data: LoginDto) {
     return this.authService.login(data);
   }
 
@@ -119,9 +93,7 @@ export class AuthController {
   @ApiOperation({
     summary: 'Refresh access token',
   })
-  async refresh(
-    @Body() data: RefreshTokenDto,
-  ) {
+  async refresh(@Body() data: RefreshTokenDto) {
     return this.authService.refresh(data);
   }
 
@@ -132,15 +104,10 @@ export class AuthController {
   @Throttle({ default: { limit: 3, ttl: 60000 } })
   @Post('forgot-password')
   @ApiOperation({
-    summary:
-      'Request password reset OTP',
+    summary: 'Request password reset OTP',
   })
-  async forgotPassword(
-    @Body() data: ForgotPasswordDto,
-  ) {
-    return this.authService.forgotPassword(
-      data,
-    );
+  async forgotPassword(@Body() data: ForgotPasswordDto) {
+    return this.authService.forgotPassword(data);
   }
 
   // RESET PASSWORD
@@ -150,15 +117,10 @@ export class AuthController {
   @Throttle({ default: { limit: 5, ttl: 60000 } })
   @Post('reset-password')
   @ApiOperation({
-    summary:
-      'Reset password using OTP',
+    summary: 'Reset password using OTP',
   })
-  async resetPassword(
-    @Body() data: ResetPasswordDto,
-  ) {
-    return this.authService.resetPassword(
-      data,
-    );
+  async resetPassword(@Body() data: ResetPasswordDto) {
+    return this.authService.resetPassword(data);
   }
 
   // CURRENT USER: 'access-token' must match the scheme name registered in main.ts's addBearerAuth, or Swagger UI has nothing to attach the token to
@@ -166,8 +128,7 @@ export class AuthController {
   @Get('me')
   @ApiBearerAuth('access-token')
   @ApiOperation({
-    summary:
-      'Get currently authenticated user',
+    summary: 'Get currently authenticated user',
   })
   async me(
     @CurrentUser()
@@ -181,8 +142,7 @@ export class AuthController {
   @Post('change-password')
   @ApiBearerAuth('access-token')
   @ApiOperation({
-    summary:
-      'Change password for authenticated user',
+    summary: 'Change password for authenticated user',
   })
   async changePassword(
     @CurrentUser()
@@ -191,10 +151,7 @@ export class AuthController {
     @Body()
     data: ChangePasswordDto,
   ) {
-    return this.authService.changePassword(
-      user,
-      data,
-    );
+    return this.authService.changePassword(user, data);
   }
 
   // LOGOUT
@@ -202,8 +159,7 @@ export class AuthController {
   @Post('logout')
   @ApiBearerAuth('access-token')
   @ApiOperation({
-    summary:
-      'Logout and invalidate current session',
+    summary: 'Logout and invalidate current session',
   })
   async logout(
     @CurrentUser()
@@ -212,10 +168,7 @@ export class AuthController {
     @Req()
     req: any,
   ) {
-    return this.authService.logout(
-      user,
-      req,
-    );
+    return this.authService.logout(user, req);
   }
 }
 
@@ -224,9 +177,7 @@ export class AuthController {
 @ApiTags('Authentication')
 @Controller('admin/auth')
 export class AdminAuthController {
-  constructor(
-    private readonly authService: AuthService,
-  ) {}
+  constructor(private readonly authService: AuthService) {}
 
   // ADMIN — REGISTER (POST /admin/auth/register, ADMIN/SUPER_ADMIN): creates a new admin and sends OTP to their phone
   // FIX: throttle added
@@ -236,17 +187,10 @@ export class AdminAuthController {
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @ApiOperation({
-    summary:
-      'Register a new admin and send OTP to their phone',
+    summary: 'Register a new admin and send OTP to their phone',
   })
-  async register(
-    @CurrentUser() user: CurrentUserDto,
-    @Body() data: AdminRegisterDto,
-  ) {
-    return this.authService.adminRegister(
-      user,
-      data,
-    );
+  async register(@CurrentUser() user: CurrentUserDto, @Body() data: AdminRegisterDto) {
+    return this.authService.adminRegister(user, data);
   }
 
   // ADMIN — VERIFY REGISTRATION (POST /admin/auth/verify/:id, ADMIN/SUPER_ADMIN): creating admin submits the new admin's OTP; success activates the new admin
@@ -257,19 +201,14 @@ export class AdminAuthController {
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @ApiOperation({
-    summary:
-      'Verify OTP for newly registered admin',
+    summary: 'Verify OTP for newly registered admin',
   })
   async verify(
     @CurrentUser() user: CurrentUserDto,
     @Param('id') adminId: string,
     @Body() data: AdminVerifyDto,
   ) {
-    return this.authService.adminVerify(
-      user,
-      adminId,
-      data,
-    );
+    return this.authService.adminVerify(user, adminId, data);
   }
 
   // ADMIN — LOGIN (POST /admin/auth/login, ANONYMOUS): admin logs in with phone number and password
@@ -279,12 +218,9 @@ export class AdminAuthController {
   @Throttle({ default: { limit: 5, ttl: 60000 } })
   @Post('login')
   @ApiOperation({
-    summary:
-      'Admin login with phone number and password',
+    summary: 'Admin login with phone number and password',
   })
-  async login(
-    @Body() data: AdminLoginDto,
-  ) {
+  async login(@Body() data: AdminLoginDto) {
     return this.authService.adminLogin(data);
   }
 }

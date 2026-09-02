@@ -1,14 +1,9 @@
 import { Module } from '@nestjs/common';
-import {
-  ConfigModule,
-  ConfigService,
-} from '@nestjs/config';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 
 import * as Joi from 'joi';
 
-import {
-  APP_GUARD,
-} from '@nestjs/core';
+import { APP_GUARD } from '@nestjs/core';
 
 import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
@@ -20,10 +15,7 @@ import { EventEmitterModule } from '@nestjs/event-emitter';
 // npm i @nestjs/throttler
 // ─────────────────────────────────────────────
 
-import {
-  ThrottlerModule,
-  ThrottlerGuard,
-} from '@nestjs/throttler';
+import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 
 // ─────────────────────────────────────────────
 // CONFIGURATION
@@ -91,7 +83,6 @@ import { RolesSeeder } from './common/seed/roles.seeder';
 
 @Module({
   imports: [
-
     // ─────────────────────────────────────────
     // CONFIGURATION
     // ─────────────────────────────────────────
@@ -99,44 +90,26 @@ import { RolesSeeder } from './common/seed/roles.seeder';
     ConfigModule.forRoot({
       isGlobal: true,
 
-      envFilePath: [
-        `.env.${process.env.NODE_ENV}`,
-        '.env',
-      ],
+      envFilePath: [`.env.${process.env.NODE_ENV}`, '.env'],
 
-      load: [
-        configuration,
-        minioConfig,
-      ],
+      load: [configuration, minioConfig],
 
       validationSchema: Joi.object({
+        NODE_ENV: Joi.string().valid('development', 'test', 'production').default('development'),
 
-        NODE_ENV: Joi.string()
-          .valid(
-            'development',
-            'test',
-            'production',
-          )
-          .default('development'),
+        PORT: Joi.number().default(3000),
 
-        PORT: Joi.number()
-          .default(3000),
-
-        APP_NAME: Joi.string()
-          .default('Ehte'),
+        APP_NAME: Joi.string().default('Ehte'),
 
         // CORS_ORIGIN may be a single origin or a
         // comma-separated list ("https://a.com,https://b.com").
         // main.ts splits this into an array before
         // passing it to enableCors().
-        CORS_ORIGIN: Joi.string()
-          .required(),
+        CORS_ORIGIN: Joi.string().required(),
 
-        CORS_CREDENTIALS: Joi.boolean()
-          .default(true),
+        CORS_CREDENTIALS: Joi.boolean().default(true),
 
-        SWAGGER_ENABLED: Joi.boolean()
-          .default(true),
+        SWAGGER_ENABLED: Joi.boolean().default(true),
 
         // Optional basic-auth credentials protecting
         // the /docs route in non-production environments
@@ -144,56 +117,44 @@ import { RolesSeeder } from './common/seed/roles.seeder';
         // is unset, /docs is left unprotected (fine for
         // fully-local dev, not fine for a shared staging
         // deployment).
-        SWAGGER_USER: Joi.string()
-          .optional(),
+        SWAGGER_USER: Joi.string().optional(),
 
-        SWAGGER_PASSWORD: Joi.string()
-          .optional(),
+        SWAGGER_PASSWORD: Joi.string().optional(),
 
-        DATABASE_URL: Joi.string()
-          .required(),
+        DATABASE_URL: Joi.string().required(),
 
         // Set to "false" to skip running
         // `prisma migrate deploy` on boot — use this
         // on every replica except the one designated
         // to run migrations (or run migrations via a
         // separate one-off job/init container instead).
-        RUN_MIGRATIONS: Joi.boolean()
-          .default(true),
+        RUN_MIGRATIONS: Joi.boolean().default(true),
 
         // ─────────────────────────────────────
         // JWT
         // ─────────────────────────────────────
 
-        JWT_SECRET: Joi.string()
-          .min(10)
-          .required(),
+        JWT_SECRET: Joi.string().min(10).required(),
 
-        JWT_EXPIRES_IN: Joi.string()
-          .default('1d'),
+        JWT_EXPIRES_IN: Joi.string().default('1d'),
 
         // Dedicated refresh-token secret/TTL so a
         // leaked access-token secret can't be used to
         // forge refresh tokens. Strongly recommended in
         // production; falls back to JWT_SECRET/7d if unset.
-        JWT_REFRESH_SECRET: Joi.string()
-          .min(10)
-          .optional(),
+        JWT_REFRESH_SECRET: Joi.string().min(10).optional(),
 
-        JWT_REFRESH_EXPIRES_IN: Joi.string()
-          .default('7d'),
+        JWT_REFRESH_EXPIRES_IN: Joi.string().default('7d'),
 
         // ─────────────────────────────────────
         // OTP
         // ─────────────────────────────────────
 
-        OTP_EXPIRES_IN_MINUTES: Joi.number()
-          .default(10),
+        OTP_EXPIRES_IN_MINUTES: Joi.number().default(10),
 
         // Minimum time between OTP resends for the same purpose/user,
         // enforced in AuthService.issueAndSendOtp().
-        OTP_RESEND_COOLDOWN_SECONDS: Joi.number()
-          .default(60),
+        OTP_RESEND_COOLDOWN_SECONDS: Joi.number().default(60),
 
         // ─────────────────────────────────────
         // SECURITY — LOGIN LOCKOUT
@@ -202,11 +163,9 @@ import { RolesSeeder } from './common/seed/roles.seeder';
         // assertNotLocked(), used by both login() and adminLogin().
         // ─────────────────────────────────────
 
-        MAX_LOGIN_ATTEMPTS: Joi.number()
-          .default(5),
+        MAX_LOGIN_ATTEMPTS: Joi.number().default(5),
 
-        LOCKOUT_DURATION_MINUTES: Joi.number()
-          .default(15),
+        LOCKOUT_DURATION_MINUTES: Joi.number().default(15),
 
         // ─────────────────────────────────────
         // SECURITY — ENCRYPTION
@@ -220,11 +179,9 @@ import { RolesSeeder } from './common/seed/roles.seeder';
         // real cipher's key/IV length requirements at that point.
         // ─────────────────────────────────────
 
-        ENCRYPTION_KEY: Joi.string()
-          .optional(),
+        ENCRYPTION_KEY: Joi.string().optional(),
 
-        ENCRYPTION_IV: Joi.string()
-          .optional(),
+        ENCRYPTION_IV: Joi.string().optional(),
 
         // ─────────────────────────────────────
         // APP DEBUG
@@ -246,50 +203,37 @@ import { RolesSeeder } from './common/seed/roles.seeder';
         // RATE LIMITING
         // ─────────────────────────────────────
 
-        THROTTLE_TTL_SECONDS: Joi.number()
-          .default(60),
+        THROTTLE_TTL_SECONDS: Joi.number().default(60),
 
-        THROTTLE_LIMIT: Joi.number()
-          .default(20),
+        THROTTLE_LIMIT: Joi.number().default(20),
 
         // ─────────────────────────────────────
         // SMS PROVIDER (Afromessage)
         // ─────────────────────────────────────
 
-        AFROMESSAGE_URL: Joi.string()
-          .uri()
-          .required(),
+        AFROMESSAGE_URL: Joi.string().uri().required(),
 
-        AFROMESSAGE_TOKEN: Joi.string()
-          .required(),
+        AFROMESSAGE_TOKEN: Joi.string().required(),
 
-        AFROMESSAGE_IDENTIFIER_ID: Joi.string()
-          .required(),
+        AFROMESSAGE_IDENTIFIER_ID: Joi.string().required(),
 
-        AFROMESSAGE_SENDER_NAME: Joi.string()
-          .optional(),
+        AFROMESSAGE_SENDER_NAME: Joi.string().optional(),
 
         // ─────────────────────────────────────
         // MINIO
         // ─────────────────────────────────────
 
-        MINIO_ENDPOINT: Joi.string()
-          .required(),
+        MINIO_ENDPOINT: Joi.string().required(),
 
-        MINIO_PORT: Joi.number()
-          .default(9000),
+        MINIO_PORT: Joi.number().default(9000),
 
-        MINIO_ACCESS_KEY: Joi.string()
-          .required(),
+        MINIO_ACCESS_KEY: Joi.string().required(),
 
-        MINIO_SECRET_KEY: Joi.string()
-          .required(),
+        MINIO_SECRET_KEY: Joi.string().required(),
 
-        MINIO_BUCKET: Joi.string()
-          .required(),
+        MINIO_BUCKET: Joi.string().required(),
 
-        MINIO_USE_SSL: Joi.boolean()
-          .default(false),
+        MINIO_USE_SSL: Joi.boolean().default(false),
       }),
 
       validationOptions: {
@@ -333,30 +277,16 @@ import { RolesSeeder } from './common/seed/roles.seeder';
     // ─────────────────────────────────────────
 
     ThrottlerModule.forRootAsync({
-      imports: [
-        ConfigModule,
-      ],
+      imports: [ConfigModule],
 
-      inject: [
-        ConfigService,
-      ],
+      inject: [ConfigService],
 
-      useFactory: (
-        config: ConfigService,
-      ) => ({
+      useFactory: (config: ConfigService) => ({
         throttlers: [
           {
-            ttl:
-              config.get<number>(
-                'THROTTLE_TTL_SECONDS',
-                60,
-              ) * 1000,
+            ttl: config.get<number>('THROTTLE_TTL_SECONDS', 60) * 1000,
 
-            limit:
-              config.get<number>(
-                'THROTTLE_LIMIT',
-                20,
-              ),
+            limit: config.get<number>('THROTTLE_LIMIT', 20),
           },
         ],
       }),
@@ -381,21 +311,12 @@ import { RolesSeeder } from './common/seed/roles.seeder';
     // ─────────────────────────────────────────
 
     JwtModule.registerAsync({
-      imports: [
-        ConfigModule,
-      ],
+      imports: [ConfigModule],
 
-      inject: [
-        ConfigService,
-      ],
+      inject: [ConfigService],
 
-      useFactory: (
-        config: ConfigService,
-      ) => ({
-        secret:
-          config.getOrThrow<string>(
-            'jwt.secret',
-          ),
+      useFactory: (config: ConfigService) => ({
+        secret: config.getOrThrow<string>('jwt.secret'),
       }),
     }),
 
@@ -442,7 +363,6 @@ import { RolesSeeder } from './common/seed/roles.seeder';
   controllers: [],
 
   providers: [
-
     // ─────────────────────────────────────────
     // JWT STRATEGY
     // ─────────────────────────────────────────

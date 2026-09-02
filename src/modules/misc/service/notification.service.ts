@@ -1,33 +1,21 @@
-import {
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 
 import { PrismaService } from 'src/prisma/prisma.service';
 
-import {
-  CreateNotificationDto,
-  NotificationQueryDto,
-} from '../dto/notification.dto';
+import { CreateNotificationDto, NotificationQueryDto } from '../dto/notification.dto';
 
-import {
-  CurrentUserDto,
-} from 'src/common/dtos/current-user.dto';
+import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
 
 @Injectable()
 export class NotificationService {
-  constructor(
-    private readonly prisma: PrismaService,
-  ) {}
+  constructor(private readonly prisma: PrismaService) {}
 
   /**
    * Create a notification.
    *
    * userId = null means broadcast notification.
    */
-  async create(
-    dto: CreateNotificationDto,
-  ) {
+  async create(dto: CreateNotificationDto) {
     return this.prisma.notification.create({
       data: {
         userId: dto.userId ?? null,
@@ -42,17 +30,11 @@ export class NotificationService {
    * Get personal notifications + broadcasts, with
    * optional filtering and pagination.
    */
-  async getMyNotifications(
-    user: CurrentUserDto,
-    query: NotificationQueryDto = {},
-  ) {
+  async getMyNotifications(user: CurrentUserDto, query: NotificationQueryDto = {}) {
     const { type, isRead, page = 1, limit = 20 } = query;
 
     const where = {
-      OR: [
-        { userId: user.id },
-        { userId: null },
-      ],
+      OR: [{ userId: user.id }, { userId: null }],
       ...(type && { type }),
       ...(isRead !== undefined && { isRead }),
     };
@@ -73,17 +55,11 @@ export class NotificationService {
   /**
    * Get a single notification (personal or broadcast).
    */
-  async getMyNotificationById(
-    id: string,
-    user: CurrentUserDto,
-  ) {
+  async getMyNotificationById(id: string, user: CurrentUserDto) {
     const notification = await this.prisma.notification.findFirst({
       where: {
         id,
-        OR: [
-          { userId: user.id },
-          { userId: null },
-        ],
+        OR: [{ userId: user.id }, { userId: null }],
       },
     });
 
@@ -106,15 +82,10 @@ export class NotificationService {
    * here rather than fixing it since that requires a
    * schema change.
    */
-  async getMyUnreadCount(
-    user: CurrentUserDto,
-  ) {
+  async getMyUnreadCount(user: CurrentUserDto) {
     const count = await this.prisma.notification.count({
       where: {
-        OR: [
-          { userId: user.id },
-          { userId: null },
-        ],
+        OR: [{ userId: user.id }, { userId: null }],
         isRead: false,
       },
     });
@@ -128,10 +99,7 @@ export class NotificationService {
    * A user can only mark their own notification
    * or a broadcast notification as read.
    */
-  async markOneAsRead(
-    id: string,
-    user: CurrentUserDto,
-  ) {
+  async markOneAsRead(id: string, user: CurrentUserDto) {
     const result = await this.prisma.notification.updateMany({
       where: {
         id,
@@ -161,10 +129,7 @@ export class NotificationService {
   /**
    * Mark multiple notifications as read.
    */
-  async markBulkAsRead(
-    ids: string[],
-    user: CurrentUserDto,
-  ) {
+  async markBulkAsRead(ids: string[], user: CurrentUserDto) {
     return this.prisma.notification.updateMany({
       where: {
         id: {
@@ -191,15 +156,10 @@ export class NotificationService {
    * Mark ALL of my notifications (personal + broadcast)
    * as read, without needing the client to list IDs.
    */
-  async markAllAsRead(
-    user: CurrentUserDto,
-  ) {
+  async markAllAsRead(user: CurrentUserDto) {
     return this.prisma.notification.updateMany({
       where: {
-        OR: [
-          { userId: user.id },
-          { userId: null },
-        ],
+        OR: [{ userId: user.id }, { userId: null }],
         isRead: false,
       },
       data: { isRead: true },
@@ -215,17 +175,11 @@ export class NotificationService {
    * as a limitation rather than a bug — fixing it would
    * require a schema change.
    */
-  async deleteMyNotification(
-    id: string,
-    user: CurrentUserDto,
-  ) {
+  async deleteMyNotification(id: string, user: CurrentUserDto) {
     const notification = await this.prisma.notification.findFirst({
       where: {
         id,
-        OR: [
-          { userId: user.id },
-          { userId: null },
-        ],
+        OR: [{ userId: user.id }, { userId: null }],
       },
     });
 
@@ -264,9 +218,7 @@ export class NotificationService {
   // for now).
   // ─────────────────────────────────────────────
 
-  async getAdminNotifications(
-    query: NotificationQueryDto = {},
-  ) {
+  async getAdminNotifications(query: NotificationQueryDto = {}) {
     const { type, isRead, page = 1, limit = 20 } = query;
 
     const where = {
@@ -298,9 +250,7 @@ export class NotificationService {
   /**
    * Get a single broadcast notification (admin view).
    */
-  async getAdminNotificationById(
-    id: string,
-  ) {
+  async getAdminNotificationById(id: string) {
     const notification = await this.prisma.notification.findFirst({
       where: { id, userId: null },
     });
@@ -312,9 +262,7 @@ export class NotificationService {
     return notification;
   }
 
-  async markAdminNotificationAsRead(
-    id: string,
-  ) {
+  async markAdminNotificationAsRead(id: string) {
     const result = await this.prisma.notification.updateMany({
       where: { id, userId: null },
       data: { isRead: true },
@@ -327,9 +275,7 @@ export class NotificationService {
     return result;
   }
 
-  async markBulkAdminNotificationsAsRead(
-    ids: string[],
-  ) {
+  async markBulkAdminNotificationsAsRead(ids: string[]) {
     return this.prisma.notification.updateMany({
       where: { id: { in: ids }, userId: null },
       data: { isRead: true },
@@ -343,9 +289,7 @@ export class NotificationService {
     });
   }
 
-  async deleteAdminNotification(
-    id: string,
-  ) {
+  async deleteAdminNotification(id: string) {
     const notification = await this.prisma.notification.findFirst({
       where: { id, userId: null },
     });

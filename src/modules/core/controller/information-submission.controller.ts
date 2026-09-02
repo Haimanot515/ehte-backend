@@ -1,18 +1,6 @@
-import {
-  Body,
-  Controller,
-  Get,
-  Param,
-  Patch,
-  Post,
-  Query,
-} from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Query } from '@nestjs/common';
 
-import {
-  ApiBearerAuth,
-  ApiOperation,
-  ApiTags,
-} from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 
 import { InformationStatus } from '@prisma/client';
 
@@ -29,9 +17,7 @@ import { CreateInformationSubmissionDto } from '../dto/information-submission.dt
 @ApiBearerAuth('access-token')
 @Controller('information-submissions')
 export class InformationSubmissionController {
-  constructor(
-    private readonly informationSubmissionService: InformationSubmissionService,
-  ) {}
+  constructor(private readonly informationSubmissionService: InformationSubmissionService) {}
 
   // ─────────────────────────────────────────────
   // CREATE
@@ -40,8 +26,7 @@ export class InformationSubmissionController {
 
   @Post('missing-person/:missingPersonId')
   @ApiOperation({
-    summary:
-      'Submit information about a missing person',
+    summary: 'Submit information about a missing person',
   })
   async create(
     @Param('missingPersonId')
@@ -53,11 +38,7 @@ export class InformationSubmissionController {
     @Body()
     data: CreateInformationSubmissionDto,
   ) {
-    return this.informationSubmissionService.create(
-      user.id,
-      missingPersonId,
-      data,
-    );
+    return this.informationSubmissionService.create(user.id, missingPersonId, data);
   }
 
   // ─────────────────────────────────────────────
@@ -67,16 +48,13 @@ export class InformationSubmissionController {
 
   @Get('mine')
   @ApiOperation({
-    summary:
-      'Get my information submissions',
+    summary: 'Get my information submissions',
   })
   async findMine(
     @CurrentUser()
     user: CurrentUserDto,
   ) {
-    return this.informationSubmissionService.findMine(
-      user.id,
-    );
+    return this.informationSubmissionService.findMine(user.id);
   }
 
   // ─────────────────────────────────────────────
@@ -86,16 +64,13 @@ export class InformationSubmissionController {
 
   @Get('missing-person/:missingPersonId')
   @ApiOperation({
-    summary:
-      'Get reviewed information for a missing person',
+    summary: 'Get reviewed information for a missing person',
   })
   async findForMissingPerson(
     @Param('missingPersonId')
     missingPersonId: string,
   ) {
-    return this.informationSubmissionService.findForMissingPerson(
-      missingPersonId,
-    );
+    return this.informationSubmissionService.findForMissingPerson(missingPersonId);
   }
 
   // ─────────────────────────────────────────────
@@ -105,8 +80,7 @@ export class InformationSubmissionController {
 
   @Get(':id')
   @ApiOperation({
-    summary:
-      'Get my information submission',
+    summary: 'Get my information submission',
   })
   async findOne(
     @Param('id')
@@ -115,10 +89,7 @@ export class InformationSubmissionController {
     @CurrentUser()
     user: CurrentUserDto,
   ) {
-    return this.informationSubmissionService.findOne(
-      id,
-      user.id,
-    );
+    return this.informationSubmissionService.findOne(id, user.id);
   }
 
   // ─────────────────────────────────────────────
@@ -132,16 +103,13 @@ export class InformationSubmissionController {
   @Get('admin/all')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @ApiOperation({
-    summary:
-      'Admin: list information submissions',
+    summary: 'Admin: list information submissions',
   })
   async findAllForAdmin(
     @Query('status')
     status?: InformationStatus,
   ) {
-    return this.informationSubmissionService.findAllForAdmin(
-      status,
-    );
+    return this.informationSubmissionService.findAllForAdmin(status);
   }
 
   // ─────────────────────────────────────────────
@@ -152,8 +120,7 @@ export class InformationSubmissionController {
   @Patch('admin/:id/status')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @ApiOperation({
-    summary:
-      'Admin: update information submission status',
+    summary: 'Admin: update information submission status',
   })
   async updateStatus(
     @Param('id')
@@ -162,10 +129,7 @@ export class InformationSubmissionController {
     @Body('status')
     status: InformationStatus,
   ) {
-    return this.informationSubmissionService.updateStatus(
-      id,
-      status,
-    );
+    return this.informationSubmissionService.updateStatus(id, status);
   }
 
   // ─────────────────────────────────────────────
@@ -176,8 +140,7 @@ export class InformationSubmissionController {
   @Patch('admin/:id/review')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @ApiOperation({
-    summary:
-      'Admin: review information submission',
+    summary: 'Admin: review information submission',
   })
   async review(
     @Param('id')
@@ -189,10 +152,6 @@ export class InformationSubmissionController {
     @CurrentUser()
     user: CurrentUserDto,
   ) {
-    return this.informationSubmissionService.review(
-      id,
-      status,
-      user,
-    );
+    return this.informationSubmissionService.review(id, status, user);
   }
 }

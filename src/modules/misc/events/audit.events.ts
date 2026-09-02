@@ -1,4 +1,3 @@
-
 import { ActorType } from '@prisma/client';
 
 export interface AuditEventPayload {

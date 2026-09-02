@@ -42,13 +42,8 @@ export class SupportService {
       throw new NotFoundException('victim_profile_not_found');
     }
 
-    if (
-      victimProfile.status !== 'PUBLISHED' ||
-      !victimProfile.isPublished
-    ) {
-      throw new BadRequestException(
-        'victim_profile_not_available_for_support',
-      );
+    if (victimProfile.status !== 'PUBLISHED' || !victimProfile.isPublished) {
+      throw new BadRequestException('victim_profile_not_available_for_support');
     }
 
     // If a breakdown is provided, it must add up to the total —
@@ -60,15 +55,11 @@ export class SupportService {
 
     if (breakdownProvided) {
       const sum =
-        (data.recipientAmount ?? 0) +
-        (data.organizationAmount ?? 0) +
-        (data.platformAmount ?? 0);
+        (data.recipientAmount ?? 0) + (data.organizationAmount ?? 0) + (data.platformAmount ?? 0);
 
       // Guard against floating point noise.
       if (Math.abs(sum - data.amount) > 0.01) {
-        throw new BadRequestException(
-          'support_breakdown_does_not_match_amount',
-        );
+        throw new BadRequestException('support_breakdown_does_not_match_amount');
       }
     }
 
@@ -94,8 +85,7 @@ export class SupportService {
       },
     });
 
-    const roles =
-      (user as unknown as { roles?: string[] }).roles ?? [];
+    const roles = (user as unknown as { roles?: string[] }).roles ?? [];
 
     this.eventEmitter.emit(AuditEventEnum.SUPPORT_CREATED, {
       userId: user.id,
@@ -110,7 +100,7 @@ export class SupportService {
         type: support.type,
         agreementType: support.agreementType,
       },
-    } as AuditEventPayload);
+    });
 
     // Note: this notifies as if payment were confirmed at creation
     // time, which is misleading — a PENDING support hasn't been
@@ -227,17 +217,14 @@ export class SupportService {
           currentStatus: updatedSupport.status,
           result: 'success',
         },
-      } as AuditEventPayload);
+      });
     }
 
     if (status === SupportStatus.CONFIRMED) {
-      this.eventEmitter.emit(
-        NotificationEventEnum.SUPPORT_PAYMENT_CONFIRMED,
-        {
-          supportId: updatedSupport.id,
-          userId: support.userId,
-        },
-      );
+      this.eventEmitter.emit(NotificationEventEnum.SUPPORT_PAYMENT_CONFIRMED, {
+        supportId: updatedSupport.id,
+        userId: support.userId,
+      });
     }
 
     return updatedSupport;
@@ -273,13 +260,10 @@ export class SupportService {
       throw new NotFoundException('support_not_found');
     }
 
-    const roles =
-      (requestingUser as unknown as { roles?: string[] }).roles ?? [];
+    const roles = (requestingUser as unknown as { roles?: string[] }).roles ?? [];
 
     const isOwner = support.userId === requestingUser.id;
-    const isAdmin = roles.some((r) =>
-      ['ADMIN', 'SUPER_ADMIN'].includes(r),
-    );
+    const isAdmin = roles.some((r) => ['ADMIN', 'SUPER_ADMIN'].includes(r));
 
     if (!isOwner && !isAdmin) {
       throw new ForbiddenException('not_allowed_to_cancel_support');
@@ -288,9 +272,7 @@ export class SupportService {
     // Once an admin has confirmed money arrived, a supporter
     // shouldn't be able to unilaterally cancel that record.
     if (support.status === SupportStatus.CONFIRMED && !isAdmin) {
-      throw new BadRequestException(
-        'cannot_cancel_confirmed_support',
-      );
+      throw new BadRequestException('cannot_cancel_confirmed_support');
     }
 
     return this.updateStatus(id, SupportStatus.CANCELLED);

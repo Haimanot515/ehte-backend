@@ -1,8 +1,4 @@
-import {
-  BadRequestException,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 
 import { EventEmitter2 } from '@nestjs/event-emitter';
 
@@ -29,10 +25,7 @@ export class VictimProfileService {
   // CREATE
   // ─────────────────────────────────────────────
 
-  async create(
-    currentUser: CurrentUserDto,
-    data: CreateVictimProfileDto,
-  ) {
+  async create(currentUser: CurrentUserDto, data: CreateVictimProfileDto) {
     const profile = await this.prisma.victimProfile.create({
       data: {
         name: data.name,
@@ -177,11 +170,7 @@ export class VictimProfileService {
   // UPDATE PROFILE
   // ─────────────────────────────────────────────
 
-  async update(
-    currentUser: CurrentUserDto,
-    id: string,
-    data: UpdateVictimProfileDto,
-  ) {
+  async update(currentUser: CurrentUserDto, id: string, data: UpdateVictimProfileDto) {
     const profile = await this.prisma.victimProfile.findUnique({
       where: { id },
     });
@@ -288,8 +277,7 @@ export class VictimProfileService {
     const page = query.page && query.page > 0 ? query.page : 1;
     const limit = query.limit && query.limit > 0 ? query.limit : 20;
 
-    const where =
-      query.status !== undefined ? { status: query.status } : {};
+    const where = query.status !== undefined ? { status: query.status } : {};
 
     const [profiles, total] = await this.prisma.$transaction([
       this.prisma.victimProfile.findMany({
@@ -337,11 +325,7 @@ export class VictimProfileService {
   // would have no way for supporters to actually send money.
   // ─────────────────────────────────────────────
 
-  async updateGates(
-    id: string,
-    data: UpdateVictimGateDto,
-    adminId: string,
-  ) {
+  async updateGates(id: string, data: UpdateVictimGateDto, adminId: string) {
     const profile = await this.prisma.victimProfile.findUnique({
       where: { id },
     });
@@ -351,21 +335,15 @@ export class VictimProfileService {
     }
 
     const isVerified = data.isVerified ?? profile.isVerified;
-    const isSafetyReviewed =
-      data.isSafetyReviewed ?? profile.isSafetyReviewed;
+    const isSafetyReviewed = data.isSafetyReviewed ?? profile.isSafetyReviewed;
     const hasConsent = data.hasConsent ?? profile.hasConsent;
-    const isPrivacyReviewed =
-      data.isPrivacyReviewed ?? profile.isPrivacyReviewed;
-    const isAdminApproved =
-      data.isAdminApproved ?? profile.isAdminApproved;
+    const isPrivacyReviewed = data.isPrivacyReviewed ?? profile.isPrivacyReviewed;
+    const isAdminApproved = data.isAdminApproved ?? profile.isAdminApproved;
 
-    const childSafetySatisfied =
-      !profile.involvesChild || isSafetyReviewed;
+    const childSafetySatisfied = !profile.involvesChild || isSafetyReviewed;
 
     const hasBankDetails =
-      !!profile.bankAccountName &&
-      !!profile.bankAccountNumber &&
-      !!profile.bankName;
+      !!profile.bankAccountName && !!profile.bankAccountNumber && !!profile.bankName;
 
     if (
       isAdminApproved &&
@@ -464,9 +442,7 @@ export class VictimProfileService {
     }
 
     const hasBankDetails =
-      !!profile.bankAccountName &&
-      !!profile.bankAccountNumber &&
-      !!profile.bankName;
+      !!profile.bankAccountName && !!profile.bankAccountNumber && !!profile.bankName;
 
     const allGatesSatisfied =
       profile.isVerified &&
@@ -565,9 +541,7 @@ export class VictimProfileService {
     }
 
     if (profile.isPublished) {
-      throw new BadRequestException(
-        'published_profile_cannot_be_rejected',
-      );
+      throw new BadRequestException('published_profile_cannot_be_rejected');
     }
 
     const updatedProfile = await this.prisma.victimProfile.update({

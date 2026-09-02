@@ -1,14 +1,6 @@
-import {
-  BadRequestException,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 
-import {
-  PostStatus,
-  PostType,
-  Prisma,
-} from '@prisma/client';
+import { PostStatus, PostType, Prisma } from '@prisma/client';
 
 import { EventEmitter2 } from '@nestjs/event-emitter';
 
@@ -44,10 +36,7 @@ import {
 // PENDING is deliberately excluded: once submitted, the post is
 // frozen for the owner until an admin approves it or sends it
 // back via CHANGES_REQUESTED.
-const OWNER_EDITABLE_STATUSES: PostStatus[] = [
-  PostStatus.DRAFT,
-  PostStatus.CHANGES_REQUESTED,
-];
+const OWNER_EDITABLE_STATUSES: PostStatus[] = [PostStatus.DRAFT, PostStatus.CHANGES_REQUESTED];
 
 @Injectable()
 export class PostService {
@@ -68,49 +57,34 @@ export class PostService {
   // nobody submitted yet.
   // ─────────────────────────────────────────────
 
-  async create(
-    userId: string,
-    data: CreatePostDto,
-  ) {
-    const post =
-      await this.prisma.post.create({
-        data: {
-          userId,
+  async create(userId: string, data: CreatePostDto) {
+    const post = await this.prisma.post.create({
+      data: {
+        userId,
 
-          title:
-            data.title ?? null,
+        title: data.title ?? null,
 
-          content:
-            data.content,
+        content: data.content,
 
-          type:
-            data.type,
+        type: data.type,
 
-          involvesChild:
-            data.involvesChild ?? false,
+        involvesChild: data.involvesChild ?? false,
 
-          status:
-            PostStatus.DRAFT,
+        status: PostStatus.DRAFT,
 
-          photo:
-            data.photo ?? [],
+        photo: data.photo ?? [],
 
-          video:
-            data.video ?? [],
+        video: data.video ?? [],
 
-          audio:
-            data.audio ?? [],
+        audio: data.audio ?? [],
 
-          pdf:
-            data.pdf ?? [],
+        pdf: data.pdf ?? [],
 
-          document:
-            data.document ?? [],
+        document: data.document ?? [],
 
-          other:
-            data.other ?? [],
-        },
-      });
+        other: data.other ?? [],
+      },
+    });
 
     /*
      * User-created content.
@@ -121,21 +95,17 @@ export class PostService {
      * Do not include post content, media URLs, password,
      * tokens, or other sensitive data in the audit payload.
      */
-    this.eventEmitter.emit(
-      AuditEventEnum.POST_CREATED,
-      {
-        userId,
-        actorType: 'USER',
-        action:
-          AuditEventEnum.POST_CREATED,
-        entity: 'Post',
-        entityId: post.id,
-        diff: {
-          status: PostStatus.DRAFT,
-          result: 'success',
-        },
-      } as AuditEventPayload,
-    );
+    this.eventEmitter.emit(AuditEventEnum.POST_CREATED, {
+      userId,
+      actorType: 'USER',
+      action: AuditEventEnum.POST_CREATED,
+      entity: 'Post',
+      entityId: post.id,
+      diff: {
+        status: PostStatus.DRAFT,
+        result: 'success',
+      },
+    });
 
     return post;
   }
@@ -160,87 +130,61 @@ export class PostService {
   // as it does for submitMyPost.
   // ─────────────────────────────────────────────
 
-  async createOfficial(
-    actor: CurrentUserDto,
-    data: AdminCreatePostDto,
-  ) {
-    const publishImmediately =
-      data.publishImmediately ?? true;
+  async createOfficial(actor: CurrentUserDto, data: AdminCreatePostDto) {
+    const publishImmediately = data.publishImmediately ?? true;
 
-    const status = publishImmediately
-      ? PostStatus.APPROVED
-      : PostStatus.PENDING;
+    const status = publishImmediately ? PostStatus.APPROVED : PostStatus.PENDING;
 
-    const post =
-      await this.prisma.post.create({
-        data: {
-          userId: actor.id,
-
-          title:
-            data.title ?? null,
-
-          content:
-            data.content,
-
-          type:
-            data.type,
-
-          involvesChild:
-            data.involvesChild ?? false,
-
-          status,
-
-          photo:
-            data.photo ?? [],
-
-          video:
-            data.video ?? [],
-
-          audio:
-            data.audio ?? [],
-
-          pdf:
-            data.pdf ?? [],
-
-          document:
-            data.document ?? [],
-
-          other:
-            data.other ?? [],
-        },
-      });
-
-    this.eventEmitter.emit(
-      AuditEventEnum.POST_CREATED,
-      {
+    const post = await this.prisma.post.create({
+      data: {
         userId: actor.id,
-        actorType: resolveActorType(
-          actor.roles ?? [],
-        ),
-        action:
-          AuditEventEnum.POST_CREATED,
-        entity: 'Post',
-        entityId: post.id,
-        diff: {
-          official: true,
-          status,
-          result: 'success',
-        },
-      } as AuditEventPayload,
-    );
+
+        title: data.title ?? null,
+
+        content: data.content,
+
+        type: data.type,
+
+        involvesChild: data.involvesChild ?? false,
+
+        status,
+
+        photo: data.photo ?? [],
+
+        video: data.video ?? [],
+
+        audio: data.audio ?? [],
+
+        pdf: data.pdf ?? [],
+
+        document: data.document ?? [],
+
+        other: data.other ?? [],
+      },
+    });
+
+    this.eventEmitter.emit(AuditEventEnum.POST_CREATED, {
+      userId: actor.id,
+      actorType: resolveActorType(actor.roles ?? []),
+      action: AuditEventEnum.POST_CREATED,
+      entity: 'Post',
+      entityId: post.id,
+      diff: {
+        official: true,
+        status,
+        result: 'success',
+      },
+    });
 
     if (!publishImmediately) {
       /*
        * Routed through normal review — notify admins
        * the same way a user-submitted post would.
        */
-      this.eventEmitter.emit(
-        NotificationEventEnum.NEW_POST,
-        {
-          postId: post.id,
-          userId: actor.id,
-        } as NewPostEvent,
-      );
+      this.eventEmitter.emit(NotificationEventEnum.NEW_POST, {
+        postId: post.id,
+        userId: actor.id,
+      });
     }
 
     return post;
@@ -250,9 +194,7 @@ export class PostService {
   // GET MY POSTS
   // ─────────────────────────────────────────────
 
-  async findMyPosts(
-    userId: string,
-  ) {
+  async findMyPosts(userId: string) {
     return this.prisma.post.findMany({
       where: {
         userId,
@@ -268,22 +210,16 @@ export class PostService {
   // GET MY POST
   // ─────────────────────────────────────────────
 
-  async findMyPost(
-    userId: string,
-    postId: string,
-  ) {
-    const post =
-      await this.prisma.post.findFirst({
-        where: {
-          id: postId,
-          userId,
-        },
-      });
+  async findMyPost(userId: string, postId: string) {
+    const post = await this.prisma.post.findFirst({
+      where: {
+        id: postId,
+        userId,
+      },
+    });
 
     if (!post) {
-      throw new NotFoundException(
-        'post_not_found',
-      );
+      throw new NotFoundException('post_not_found');
     }
 
     return post;
@@ -306,102 +242,65 @@ export class PostService {
   // which fields were actually changed instead.
   // ─────────────────────────────────────────────
 
-  async updateMyPost(
-    userId: string,
-    postId: string,
-    data: UpdatePostDto,
-  ) {
-    const existing =
-      await this.prisma.post.findFirst({
-        where: {
-          id: postId,
-          userId,
-        },
-      });
+  async updateMyPost(userId: string, postId: string, data: UpdatePostDto) {
+    const existing = await this.prisma.post.findFirst({
+      where: {
+        id: postId,
+        userId,
+      },
+    });
 
     if (!existing) {
-      throw new NotFoundException(
-        'post_not_found',
-      );
+      throw new NotFoundException('post_not_found');
     }
 
-    if (
-      !OWNER_EDITABLE_STATUSES.includes(
-        existing.status,
-      )
-    ) {
-      throw new BadRequestException(
-        'post_cannot_be_edited_in_current_status',
-      );
+    if (!OWNER_EDITABLE_STATUSES.includes(existing.status)) {
+      throw new BadRequestException('post_cannot_be_edited_in_current_status');
     }
 
     const updatedFields = Object.keys(data).filter(
       (key) => data[key as keyof UpdatePostDto] !== undefined,
     );
 
-    const post =
-      await this.prisma.post.update({
-        where: {
-          id: postId,
-        },
+    const post = await this.prisma.post.update({
+      where: {
+        id: postId,
+      },
 
-        data: {
-          ...(data.title !== undefined
-            ? { title: data.title }
-            : {}),
+      data: {
+        ...(data.title !== undefined ? { title: data.title } : {}),
 
-          ...(data.content !== undefined
-            ? { content: data.content }
-            : {}),
+        ...(data.content !== undefined ? { content: data.content } : {}),
 
-          ...(data.type !== undefined
-            ? { type: data.type }
-            : {}),
+        ...(data.type !== undefined ? { type: data.type } : {}),
 
-          ...(data.involvesChild !== undefined
-            ? { involvesChild: data.involvesChild }
-            : {}),
+        ...(data.involvesChild !== undefined ? { involvesChild: data.involvesChild } : {}),
 
-          ...(data.photo !== undefined
-            ? { photo: data.photo }
-            : {}),
+        ...(data.photo !== undefined ? { photo: data.photo } : {}),
 
-          ...(data.video !== undefined
-            ? { video: data.video }
-            : {}),
+        ...(data.video !== undefined ? { video: data.video } : {}),
 
-          ...(data.audio !== undefined
-            ? { audio: data.audio }
-            : {}),
+        ...(data.audio !== undefined ? { audio: data.audio } : {}),
 
-          ...(data.pdf !== undefined
-            ? { pdf: data.pdf }
-            : {}),
+        ...(data.pdf !== undefined ? { pdf: data.pdf } : {}),
 
-          ...(data.document !== undefined
-            ? { document: data.document }
-            : {}),
+        ...(data.document !== undefined ? { document: data.document } : {}),
 
-          ...(data.other !== undefined
-            ? { other: data.other }
-            : {}),
-        },
-      });
+        ...(data.other !== undefined ? { other: data.other } : {}),
+      },
+    });
 
-    this.eventEmitter.emit(
-      AuditEventEnum.POST_UPDATED,
-      {
-        userId,
-        actorType: 'USER',
-        action: AuditEventEnum.POST_UPDATED,
-        entity: 'Post',
-        entityId: post.id,
-        diff: {
-          updatedFields,
-          result: 'success',
-        },
-      } as AuditEventPayload,
-    );
+    this.eventEmitter.emit(AuditEventEnum.POST_UPDATED, {
+      userId,
+      actorType: 'USER',
+      action: AuditEventEnum.POST_UPDATED,
+      entity: 'Post',
+      entityId: post.id,
+      diff: {
+        updatedFields,
+        result: 'success',
+      },
+    });
 
     return post;
   }
@@ -414,60 +313,44 @@ export class PostService {
   // admins (PRD §12 diagram), so NEW_POST fires here.
   // ─────────────────────────────────────────────
 
-  async submitMyPost(
-    userId: string,
-    postId: string,
-  ) {
-    const existing =
-      await this.prisma.post.findFirst({
-        where: {
-          id: postId,
-          userId,
-        },
-      });
+  async submitMyPost(userId: string, postId: string) {
+    const existing = await this.prisma.post.findFirst({
+      where: {
+        id: postId,
+        userId,
+      },
+    });
 
     if (!existing) {
-      throw new NotFoundException(
-        'post_not_found',
-      );
+      throw new NotFoundException('post_not_found');
     }
 
-    if (
-      !OWNER_EDITABLE_STATUSES.includes(
-        existing.status,
-      )
-    ) {
-      throw new BadRequestException(
-        'post_cannot_be_submitted_in_current_status',
-      );
+    if (!OWNER_EDITABLE_STATUSES.includes(existing.status)) {
+      throw new BadRequestException('post_cannot_be_submitted_in_current_status');
     }
 
-    const post =
-      await this.prisma.post.update({
-        where: {
-          id: postId,
-        },
+    const post = await this.prisma.post.update({
+      where: {
+        id: postId,
+      },
 
-        data: {
-          status: PostStatus.PENDING,
-        },
-      });
+      data: {
+        status: PostStatus.PENDING,
+      },
+    });
 
-    this.eventEmitter.emit(
-      AuditEventEnum.POST_UPDATED,
-      {
-        userId,
-        actorType: 'USER',
-        action: AuditEventEnum.POST_UPDATED,
-        entity: 'Post',
-        entityId: post.id,
-        diff: {
-          previousStatus: existing.status,
-          newStatus: PostStatus.PENDING,
-          result: 'success',
-        },
-      } as AuditEventPayload,
-    );
+    this.eventEmitter.emit(AuditEventEnum.POST_UPDATED, {
+      userId,
+      actorType: 'USER',
+      action: AuditEventEnum.POST_UPDATED,
+      entity: 'Post',
+      entityId: post.id,
+      diff: {
+        previousStatus: existing.status,
+        newStatus: PostStatus.PENDING,
+        result: 'success',
+      },
+    });
 
     /*
      * Notify the appropriate notification listener.
@@ -475,13 +358,10 @@ export class PostService {
      * The notification listener decides who should receive
      * the notification (for example administrators).
      */
-    this.eventEmitter.emit(
-      NotificationEventEnum.NEW_POST,
-      {
-        postId: post.id,
-        userId,
-      } as NewPostEvent,
-    );
+    this.eventEmitter.emit(NotificationEventEnum.NEW_POST, {
+      postId: post.id,
+      userId,
+    });
 
     return post;
   }
@@ -498,9 +378,7 @@ export class PostService {
   // shape as the admin findAll, for consistency.
   // ─────────────────────────────────────────────
 
-  async findPublishedPosts(
-    query: PublishedPostsQueryDto,
-  ) {
+  async findPublishedPosts(query: PublishedPostsQueryDto) {
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
 
@@ -509,18 +387,17 @@ export class PostService {
       ...(query.type ? { type: query.type } : {}),
     };
 
-    const [items, total] =
-      await this.prisma.$transaction([
-        this.prisma.post.findMany({
-          where,
-          orderBy: {
-            createdAt: 'desc',
-          },
-          skip: (page - 1) * limit,
-          take: limit,
-        }),
-        this.prisma.post.count({ where }),
-      ]);
+    const [items, total] = await this.prisma.$transaction([
+      this.prisma.post.findMany({
+        where,
+        orderBy: {
+          createdAt: 'desc',
+        },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      this.prisma.post.count({ where }),
+    ]);
 
     return {
       items,
@@ -535,23 +412,17 @@ export class PostService {
   // PUBLIC — GET ONE PUBLISHED POST
   // ─────────────────────────────────────────────
 
-  async findPublishedPost(
-    postId: string,
-  ) {
-    const post =
-      await this.prisma.post.findFirst({
-        where: {
-          id: postId,
+  async findPublishedPost(postId: string) {
+    const post = await this.prisma.post.findFirst({
+      where: {
+        id: postId,
 
-          status:
-            PostStatus.PUBLISHED,
-        },
-      });
+        status: PostStatus.PUBLISHED,
+      },
+    });
 
     if (!post) {
-      throw new NotFoundException(
-        'post_not_found',
-      );
+      throw new NotFoundException('post_not_found');
     }
 
     return post;
@@ -566,32 +437,27 @@ export class PostService {
   // instead of returning every post unfiltered.
   // ─────────────────────────────────────────────
 
-  async findAll(
-    query: AdminPostQueryDto,
-  ) {
+  async findAll(query: AdminPostQueryDto) {
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
 
     const where: Prisma.PostWhereInput = {
       ...(query.status ? { status: query.status } : {}),
       ...(query.type ? { type: query.type } : {}),
-      ...(query.involvesChild !== undefined
-        ? { involvesChild: query.involvesChild }
-        : {}),
+      ...(query.involvesChild !== undefined ? { involvesChild: query.involvesChild } : {}),
     };
 
-    const [items, total] =
-      await this.prisma.$transaction([
-        this.prisma.post.findMany({
-          where,
-          orderBy: {
-            createdAt: 'desc',
-          },
-          skip: (page - 1) * limit,
-          take: limit,
-        }),
-        this.prisma.post.count({ where }),
-      ]);
+    const [items, total] = await this.prisma.$transaction([
+      this.prisma.post.findMany({
+        where,
+        orderBy: {
+          createdAt: 'desc',
+        },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      this.prisma.post.count({ where }),
+    ]);
 
     return {
       items,
@@ -606,20 +472,15 @@ export class PostService {
   // ADMIN — GET ONE POST
   // ─────────────────────────────────────────────
 
-  async findOne(
-    postId: string,
-  ) {
-    const post =
-      await this.prisma.post.findUnique({
-        where: {
-          id: postId,
-        },
-      });
+  async findOne(postId: string) {
+    const post = await this.prisma.post.findUnique({
+      where: {
+        id: postId,
+      },
+    });
 
     if (!post) {
-      throw new NotFoundException(
-        'post_not_found',
-      );
+      throw new NotFoundException('post_not_found');
     }
 
     return post;
@@ -631,48 +492,34 @@ export class PostService {
   // Unchanged, kept exactly as it was.
   // ─────────────────────────────────────────────
 
-  async updateStatus(
-    user: CurrentUserDto,
-    postId: string,
-    status: PostStatus,
-  ) {
-    const existing =
-      await this.findOne(postId);
+  async updateStatus(user: CurrentUserDto, postId: string, status: PostStatus) {
+    const existing = await this.findOne(postId);
 
-    const updated =
-      await this.prisma.post.update({
-        where: {
-          id: postId,
-        },
+    const updated = await this.prisma.post.update({
+      where: {
+        id: postId,
+      },
 
-        data: {
-          status,
-        },
-      });
+      data: {
+        status,
+      },
+    });
 
     /*
      * Generic status change.
      */
-    this.eventEmitter.emit(
-      AuditEventEnum.POST_UPDATED,
-      {
-        userId: user.id,
-        actorType: resolveActorType(
-          user.roles ?? [],
-        ),
-        action:
-          AuditEventEnum.POST_UPDATED,
-        entity: 'Post',
-        entityId: postId,
-        diff: {
-          previousStatus:
-            existing.status,
-          newStatus:
-            status,
-          result: 'success',
-        },
-      } as AuditEventPayload,
-    );
+    this.eventEmitter.emit(AuditEventEnum.POST_UPDATED, {
+      userId: user.id,
+      actorType: resolveActorType(user.roles ?? []),
+      action: AuditEventEnum.POST_UPDATED,
+      entity: 'Post',
+      entityId: postId,
+      diff: {
+        previousStatus: existing.status,
+        newStatus: status,
+        result: 'success',
+      },
+    });
 
     return updated;
   }
@@ -686,93 +533,56 @@ export class PostService {
   // (PRD §32).
   // ─────────────────────────────────────────────
 
-  async approve(
-    user: CurrentUserDto,
-    postId: string,
-    data: ApprovePostDto,
-  ) {
-    const post =
-      await this.findOne(postId);
+  async approve(user: CurrentUserDto, postId: string, data: ApprovePostDto) {
+    const post = await this.findOne(postId);
 
-    if (
-      post.status ===
-      PostStatus.APPROVED
-    ) {
-      throw new BadRequestException(
-        'post_already_approved',
-      );
+    if (post.status === PostStatus.APPROVED) {
+      throw new BadRequestException('post_already_approved');
     }
 
-    if (
-      post.status ===
-      PostStatus.REJECTED
-    ) {
-      throw new BadRequestException(
-        'rejected_post_cannot_be_approved',
-      );
+    if (post.status === PostStatus.REJECTED) {
+      throw new BadRequestException('rejected_post_cannot_be_approved');
     }
 
-    if (
-      post.involvesChild &&
-      data.childSafetyConfirmed !== true
-    ) {
-      throw new BadRequestException(
-        'child_safety_confirmation_required',
-      );
+    if (post.involvesChild && data.childSafetyConfirmed !== true) {
+      throw new BadRequestException('child_safety_confirmation_required');
     }
 
-    const updated =
-      await this.prisma.post.update({
-        where: {
-          id: postId,
-        },
+    const updated = await this.prisma.post.update({
+      where: {
+        id: postId,
+      },
 
-        data: {
-          status:
-            PostStatus.APPROVED,
-        },
-      });
+      data: {
+        status: PostStatus.APPROVED,
+      },
+    });
 
     /*
      * Audit.
      */
-    this.eventEmitter.emit(
-      AuditEventEnum.POST_APPROVED,
-      {
-        userId: user.id,
-        actorType: resolveActorType(
-          user.roles ?? [],
-        ),
-        action:
-          AuditEventEnum.POST_APPROVED,
-        entity: 'Post',
-        entityId: postId,
-        diff: {
-          previousStatus:
-            post.status,
-          newStatus:
-            PostStatus.APPROVED,
-          involvesChild:
-            post.involvesChild,
-          childSafetyConfirmed:
-            post.involvesChild
-              ? data.childSafetyConfirmed === true
-              : undefined,
-          result: 'success',
-        },
-      } as AuditEventPayload,
-    );
+    this.eventEmitter.emit(AuditEventEnum.POST_APPROVED, {
+      userId: user.id,
+      actorType: resolveActorType(user.roles ?? []),
+      action: AuditEventEnum.POST_APPROVED,
+      entity: 'Post',
+      entityId: postId,
+      diff: {
+        previousStatus: post.status,
+        newStatus: PostStatus.APPROVED,
+        involvesChild: post.involvesChild,
+        childSafetyConfirmed: post.involvesChild ? data.childSafetyConfirmed === true : undefined,
+        result: 'success',
+      },
+    });
 
     /*
      * Notify post owner.
      */
-    this.eventEmitter.emit(
-      NotificationEventEnum.POST_APPROVED,
-      {
-        postId,
-        userId: post.userId,
-      } as PostApprovedEvent,
-    );
+    this.eventEmitter.emit(NotificationEventEnum.POST_APPROVED, {
+      postId,
+      userId: post.userId,
+    });
 
     return updated;
   }
@@ -786,61 +596,42 @@ export class PostService {
   // submitMyPost) instead of closing it out.
   // ─────────────────────────────────────────────
 
-  async requestChanges(
-    user: CurrentUserDto,
-    postId: string,
-    data: RequestPostChangesDto,
-  ) {
-    const post =
-      await this.findOne(postId);
+  async requestChanges(user: CurrentUserDto, postId: string, data: RequestPostChangesDto) {
+    const post = await this.findOne(postId);
 
-    if (
-      post.status === PostStatus.PUBLISHED ||
-      post.status === PostStatus.REJECTED
-    ) {
-      throw new BadRequestException(
-        'post_cannot_have_changes_requested_in_current_status',
-      );
+    if (post.status === PostStatus.PUBLISHED || post.status === PostStatus.REJECTED) {
+      throw new BadRequestException('post_cannot_have_changes_requested_in_current_status');
     }
 
-    const updated =
-      await this.prisma.post.update({
-        where: {
-          id: postId,
-        },
-
-        data: {
-          status: PostStatus.CHANGES_REQUESTED,
-        },
-      });
-
-    this.eventEmitter.emit(
-      AuditEventEnum.POST_UPDATED,
-      {
-        userId: user.id,
-        actorType: resolveActorType(
-          user.roles ?? [],
-        ),
-        action: AuditEventEnum.POST_UPDATED,
-        entity: 'Post',
-        entityId: postId,
-        diff: {
-          previousStatus: post.status,
-          newStatus: PostStatus.CHANGES_REQUESTED,
-          message: data.message,
-          result: 'success',
-        },
-      } as AuditEventPayload,
-    );
-
-    this.eventEmitter.emit(
-      NotificationEventEnum.POST_CHANGES_REQUESTED,
-      {
-        postId,
-        userId: post.userId,
-        message: data.message,
+    const updated = await this.prisma.post.update({
+      where: {
+        id: postId,
       },
-    );
+
+      data: {
+        status: PostStatus.CHANGES_REQUESTED,
+      },
+    });
+
+    this.eventEmitter.emit(AuditEventEnum.POST_UPDATED, {
+      userId: user.id,
+      actorType: resolveActorType(user.roles ?? []),
+      action: AuditEventEnum.POST_UPDATED,
+      entity: 'Post',
+      entityId: postId,
+      diff: {
+        previousStatus: post.status,
+        newStatus: PostStatus.CHANGES_REQUESTED,
+        message: data.message,
+        result: 'success',
+      },
+    });
+
+    this.eventEmitter.emit(NotificationEventEnum.POST_CHANGES_REQUESTED, {
+      postId,
+      userId: post.userId,
+      message: data.message,
+    });
 
     return updated;
   }
@@ -849,59 +640,38 @@ export class PostService {
   // ADMIN — PUBLISH POST
   // ─────────────────────────────────────────────
 
-  async publish(
-    user: CurrentUserDto,
-    postId: string,
-  ) {
-    const post =
-      await this.findOne(postId);
+  async publish(user: CurrentUserDto, postId: string) {
+    const post = await this.findOne(postId);
 
-    if (
-      post.status !==
-        PostStatus.APPROVED &&
-      post.status !==
-        PostStatus.UNPUBLISHED
-    ) {
-      throw new BadRequestException(
-        'post_must_be_approved_before_publishing',
-      );
+    if (post.status !== PostStatus.APPROVED && post.status !== PostStatus.UNPUBLISHED) {
+      throw new BadRequestException('post_must_be_approved_before_publishing');
     }
 
-    const updated =
-      await this.prisma.post.update({
-        where: {
-          id: postId,
-        },
+    const updated = await this.prisma.post.update({
+      where: {
+        id: postId,
+      },
 
-        data: {
-          status:
-            PostStatus.PUBLISHED,
-        },
-      });
+      data: {
+        status: PostStatus.PUBLISHED,
+      },
+    });
 
     /*
      * Audit.
      */
-    this.eventEmitter.emit(
-      AuditEventEnum.POST_PUBLISHED,
-      {
-        userId: user.id,
-        actorType: resolveActorType(
-          user.roles ?? [],
-        ),
-        action:
-          AuditEventEnum.POST_PUBLISHED,
-        entity: 'Post',
-        entityId: postId,
-        diff: {
-          previousStatus:
-            post.status,
-          newStatus:
-            PostStatus.PUBLISHED,
-          result: 'success',
-        },
-      } as AuditEventPayload,
-    );
+    this.eventEmitter.emit(AuditEventEnum.POST_PUBLISHED, {
+      userId: user.id,
+      actorType: resolveActorType(user.roles ?? []),
+      action: AuditEventEnum.POST_PUBLISHED,
+      entity: 'Post',
+      entityId: postId,
+      diff: {
+        previousStatus: post.status,
+        newStatus: PostStatus.PUBLISHED,
+        result: 'success',
+      },
+    });
 
     return updated;
   }
@@ -916,72 +686,48 @@ export class PostService {
   // notification payload.
   // ─────────────────────────────────────────────
 
-  async reject(
-    user: CurrentUserDto,
-    postId: string,
-    data: RejectPostDto,
-  ) {
-    const post =
-      await this.findOne(postId);
+  async reject(user: CurrentUserDto, postId: string, data: RejectPostDto) {
+    const post = await this.findOne(postId);
 
-    if (
-      post.status ===
-      PostStatus.REJECTED
-    ) {
-      throw new BadRequestException(
-        'post_already_rejected',
-      );
+    if (post.status === PostStatus.REJECTED) {
+      throw new BadRequestException('post_already_rejected');
     }
 
-    const updated =
-      await this.prisma.post.update({
-        where: {
-          id: postId,
-        },
+    const updated = await this.prisma.post.update({
+      where: {
+        id: postId,
+      },
 
-        data: {
-          status:
-            PostStatus.REJECTED,
-        },
-      });
+      data: {
+        status: PostStatus.REJECTED,
+      },
+    });
 
     /*
      * Audit.
      */
-    this.eventEmitter.emit(
-      AuditEventEnum.POST_REJECTED,
-      {
-        userId: user.id,
-        actorType: resolveActorType(
-          user.roles ?? [],
-        ),
-        action:
-          AuditEventEnum.POST_REJECTED,
-        entity: 'Post',
-        entityId: postId,
-        diff: {
-          previousStatus:
-            post.status,
-          newStatus:
-            PostStatus.REJECTED,
-          reason:
-            data.reason,
-          result: 'success',
-        },
-      } as AuditEventPayload,
-    );
+    this.eventEmitter.emit(AuditEventEnum.POST_REJECTED, {
+      userId: user.id,
+      actorType: resolveActorType(user.roles ?? []),
+      action: AuditEventEnum.POST_REJECTED,
+      entity: 'Post',
+      entityId: postId,
+      diff: {
+        previousStatus: post.status,
+        newStatus: PostStatus.REJECTED,
+        reason: data.reason,
+        result: 'success',
+      },
+    });
 
     /*
      * Notify post owner.
      */
-    this.eventEmitter.emit(
-      NotificationEventEnum.POST_REJECTED,
-      {
-        postId,
-        userId: post.userId,
-        reason: data.reason,
-      } as PostRejectedEvent,
-    );
+    this.eventEmitter.emit(NotificationEventEnum.POST_REJECTED, {
+      postId,
+      userId: post.userId,
+      reason: data.reason,
+    });
 
     return updated;
   }
@@ -990,57 +736,38 @@ export class PostService {
   // ADMIN — UNPUBLISH POST
   // ─────────────────────────────────────────────
 
-  async unpublish(
-    user: CurrentUserDto,
-    postId: string,
-  ) {
-    const post =
-      await this.findOne(postId);
+  async unpublish(user: CurrentUserDto, postId: string) {
+    const post = await this.findOne(postId);
 
-    if (
-      post.status !==
-      PostStatus.PUBLISHED
-    ) {
-      throw new BadRequestException(
-        'post_is_not_published',
-      );
+    if (post.status !== PostStatus.PUBLISHED) {
+      throw new BadRequestException('post_is_not_published');
     }
 
-    const updated =
-      await this.prisma.post.update({
-        where: {
-          id: postId,
-        },
+    const updated = await this.prisma.post.update({
+      where: {
+        id: postId,
+      },
 
-        data: {
-          status:
-            PostStatus.UNPUBLISHED,
-        },
-      });
+      data: {
+        status: PostStatus.UNPUBLISHED,
+      },
+    });
 
     /*
      * Audit.
      */
-    this.eventEmitter.emit(
-      AuditEventEnum.POST_UNPUBLISHED,
-      {
-        userId: user.id,
-        actorType: resolveActorType(
-          user.roles ?? [],
-        ),
-        action:
-          AuditEventEnum.POST_UNPUBLISHED,
-        entity: 'Post',
-        entityId: postId,
-        diff: {
-          previousStatus:
-            post.status,
-          newStatus:
-            PostStatus.UNPUBLISHED,
-          result: 'success',
-        },
-      } as AuditEventPayload,
-    );
+    this.eventEmitter.emit(AuditEventEnum.POST_UNPUBLISHED, {
+      userId: user.id,
+      actorType: resolveActorType(user.roles ?? []),
+      action: AuditEventEnum.POST_UNPUBLISHED,
+      entity: 'Post',
+      entityId: postId,
+      diff: {
+        previousStatus: post.status,
+        newStatus: PostStatus.UNPUBLISHED,
+        result: 'success',
+      },
+    });
 
     return updated;
   }
