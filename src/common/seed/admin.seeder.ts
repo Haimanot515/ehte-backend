@@ -37,6 +37,7 @@ export class AdminSeeder implements OnApplicationBootstrap {
         phone,
         password: hashedPassword,
         isActive: true,
+        isPhoneVerified: true,
       },
     });
 

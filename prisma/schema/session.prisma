@@ -9,6 +9,12 @@ model Session {
   refreshToken String
   expiresAt    DateTime
 
+  // Set instead of deleting the row when this session is rotated or explicitly
+  // revoked (see AuthService.refresh()). A refresh request matching a session
+  // that already has revokedAt set means the token was reused after rotation —
+  // treat as compromised and wipe all sessions for the user.
+  revokedAt DateTime?
+
   createdAt DateTime @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)

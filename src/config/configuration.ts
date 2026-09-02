@@ -3,6 +3,10 @@ export default () => ({
     name: process.env.APP_NAME || 'Ehte',
     env: process.env.NODE_ENV || 'development',
     port: Number(process.env.PORT) || 3000,
+
+    // Gates dev-only OTP console logging in AuthService. MUST be false
+    // in production — leaving it true prints real OTPs to server logs.
+    debug: process.env.APP_DEBUG === 'true',
   },
 
   database: {
@@ -12,6 +16,14 @@ export default () => ({
   jwt: {
     secret: process.env.JWT_SECRET,
     expiresIn: process.env.JWT_EXPIRES_IN || '1d',
+
+    // FIX: was previously unmapped — every refreshSecret lookup in
+    // AuthService silently fell back to jwt.secret regardless of
+    // whether JWT_REFRESH_SECRET was set in the environment.
+    refreshSecret: process.env.JWT_REFRESH_SECRET,
+
+    refreshExpiresIn:
+      process.env.JWT_REFRESH_EXPIRES_IN || '7d',
   },
 
   cors: {
@@ -40,6 +52,13 @@ export default () => ({
   otp: {
     expiresInMinutes: parseInt(
       process.env.OTP_EXPIRES_IN_MINUTES ?? '10',
+      10,
+    ),
+
+    // Minimum time between OTP resends for the same purpose/user,
+    // enforced in AuthService.issueAndSendOtp().
+    resendCooldownSeconds: parseInt(
+      process.env.OTP_RESEND_COOLDOWN_SECONDS ?? '60',
       10,
     ),
   },
@@ -71,6 +90,18 @@ export default () => ({
 
     encryptionIv:
       process.env.ENCRYPTION_IV,
+
+    // Login lockout, enforced in AuthService.recordFailedLogin() /
+    // assertNotLocked() — used by both login() and adminLogin().
+    maxLoginAttempts: parseInt(
+      process.env.MAX_LOGIN_ATTEMPTS ?? '5',
+      10,
+    ),
+
+    lockoutDurationMinutes: parseInt(
+      process.env.LOCKOUT_DURATION_MINUTES ?? '15',
+      10,
+    ),
   },
 
   media: {

@@ -14,6 +14,13 @@ model User {
   // is successfully consumed — never set it true anywhere else.
   isPhoneVerified Boolean @default(false)
 
+  // Account lockout after repeated failed login attempts (see AuthService.login()).
+  // failedLoginAttempts increments on each wrong password, resets to 0 on success.
+  // lockedUntil is set once the attempt threshold is hit and checked before
+  // password comparison; null means not locked.
+  failedLoginAttempts Int       @default(0)
+  lockedUntil         DateTime?
+
   // Discreet Mode state (Section 9.1 / 9.5).
   // Toggling this requires password re-authentication at the application layer.
   discreetModeEnabled   Boolean   @default(false)

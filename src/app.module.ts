@@ -187,6 +187,57 @@ import { RolesSeeder } from './common/seed/roles.seeder';
         OTP_EXPIRES_IN_MINUTES: Joi.number()
           .default(10),
 
+        // Minimum time between OTP resends for the same purpose/user,
+        // enforced in AuthService.issueAndSendOtp().
+        OTP_RESEND_COOLDOWN_SECONDS: Joi.number()
+          .default(60),
+
+        // ─────────────────────────────────────
+        // SECURITY — LOGIN LOCKOUT
+        //
+        // Enforced in AuthService.recordFailedLogin() /
+        // assertNotLocked(), used by both login() and adminLogin().
+        // ─────────────────────────────────────
+
+        MAX_LOGIN_ATTEMPTS: Joi.number()
+          .default(5),
+
+        LOCKOUT_DURATION_MINUTES: Joi.number()
+          .default(15),
+
+        // ─────────────────────────────────────
+        // SECURITY — ENCRYPTION
+        //
+        // Maps to security.encryptionKey / security.encryptionIv in
+        // configuration.ts. Previously unvalidated — a missing value
+        // only surfaced as a runtime failure wherever these are
+        // consumed, instead of at startup. Adjust constraints below
+        // once the exact algorithm's key/IV length requirements are
+        // confirmed.
+        // ─────────────────────────────────────
+
+        ENCRYPTION_KEY: Joi.string()
+          .required(),
+
+        ENCRYPTION_IV: Joi.string()
+          .required(),
+
+        // ─────────────────────────────────────
+        // APP DEBUG
+        //
+        // Gates dev-only OTP console logging in AuthService.
+        // MUST be false in production — leaving it true prints
+        // real OTPs to server logs.
+        // ─────────────────────────────────────
+
+        APP_DEBUG: Joi.boolean()
+          .default(false)
+          .when('NODE_ENV', {
+            is: 'production',
+            then: Joi.valid(false),
+            otherwise: Joi.optional(),
+          }),
+
         // ─────────────────────────────────────
         // RATE LIMITING
         // ─────────────────────────────────────
@@ -232,6 +283,9 @@ import { RolesSeeder } from './common/seed/roles.seeder';
 
         MINIO_BUCKET: Joi.string()
           .required(),
+
+        MINIO_USE_SSL: Joi.boolean()
+          .default(false),
       }),
 
       validationOptions: {
@@ -312,6 +366,14 @@ import { RolesSeeder } from './common/seed/roles.seeder';
 
     // ─────────────────────────────────────────
     // JWT
+    //
+    // signOptions.expiresIn is deliberately NOT set here. Every
+    // JwtService.sign() call in AuthService.issueTokens() passes its
+    // own explicit `expiresIn` (and, for refresh tokens, its own
+    // `secret`) — per-call options always override a module-level
+    // default, so a signOptions default here would never actually
+    // apply. Access-token TTL is controlled solely by
+    // jwt.expiresIn (JWT_EXPIRES_IN) as read in AuthService.
     // ─────────────────────────────────────────
 
     JwtModule.registerAsync({
@@ -330,14 +392,6 @@ import { RolesSeeder } from './common/seed/roles.seeder';
           config.getOrThrow<string>(
             'jwt.secret',
           ),
-
-        signOptions: {
-          expiresIn:
-            config.get(
-              'jwt.expiresIn',
-              '1d',
-            ) as any,
-        },
       }),
     }),
 

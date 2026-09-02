@@ -13,6 +13,8 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 
+import { Throttle } from '@nestjs/throttler';
+
 import { AuthService } from '../service/auth.service';
 
 import {
@@ -41,11 +43,11 @@ export class AuthController {
     private readonly authService: AuthService,
   ) {}
 
-  // ─────────────────────────────────────────────
   // SIGN UP — REQUEST OTP
-  // ─────────────────────────────────────────────
+  // FIX: tighter throttle — account creation + SMS cost per request
 
   @AllowAnonymous()
+  @Throttle({ default: { limit: 3, ttl: 60000 } })
   @Post('signup')
   @ApiOperation({
     summary:
@@ -57,11 +59,11 @@ export class AuthController {
     return this.authService.signup(data);
   }
 
-  // ─────────────────────────────────────────────
   // SIGN UP — VERIFY OTP
-  // ─────────────────────────────────────────────
+  // FIX: tighter throttle — OTP brute-force surface
 
   @AllowAnonymous()
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
   @Post('signup/verify')
   @ApiOperation({
     summary:
@@ -73,11 +75,11 @@ export class AuthController {
     return this.authService.verifySignupOtp(data);
   }
 
-  // ─────────────────────────────────────────────
   // SIGN UP — RESEND OTP
-  // ─────────────────────────────────────────────
+  // FIX: tightest throttle — direct SMS-bombing vector
 
   @AllowAnonymous()
+  @Throttle({ default: { limit: 2, ttl: 60000 } })
   @Post(
     'signup/resend-otp/:verificationId',
   )
@@ -93,11 +95,11 @@ export class AuthController {
     );
   }
 
-  // ─────────────────────────────────────────────
   // LOGIN
-  // ─────────────────────────────────────────────
+  // FIX: tighter throttle — credential-guessing surface
 
   @AllowAnonymous()
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
   @Post('login')
   @ApiOperation({
     summary:
@@ -109,9 +111,8 @@ export class AuthController {
     return this.authService.login(data);
   }
 
-  // ─────────────────────────────────────────────
   // REFRESH TOKEN
-  // ─────────────────────────────────────────────
+  // Left at global default — requires a valid signed token, not a guessable credential
 
   @AllowAnonymous()
   @Post('refresh')
@@ -124,11 +125,11 @@ export class AuthController {
     return this.authService.refresh(data);
   }
 
-  // ─────────────────────────────────────────────
   // FORGOT PASSWORD
-  // ─────────────────────────────────────────────
+  // FIX: tighter throttle — SMS-bombing vector
 
   @AllowAnonymous()
+  @Throttle({ default: { limit: 3, ttl: 60000 } })
   @Post('forgot-password')
   @ApiOperation({
     summary:
@@ -142,11 +143,11 @@ export class AuthController {
     );
   }
 
-  // ─────────────────────────────────────────────
   // RESET PASSWORD
-  // ─────────────────────────────────────────────
+  // FIX: tighter throttle — OTP brute-force surface
 
   @AllowAnonymous()
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
   @Post('reset-password')
   @ApiOperation({
     summary:
@@ -160,18 +161,7 @@ export class AuthController {
     );
   }
 
-  // ─────────────────────────────────────────────
-  // CURRENT USER
-  //
-  // 'access-token' must match the scheme name
-  // registered in main.ts's
-  // DocumentBuilder().addBearerAuth({...}, 'access-token').
-  // Without this argument, @ApiBearerAuth('access-token') defaults to
-  // a scheme named 'bearer', which doesn't exist in this
-  // app's Swagger document — so Swagger UI's Authorize
-  // dialog has nothing to attach the token to, and the
-  // header silently never gets sent.
-  // ─────────────────────────────────────────────
+  // CURRENT USER: 'access-token' must match the scheme name registered in main.ts's addBearerAuth, or Swagger UI has nothing to attach the token to
 
   @Get('me')
   @ApiBearerAuth('access-token')
@@ -186,9 +176,7 @@ export class AuthController {
     return this.authService.me(user);
   }
 
-  // ─────────────────────────────────────────────
   // CHANGE PASSWORD
-  // ─────────────────────────────────────────────
 
   @Post('change-password')
   @ApiBearerAuth('access-token')
@@ -209,9 +197,7 @@ export class AuthController {
     );
   }
 
-  // ─────────────────────────────────────────────
   // LOGOUT
-  // ─────────────────────────────────────────────
 
   @Post('logout')
   @ApiBearerAuth('access-token')
@@ -233,15 +219,7 @@ export class AuthController {
   }
 }
 
-// ─────────────────────────────────────────────
-// ADMIN AUTHENTICATION
-//
-// Kept as a separate controller/class for routing
-// (/admin/auth/...) and role separation, but grouped
-// under the same 'Authentication' Swagger tag as
-// AuthController rather than its own tag — there is
-// only one Authentication category in the docs.
-// ─────────────────────────────────────────────
+// ADMIN AUTHENTICATION: separate controller for /admin/auth routing and role separation, but shares the 'Authentication' Swagger tag
 
 @ApiTags('Authentication')
 @Controller('admin/auth')
@@ -250,16 +228,10 @@ export class AdminAuthController {
     private readonly authService: AuthService,
   ) {}
 
-  // ─────────────────────────────────────────────
-  // ADMIN — REGISTER
-  // POST /admin/auth/register
-  //
-  // ADMIN / SUPER_ADMIN
-  //
-  // An authorized admin creates a new admin.
-  // OTP is sent to the new admin's phone.
-  // ─────────────────────────────────────────────
+  // ADMIN — REGISTER (POST /admin/auth/register, ADMIN/SUPER_ADMIN): creates a new admin and sends OTP to their phone
+  // FIX: throttle added
 
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
   @Post('register')
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
@@ -277,27 +249,10 @@ export class AdminAuthController {
     );
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — VERIFY REGISTRATION
-  // POST /admin/auth/verify/:id
-  //
-  // ADMIN / SUPER_ADMIN
-  //
-  // The new admin receives the OTP on their phone
-  // and tells the OTP to the admin who created them.
-  //
-  // The creating admin enters the OTP.
-  //
-  // The system verifies:
-  // - Admin ID
-  // - Phone number
-  // - OTP
-  // - OTP expiration
-  // - OTP purpose
-  //
-  // Successful verification activates the new admin.
-  // ─────────────────────────────────────────────
+  // ADMIN — VERIFY REGISTRATION (POST /admin/auth/verify/:id, ADMIN/SUPER_ADMIN): creating admin submits the new admin's OTP; success activates the new admin
+  // FIX: throttle added
 
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
   @Post('verify/:id')
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
@@ -317,18 +272,11 @@ export class AdminAuthController {
     );
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — LOGIN
-  // POST /admin/auth/login
-  //
-  // ANONYMOUS
-  //
-  // Admin logs in using:
-  // - Phone number
-  // - Password
-  // ─────────────────────────────────────────────
+  // ADMIN — LOGIN (POST /admin/auth/login, ANONYMOUS): admin logs in with phone number and password
+  // FIX: throttle added — credential-guessing surface, high-privilege target
 
   @AllowAnonymous()
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
   @Post('login')
   @ApiOperation({
     summary:
