@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Header,
   Param,
   Patch,
   Post,
@@ -22,6 +23,7 @@ import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { RolesEnum } from 'src/common/enums/roles.enum';
+import { RequireReauthentication } from 'src/common/decorators/reauth.decorator';
 import {
   CreatePostDto,
   UpdatePostDto,
@@ -43,8 +45,10 @@ export class PostController {
   // CREATE POST
   // POST /posts
   // AUTHENTICATED USER
+  // Requires password re-authentication.
   // ─────────────────────────────────────────────
   @Post()
+  @RequireReauthentication()
   @ApiBearerAuth('access-token')
   @ApiOperation({
     summary: 'Create a new post',
@@ -62,8 +66,13 @@ export class PostController {
   // MY POSTS
   // GET /posts/me
   // AUTHENTICATED USER
+  // Requires password re-authentication, sent via
+  // X-Reauth-Password header since this is a GET.
+  // Response is never cached.
   // ─────────────────────────────────────────────
   @Get('me')
+  @RequireReauthentication()
+  @Header('Cache-Control', 'no-store')
   @ApiBearerAuth('access-token')
   @ApiOperation({
     summary: 'Get posts created by current user',
@@ -128,8 +137,10 @@ export class PostController {
   // putting the post in front of admins (PRD §12).
   //
   // AUTHENTICATED USER
+  // Requires password re-authentication.
   // ─────────────────────────────────────────────
   @Patch('me/:id/submit')
+  @RequireReauthentication()
   @ApiBearerAuth('access-token')
   @ApiOperation({
     summary: 'Submit own post for admin review',

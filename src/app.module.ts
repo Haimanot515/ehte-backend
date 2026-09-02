@@ -75,6 +75,9 @@ import { JwtStrategy } from './common/guards/jwt.strategy';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 
+import { ReauthGuard } from './common/guards/reauth.guard';
+import { ReauthService } from './common/services/reauth.service';
+
 // ─────────────────────────────────────────────
 // SEEDERS
 // ─────────────────────────────────────────────
@@ -209,18 +212,19 @@ import { RolesSeeder } from './common/seed/roles.seeder';
         // SECURITY — ENCRYPTION
         //
         // Maps to security.encryptionKey / security.encryptionIv in
-        // configuration.ts. Previously unvalidated — a missing value
-        // only surfaced as a runtime failure wherever these are
-        // consumed, instead of at startup. Adjust constraints below
-        // once the exact algorithm's key/IV length requirements are
-        // confirmed.
+        // configuration.ts. Currently unused — no code in the
+        // codebase reads these values yet (confirmed via grep).
+        // Kept optional so they're ready to wire up later without
+        // blocking boot in the meantime. Tighten back to .required()
+        // once something actually consumes them, and confirm the
+        // real cipher's key/IV length requirements at that point.
         // ─────────────────────────────────────
 
         ENCRYPTION_KEY: Joi.string()
-          .required(),
+          .optional(),
 
         ENCRYPTION_IV: Joi.string()
-          .required(),
+          .optional(),
 
         // ─────────────────────────────────────
         // APP DEBUG
@@ -446,6 +450,12 @@ import { RolesSeeder } from './common/seed/roles.seeder';
     JwtStrategy,
 
     // ─────────────────────────────────────────
+    // RE-AUTHENTICATION SERVICE
+    // ─────────────────────────────────────────
+
+    ReauthService,
+
+    // ─────────────────────────────────────────
     // GLOBAL RATE-LIMIT GUARD
     //
     // Registered first so throttling is evaluated
@@ -464,6 +474,19 @@ import { RolesSeeder } from './common/seed/roles.seeder';
     {
       provide: APP_GUARD,
       useClass: JwtAuthGuard,
+    },
+
+    // ─────────────────────────────────────────
+    // GLOBAL RE-AUTHENTICATION GUARD
+    //
+    // Runs after JwtAuthGuard (needs request.user)
+    // and before RolesGuard. Only activates on
+    // endpoints using @RequireReauthentication().
+    // ─────────────────────────────────────────
+
+    {
+      provide: APP_GUARD,
+      useClass: ReauthGuard,
     },
 
     // ─────────────────────────────────────────

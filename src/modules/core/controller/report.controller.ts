@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Header,
   Param,
   Patch,
   Post,
@@ -34,6 +35,7 @@ import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { RolesEnum } from 'src/common/enums/roles.enum';
+import { RequireReauthentication } from 'src/common/decorators/reauth.decorator';
 
 @ApiTags('Reports')
 @ApiBearerAuth('access-token')
@@ -48,9 +50,11 @@ export class ReportController {
   // POST /reports
   //
   // Any authenticated user (ActorType.USER)
+  // Requires password re-authentication (PRD).
   // ─────────────────────────────────────────────
 
   @Post()
+  @RequireReauthentication()
   @ApiOperation({
     summary: 'Submit a new report',
   })
@@ -73,9 +77,14 @@ export class ReportController {
   // route parameter.
   //
   // Any authenticated user (ActorType.USER)
+  // Requires password re-authentication (PRD),
+  // sent via X-Reauth-Password header since this
+  // is a GET request. Response is never cached.
   // ─────────────────────────────────────────────
 
   @Get('me')
+  @RequireReauthentication()
+  @Header('Cache-Control', 'no-store')
   @ApiOperation({
     summary:
       'Get reports submitted by the current user',
