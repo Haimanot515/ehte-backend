@@ -39,6 +39,11 @@ export enum AuditEventEnum {
   POST_REJECTED = 'POST_REJECTED',
   POST_PUBLISHED = 'POST_PUBLISHED',
   POST_UNPUBLISHED = 'POST_UNPUBLISHED',
+  // Added — used by PostService.deleteMyPost. Previously
+  // deleteMyPost had no matching audit action and fell back to
+  // POST_UPDATED with a diff.deleted flag; this gives delete its
+  // own first-class event like every other terminal Post action.
+  POST_DELETED = 'POST_DELETED',
   // MISSING PERSON
   MISSING_PERSON_CREATED = 'MISSING_PERSON_CREATED',
   MISSING_PERSON_UPDATED = 'MISSING_PERSON_UPDATED',

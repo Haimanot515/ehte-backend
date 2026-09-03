@@ -8,6 +8,11 @@ export enum NotificationEventEnum {
   POST_APPROVED = 'POST_APPROVED',
   POST_REJECTED = 'POST_REJECTED',
   POST_CHANGES_REQUESTED = 'POST_CHANGES_REQUESTED',
+  // Added — used by PostService.unpublish() to notify the post
+  // owner when their published post is taken down. Previously
+  // there was no notification at all on this path, unlike
+  // approve/reject/request-changes.
+  POST_UNPUBLISHED = 'POST_UNPUBLISHED',
 
   MISSING_PERSON_UPDATED = 'MISSING_PERSON_UPDATED',
 
@@ -28,4 +33,4 @@ export enum NotificationEventEnum {
   // audit event, with no dependency on event-name collision.
   PASSWORD_CHANGED = 'notification.password_changed',
   PASSWORD_RESET = 'notification.password_reset',
-}
+} 
