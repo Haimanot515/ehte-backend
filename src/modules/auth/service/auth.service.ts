@@ -75,6 +75,13 @@ export class AuthService {
     private readonly eventEmitter: EventEmitter2,
   ) {}
 
+  // AUDIT EMIT (typed helper): routes every audit emit through AuditEventPayload so a
+  // missing field (actorType, entity, etc.) is caught at compile time, not silently dropped
+
+  private emitAudit(payload: AuditEventPayload): void {
+    this.eventEmitter.emit(payload.action, payload);
+  }
+
   // SIGN UP
 
   async signup(data: SignupDto): Promise<{ verificationId: string }> {
@@ -163,7 +170,7 @@ export class AuthService {
     }
 
     // Audit user creation (never include password/OTP/token data)
-    this.eventEmitter.emit(AuditEventEnum.USER_CREATED, {
+    this.emitAudit({
       userId: result.userId,
       actorType: resolveActorType([userRole.name]),
       action: AuditEventEnum.USER_CREATED,
@@ -211,7 +218,7 @@ export class AuthService {
 
     // Enforce max OTP attempts
     if (otpRecord.attempts >= 5) {
-      this.eventEmitter.emit(AuditEventEnum.SECURITY_ALERT, {
+      this.emitAudit({
         userId: otpRecord.user.id,
         actorType: resolveActorType(roles),
         action: AuditEventEnum.SECURITY_ALERT,
@@ -237,7 +244,7 @@ export class AuthService {
 
       // Alert once failed attempts hit the max
       if (updatedOtp.attempts >= 5) {
-        this.eventEmitter.emit(AuditEventEnum.SECURITY_ALERT, {
+        this.emitAudit({
           userId: otpRecord.user.id,
           actorType: resolveActorType(roles),
           action: AuditEventEnum.SECURITY_ALERT,
@@ -277,7 +284,7 @@ export class AuthService {
     });
 
     // Audit successful verification
-    this.eventEmitter.emit(AuditEventEnum.OTP_VERIFIED, {
+    this.emitAudit({
       userId: otpRecord.user.id,
       actorType: resolveActorType(roles),
       action: AuditEventEnum.OTP_VERIFIED,
@@ -327,7 +334,7 @@ export class AuthService {
     });
 
     if (!user || !user.password) {
-      this.eventEmitter.emit(AuditEventEnum.LOGIN_FAILED, {
+      this.emitAudit({
         userId: user?.id ?? null,
         actorType: resolveActorType(
           user ? user.userRoles.map((userRole) => userRole.role.name) : [],
@@ -347,7 +354,7 @@ export class AuthService {
     try {
       this.assertNotLocked(user);
     } catch (err) {
-      this.eventEmitter.emit(AuditEventEnum.LOGIN_FAILED, {
+      this.emitAudit({
         userId: user.id,
         actorType: resolveActorType(roles),
         action: AuditEventEnum.LOGIN_FAILED,
@@ -369,7 +376,7 @@ export class AuthService {
       // FIX: count the failure, possibly locking the account
       await this.recordFailedLogin(user.id);
 
-      this.eventEmitter.emit(AuditEventEnum.LOGIN_FAILED, {
+      this.emitAudit({
         userId: user.id,
         actorType: resolveActorType(roles),
         action: AuditEventEnum.LOGIN_FAILED,
@@ -385,7 +392,7 @@ export class AuthService {
     await this.resetLoginAttempts(user);
 
     if (!user.isActive) {
-      this.eventEmitter.emit(AuditEventEnum.LOGIN_FAILED, {
+      this.emitAudit({
         userId: user.id,
         actorType: resolveActorType(roles),
         action: AuditEventEnum.LOGIN_FAILED,
@@ -402,7 +409,7 @@ export class AuthService {
     }
 
     if (!user.isPhoneVerified) {
-      this.eventEmitter.emit(AuditEventEnum.LOGIN_FAILED, {
+      this.emitAudit({
         userId: user.id,
         actorType: resolveActorType(roles),
         action: AuditEventEnum.LOGIN_FAILED,
@@ -429,7 +436,7 @@ export class AuthService {
       };
     }
 
-    this.eventEmitter.emit(AuditEventEnum.LOGIN_SUCCESS, {
+    this.emitAudit({
       userId: user.id,
       actorType: resolveActorType(roles),
       action: AuditEventEnum.LOGIN_SUCCESS,
@@ -502,7 +509,7 @@ export class AuthService {
     const roles = otpRecord.user.userRoles.map((userRole) => userRole.role.name);
 
     if (otpRecord.attempts >= 5) {
-      this.eventEmitter.emit(AuditEventEnum.SECURITY_ALERT, {
+      this.emitAudit({
         userId: otpRecord.user.id,
         actorType: resolveActorType(roles),
         action: AuditEventEnum.SECURITY_ALERT,
@@ -527,7 +534,7 @@ export class AuthService {
       });
 
       if (updatedOtp.attempts >= 5) {
-        this.eventEmitter.emit(AuditEventEnum.SECURITY_ALERT, {
+        this.emitAudit({
           userId: otpRecord.user.id,
           actorType: resolveActorType(roles),
           action: AuditEventEnum.SECURITY_ALERT,
@@ -573,7 +580,7 @@ export class AuthService {
     });
 
     // Audit after successful transaction
-    this.eventEmitter.emit(AuditEventEnum.PASSWORD_RESET, {
+    this.emitAudit({
       userId: otpRecord.user.id,
       actorType: resolveActorType(roles),
       action: AuditEventEnum.PASSWORD_RESET,
@@ -583,9 +590,8 @@ export class AuthService {
     });
 
     // Notify after successful transaction
-    this.eventEmitter.emit(NotificationEventEnum.PASSWORD_RESET, {
-      userId: otpRecord.user.id,
-    });
+    const resetEvent: PasswordResetEvent = { userId: otpRecord.user.id };
+    this.eventEmitter.emit(NotificationEventEnum.PASSWORD_RESET, resetEvent);
 
     return { message: 'password_reset_successful' };
   }
@@ -642,7 +648,7 @@ export class AuthService {
         data: { revokedAt: new Date() },
       });
 
-      this.eventEmitter.emit(AuditEventEnum.SECURITY_ALERT, {
+      this.emitAudit({
         userId: payload.sub,
         actorType: resolveActorType(payload.roles ?? []),
         action: AuditEventEnum.SECURITY_ALERT,
@@ -715,7 +721,7 @@ export class AuthService {
     }
 
     const roles = user.userRoles.map((userRole) => userRole.role.name);
-    const { userRoles, ...userData } = user;
+    const { userRoles: _userRoles, ...userData } = user;
 
     return { ...userData, roles };
   }
@@ -764,7 +770,7 @@ export class AuthService {
     const roles = dbUser.userRoles.map((userRole) => userRole.role.name);
 
     // Audit after successful transaction
-    this.eventEmitter.emit(AuditEventEnum.PASSWORD_CHANGED, {
+    this.emitAudit({
       userId: user.id,
       actorType: resolveActorType(roles),
       action: AuditEventEnum.PASSWORD_CHANGED,
@@ -774,9 +780,8 @@ export class AuthService {
     });
 
     // Notify after successful transaction
-    this.eventEmitter.emit(NotificationEventEnum.PASSWORD_CHANGED, {
-      userId: user.id,
-    });
+    const changedEvent: PasswordChangedEvent = { userId: user.id };
+    this.eventEmitter.emit(NotificationEventEnum.PASSWORD_CHANGED, changedEvent);
 
     return { message: 'password_changed' };
   }
@@ -802,7 +807,7 @@ export class AuthService {
     // Roles come straight from JWT payload via CurrentUserDto
     const roles = user.roles ?? [];
 
-    this.eventEmitter.emit(AuditEventEnum.LOGOUT, {
+    this.emitAudit({
       userId: user.id,
       actorType: resolveActorType(roles),
       action: AuditEventEnum.LOGOUT,
@@ -904,7 +909,7 @@ export class AuthService {
       console.log(`[EHTE DEV] Admin registration OTP for ${result.phone}: ${result.otp}`);
     }
 
-    this.eventEmitter.emit(AuditEventEnum.USER_CREATED, {
+    this.emitAudit({
       userId: result.adminId,
       actorType: resolveActorType([RolesEnum.ADMIN]),
       action: AuditEventEnum.USER_CREATED,
@@ -977,7 +982,7 @@ export class AuthService {
     }
 
     if (otpRecord.attempts >= 5) {
-      this.eventEmitter.emit(AuditEventEnum.SECURITY_ALERT, {
+      this.emitAudit({
         userId: admin.id,
         actorType: resolveActorType(roles),
         action: AuditEventEnum.SECURITY_ALERT,
@@ -1003,7 +1008,7 @@ export class AuthService {
       });
 
       if (updatedOtp.attempts >= 5) {
-        this.eventEmitter.emit(AuditEventEnum.SECURITY_ALERT, {
+        this.emitAudit({
           userId: admin.id,
           actorType: resolveActorType(roles),
           action: AuditEventEnum.SECURITY_ALERT,
@@ -1043,7 +1048,7 @@ export class AuthService {
       });
     });
 
-    this.eventEmitter.emit(AuditEventEnum.OTP_VERIFIED, {
+    this.emitAudit({
       userId: admin.id,
       actorType: resolveActorType(roles),
       action: AuditEventEnum.OTP_VERIFIED,
@@ -1078,7 +1083,7 @@ export class AuthService {
     );
 
     if (!user || !user.password || !isAdmin) {
-      this.eventEmitter.emit(AuditEventEnum.LOGIN_FAILED, {
+      this.emitAudit({
         userId: user?.id ?? null,
         actorType: resolveActorType(roles),
         action: AuditEventEnum.LOGIN_FAILED,
@@ -1098,7 +1103,7 @@ export class AuthService {
     try {
       this.assertNotLocked(user);
     } catch (err) {
-      this.eventEmitter.emit(AuditEventEnum.LOGIN_FAILED, {
+      this.emitAudit({
         userId: user.id,
         actorType: resolveActorType(roles),
         action: AuditEventEnum.LOGIN_FAILED,
@@ -1115,7 +1120,7 @@ export class AuthService {
     }
 
     if (!user.isActive) {
-      this.eventEmitter.emit(AuditEventEnum.LOGIN_FAILED, {
+      this.emitAudit({
         userId: user.id,
         actorType: resolveActorType(roles),
         action: AuditEventEnum.LOGIN_FAILED,
@@ -1139,7 +1144,7 @@ export class AuthService {
       // FIX: count the failure, possibly locking the account
       await this.recordFailedLogin(user.id);
 
-      this.eventEmitter.emit(AuditEventEnum.LOGIN_FAILED, {
+      this.emitAudit({
         userId: user.id,
         actorType: resolveActorType(roles),
         action: AuditEventEnum.LOGIN_FAILED,
@@ -1158,7 +1163,7 @@ export class AuthService {
     // FIX: correct password clears any prior failure count/lock
     await this.resetLoginAttempts(user);
 
-    this.eventEmitter.emit(AuditEventEnum.LOGIN_SUCCESS, {
+    this.emitAudit({
       userId: user.id,
       actorType: resolveActorType(roles),
       action: AuditEventEnum.LOGIN_SUCCESS,

@@ -32,6 +32,13 @@ export class ReportService {
     private readonly eventEmitter: EventEmitter2,
   ) {}
 
+  // AUDIT EMIT (typed helper): routes every audit emit through AuditEventPayload so a
+  // missing field (actorType, entity, etc.) is caught at compile time, not silently dropped
+
+  private emitAudit(payload: AuditEventPayload): void {
+    this.eventEmitter.emit(payload.action, payload);
+  }
+
   // ─────────────────────────────────────────────
   // CREATE REPORT
   // ─────────────────────────────────────────────
@@ -67,7 +74,7 @@ export class ReportService {
       },
     });
 
-    this.eventEmitter.emit(AuditEventEnum.REPORT_CREATED, {
+    this.emitAudit({
       userId: user.id,
       actorType: resolveActorType(this.getRoles(user)),
       action: AuditEventEnum.REPORT_CREATED,
@@ -178,7 +185,7 @@ export class ReportService {
       },
     });
 
-    this.eventEmitter.emit(AuditEventEnum.REPORT_UPDATED, {
+    this.emitAudit({
       userId: user.id,
       actorType: resolveActorType(this.getRoles(user)),
       action: AuditEventEnum.REPORT_UPDATED,
@@ -262,7 +269,7 @@ export class ReportService {
 
     const actorType = resolveActorType(this.getRoles(admin));
 
-    this.eventEmitter.emit(AuditEventEnum.REPORT_OPENED, {
+    this.emitAudit({
       userId: admin.id,
       actorType,
       action: AuditEventEnum.REPORT_OPENED,
@@ -271,7 +278,7 @@ export class ReportService {
       diff: { result: 'success' },
     });
 
-    this.eventEmitter.emit(AuditEventEnum.REPORTER_INFORMATION_OPENED, {
+    this.emitAudit({
       userId: admin.id,
       actorType,
       action: AuditEventEnum.REPORTER_INFORMATION_OPENED,
@@ -301,7 +308,7 @@ export class ReportService {
       data: { status: data.status },
     });
 
-    this.eventEmitter.emit(AuditEventEnum.REPORT_STATUS_CHANGED, {
+    this.emitAudit({
       userId: admin.id,
       actorType: resolveActorType(this.getRoles(admin)),
       action: AuditEventEnum.REPORT_STATUS_CHANGED,
@@ -340,7 +347,7 @@ export class ReportService {
       throw new NotFoundException('report_not_found');
     }
 
-    this.eventEmitter.emit(AuditEventEnum.REPORT_MORE_INFORMATION_REQUESTED, {
+    this.emitAudit({
       userId: admin.id,
       actorType: resolveActorType(this.getRoles(admin)),
       action: AuditEventEnum.REPORT_MORE_INFORMATION_REQUESTED,
@@ -379,7 +386,7 @@ export class ReportService {
       throw new NotFoundException('report_not_found');
     }
 
-    this.eventEmitter.emit(AuditEventEnum.REPORT_ASSIGNED, {
+    this.emitAudit({
       userId: admin.id,
       actorType: resolveActorType(this.getRoles(admin)),
       action: AuditEventEnum.REPORT_ASSIGNED,
@@ -416,7 +423,7 @@ export class ReportService {
       data: { status: ReportStatus.ESCALATED },
     });
 
-    this.eventEmitter.emit(AuditEventEnum.REPORT_ESCALATED, {
+    this.emitAudit({
       userId: admin.id,
       actorType: resolveActorType(this.getRoles(admin)),
       action: AuditEventEnum.REPORT_ESCALATED,

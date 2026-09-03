@@ -45,6 +45,13 @@ export class PostService {
     private readonly eventEmitter: EventEmitter2,
   ) {}
 
+  // AUDIT EMIT (typed helper): routes every audit emit through AuditEventPayload so a
+  // missing field (actorType, entity, etc.) is caught at compile time, not silently dropped
+
+  private emitAudit(payload: AuditEventPayload): void {
+    this.eventEmitter.emit(payload.action, payload);
+  }
+
   // ─────────────────────────────────────────────
   // CREATE POST
   //
@@ -58,6 +65,11 @@ export class PostService {
   // ─────────────────────────────────────────────
 
   async create(userId: string, data: CreatePostDto) {
+    // Explicitly typed so a mismatch between CreatePostDto's `type`
+    // field and the actual PostType enum is caught here, not at the
+    // Prisma query boundary.
+    const postType: PostType = data.type;
+
     const post = await this.prisma.post.create({
       data: {
         userId,
@@ -66,7 +78,7 @@ export class PostService {
 
         content: data.content,
 
-        type: data.type,
+        type: postType,
 
         involvesChild: data.involvesChild ?? false,
 
@@ -95,7 +107,7 @@ export class PostService {
      * Do not include post content, media URLs, password,
      * tokens, or other sensitive data in the audit payload.
      */
-    this.eventEmitter.emit(AuditEventEnum.POST_CREATED, {
+    this.emitAudit({
       userId,
       actorType: 'USER',
       action: AuditEventEnum.POST_CREATED,
@@ -135,6 +147,8 @@ export class PostService {
 
     const status = publishImmediately ? PostStatus.APPROVED : PostStatus.PENDING;
 
+    const postType: PostType = data.type;
+
     const post = await this.prisma.post.create({
       data: {
         userId: actor.id,
@@ -143,7 +157,7 @@ export class PostService {
 
         content: data.content,
 
-        type: data.type,
+        type: postType,
 
         involvesChild: data.involvesChild ?? false,
 
@@ -163,7 +177,7 @@ export class PostService {
       },
     });
 
-    this.eventEmitter.emit(AuditEventEnum.POST_CREATED, {
+    this.emitAudit({
       userId: actor.id,
       actorType: resolveActorType(actor.roles ?? []),
       action: AuditEventEnum.POST_CREATED,
@@ -181,10 +195,11 @@ export class PostService {
        * Routed through normal review — notify admins
        * the same way a user-submitted post would.
        */
-      this.eventEmitter.emit(NotificationEventEnum.NEW_POST, {
+      const newPostEvent: NewPostEvent = {
         postId: post.id,
         userId: actor.id,
-      });
+      };
+      this.eventEmitter.emit(NotificationEventEnum.NEW_POST, newPostEvent);
     }
 
     return post;
@@ -290,7 +305,7 @@ export class PostService {
       },
     });
 
-    this.eventEmitter.emit(AuditEventEnum.POST_UPDATED, {
+    this.emitAudit({
       userId,
       actorType: 'USER',
       action: AuditEventEnum.POST_UPDATED,
@@ -339,7 +354,7 @@ export class PostService {
       },
     });
 
-    this.eventEmitter.emit(AuditEventEnum.POST_UPDATED, {
+    this.emitAudit({
       userId,
       actorType: 'USER',
       action: AuditEventEnum.POST_UPDATED,
@@ -358,10 +373,11 @@ export class PostService {
      * The notification listener decides who should receive
      * the notification (for example administrators).
      */
-    this.eventEmitter.emit(NotificationEventEnum.NEW_POST, {
+    const newPostEvent: NewPostEvent = {
       postId: post.id,
       userId,
-    });
+    };
+    this.eventEmitter.emit(NotificationEventEnum.NEW_POST, newPostEvent);
 
     return post;
   }
@@ -382,9 +398,14 @@ export class PostService {
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
 
+    // Explicitly typed so a mismatch between the DTO's `type` field
+    // and the actual PostType enum is caught here, not at the
+    // Prisma query boundary.
+    const postType: PostType | undefined = query.type;
+
     const where: Prisma.PostWhereInput = {
       status: PostStatus.PUBLISHED,
-      ...(query.type ? { type: query.type } : {}),
+      ...(postType ? { type: postType } : {}),
     };
 
     const [items, total] = await this.prisma.$transaction([
@@ -441,9 +462,14 @@ export class PostService {
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
 
+    // Explicitly typed so a mismatch between the DTO's `type` field
+    // and the actual PostType enum is caught here, not at the
+    // Prisma query boundary.
+    const postType: PostType | undefined = query.type;
+
     const where: Prisma.PostWhereInput = {
       ...(query.status ? { status: query.status } : {}),
-      ...(query.type ? { type: query.type } : {}),
+      ...(postType ? { type: postType } : {}),
       ...(query.involvesChild !== undefined ? { involvesChild: query.involvesChild } : {}),
     };
 
@@ -508,7 +534,7 @@ export class PostService {
     /*
      * Generic status change.
      */
-    this.eventEmitter.emit(AuditEventEnum.POST_UPDATED, {
+    this.emitAudit({
       userId: user.id,
       actorType: resolveActorType(user.roles ?? []),
       action: AuditEventEnum.POST_UPDATED,
@@ -561,7 +587,7 @@ export class PostService {
     /*
      * Audit.
      */
-    this.eventEmitter.emit(AuditEventEnum.POST_APPROVED, {
+    this.emitAudit({
       userId: user.id,
       actorType: resolveActorType(user.roles ?? []),
       action: AuditEventEnum.POST_APPROVED,
@@ -579,10 +605,11 @@ export class PostService {
     /*
      * Notify post owner.
      */
-    this.eventEmitter.emit(NotificationEventEnum.POST_APPROVED, {
+    const postApprovedEvent: PostApprovedEvent = {
       postId,
       userId: post.userId,
-    });
+    };
+    this.eventEmitter.emit(NotificationEventEnum.POST_APPROVED, postApprovedEvent);
 
     return updated;
   }
@@ -613,7 +640,7 @@ export class PostService {
       },
     });
 
-    this.eventEmitter.emit(AuditEventEnum.POST_UPDATED, {
+    this.emitAudit({
       userId: user.id,
       actorType: resolveActorType(user.roles ?? []),
       action: AuditEventEnum.POST_UPDATED,
@@ -660,7 +687,7 @@ export class PostService {
     /*
      * Audit.
      */
-    this.eventEmitter.emit(AuditEventEnum.POST_PUBLISHED, {
+    this.emitAudit({
       userId: user.id,
       actorType: resolveActorType(user.roles ?? []),
       action: AuditEventEnum.POST_PUBLISHED,
@@ -706,7 +733,7 @@ export class PostService {
     /*
      * Audit.
      */
-    this.eventEmitter.emit(AuditEventEnum.POST_REJECTED, {
+    this.emitAudit({
       userId: user.id,
       actorType: resolveActorType(user.roles ?? []),
       action: AuditEventEnum.POST_REJECTED,
@@ -723,11 +750,12 @@ export class PostService {
     /*
      * Notify post owner.
      */
-    this.eventEmitter.emit(NotificationEventEnum.POST_REJECTED, {
+    const postRejectedEvent: PostRejectedEvent = {
       postId,
       userId: post.userId,
-      reason: data.reason,
-    });
+      title: post.title ?? undefined,
+    };
+    this.eventEmitter.emit(NotificationEventEnum.POST_REJECTED, postRejectedEvent);
 
     return updated;
   }
@@ -756,7 +784,7 @@ export class PostService {
     /*
      * Audit.
      */
-    this.eventEmitter.emit(AuditEventEnum.POST_UNPUBLISHED, {
+    this.emitAudit({
       userId: user.id,
       actorType: resolveActorType(user.roles ?? []),
       action: AuditEventEnum.POST_UNPUBLISHED,

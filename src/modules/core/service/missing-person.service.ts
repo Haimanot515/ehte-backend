@@ -27,6 +27,13 @@ export class MissingPersonService {
     private readonly eventEmitter: EventEmitter2,
   ) {}
 
+  // AUDIT EMIT (typed helper): routes every audit emit through AuditEventPayload so a
+  // missing field (actorType, entity, etc.) is caught at compile time, not silently dropped
+
+  private emitAudit(payload: AuditEventPayload): void {
+    this.eventEmitter.emit(payload.action, payload);
+  }
+
   // ─────────────────────────────────────────────
   // CREATE
   // ─────────────────────────────────────────────
@@ -60,7 +67,7 @@ export class MissingPersonService {
     // AUDIT
     // ─────────────────────────────────────────
 
-    this.eventEmitter.emit(AuditEventEnum.MISSING_PERSON_CREATED, {
+    this.emitAudit({
       userId: user.id,
 
       actorType: resolveActorType(user.roles ?? []),
@@ -281,7 +288,7 @@ export class MissingPersonService {
     // AUDIT
     // ─────────────────────────────────────────
 
-    this.eventEmitter.emit(AuditEventEnum.MISSING_PERSON_UPDATED, {
+    this.emitAudit({
       userId: user.id,
 
       actorType: resolveActorType(user.roles ?? []),
@@ -463,7 +470,7 @@ export class MissingPersonService {
     // AUDIT
     // ─────────────────────────────────────────
 
-    this.eventEmitter.emit(auditEvent, {
+    this.emitAudit({
       userId: admin.id,
 
       actorType: resolveActorType(admin.roles ?? []),

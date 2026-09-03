@@ -37,6 +37,17 @@ export default tseslint.config(
       // Allow any where needed
       '@typescript-eslint/no-explicit-any': 'off',
 
+      // Treat underscore-prefixed vars/args as intentionally unused
+      // (e.g. `const { userRoles: _userRoles, ...rest } = user;`)
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        {
+          argsIgnorePattern: '^_',
+          varsIgnorePattern: '^_',
+          destructuredArrayIgnorePattern: '^_',
+        },
+      ],
+
       // Disable strict type-safety lint errors
       '@typescript-eslint/no-unsafe-assignment': 'off',
       '@typescript-eslint/no-unsafe-call': 'off',

@@ -87,7 +87,7 @@ export class SupportService {
 
     const roles = (user as unknown as { roles?: string[] }).roles ?? [];
 
-    this.eventEmitter.emit(AuditEventEnum.SUPPORT_CREATED, {
+    const createdPayload: AuditEventPayload = {
       userId: user.id,
       actorType: resolveActorType(roles),
       action: AuditEventEnum.SUPPORT_CREATED,
@@ -100,7 +100,9 @@ export class SupportService {
         type: support.type,
         agreementType: support.agreementType,
       },
-    });
+    };
+
+    this.eventEmitter.emit(AuditEventEnum.SUPPORT_CREATED, createdPayload);
 
     // Note: this notifies as if payment were confirmed at creation
     // time, which is misleading — a PENDING support hasn't been
@@ -205,7 +207,7 @@ export class SupportService {
     }
 
     if (auditEvent) {
-      this.eventEmitter.emit(auditEvent, {
+      const statusPayload: AuditEventPayload = {
         userId: support.userId,
         actorType: resolveActorType([]),
         action: auditEvent,
@@ -217,7 +219,9 @@ export class SupportService {
           currentStatus: updatedSupport.status,
           result: 'success',
         },
-      });
+      };
+
+      this.eventEmitter.emit(auditEvent, statusPayload);
     }
 
     if (status === SupportStatus.CONFIRMED) {

@@ -25,6 +25,13 @@ export class InformationSubmissionService {
     private readonly eventEmitter: EventEmitter2,
   ) {}
 
+  // AUDIT EMIT (typed helper): routes every audit emit through AuditEventPayload so a
+  // missing field (actorType, entity, etc.) is caught at compile time, not silently dropped
+
+  private emitAudit(payload: AuditEventPayload): void {
+    this.eventEmitter.emit(payload.action, payload);
+  }
+
   // ─────────────────────────────────────────────
   // CREATE INFORMATION
   // Only allowed against APPROVED (publicly visible) cases.
@@ -72,7 +79,7 @@ export class InformationSubmissionService {
     // AUDIT — INFORMATION SUBMITTED
     // ─────────────────────────────────────────────
 
-    this.eventEmitter.emit(AuditEventEnum.INFORMATION_SUBMITTED, {
+    this.emitAudit({
       userId,
 
       actorType: resolveActorType(['USER']),
@@ -309,7 +316,7 @@ export class InformationSubmissionService {
     // AUDIT — REVIEW / REJECT
     // ─────────────────────────────────────────────
 
-    this.eventEmitter.emit(auditEvent, {
+    this.emitAudit({
       userId: reviewer.id,
 
       actorType: resolveActorType(

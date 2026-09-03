@@ -1,3 +1,12 @@
-echo "Running Ehte pre-commit checks..."
+echo "🔍 Running pre-commit checks..."
+
+echo "→ Formatting code..."
+npm run format
+
+echo "→ Linting code..."
+npm run lint
+
+echo "→ Building project..."
 npm run build
+
 echo "✅ Pre-commit checks passed!"
