@@ -3,6 +3,9 @@ echo "🔍 Running pre-commit checks..."
 echo "→ Formatting code..."
 npm run format
 
+echo "→ Type-checking..."
+npm run type-check
+
 echo "→ Linting code..."
 npm run lint
 
