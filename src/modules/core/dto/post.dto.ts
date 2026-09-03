@@ -23,10 +23,10 @@ export class CreatePostDto {
 
   @IsString()
   @MinLength(3)
-  content: string;
+  content!: string;
 
   @IsEnum(PostType)
-  type: PostType;
+  type!: PostType;
 
   // Added — flags content involving a child, driving the
   // additional-review gate required by PRD §32. Optional so
@@ -131,7 +131,7 @@ export class UpdatePostDto {
 export class RequestPostChangesDto {
   @IsString()
   @MinLength(3)
-  message: string;
+  message!: string;
 }
 
 // ─────────────────────────────────────────────
@@ -158,7 +158,7 @@ export class ApprovePostDto {
 export class RejectPostDto {
   @IsString()
   @MinLength(3)
-  reason: string;
+  reason!: string;
 }
 
 // ─────────────────────────────────────────────
