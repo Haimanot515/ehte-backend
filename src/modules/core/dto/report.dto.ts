@@ -1,15 +1,33 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsArray, IsDateString, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
+import {
+  IsArray,
+  IsDateString,
+  IsEnum,
+  IsIn,
+  IsInt,
+  IsOptional,
+  IsString,
+  IsUUID,
+  MaxLength,
+  MinLength,
+  Min,
+} from 'class-validator';
+import { Type } from 'class-transformer';
+
+import { ReportStatus, ReportCategory } from '@prisma/client';
+
+// ─────────────────────────────────────────────
+// REPORTER-FACING
+// ─────────────────────────────────────────────
 
 export class CreateReportDto {
   @ApiProperty({
-    example: 'Domestic Violence',
+    enum: ReportCategory,
+    example: ReportCategory.HARASSMENT,
     description: 'Category of the incident',
   })
-  @IsString()
-  @MinLength(2)
-  @MaxLength(100)
-  category: string;
+  @IsEnum(ReportCategory)
+  category: ReportCategory;
 
   @ApiProperty({
     example: 'The incident happened at approximately 8 PM...',
@@ -92,13 +110,12 @@ export class CreateReportDto {
 
 export class UpdateReportDto {
   @ApiPropertyOptional({
-    example: 'Domestic Violence',
+    enum: ReportCategory,
+    example: ReportCategory.HARASSMENT,
   })
   @IsOptional()
-  @IsString()
-  @MinLength(2)
-  @MaxLength(100)
-  category?: string;
+  @IsEnum(ReportCategory)
+  category?: ReportCategory;
 
   @ApiPropertyOptional({
     example: 'Updated description of the incident...',
@@ -171,4 +188,106 @@ export class UpdateReportDto {
   @IsArray()
   @IsString({ each: true })
   other?: string[];
+}
+
+// ─────────────────────────────────────────────
+// ADMIN-FACING
+// ─────────────────────────────────────────────
+
+export class AdminReportQueryDto {
+  @ApiPropertyOptional({ enum: ReportStatus })
+  @IsOptional()
+  @IsEnum(ReportStatus)
+  status?: ReportStatus;
+
+  @ApiPropertyOptional({ enum: ReportCategory })
+  @IsOptional()
+  @IsEnum(ReportCategory)
+  category?: ReportCategory;
+
+  @ApiPropertyOptional({ description: 'Filter by assigned admin userId' })
+  @IsOptional()
+  @IsUUID()
+  assignedTo?: string;
+
+  @ApiPropertyOptional({
+    enum: ['assigned', 'unassigned'],
+    description:
+      'Filter by whether a report has any admin assigned, regardless of who. Ignored if assignedTo is also provided (assignedTo is more specific).',
+  })
+  @IsOptional()
+  @IsIn(['assigned', 'unassigned'])
+  assignmentStatus?: 'assigned' | 'unassigned';
+
+  @ApiPropertyOptional({ example: 1 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number;
+
+  @ApiPropertyOptional({ example: 20 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  limit?: number;
+}
+
+export class UpdateReportStatusDto {
+  @ApiProperty({ enum: ReportStatus, description: 'New status for the report' })
+  @IsEnum(ReportStatus)
+  status: ReportStatus;
+
+  @ApiPropertyOptional({ description: 'Optional internal note explaining the status change' })
+  @IsOptional()
+  @IsString()
+  note?: string;
+}
+
+export class RequestMoreInformationDto {
+  @ApiProperty({
+    example: 'Could you clarify the exact time and location of the incident?',
+    description: 'Message sent to the reporter requesting more detail',
+  })
+  @IsString()
+  message: string;
+}
+
+export class RespondToInformationRequestDto {
+  @ApiProperty({
+    example: 'The incident took place near the west entrance around 6:30pm.',
+    description: "The reporter's response to the admin's information request",
+  })
+  @IsString()
+  responseMessage: string;
+
+  @ApiPropertyOptional({
+    type: [String],
+    description: 'Optional supporting files (URLs) attached to the response',
+  })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  responseFiles?: string[];
+}
+
+export class AssignReportDto {
+  @ApiProperty({ description: 'Id of the admin the report is being assigned to' })
+  @IsUUID()
+  assignedToUserId: string;
+
+  @ApiPropertyOptional({ description: 'Optional internal note about the assignment' })
+  @IsOptional()
+  @IsString()
+  note?: string;
+}
+
+export class EscalateReportDto {
+  @ApiProperty({
+    example: 'Immediate safety risk to the reporter',
+    description: 'Reason the report is being escalated',
+  })
+  @IsString()
+  reason: string;
 }

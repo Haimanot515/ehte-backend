@@ -1,159 +1,34 @@
-
-version: "3.3"
-
 services:
-
-  postgres:
-    image: postgres:16
-    container_name: ehte-postgres
-    restart: unless-stopped
-
-    environment:
-      POSTGRES_DB: "${POSTGRES_DB}"
-      POSTGRES_USER: "${POSTGRES_USER}"
-      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
-
-    volumes:
-      - ehte_ehte_postgres_data:/var/lib/postgresql/data
-
-    healthcheck:
-      test:
-        - CMD-SHELL
-        - pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}
-      interval: 10s
-      timeout: 5s
-      retries: 10
-
-
   minio:
     image: minio/minio:latest
     container_name: ehte-minio
     restart: unless-stopped
-
-    command: server /data --console-address ":9001"
-
     environment:
-      MINIO_ROOT_USER: "${MINIO_ACCESS_KEY}"
-      MINIO_ROOT_PASSWORD: "${MINIO_SECRET_KEY}"
-
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin123}
     ports:
       - "9010:9000"
       - "9011:9001"
-
     volumes:
-      - ehte-minio-data:/data
-
+      - minio_data:/data
+    command: server /data --console-address ":9001"
     healthcheck:
-      test:
-        - CMD
-        - curl
-        - -f
-        - http://localhost:9000/minio/health/live
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 10s
       timeout: 5s
       retries: 10
 
-
-  api:
-    build:
-      context: .
-      dockerfile: Dockerfile
-
-    image: ehte-api:latest
-    container_name: ehte-api
+  app:
+    image: ${REGISTRY_HOST}/${IMAGE_NAME:-ehte_backend}:${IMAGE_TAG:-dev-latest}
+    container_name: ehte_backend
     restart: unless-stopped
-
     ports:
-      - "3000:3000"
-
-    environment:
-
-      # ─────────────────────────────────────
-      # APPLICATION
-      # ─────────────────────────────────────
-
-      NODE_ENV: "${NODE_ENV}"
-      PORT: "${PORT}"
-
-      # ─────────────────────────────────────
-      # SWAGGER
-      # ─────────────────────────────────────
-
-      SWAGGER_ENABLED: "${SWAGGER_ENABLED}"
-      SWAGGER_USER: "${SWAGGER_USER}"
-      SWAGGER_PASSWORD: "${SWAGGER_PASSWORD}"
-
-      # ─────────────────────────────────────
-      # DATABASE
-      # ─────────────────────────────────────
-
-      DATABASE_URL: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}"
-
-      # ─────────────────────────────────────
-      # JWT
-      # ─────────────────────────────────────
-
-      JWT_SECRET: "${JWT_SECRET}"
-      JWT_EXPIRES_IN: "${JWT_EXPIRES_IN}"
-
-      JWT_REFRESH_SECRET: "${JWT_REFRESH_SECRET}"
-      JWT_REFRESH_EXPIRES_IN: "${JWT_REFRESH_EXPIRES_IN}"
-
-      # ─────────────────────────────────────
-      # OTP
-      # ─────────────────────────────────────
-
-      OTP_EXPIRES_IN_MINUTES: "${OTP_EXPIRES_IN_MINUTES}"
-
-      # ─────────────────────────────────────
-      # CORS
-      # ─────────────────────────────────────
-
-      CORS_ORIGIN: "${CORS_ORIGIN}"
-
-      # ─────────────────────────────────────
-      # AFRO MESSAGE
-      # ─────────────────────────────────────
-
-      AFROMESSAGE_URL: "${AFROMESSAGE_URL}"
-      AFROMESSAGE_TOKEN: "${AFROMESSAGE_TOKEN}"
-      AFROMESSAGE_IDENTIFIER_ID: "${AFROMESSAGE_IDENTIFIER_ID}"
-      AFROMESSAGE_SENDER_NAME: "${AFROMESSAGE_SENDER_NAME}"
-
-      # ─────────────────────────────────────
-      # MINIO
-      # ─────────────────────────────────────
-
-      MINIO_ENDPOINT: "${MINIO_ENDPOINT_DOCKER}"
-      MINIO_PORT: "${MINIO_PORT_DOCKER}"
-      MINIO_USE_SSL: "${MINIO_USE_SSL}"
-
-      MINIO_ACCESS_KEY: "${MINIO_ACCESS_KEY}"
-      MINIO_SECRET_KEY: "${MINIO_SECRET_KEY}"
-
-      MINIO_BUCKET: "${MINIO_BUCKET}"
-      MINIO_BUCKET_NAME: "${MINIO_BUCKET_NAME}"
-
-      MINIO_PUBLIC_URL: "${MINIO_PUBLIC_URL}"
-
-      DURATION_OF_PRE_SIGNED_DOCUMENT: "${DURATION_OF_PRE_SIGNED_DOCUMENT}"
-
-      # ─────────────────────────────────────
-      # ADMIN
-      # ─────────────────────────────────────
-
-      ADMIN_PHONE: "${ADMIN_PHONE}"
-      ADMIN_NAME: "${ADMIN_NAME}"
-      ADMIN_PASSWORD: "${ADMIN_PASSWORD}"
-
+      - "3009:3000"
+    env_file:
+      - ehte.env
     depends_on:
-      - postgres
-      - minio
-
+      minio:
+        condition: service_healthy
 
 volumes:
-  ehte-minio-data:
-    external: true
-
-  ehte_ehte_postgres_data:
-    external: true
+  minio_data:

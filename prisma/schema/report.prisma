@@ -2,6 +2,16 @@
 // EHTE FEATURES — Report
 // ─────────────────────────────────────────────
 
+enum ReportCategory {
+  HARASSMENT
+  ABUSE
+  FRAUD
+  THREAT
+  DISCRIMINATION
+  SAFETY_CONCERN
+  OTHER
+}
+
 enum ReportStatus {
   PENDING
   RECEIVED
@@ -14,13 +24,18 @@ enum ReportStatus {
   REJECTED
 }
 
+enum InformationRequestStatus {
+  PENDING
+  RESPONDED
+}
+
 model Report {
   id     String @id @default(uuid())
   userId String
 
   caseReference String @unique
 
-  category    String
+  category    ReportCategory
   description String
 
   location   String?
@@ -35,13 +50,45 @@ model Report {
 
   status ReportStatus @default(PENDING)
 
+  assignedToId String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user       User  @relation("ReportReporter", fields: [userId], references: [id], onDelete: Cascade)
+  assignedTo User? @relation("ReportAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
+
+  informationRequests ReportInformationRequest[]
 
   @@index([userId])
   @@index([status])
+  @@index([assignedToId])
   @@index([caseReference])
+  @@index([category])
   @@map("report")
+}
+
+model ReportInformationRequest {
+  id       String @id @default(uuid())
+  reportId String
+
+  requestedById String
+  message       String
+
+  status InformationRequestStatus @default(PENDING)
+
+  responseMessage String?
+  responseFiles   String[] @default([])
+  respondedAt     DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  report      Report @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  requestedBy User   @relation("InfoRequestRequestedBy", fields: [requestedById], references: [id], onDelete: Cascade)
+
+  @@index([reportId])
+  @@index([requestedById])
+  @@index([status])
+  @@map("report_information_request")
 }

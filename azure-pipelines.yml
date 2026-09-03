@@ -1,4 +1,3 @@
-
 name: $(Date:yyyyMMdd).$(Rev:r)
 
 trigger:
@@ -15,236 +14,138 @@ pr:
 
 variables:
   - name: IMAGE_NAME
-    value: ehte-api
+    value: ehte_backend
 
 stages:
 
-# ============================================================
+# ─────────────────────────────────────────────
 # PR → DEV : CI ONLY
-# ============================================================
-
+# ─────────────────────────────────────────────
 - stage: CI_DEV
   displayName: "CI (PR → dev)"
-
-  condition: and(
-    eq(variables['Build.Reason'], 'PullRequest'),
-    eq(variables['System.PullRequest.TargetBranchName'], 'dev')
-  )
-
+  condition: and(eq(variables['Build.Reason'], 'PullRequest'), eq(variables['System.PullRequest.TargetBranchName'], 'dev'))
   jobs:
-
     - job: build
-      displayName: "Install, Test & Build"
-
       pool:
         name: pitron-dev
-
       steps:
-
         - checkout: self
-          clean: true
-
+          clean: 'true'
         - task: UseNode@1
           inputs:
             version: "22.x"
-
         - script: |
             set -e
-
             npm ci
-
-            # Temporary CI database URL.
-            # Only used for Prisma generate.
             export DATABASE_URL="postgresql://user:pass@localhost:5432/dummy"
-
             export JWT_SECRET="ci-temp-secret"
-
-            npx prisma generate
-            npx prisma format || true
-
-            npm run lint || true
+            npx prisma generate --schema=./prisma/schema
+            npx prisma format --schema=./prisma/schema || true
+            npm run format
+            npm run type-check
+            npm run lint
             npm run test --if-present || true
-
             npm run build
+          displayName: "Install, Format, Type-check, Lint, Test & Build"
 
-          displayName: "Install, Test & Build"
-
-
-# ============================================================
+# ─────────────────────────────────────────────
 # MERGE → DEV : CD DEV
-# ============================================================
-
+# ─────────────────────────────────────────────
 - stage: CD_DEV
   displayName: "CD (dev) - Build, Push, Deploy"
-
-  condition: and(
-    ne(variables['Build.Reason'], 'PullRequest'),
-    eq(variables['Build.SourceBranch'], 'refs/heads/dev')
-  )
-
+  condition: and(ne(variables['Build.Reason'], 'PullRequest'), eq(variables['Build.SourceBranch'], 'refs/heads/dev'))
   variables:
-    - group: ehte-registry-dev
-
+    - group: ehte_backend-registry-dev
   jobs:
-
-    # ========================================================
     # BUILD + PUSH IMAGE
-    # ========================================================
-
     - job: build_push
-      displayName: "Build & Push Ehte Docker Image"
-
+      displayName: "Build & Push Docker Image"
       pool:
         name: pitron-dev
-
       steps:
-
         - checkout: self
-          clean: true
-
-        # ----------------------------------------------------
-        # Validate registry variables
-        # ----------------------------------------------------
+          clean: 'true'
 
         - script: |
             set -e
-
             echo "Checking registry variables..."
-
             if [ -z "$REGISTRY_HOST" ]; then
               echo "REGISTRY_HOST is EMPTY"
               exit 1
             fi
-
             if [ -z "$REGISTRY_USER" ]; then
               echo "REGISTRY_USER is EMPTY"
               exit 1
             fi
-
             if [ -z "$REGISTRY_PASSWORD" ]; then
               echo "REGISTRY_PASSWORD is EMPTY"
               exit 1
             fi
-
             echo "Registry variables validated successfully."
-
           displayName: "Validate Registry Variables"
-
           env:
             REGISTRY_HOST: $(REGISTRY_HOST)
             REGISTRY_USER: $(REGISTRY_USER)
             REGISTRY_PASSWORD: $(REGISTRY_PASSWORD)
 
-
-        # ----------------------------------------------------
-        # Docker login
-        # ----------------------------------------------------
-
         - script: |
             set -e
-
             echo "$REGISTRY_PASSWORD" | docker login "$REGISTRY_HOST" \
               -u "$REGISTRY_USER" \
               --password-stdin
-
           displayName: "Docker Login"
-
           env:
             REGISTRY_HOST: $(REGISTRY_HOST)
             REGISTRY_USER: $(REGISTRY_USER)
             REGISTRY_PASSWORD: $(REGISTRY_PASSWORD)
 
-
-        # ----------------------------------------------------
-        # Build Ehte image
-        # ----------------------------------------------------
-
         - script: |
             set -e
-
             docker build \
               --pull \
               --no-cache \
               -t $REGISTRY_HOST/$IMAGE_NAME:dev-latest \
               .
-
-          displayName: "Build Ehte Docker Image"
-
+          displayName: "Build Docker Image"
           env:
             REGISTRY_HOST: $(REGISTRY_HOST)
-
-
-        # ----------------------------------------------------
-        # Push Ehte image
-        # ----------------------------------------------------
 
         - script: |
             set -e
-
             docker push $REGISTRY_HOST/$IMAGE_NAME:dev-latest
-
-          displayName: "Push Ehte Docker Image"
-
+          displayName: "Push Docker Image"
           env:
             REGISTRY_HOST: $(REGISTRY_HOST)
 
-
-    # ========================================================
     # DEPLOY DEV
-    # ========================================================
-
     - job: deploy_dev
-      displayName: "Deploy Ehte Development"
-
+      displayName: "Deploy Development"
       dependsOn: build_push
-
       pool:
         name: pitron-dev
-
       steps:
-
         - checkout: none
-
-        # ----------------------------------------------------
-        # Download Ehte development environment
-        # ----------------------------------------------------
 
         - task: DownloadSecureFile@1
           name: envFile
-          displayName: "Download Ehte Development Environment"
-
+          displayName: "Download env file from Secure Files"
           inputs:
             secureFile: "ehte_dev.env"
 
-
         - script: |
-            cp $(envFile.secureFilePath) \
-              $(System.DefaultWorkingDirectory)/.env
-
-          displayName: "Place Ehte Environment File"
-
-
-        # ----------------------------------------------------
-        # Deploy
-        # ----------------------------------------------------
+            cp $(envFile.secureFilePath) $(System.DefaultWorkingDirectory)/ehte.env
+          displayName: "Place env file in workspace"
 
         - script: |
             set -e
-
             echo "$REGISTRY_PASSWORD" | docker login "$REGISTRY_HOST" \
               -u "$REGISTRY_USER" \
               --password-stdin
-
             docker pull $REGISTRY_HOST/$IMAGE_NAME:dev-latest
-
             docker compose down || true
-
             docker compose up -d
-
             docker ps
-
-          displayName: "Deploy Ehte DEV"
-
+          displayName: "Deploy DEV"
           env:
             REGISTRY_HOST: $(REGISTRY_HOST)
             REGISTRY_USER: $(REGISTRY_USER)
@@ -252,234 +153,137 @@ stages:
             IMAGE_NAME: $(IMAGE_NAME)
             IMAGE_TAG: dev-latest
 
-
-# ============================================================
+# ─────────────────────────────────────────────
 # PR → MASTER : CI ONLY
-# ============================================================
-
+# ─────────────────────────────────────────────
 - stage: CI_PROD
   displayName: "CI (PR → master)"
-
-  condition: and(
-    eq(variables['Build.Reason'], 'PullRequest'),
-    eq(variables['System.PullRequest.TargetBranchName'], 'master')
-  )
-
+  condition: and(eq(variables['Build.Reason'], 'PullRequest'), eq(variables['System.PullRequest.TargetBranchName'], 'master'))
   jobs:
-
     - job: build
-      displayName: "Install, Test & Build"
-
       pool:
         name: pitron-dev
-
       steps:
-
         - checkout: self
-          clean: true
-
+          clean: 'true'
         - task: UseNode@1
           inputs:
             version: "22.x"
-
         - script: |
             set -e
-
             npm ci
-
             export DATABASE_URL="postgresql://user:pass@localhost:5432/dummy"
             export JWT_SECRET="ci-temp-secret"
-
-            npx prisma generate
-            npx prisma format || true
-
-            npm run lint || true
+            npx prisma generate --schema=./prisma/schema
+            npx prisma format --schema=./prisma/schema || true
+            npm run format
+            npm run type-check
+            npm run lint
             npm run test --if-present || true
-
             npm run build
+          displayName: "Install, Format, Type-check, Lint, Test & Build"
 
-          displayName: "Install, Test & Build"
-
-
-# ============================================================
+# ─────────────────────────────────────────────
 # MERGE → MASTER : CD PROD
-# ============================================================
-
+# ─────────────────────────────────────────────
 - stage: CD_PROD
   displayName: "CD (prod) - Build, Push, Deploy"
-
-  condition: and(
-    ne(variables['Build.Reason'], 'PullRequest'),
-    eq(variables['Build.SourceBranch'], 'refs/heads/master')
-  )
-
+  condition: and(ne(variables['Build.Reason'], 'PullRequest'), eq(variables['Build.SourceBranch'], 'refs/heads/master'))
   variables:
-    - group: ehte-registry-prod
-
+    - group: ehte_backend-registry-prod
   jobs:
-
-    # ========================================================
     # BUILD + PUSH IMAGE
-    # ========================================================
-
     - job: build_push
-      displayName: "Build & Push Ehte Production Image"
-
+      displayName: "Build & Push Docker Image"
       pool:
         name: pitron-dev
-
       steps:
-
         - checkout: self
-          clean: true
-
-        # ----------------------------------------------------
-        # Validate registry variables
-        # ----------------------------------------------------
+          clean: 'true'
 
         - script: |
             set -e
-
             echo "Checking registry variables..."
-
             if [ -z "$REGISTRY_HOST" ]; then
               echo "REGISTRY_HOST is EMPTY"
               exit 1
             fi
-
             if [ -z "$REGISTRY_USER" ]; then
               echo "REGISTRY_USER is EMPTY"
               exit 1
             fi
-
             if [ -z "$REGISTRY_PASSWORD" ]; then
               echo "REGISTRY_PASSWORD is EMPTY"
               exit 1
             fi
-
             echo "Registry variables validated successfully."
-
           displayName: "Validate Registry Variables"
-
           env:
             REGISTRY_HOST: $(REGISTRY_HOST)
             REGISTRY_USER: $(REGISTRY_USER)
             REGISTRY_PASSWORD: $(REGISTRY_PASSWORD)
 
-
-        # ----------------------------------------------------
-        # Docker login
-        # ----------------------------------------------------
-
         - script: |
             set -e
-
             echo "$REGISTRY_PASSWORD" | docker login "$REGISTRY_HOST" \
               -u "$REGISTRY_USER" \
               --password-stdin
-
           displayName: "Docker Login"
-
           env:
             REGISTRY_HOST: $(REGISTRY_HOST)
             REGISTRY_USER: $(REGISTRY_USER)
             REGISTRY_PASSWORD: $(REGISTRY_PASSWORD)
 
-
-        # ----------------------------------------------------
-        # Build production image
-        # ----------------------------------------------------
-
         - script: |
             set -e
-
             docker build \
               --pull \
               --no-cache \
               -t $REGISTRY_HOST/$IMAGE_NAME:prod-latest \
               .
-
-          displayName: "Build Ehte Production Image"
-
+          displayName: "Build Docker Image"
           env:
             REGISTRY_HOST: $(REGISTRY_HOST)
-
-
-        # ----------------------------------------------------
-        # Push production image
-        # ----------------------------------------------------
 
         - script: |
             set -e
-
             docker push $REGISTRY_HOST/$IMAGE_NAME:prod-latest
-
-          displayName: "Push Ehte Production Image"
-
+          displayName: "Push Docker Image"
           env:
             REGISTRY_HOST: $(REGISTRY_HOST)
 
-
-    # ========================================================
     # DEPLOY PROD
-    # ========================================================
-
     - job: deploy_prod
-      displayName: "Deploy Ehte Production"
-
+      displayName: "Deploy Production"
       dependsOn: build_push
-
       pool:
         name: pitron-dev
-
       steps:
-
         - checkout: none
-
-        # ----------------------------------------------------
-        # Download Ehte production environment
-        # ----------------------------------------------------
 
         - task: DownloadSecureFile@1
           name: envFile
-          displayName: "Download Ehte Production Environment"
-
+          displayName: "Download env file from Secure Files"
           inputs:
             secureFile: "ehte_prod.env"
 
-
         - script: |
-            cp $(envFile.secureFilePath) \
-              $(System.DefaultWorkingDirectory)/.env
-
-          displayName: "Place Ehte Production Environment"
-
-
-        # ----------------------------------------------------
-        # Deploy
-        # ----------------------------------------------------
+            cp $(envFile.secureFilePath) $(System.DefaultWorkingDirectory)/ehte.env
+          displayName: "Place env file in workspace"
 
         - script: |
             set -e
-
             echo "$REGISTRY_PASSWORD" | docker login "$REGISTRY_HOST" \
               -u "$REGISTRY_USER" \
               --password-stdin
-
             docker pull $REGISTRY_HOST/$IMAGE_NAME:prod-latest
-
             docker compose down || true
-
             docker compose up -d
-
             docker ps
-
-          displayName: "Deploy Ehte PROD"
-
+          displayName: "Deploy PROD"
           env:
             REGISTRY_HOST: $(REGISTRY_HOST)
             REGISTRY_USER: $(REGISTRY_USER)
             REGISTRY_PASSWORD: $(REGISTRY_PASSWORD)
             IMAGE_NAME: $(IMAGE_NAME)
             IMAGE_TAG: prod-latest
-
