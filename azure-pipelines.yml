@@ -184,6 +184,11 @@ stages:
           displayName: "Install, Format, Type-check, Lint, Test & Build"
 
 # ─────────────────────────────────────────────
+ 
+          displayName: "Install, Test & Build"
+
+
+# ============================================================
 # MERGE → MASTER : CD PROD
 # ─────────────────────────────────────────────
 - stage: CD_PROD
