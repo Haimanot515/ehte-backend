@@ -1,5 +1,12 @@
 // ─────────────────────────────────────────────
 // EHTE FEATURES — Post
+//
+// Added `reviewNote` — persists the admin's message
+// from requestChanges() or reason from reject()
+// directly on the row, so GET /posts/me/:id shows the
+// owner why without relying on them having caught the
+// notification. Previously this only lived in the
+// audit log and the notification event payload.
 // ─────────────────────────────────────────────
 
 enum PostType {
@@ -31,6 +38,12 @@ model Post {
   // review required by PRD §32 before it can be approved.
   involvesChild Boolean @default(false)
 
+  // Added — set by requestChanges() (the admin's message) or
+  // reject() (the admin's reason). Cleared or overwritten on the
+  // next transition into either of those states; not meant as a
+  // history log, just "why is this in its current state."
+  reviewNote String?
+
   photo    String[]
   video    String[]
   audio    String[]
@@ -49,3 +62,6 @@ model Post {
   @@index([involvesChild])
   @@map("post")
 }
+
+// After merging this into schema.prisma, run:
+//   npx prisma migrate dev --name add_post_review_note

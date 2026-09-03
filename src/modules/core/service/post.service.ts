@@ -32,11 +32,39 @@ import {
   PublishedPostsQueryDto,
 } from '../dto/post.dto';
 
-// Added — statuses the owner is allowed to edit or submit from.
+// Statuses the owner is allowed to edit or submit from.
 // PENDING is deliberately excluded: once submitted, the post is
 // frozen for the owner until an admin approves it or sends it
 // back via CHANGES_REQUESTED.
 const OWNER_EDITABLE_STATUSES: PostStatus[] = [PostStatus.DRAFT, PostStatus.CHANGES_REQUESTED];
+
+// ─────────────────────────────────────────────
+// FIX (#7/#8/#9) — Single source of truth for what
+// status can move to what. Previously each method
+// (approve/reject/requestChanges/publish/unpublish)
+// had its own ad hoc, mutually inconsistent guard —
+// e.g. approve() didn't block approving a DRAFT that
+// was never submitted, requestChanges() didn't block
+// a DRAFT either, and reject() allowed rejecting a
+// PUBLISHED post directly instead of requiring
+// unpublish() first. This map is now the single
+// place that encodes the real workflow.
+// ─────────────────────────────────────────────
+const ALLOWED_STATUS_TRANSITIONS: Record<PostStatus, PostStatus[]> = {
+  [PostStatus.DRAFT]: [PostStatus.PENDING],
+  [PostStatus.PENDING]: [PostStatus.APPROVED, PostStatus.REJECTED, PostStatus.CHANGES_REQUESTED, PostStatus.DRAFT],
+  [PostStatus.CHANGES_REQUESTED]: [PostStatus.PENDING],
+  [PostStatus.APPROVED]: [PostStatus.PUBLISHED, PostStatus.REJECTED],
+  [PostStatus.PUBLISHED]: [PostStatus.UNPUBLISHED],
+  [PostStatus.UNPUBLISHED]: [PostStatus.PUBLISHED],
+  [PostStatus.REJECTED]: [],
+};
+
+function assertTransitionAllowed(from: PostStatus, to: PostStatus): void {
+  if (!ALLOWED_STATUS_TRANSITIONS[from]?.includes(to)) {
+    throw new BadRequestException(`post_transition_not_allowed:${from}->${to}`);
+  }
+}
 
 @Injectable()
 export class PostService {
@@ -45,68 +73,34 @@ export class PostService {
     private readonly eventEmitter: EventEmitter2,
   ) {}
 
-  // AUDIT EMIT (typed helper): routes every audit emit through AuditEventPayload so a
-  // missing field (actorType, entity, etc.) is caught at compile time, not silently dropped
-
   private emitAudit(payload: AuditEventPayload): void {
     this.eventEmitter.emit(payload.action, payload);
   }
 
   // ─────────────────────────────────────────────
   // CREATE POST
-  //
-  // Modified — status now starts at DRAFT instead
-  // of PENDING, matching PRD §14's status list and
-  // §12's CREATE POST → SUBMIT → PENDING flow. The
-  // NEW_POST notification therefore no longer fires
-  // here; it fires from submitMyPost() below, since
-  // admins shouldn't be notified about a draft
-  // nobody submitted yet.
   // ─────────────────────────────────────────────
 
   async create(userId: string, data: CreatePostDto) {
-    // Explicitly typed so a mismatch between CreatePostDto's `type`
-    // field and the actual PostType enum is caught here, not at the
-    // Prisma query boundary.
     const postType: PostType = data.type;
 
     const post = await this.prisma.post.create({
       data: {
         userId,
-
         title: data.title ?? null,
-
         content: data.content,
-
         type: postType,
-
         involvesChild: data.involvesChild ?? false,
-
         status: PostStatus.DRAFT,
-
         photo: data.photo ?? [],
-
         video: data.video ?? [],
-
         audio: data.audio ?? [],
-
         pdf: data.pdf ?? [],
-
         document: data.document ?? [],
-
         other: data.other ?? [],
       },
     });
 
-    /*
-     * User-created content.
-     *
-     * The post has already been successfully created,
-     * therefore emit the audit event AFTER persistence.
-     *
-     * Do not include post content, media URLs, password,
-     * tokens, or other sensitive data in the audit payload.
-     */
     this.emitAudit({
       userId,
       actorType: 'USER',
@@ -123,27 +117,28 @@ export class PostService {
   }
 
   // ─────────────────────────────────────────────
-  // Added — ADMIN — CREATE OFFICIAL POST
+  // ADMIN — CREATE OFFICIAL POST
   //
-  // PRD §13: "Authorized administrators can create
-  // official Posts." Attributed to the admin as
-  // author (userId = admin's id). Admin authorship
-  // is itself the review step, so by default this
-  // skips straight to APPROVED rather than PENDING —
-  // an explicit /publish call is still required, so
-  // an official post never goes live without a
-  // deliberate second action.
-  //
-  // publishImmediately=false opts back into the
-  // normal PENDING flow (approve/reject/request-
-  // changes), for an admin drafting on someone else's
-  // behalf who still wants a second reviewer's
-  // sign-off — in that case NEW_POST fires, exactly
-  // as it does for submitMyPost.
+  // FIX (#2/#3) — previously an involvesChild=true
+  // post could be created straight into APPROVED via
+  // this endpoint with NO childSafetyConfirmed field
+  // existing anywhere on the request. Now, when
+  // publishImmediately is true (the straight-to-
+  // APPROVED path) and involvesChild is true, the
+  // caller must explicitly pass childSafetyConfirmed:
+  // true, exactly like approve() requires. The
+  // PENDING path (publishImmediately=false) does not
+  // require it here, because that path still goes
+  // through approve()'s own gate later.
   // ─────────────────────────────────────────────
 
   async createOfficial(actor: CurrentUserDto, data: AdminCreatePostDto) {
     const publishImmediately = data.publishImmediately ?? true;
+    const involvesChild = data.involvesChild ?? false;
+
+    if (publishImmediately && involvesChild && data.childSafetyConfirmed !== true) {
+      throw new BadRequestException('child_safety_confirmation_required');
+    }
 
     const status = publishImmediately ? PostStatus.APPROVED : PostStatus.PENDING;
 
@@ -152,27 +147,16 @@ export class PostService {
     const post = await this.prisma.post.create({
       data: {
         userId: actor.id,
-
         title: data.title ?? null,
-
         content: data.content,
-
         type: postType,
-
-        involvesChild: data.involvesChild ?? false,
-
+        involvesChild,
         status,
-
         photo: data.photo ?? [],
-
         video: data.video ?? [],
-
         audio: data.audio ?? [],
-
         pdf: data.pdf ?? [],
-
         document: data.document ?? [],
-
         other: data.other ?? [],
       },
     });
@@ -186,15 +170,13 @@ export class PostService {
       diff: {
         official: true,
         status,
+        involvesChild,
+        childSafetyConfirmed: publishImmediately && involvesChild ? true : undefined,
         result: 'success',
       },
     });
 
     if (!publishImmediately) {
-      /*
-       * Routed through normal review — notify admins
-       * the same way a user-submitted post would.
-       */
       const newPostEvent: NewPostEvent = {
         postId: post.id,
         userId: actor.id,
@@ -211,13 +193,8 @@ export class PostService {
 
   async findMyPosts(userId: string) {
     return this.prisma.post.findMany({
-      where: {
-        userId,
-      },
-
-      orderBy: {
-        createdAt: 'desc',
-      },
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
     });
   }
 
@@ -227,10 +204,7 @@ export class PostService {
 
   async findMyPost(userId: string, postId: string) {
     const post = await this.prisma.post.findFirst({
-      where: {
-        id: postId,
-        userId,
-      },
+      where: { id: postId, userId },
     });
 
     if (!post) {
@@ -241,28 +215,13 @@ export class PostService {
   }
 
   // ─────────────────────────────────────────────
-  // Added — UPDATE MY POST
-  //
+  // UPDATE MY POST
   // Allowed only while DRAFT or CHANGES_REQUESTED.
-  // Does not itself resubmit the post — the owner
-  // must call submitMyPost() explicitly, so "save
-  // my edits" and "send this back to review" stay
-  // two distinct actions.
-  //
-  // Fixed — the audit diff previously logged
-  // previousStatus/newStatus even though this method
-  // never changes status (that's submitMyPost's job),
-  // so the two values were always identical and
-  // implied a transition that didn't happen. Now logs
-  // which fields were actually changed instead.
   // ─────────────────────────────────────────────
 
   async updateMyPost(userId: string, postId: string, data: UpdatePostDto) {
     const existing = await this.prisma.post.findFirst({
-      where: {
-        id: postId,
-        userId,
-      },
+      where: { id: postId, userId },
     });
 
     if (!existing) {
@@ -278,29 +237,17 @@ export class PostService {
     );
 
     const post = await this.prisma.post.update({
-      where: {
-        id: postId,
-      },
-
+      where: { id: postId },
       data: {
         ...(data.title !== undefined ? { title: data.title } : {}),
-
         ...(data.content !== undefined ? { content: data.content } : {}),
-
         ...(data.type !== undefined ? { type: data.type } : {}),
-
         ...(data.involvesChild !== undefined ? { involvesChild: data.involvesChild } : {}),
-
         ...(data.photo !== undefined ? { photo: data.photo } : {}),
-
         ...(data.video !== undefined ? { video: data.video } : {}),
-
         ...(data.audio !== undefined ? { audio: data.audio } : {}),
-
         ...(data.pdf !== undefined ? { pdf: data.pdf } : {}),
-
         ...(data.document !== undefined ? { document: data.document } : {}),
-
         ...(data.other !== undefined ? { other: data.other } : {}),
       },
     });
@@ -321,19 +268,13 @@ export class PostService {
   }
 
   // ─────────────────────────────────────────────
-  // Added — SUBMIT MY POST
-  //
+  // SUBMIT MY POST
   // Moves DRAFT or CHANGES_REQUESTED → PENDING.
-  // This is the step that puts the post in front of
-  // admins (PRD §12 diagram), so NEW_POST fires here.
   // ─────────────────────────────────────────────
 
   async submitMyPost(userId: string, postId: string) {
     const existing = await this.prisma.post.findFirst({
-      where: {
-        id: postId,
-        userId,
-      },
+      where: { id: postId, userId },
     });
 
     if (!existing) {
@@ -344,15 +285,18 @@ export class PostService {
       throw new BadRequestException('post_cannot_be_submitted_in_current_status');
     }
 
-    const post = await this.prisma.post.update({
-      where: {
-        id: postId,
-      },
-
-      data: {
-        status: PostStatus.PENDING,
-      },
+    // FIX (#11 partial) — conditional update guards against a
+    // concurrent transition landing between findFirst and update.
+    const result = await this.prisma.post.updateMany({
+      where: { id: postId, status: existing.status },
+      data: { status: PostStatus.PENDING },
     });
+
+    if (result.count === 0) {
+      throw new BadRequestException('post_cannot_be_submitted_in_current_status');
+    }
+
+    const post = await this.prisma.post.findUniqueOrThrow({ where: { id: postId } });
 
     this.emitAudit({
       userId,
@@ -367,12 +311,6 @@ export class PostService {
       },
     });
 
-    /*
-     * Notify the appropriate notification listener.
-     *
-     * The notification listener decides who should receive
-     * the notification (for example administrators).
-     */
     const newPostEvent: NewPostEvent = {
       postId: post.id,
       userId,
@@ -383,24 +321,104 @@ export class PostService {
   }
 
   // ─────────────────────────────────────────────
+  // FIX (#4) — CANCEL / WITHDRAW MY POST
+  // PENDING → DRAFT. Previously an owner had no way
+  // to pull a submitted post back; the only exit from
+  // PENDING was an admin acting on it. Withdrawing
+  // returns it to DRAFT so the owner can edit it again
+  // via updateMyPost and resubmit via submitMyPost.
+  // ─────────────────────────────────────────────
+
+  async cancelMyPost(userId: string, postId: string) {
+    const existing = await this.prisma.post.findFirst({
+      where: { id: postId, userId },
+    });
+
+    if (!existing) {
+      throw new NotFoundException('post_not_found');
+    }
+
+    if (existing.status !== PostStatus.PENDING) {
+      throw new BadRequestException('only_pending_posts_can_be_withdrawn');
+    }
+
+    const result = await this.prisma.post.updateMany({
+      where: { id: postId, status: PostStatus.PENDING },
+      data: { status: PostStatus.DRAFT },
+    });
+
+    if (result.count === 0) {
+      throw new BadRequestException('only_pending_posts_can_be_withdrawn');
+    }
+
+    const post = await this.prisma.post.findUniqueOrThrow({ where: { id: postId } });
+
+    this.emitAudit({
+      userId,
+      actorType: 'USER',
+      action: AuditEventEnum.POST_UPDATED,
+      entity: 'Post',
+      entityId: post.id,
+      diff: {
+        previousStatus: PostStatus.PENDING,
+        newStatus: PostStatus.DRAFT,
+        reason: 'withdrawn_by_owner',
+        result: 'success',
+      },
+    });
+
+    return post;
+  }
+
+  // ─────────────────────────────────────────────
+  // FIX (#5) — DELETE MY POST
+  // Scoped to DRAFT only, mirroring
+  // OWNER_EDITABLE_STATUSES's spirit but deliberately
+  // narrower than "edit" — a post that has ever been
+  // submitted (PENDING/CHANGES_REQUESTED/etc.) keeps
+  // its record rather than disappearing from the
+  // audit trail; owners can still discard a draft
+  // they never intend to submit.
+  // ─────────────────────────────────────────────
+
+  async deleteMyPost(userId: string, postId: string) {
+    const existing = await this.prisma.post.findFirst({
+      where: { id: postId, userId },
+    });
+
+    if (!existing) {
+      throw new NotFoundException('post_not_found');
+    }
+
+    if (existing.status !== PostStatus.DRAFT) {
+      throw new BadRequestException('only_draft_posts_can_be_deleted');
+    }
+
+    await this.prisma.post.delete({ where: { id: postId } });
+
+    this.emitAudit({
+      userId,
+      actorType: 'USER',
+      action: AuditEventEnum.POST_DELETED,
+      entity: 'Post',
+      entityId: postId,
+      diff: {
+        previousStatus: PostStatus.DRAFT,
+        result: 'success',
+      },
+    });
+
+    return { id: postId, deleted: true };
+  }
+
+  // ─────────────────────────────────────────────
   // PUBLIC — GET PUBLISHED POSTS
-  //
-  // Modified — optional `type` filter separates
-  // Incident Posts (PRD §12) from Awareness Posts
-  // (§13) on the public feed.
-  //
-  // Modified — now paginated (PRD §30). Returns the
-  // same { items, total, page, limit, totalPages }
-  // shape as the admin findAll, for consistency.
   // ─────────────────────────────────────────────
 
   async findPublishedPosts(query: PublishedPostsQueryDto) {
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
 
-    // Explicitly typed so a mismatch between the DTO's `type` field
-    // and the actual PostType enum is caught here, not at the
-    // Prisma query boundary.
     const postType: PostType | undefined = query.type;
 
     const where: Prisma.PostWhereInput = {
@@ -411,9 +429,7 @@ export class PostService {
     const [items, total] = await this.prisma.$transaction([
       this.prisma.post.findMany({
         where,
-        orderBy: {
-          createdAt: 'desc',
-        },
+        orderBy: { createdAt: 'desc' },
         skip: (page - 1) * limit,
         take: limit,
       }),
@@ -435,11 +451,7 @@ export class PostService {
 
   async findPublishedPost(postId: string) {
     const post = await this.prisma.post.findFirst({
-      where: {
-        id: postId,
-
-        status: PostStatus.PUBLISHED,
-      },
+      where: { id: postId, status: PostStatus.PUBLISHED },
     });
 
     if (!post) {
@@ -452,33 +464,27 @@ export class PostService {
   // ─────────────────────────────────────────────
   // ADMIN — GET ALL POSTS
   //
-  // Modified — now filters by status/type/
-  // involvesChild and paginates, matching
-  // ReportService.findAllForAdmin's pattern
-  // instead of returning every post unfiltered.
+  // FIX (#6) — added authorId filter (equivalent of
+  // assignedTo on the Report query).
   // ─────────────────────────────────────────────
 
   async findAll(query: AdminPostQueryDto) {
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
 
-    // Explicitly typed so a mismatch between the DTO's `type` field
-    // and the actual PostType enum is caught here, not at the
-    // Prisma query boundary.
     const postType: PostType | undefined = query.type;
 
     const where: Prisma.PostWhereInput = {
       ...(query.status ? { status: query.status } : {}),
       ...(postType ? { type: postType } : {}),
       ...(query.involvesChild !== undefined ? { involvesChild: query.involvesChild } : {}),
+      ...(query.authorId ? { userId: query.authorId } : {}),
     };
 
     const [items, total] = await this.prisma.$transaction([
       this.prisma.post.findMany({
         where,
-        orderBy: {
-          createdAt: 'desc',
-        },
+        orderBy: { createdAt: 'desc' },
         skip: (page - 1) * limit,
         take: limit,
       }),
@@ -499,11 +505,7 @@ export class PostService {
   // ─────────────────────────────────────────────
 
   async findOne(postId: string) {
-    const post = await this.prisma.post.findUnique({
-      where: {
-        id: postId,
-      },
-    });
+    const post = await this.prisma.post.findUnique({ where: { id: postId } });
 
     if (!post) {
       throw new NotFoundException('post_not_found');
@@ -515,25 +517,49 @@ export class PostService {
   // ─────────────────────────────────────────────
   // ADMIN — UPDATE STATUS
   //
-  // Unchanged, kept exactly as it was.
+  // FIX (#1/#7/#12/#13) — this generic endpoint
+  // previously accepted any PostStatus with zero
+  // transition validation and zero child-safety
+  // check, making it a total bypass of approve()'s
+  // gate (e.g. flipping a DRAFT, involvesChild=true
+  // post straight to PUBLISHED in one call). It now:
+  //   - validates the transition via the shared map
+  //   - requires childSafetyConfirmed when moving an
+  //     involvesChild post to APPROVED or PUBLISHED
+  //   - uses a conditional update to avoid racing
+  //     another concurrent transition
+  // The `status` value itself is now DTO-validated
+  // with @IsEnum at the controller layer (see
+  // UpdatePostStatusDto) instead of being read raw
+  // off the body.
   // ─────────────────────────────────────────────
 
-  async updateStatus(user: CurrentUserDto, postId: string, status: PostStatus) {
+  async updateStatus(
+    user: CurrentUserDto,
+    postId: string,
+    status: PostStatus,
+    childSafetyConfirmed?: boolean,
+  ) {
     const existing = await this.findOne(postId);
 
-    const updated = await this.prisma.post.update({
-      where: {
-        id: postId,
-      },
+    assertTransitionAllowed(existing.status, status);
 
-      data: {
-        status,
-      },
+    const movesToLiveReview = status === PostStatus.APPROVED || status === PostStatus.PUBLISHED;
+    if (existing.involvesChild && movesToLiveReview && childSafetyConfirmed !== true) {
+      throw new BadRequestException('child_safety_confirmation_required');
+    }
+
+    const result = await this.prisma.post.updateMany({
+      where: { id: postId, status: existing.status },
+      data: { status },
     });
 
-    /*
-     * Generic status change.
-     */
+    if (result.count === 0) {
+      throw new BadRequestException('post_transition_conflict');
+    }
+
+    const updated = await this.prisma.post.findUniqueOrThrow({ where: { id: postId } });
+
     this.emitAudit({
       userId: user.id,
       actorType: resolveActorType(user.roles ?? []),
@@ -543,6 +569,7 @@ export class PostService {
       diff: {
         previousStatus: existing.status,
         newStatus: status,
+        childSafetyConfirmed: existing.involvesChild && movesToLiveReview ? true : undefined,
         result: 'success',
       },
     });
@@ -553,40 +580,32 @@ export class PostService {
   // ─────────────────────────────────────────────
   // ADMIN — APPROVE POST
   //
-  // Modified — now takes ApprovePostDto and blocks
-  // approval unless childSafetyConfirmed is true
-  // whenever the post has involvesChild = true
-  // (PRD §32).
+  // FIX (#8) — now uses assertTransitionAllowed, so
+  // approving a DRAFT post that was never submitted
+  // is blocked (previously only APPROVED/REJECTED
+  // were excluded).
   // ─────────────────────────────────────────────
 
   async approve(user: CurrentUserDto, postId: string, data: ApprovePostDto) {
     const post = await this.findOne(postId);
 
-    if (post.status === PostStatus.APPROVED) {
-      throw new BadRequestException('post_already_approved');
-    }
-
-    if (post.status === PostStatus.REJECTED) {
-      throw new BadRequestException('rejected_post_cannot_be_approved');
-    }
+    assertTransitionAllowed(post.status, PostStatus.APPROVED);
 
     if (post.involvesChild && data.childSafetyConfirmed !== true) {
       throw new BadRequestException('child_safety_confirmation_required');
     }
 
-    const updated = await this.prisma.post.update({
-      where: {
-        id: postId,
-      },
-
-      data: {
-        status: PostStatus.APPROVED,
-      },
+    const result = await this.prisma.post.updateMany({
+      where: { id: postId, status: post.status },
+      data: { status: PostStatus.APPROVED },
     });
 
-    /*
-     * Audit.
-     */
+    if (result.count === 0) {
+      throw new BadRequestException('post_transition_conflict');
+    }
+
+    const updated = await this.prisma.post.findUniqueOrThrow({ where: { id: postId } });
+
     this.emitAudit({
       userId: user.id,
       actorType: resolveActorType(user.roles ?? []),
@@ -602,9 +621,6 @@ export class PostService {
       },
     });
 
-    /*
-     * Notify post owner.
-     */
     const postApprovedEvent: PostApprovedEvent = {
       postId,
       userId: post.userId,
@@ -615,30 +631,41 @@ export class PostService {
   }
 
   // ─────────────────────────────────────────────
-  // Added — ADMIN — REQUEST CHANGES
+  // ADMIN — REQUEST CHANGES
   //
-  // PRD §24: "Request changes" (Posts). Distinct
-  // from reject — sends the post back to the owner
-  // (editable via updateMyPost, resubmittable via
-  // submitMyPost) instead of closing it out.
+  // FIX (#9) — now uses assertTransitionAllowed, so
+  // requesting changes on a DRAFT (never submitted)
+  // is blocked, not just PUBLISHED/REJECTED.
+  //
+  // FIX (#11) — the message is now also persisted on
+  // the Post row (reviewNote), not just the audit log
+  // and notification payload, so GET /posts/me/:id
+  // shows the owner *why* without relying on them
+  // having caught the notification.
+  //
+  // NOTE: this requires a `reviewNote String?` column
+  // on the Post model — add a Prisma migration for it
+  // if it isn't already there.
   // ─────────────────────────────────────────────
 
   async requestChanges(user: CurrentUserDto, postId: string, data: RequestPostChangesDto) {
     const post = await this.findOne(postId);
 
-    if (post.status === PostStatus.PUBLISHED || post.status === PostStatus.REJECTED) {
-      throw new BadRequestException('post_cannot_have_changes_requested_in_current_status');
-    }
+    assertTransitionAllowed(post.status, PostStatus.CHANGES_REQUESTED);
 
-    const updated = await this.prisma.post.update({
-      where: {
-        id: postId,
-      },
-
+    const result = await this.prisma.post.updateMany({
+      where: { id: postId, status: post.status },
       data: {
         status: PostStatus.CHANGES_REQUESTED,
+        reviewNote: data.message,
       },
     });
+
+    if (result.count === 0) {
+      throw new BadRequestException('post_transition_conflict');
+    }
+
+    const updated = await this.prisma.post.findUniqueOrThrow({ where: { id: postId } });
 
     this.emitAudit({
       userId: user.id,
@@ -670,23 +697,19 @@ export class PostService {
   async publish(user: CurrentUserDto, postId: string) {
     const post = await this.findOne(postId);
 
-    if (post.status !== PostStatus.APPROVED && post.status !== PostStatus.UNPUBLISHED) {
-      throw new BadRequestException('post_must_be_approved_before_publishing');
-    }
+    assertTransitionAllowed(post.status, PostStatus.PUBLISHED);
 
-    const updated = await this.prisma.post.update({
-      where: {
-        id: postId,
-      },
-
-      data: {
-        status: PostStatus.PUBLISHED,
-      },
+    const result = await this.prisma.post.updateMany({
+      where: { id: postId, status: post.status },
+      data: { status: PostStatus.PUBLISHED },
     });
 
-    /*
-     * Audit.
-     */
+    if (result.count === 0) {
+      throw new BadRequestException('post_transition_conflict');
+    }
+
+    const updated = await this.prisma.post.findUniqueOrThrow({ where: { id: postId } });
+
     this.emitAudit({
       userId: user.id,
       actorType: resolveActorType(user.roles ?? []),
@@ -706,33 +729,35 @@ export class PostService {
   // ─────────────────────────────────────────────
   // ADMIN — REJECT POST
   //
-  // Modified — now takes RejectPostDto so the owner
-  // is always told why, mirroring requestChanges and
-  // PRD §40's transparency principle. Reason is
-  // carried in both the audit diff and the
-  // notification payload.
+  // FIX (#10) — now uses assertTransitionAllowed, so
+  // a PUBLISHED post can no longer be rejected
+  // directly; it must go through unpublish() first,
+  // matching the real-world workflow (you take
+  // something down before you formally reject it).
+  //
+  // FIX (#11) — reason is now also persisted on the
+  // Post row (reviewNote). See migration note above.
   // ─────────────────────────────────────────────
 
   async reject(user: CurrentUserDto, postId: string, data: RejectPostDto) {
     const post = await this.findOne(postId);
 
-    if (post.status === PostStatus.REJECTED) {
-      throw new BadRequestException('post_already_rejected');
-    }
+    assertTransitionAllowed(post.status, PostStatus.REJECTED);
 
-    const updated = await this.prisma.post.update({
-      where: {
-        id: postId,
-      },
-
+    const result = await this.prisma.post.updateMany({
+      where: { id: postId, status: post.status },
       data: {
         status: PostStatus.REJECTED,
+        reviewNote: data.reason,
       },
     });
 
-    /*
-     * Audit.
-     */
+    if (result.count === 0) {
+      throw new BadRequestException('post_transition_conflict');
+    }
+
+    const updated = await this.prisma.post.findUniqueOrThrow({ where: { id: postId } });
+
     this.emitAudit({
       userId: user.id,
       actorType: resolveActorType(user.roles ?? []),
@@ -747,9 +772,6 @@ export class PostService {
       },
     });
 
-    /*
-     * Notify post owner.
-     */
     const postRejectedEvent: PostRejectedEvent = {
       postId,
       userId: post.userId,
@@ -762,28 +784,29 @@ export class PostService {
 
   // ─────────────────────────────────────────────
   // ADMIN — UNPUBLISH POST
+  //
+  // FIX (#14) — now notifies the post owner, matching
+  // approve/reject/requestChanges. Previously a
+  // user's published post could vanish from the
+  // public feed with zero notice to them.
   // ─────────────────────────────────────────────
 
   async unpublish(user: CurrentUserDto, postId: string) {
     const post = await this.findOne(postId);
 
-    if (post.status !== PostStatus.PUBLISHED) {
-      throw new BadRequestException('post_is_not_published');
-    }
+    assertTransitionAllowed(post.status, PostStatus.UNPUBLISHED);
 
-    const updated = await this.prisma.post.update({
-      where: {
-        id: postId,
-      },
-
-      data: {
-        status: PostStatus.UNPUBLISHED,
-      },
+    const result = await this.prisma.post.updateMany({
+      where: { id: postId, status: post.status },
+      data: { status: PostStatus.UNPUBLISHED },
     });
 
-    /*
-     * Audit.
-     */
+    if (result.count === 0) {
+      throw new BadRequestException('post_transition_conflict');
+    }
+
+    const updated = await this.prisma.post.findUniqueOrThrow({ where: { id: postId } });
+
     this.emitAudit({
       userId: user.id,
       actorType: resolveActorType(user.roles ?? []),
@@ -795,6 +818,11 @@ export class PostService {
         newStatus: PostStatus.UNPUBLISHED,
         result: 'success',
       },
+    });
+
+    this.eventEmitter.emit(NotificationEventEnum.POST_UNPUBLISHED, {
+      postId,
+      userId: post.userId,
     });
 
     return updated;

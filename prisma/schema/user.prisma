@@ -35,7 +35,11 @@ model User {
   auditLogs     AuditLog[]
   notifications Notification[]
 
-  reports            Report[]
+  reports         Report[] @relation("ReportReporter")
+  assignedReports Report[] @relation("ReportAssignee")
+
+  requestedInformation ReportInformationRequest[] @relation("InfoRequestRequestedBy")
+
   posts              Post[]
   missingPersons     MissingPerson[]
   informationReports InformationSubmission[]
