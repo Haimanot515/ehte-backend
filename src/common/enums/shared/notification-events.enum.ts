@@ -15,8 +15,23 @@ export enum NotificationEventEnum {
   POST_UNPUBLISHED = 'POST_UNPUBLISHED',
 
   MISSING_PERSON_UPDATED = 'MISSING_PERSON_UPDATED',
+  // Added — used by MissingPersonService.updateStatus() so each
+  // outcome gets its own event/copy instead of all four statuses
+  // (approved, rejected, more-info, found) sharing the generic
+  // MISSING_PERSON_UPDATED message. MISSING_PERSON_UPDATED itself
+  // is kept for the plain edit-confirmation path (update()).
+  MISSING_PERSON_APPROVED = 'MISSING_PERSON_APPROVED',
+  MISSING_PERSON_REJECTED = 'MISSING_PERSON_REJECTED',
+  MISSING_PERSON_MORE_INFORMATION_REQUESTED = 'MISSING_PERSON_MORE_INFORMATION_REQUESTED',
+  MISSING_PERSON_FOUND = 'MISSING_PERSON_FOUND',
 
   NEW_MISSING_PERSON_INFORMATION = 'NEW_MISSING_PERSON_INFORMATION',
+  // Added — used by InformationSubmissionService.review() to tell
+  // the submitter their tip was accepted or rejected (reviewNote
+  // included in the payload for REJECTED). Previously review()
+  // emitted no notification at all.
+  INFORMATION_SUBMISSION_REVIEWED = 'INFORMATION_SUBMISSION_REVIEWED',
+  INFORMATION_SUBMISSION_REJECTED = 'INFORMATION_SUBMISSION_REJECTED',
 
   SUPPORT_PAYMENT_CONFIRMED = 'SUPPORT_PAYMENT_CONFIRMED',
 
@@ -33,4 +48,4 @@ export enum NotificationEventEnum {
   // audit event, with no dependency on event-name collision.
   PASSWORD_CHANGED = 'notification.password_changed',
   PASSWORD_RESET = 'notification.password_reset',
-} 
+}

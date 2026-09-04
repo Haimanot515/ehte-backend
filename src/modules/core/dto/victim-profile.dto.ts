@@ -181,14 +181,47 @@ export class UpdateVictimGateDto {
   @IsBoolean()
   isPrivacyReviewed?: boolean;
 
-  // §32 — only meaningful/enforced when the profile has involvesChild = true.
-  @IsOptional()
-  @IsBoolean()
-  isChildSafetyReviewed?: boolean;
-
   @IsOptional()
   @IsBoolean()
   isAdminApproved?: boolean;
+}
+
+// ─────────────────────────────────────────────
+// §32 — dedicated gate, only meaningful/enforced when
+// the profile has involvesChild = true. Kept as its own
+// endpoint/DTO rather than folded into UpdateVictimGateDto
+// so the sensitive review always leaves its own audit trail
+// and can't be silently flipped alongside unrelated gates.
+// ─────────────────────────────────────────────
+export class UpdateChildSafetyReviewDto {
+  @IsBoolean()
+  isChildSafetyReviewed: boolean;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  reviewNotes?: string;
+}
+
+export class RevokeConsentDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  reason?: string;
+}
+
+export class UpdateBankDetailsDto {
+  @IsString()
+  @MaxLength(200)
+  bankAccountName: string;
+
+  @IsString()
+  @MaxLength(64)
+  bankAccountNumber: string;
+
+  @IsString()
+  @MaxLength(200)
+  bankName: string;
 }
 
 export class FindAllVictimProfilesQueryDto {
@@ -203,4 +236,29 @@ export class FindAllVictimProfilesQueryDto {
   @IsOptional()
   @IsEnum(VictimProfileStatus)
   status?: VictimProfileStatus;
+}
+
+// ─────────────────────────────────────────────
+// Public listing filters — mirrors the admin list's
+// pagination but only exposes fields safe/relevant for
+// the public-facing app (no status filter; public list is
+// implicitly PUBLISHED-only).
+// ─────────────────────────────────────────────
+export class FindPublicVictimProfilesQueryDto {
+  @IsOptional()
+  @Type(() => Number)
+  page?: number = 1;
+
+  @IsOptional()
+  @Type(() => Number)
+  limit?: number = 20;
+
+  @IsOptional()
+  @IsEnum(SupportType)
+  supportType?: SupportType;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  search?: string;
 }
