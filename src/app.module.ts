@@ -231,7 +231,7 @@ import { RolesSeeder } from './common/seed/roles.seeder';
 
         MINIO_SECRET_KEY: Joi.string().required(),
 
-        MINIO_BUCKET: Joi.string().required(),
+        MINIO_BUCKET_NAME: Joi.string().required(),
 
         MINIO_USE_SSL: Joi.boolean().default(false),
       }),

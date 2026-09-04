@@ -3,6 +3,7 @@ import { BadRequestException, ForbiddenException, Injectable, NotFoundException 
 import { MissingPersonStatus } from '@prisma/client';
 
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import { ConfigService } from '@nestjs/config';
 
 import { PrismaService } from 'src/prisma/prisma.service';
 import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
@@ -13,6 +14,8 @@ import { AuditEventPayload } from 'src/modules/misc/events/audit.events';
 
 import { NotificationEventEnum } from 'src/common/enums/shared/notification-events.enum';
 
+import { MinioService } from 'src/common/minio/minio.service';
+
 import {
   CreateMissingPersonDto,
   ListMissingPersonsAdminQueryDto,
@@ -20,11 +23,22 @@ import {
   UpdateMissingPersonDto,
 } from '../dto/missing-person.dto';
 
+// The six media-array fields shared by CreateMissingPersonDto/
+// UpdateMissingPersonDto and the MissingPerson model itself.
+// Mirrors PostService's MEDIA_FIELD_NAMES so every module stays in
+// sync if a new media kind is ever added.
+const MEDIA_FIELD_NAMES = ['photo', 'video', 'audio', 'pdf', 'document', 'other'] as const;
+type MediaFieldName = (typeof MEDIA_FIELD_NAMES)[number];
+type MediaBearing = Record<MediaFieldName, string[]>;
+type MediaBearingDto = Partial<Record<MediaFieldName, string[] | undefined>>;
+
 @Injectable()
 export class MissingPersonService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly eventEmitter: EventEmitter2,
+    private readonly minioService: MinioService,
+    private readonly configService: ConfigService,
   ) {}
 
   // ─────────────────────────────────────────────
@@ -98,10 +112,92 @@ export class MissingPersonService {
   }
 
   // ─────────────────────────────────────────────
+  // MEDIA HELPERS
+  //
+  // Mirrors PostService's media helpers. MissingPerson stores media
+  // as plain filepath strings in typed arrays (photo/video/audio/
+  // pdf/document/other), same as Post, Report, and VictimProfile —
+  // kept in one place so every read/write of that shape stays
+  // consistent.
+  // ─────────────────────────────────────────────
+
+  private getMediaBucket(): string {
+    return this.configService.get<string>('minio.bucketName') ?? 'ehte-media';
+  }
+
+  private collectMediaFields(entity: MediaBearing): string[] {
+    return MEDIA_FIELD_NAMES.flatMap((field) => entity[field]);
+  }
+
+  private collectMediaFieldsFromDto(dto: MediaBearingDto): string[] {
+    return MEDIA_FIELD_NAMES.flatMap((field) => dto[field] ?? []);
+  }
+
+  // Diffs each media field individually (not the flattened whole),
+  // so a client resending the same array doesn't get treated as
+  // "remove and re-add." Only fields present in the incoming DTO
+  // are considered — an omitted field means "leave this one alone."
+  private diffMediaFields(
+    before: MediaBearing,
+    incoming: MediaBearingDto,
+  ): { added: string[]; removed: string[] } {
+    const added: string[] = [];
+    const removed: string[] = [];
+
+    for (const field of MEDIA_FIELD_NAMES) {
+      const next = incoming[field];
+      if (next === undefined) continue;
+      const prev = before[field];
+      added.push(...next.filter((fp) => !prev.includes(fp)));
+      removed.push(...prev.filter((fp) => !next.includes(fp)));
+    }
+
+    return { added, removed };
+  }
+
+  // Confirms every filepath the client is attaching actually exists
+  // in the media bucket, so a case can't reference an object that
+  // was never uploaded (typo'd path, upload abandoned mid-flow,
+  // filepath copied from an unrelated response, etc.). Only called
+  // on filepaths that are new to the entity — already-attached
+  // filepaths were validated when they were first added.
+  private async validateMediaFilesExist(filepaths: string[]): Promise<void> {
+    if (!filepaths.length) return;
+
+    const bucket = this.getMediaBucket();
+    const checks = await Promise.all(
+      filepaths.map(async (filepath) => ({
+        filepath,
+        exists: await this.minioService.objectExists(bucket, filepath),
+      })),
+    );
+
+    const missing = checks.filter((c) => !c.exists).map((c) => c.filepath);
+    if (missing.length) {
+      throw new BadRequestException(`media_files_not_found:${missing.join(',')}`);
+    }
+  }
+
+  // Best-effort delete against MinIO. A file that's already gone
+  // (or MinIO briefly unreachable) must never block the DB write
+  // that triggered the cleanup — failures are swallowed per-file
+  // via allSettled rather than surfaced to the caller.
+  private async deleteMediaFiles(filepaths: string[]): Promise<void> {
+    if (!filepaths.length) return;
+    const bucket = this.getMediaBucket();
+    await Promise.allSettled(filepaths.map((fp) => this.minioService.deleteFile(bucket, fp)));
+  }
+
+  // ─────────────────────────────────────────────
   // CREATE
+  //
+  // Media filepaths are validated against MinIO before the case
+  // is created, same as PostService.create.
   // ─────────────────────────────────────────────
 
   async create(user: CurrentUserDto, data: CreateMissingPersonDto) {
+    await this.validateMediaFilesExist(this.collectMediaFieldsFromDto(data));
+
     const missingPerson = await this.prisma.missingPerson.create({
       data: {
         userId: user.id,
@@ -226,6 +322,12 @@ export class MissingPersonService {
   // edited by their owner. Editing a MORE_INFORMATION_REQUESTED
   // case moves it back to PENDING so it re-enters the review queue.
   // Empty patches are rejected.
+  //
+  // Media handling: diffs each media field present in the request
+  // against what's currently on the row. Newly-added filepaths are
+  // validated against MinIO before the write; filepaths dropped
+  // from the new array are deleted from MinIO after the write
+  // commits — same ordering discipline as PostService.updateMyPost.
   // ─────────────────────────────────────────────
 
   async update(user: CurrentUserDto, id: string, data: UpdateMissingPersonDto) {
@@ -249,6 +351,9 @@ export class MissingPersonService {
       throw new BadRequestException('no_fields_provided');
     }
 
+    const { added, removed } = this.diffMediaFields(existing, data);
+    await this.validateMediaFilesExist(added);
+
     const shouldReturnToPending = existing.status === MissingPersonStatus.MORE_INFORMATION_REQUESTED;
 
     const updated = await this.prisma.missingPerson.update({
@@ -268,6 +373,10 @@ export class MissingPersonService {
         ...(shouldReturnToPending ? { status: MissingPersonStatus.PENDING } : {}),
       },
     });
+
+    // Only after the DB write commits — deleting first and having
+    // the write fail would strand the case pointing at nothing.
+    await this.deleteMediaFiles(removed);
 
     this.emitAudit({
       userId: user.id,
@@ -293,6 +402,10 @@ export class MissingPersonService {
   // ─────────────────────────────────────────────
   // DELETE
   // Only PENDING submissions may be deleted by their owner.
+  // Deletes the DB row, then removes every attached media object
+  // from MinIO — once the row referencing them is gone, an
+  // orphaned object in the bucket serves no purpose. Same ordering
+  // as PostService.deleteMyPost.
   // ─────────────────────────────────────────────
 
   async remove(user: CurrentUserDto, id: string) {
@@ -311,6 +424,8 @@ export class MissingPersonService {
     }
 
     await this.prisma.missingPerson.delete({ where: { id } });
+
+    await this.deleteMediaFiles(this.collectMediaFields(existing));
 
     this.emitAudit({
       userId: user.id,

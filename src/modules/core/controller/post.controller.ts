@@ -19,10 +19,12 @@ import {
   UpdatePostStatusDto,
 } from '../dto/post.dto';
 import { PostService } from '../service/post.service';
+
 @ApiTags('Posts')
 @Controller('posts')
 export class PostController {
   constructor(private readonly postService: PostService) {}
+
   // ─────────────────────────────────────────────
   // CREATE POST
   // POST /posts
@@ -38,6 +40,7 @@ export class PostController {
   async create(@CurrentUser() user: CurrentUserDto, @Body() data: CreatePostDto) {
     return this.postService.create(user.id, data);
   }
+
   // ─────────────────────────────────────────────
   // MY POSTS
   // GET /posts/me
@@ -56,17 +59,10 @@ export class PostController {
   async findMyPosts(@CurrentUser() user: CurrentUserDto) {
     return this.postService.findMyPosts(user.id);
   }
+
   // ─────────────────────────────────────────────
   // MY POST
   // GET /posts/me/:id
-  //
-  // FIX (#15) — added @RequireReauthentication() to
-  // match findMyPosts. Previously the list view
-  // required re-auth to see your own posts, but the
-  // detail view for a single post — same class of
-  // data — didn't, which was a weaker-gated way to
-  // reach identical information.
-  //
   // AUTHENTICATED USER
   // ─────────────────────────────────────────────
   @Get('me/:id')
@@ -79,6 +75,7 @@ export class PostController {
   async findMyPost(@CurrentUser() user: CurrentUserDto, @Param('id') postId: string) {
     return this.postService.findMyPost(user.id, postId);
   }
+
   // ─────────────────────────────────────────────
   // UPDATE MY POST
   // PATCH /posts/me/:id
@@ -100,6 +97,7 @@ export class PostController {
   ) {
     return this.postService.updateMyPost(user.id, postId, data);
   }
+
   // ─────────────────────────────────────────────
   // SUBMIT MY POST
   // PATCH /posts/me/:id/submit
@@ -119,13 +117,11 @@ export class PostController {
   async submitMyPost(@CurrentUser() user: CurrentUserDto, @Param('id') postId: string) {
     return this.postService.submitMyPost(user.id, postId);
   }
+
   // ─────────────────────────────────────────────
-  // FIX (#4) — CANCEL / WITHDRAW MY POST
+  // CANCEL / WITHDRAW MY POST
   // PATCH /posts/me/:id/cancel
-  //
-  // PENDING → DRAFT. Previously an owner had no way
-  // to pull a submitted post back before an admin
-  // acted on it.
+  // PENDING → DRAFT.
   //
   // AUTHENTICATED USER
   // ─────────────────────────────────────────────
@@ -137,8 +133,9 @@ export class PostController {
   async cancelMyPost(@CurrentUser() user: CurrentUserDto, @Param('id') postId: string) {
     return this.postService.cancelMyPost(user.id, postId);
   }
+
   // ─────────────────────────────────────────────
-  // FIX (#5) — DELETE MY POST
+  // DELETE MY POST
   // DELETE /posts/me/:id
   //
   // Scoped to DRAFT only — enforced in
@@ -156,6 +153,7 @@ export class PostController {
   async deleteMyPost(@CurrentUser() user: CurrentUserDto, @Param('id') postId: string) {
     return this.postService.deleteMyPost(user.id, postId);
   }
+
   // ─────────────────────────────────────────────
   // PUBLIC POSTS
   // GET /posts/published
@@ -172,6 +170,7 @@ export class PostController {
   async findPublishedPosts(@Query() query: PublishedPostsQueryDto) {
     return this.postService.findPublishedPosts(query);
   }
+
   // ─────────────────────────────────────────────
   // PUBLIC POST
   // GET /posts/published/:id
@@ -185,6 +184,7 @@ export class PostController {
   async findPublishedPost(@Param('id') postId: string) {
     return this.postService.findPublishedPost(postId);
   }
+
   // ─────────────────────────────────────────────
   // ADMIN — CREATE OFFICIAL POST
   // POST /posts/official
@@ -192,7 +192,7 @@ export class PostController {
   // Distinct from POST /posts: attributed to the
   // admin as author. When publishImmediately=true
   // (default) AND involvesChild=true,
-  // childSafetyConfirmed=true is now required in the
+  // childSafetyConfirmed=true is required in the
   // body — enforced in PostService.createOfficial.
   //
   // ADMIN / SUPER_ADMIN
@@ -206,6 +206,7 @@ export class PostController {
   async createOfficial(@CurrentUser() user: CurrentUserDto, @Body() data: AdminCreatePostDto) {
     return this.postService.createOfficial(user, data);
   }
+
   // ─────────────────────────────────────────────
   // ADMIN — ALL POSTS
   // GET /posts
@@ -230,6 +231,7 @@ export class PostController {
   async findAll(@Query() query: AdminPostQueryDto) {
     return this.postService.findAll(query);
   }
+
   // ─────────────────────────────────────────────
   // ADMIN — ONE POST
   // GET /posts/:id
@@ -244,23 +246,15 @@ export class PostController {
   async findOne(@Param('id') postId: string) {
     return this.postService.findOne(postId);
   }
+
   // ─────────────────────────────────────────────
   // ADMIN — UPDATE STATUS
   // PATCH /posts/:id/status
   //
-  // FIX (#1/#12/#13) — now takes UpdatePostStatusDto
-  // instead of reading @Body('status') raw, so the
-  // status value is DTO-validated (@IsEnum) like
-  // every other write endpoint. The DTO also carries
-  // an optional childSafetyConfirmed, which
-  // PostService.updateStatus now requires whenever
-  // the transition target is APPROVED/PUBLISHED on an
-  // involvesChild post — closing the bypass this
-  // endpoint previously had around approve()'s gate.
-  // Every transition is also validated against the
-  // shared status-transition map, so this endpoint
-  // can no longer skip steps a dedicated endpoint
-  // wouldn't allow (e.g. DRAFT straight to PUBLISHED).
+  // Takes UpdatePostStatusDto so the status value is
+  // DTO-validated (@IsEnum) like every other write
+  // endpoint. Every transition is also validated
+  // against the shared status-transition map.
   //
   // ADMIN / SUPER_ADMIN
   // ─────────────────────────────────────────────
@@ -277,15 +271,14 @@ export class PostController {
   ) {
     return this.postService.updateStatus(user, postId, data.status, data.childSafetyConfirmed);
   }
+
   // ─────────────────────────────────────────────
   // ADMIN — APPROVE
   // PATCH /posts/:id/approve
   //
   // Requires childSafetyConfirmed=true in the body
   // when the post has involvesChild = true (PRD §32)
-  // — enforced in PostService.approve. Also now
-  // blocks approving a DRAFT post that was never
-  // submitted, via the shared transition map.
+  // — enforced in PostService.approve.
   //
   // ADMIN / SUPER_ADMIN
   // ─────────────────────────────────────────────
@@ -302,13 +295,12 @@ export class PostController {
   ) {
     return this.postService.approve(user, postId, data);
   }
+
   // ─────────────────────────────────────────────
   // ADMIN — REQUEST CHANGES
   // PATCH /posts/:id/request-changes
   //
-  // PRD §24: "Request changes" (Posts). Now blocks
-  // requesting changes on a DRAFT (never submitted)
-  // via the shared transition map, and persists the
+  // PRD §24: "Request changes" (Posts). Persists the
   // message on the Post row itself in addition to the
   // audit log and notification.
   //
@@ -327,6 +319,7 @@ export class PostController {
   ) {
     return this.postService.requestChanges(user, postId, data);
   }
+
   // ─────────────────────────────────────────────
   // ADMIN — PUBLISH
   // PATCH /posts/:id/publish
@@ -341,13 +334,14 @@ export class PostController {
   async publish(@CurrentUser() user: CurrentUserDto, @Param('id') postId: string) {
     return this.postService.publish(user, postId);
   }
+
   // ─────────────────────────────────────────────
   // ADMIN — REJECT
   // PATCH /posts/:id/reject
   //
   // Takes RejectPostDto so the owner is told why,
   // mirroring request-changes and PRD §40's
-  // transparency principle. Now blocks rejecting a
+  // transparency principle. Blocks rejecting a
   // PUBLISHED post directly — it must be unpublished
   // first, via the shared transition map — and
   // persists the reason on the Post row itself.
@@ -367,11 +361,12 @@ export class PostController {
   ) {
     return this.postService.reject(user, postId, data);
   }
+
   // ─────────────────────────────────────────────
   // ADMIN — UNPUBLISH
   // PATCH /posts/:id/unpublish
   //
-  // Now notifies the post owner, matching
+  // Notifies the post owner, matching
   // approve/reject/request-changes.
   //
   // ADMIN / SUPER_ADMIN

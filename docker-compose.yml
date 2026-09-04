@@ -25,7 +25,7 @@ services:
     ports:
       - "3009:3000"
     env_file:
-      - ehte.env
+      - .env
     depends_on:
       minio:
         condition: service_healthy

@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleInit, ServiceUnavailableException } from '@nestjs/common';
+import { Injectable, OnModuleInit, Logger, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'crypto';
 import * as Minio from 'minio';
@@ -8,20 +8,19 @@ import type { Express } from 'express';
 @Injectable()
 export class MinioService implements OnModuleInit {
   private readonly logger = new Logger(MinioService.name);
-
   private client: Minio.Client;
 
   constructor(private readonly configService: ConfigService) {}
 
-  async onModuleInit(): Promise<void> {
+  async onModuleInit() {
     const endpoint = this.configService.get<string>('minio.endpoint');
-
     const accessKey = this.configService.get<string>('minio.accessKey');
-
     const secretKey = this.configService.get<string>('minio.secretKey');
 
     if (!endpoint || !accessKey || !secretKey) {
-      this.logger.warn('MinIO is not configured. File uploads will be disabled.');
+      this.logger.warn(
+        'MinIO is not configured (missing endpoint/accessKey/secretKey). File uploads will be disabled.',
+      );
       return;
     }
 
@@ -33,124 +32,121 @@ export class MinioService implements OnModuleInit {
         accessKey,
         secretKey,
       });
+      this.logger.log('MinIO client initialized');
 
-      this.logger.log('Ehte MinIO client initialized');
-
-      const bucket = this.configService.get<string>('minio.bucketName') ?? 'ehte-media';
-
+      const bucket =
+        this.configService.get<string>('minio.bucketName') ?? 'ehte-media';
       await this.ensureBucket(bucket);
-    } catch (error) {
-      this.logger.error('Failed to initialize Ehte MinIO', error);
+    } catch (e) {
+      this.logger.error('Failed to initialize MinIO', e);
     }
   }
 
-  /**
-   * Make sure the Ehte storage bucket exists.
-   */
+  private assertClient(): void {
+    if (!this.client) {
+      throw new ServiceUnavailableException(
+        'MinIO is not configured or failed to start. Check MINIO_* environment variables.',
+      );
+    }
+  }
+
   async ensureBucket(bucketName: string): Promise<void> {
     this.assertClient();
-
     try {
       const exists = await this.client.bucketExists(bucketName);
-
       if (!exists) {
         await this.client.makeBucket(bucketName, 'us-east-1');
-
-        this.logger.log(`Ehte MinIO bucket "${bucketName}" created`);
+        this.logger.log(`Bucket "${bucketName}" created`);
       }
-    } catch (error: any) {
-      if (error.code === 'BucketAlreadyOwnedByYou') {
+    } catch (err: any) {
+      if (err.code === 'BucketAlreadyOwnedByYou') {
         return;
       }
-
-      throw error;
+      throw err;
     }
   }
 
-  /**
-   * Upload a Buffer to MinIO.
-   */
   async uploadBuffer(
     bucketName: string,
     objectName: string,
     buffer: Buffer,
-    contentType = 'application/octet-stream',
+    contentType: string = 'application/octet-stream',
   ): Promise<string> {
     this.assertClient();
-
     await this.client.putObject(bucketName, objectName, buffer, buffer.length, {
       'Content-Type': contentType,
     });
-
-    this.logger.log(`Uploaded Ehte file: ${bucketName}/${objectName}`);
-
+    this.logger.log(`Uploaded: ${bucketName}/${objectName}`);
     return objectName;
   }
 
-  /**
-   * Upload a file received through Multer.
-   */
-  async uploadFile(bucketName: string, file: Express.Multer.File, folder: string): Promise<string> {
+  async uploadFile(
+    bucketName: string,
+    file: Express.Multer.File,
+    folder: string,
+  ): Promise<string> {
     this.assertClient();
+    const today = new Date();
+    const day = String(today.getDate()).padStart(2, '0');
+    const month = String(today.getMonth() + 1).padStart(2, '0');
+    const year = String(today.getFullYear()).slice(-2);
+    const datePrefix = `${day}-${month}-${year}`;
+    const cleanName = file.originalname.replace(/\s+/g, '_');
+    const objectName = `${folder}/${datePrefix}-${cleanName}`;
 
-    const extension = extname(file.originalname);
-
-    const safeFileName = `${randomUUID()}${extension}`;
-
-    const objectName = `${folder}/${safeFileName}`;
-
-    await this.client.putObject(bucketName, objectName, file.buffer, file.size, {
-      'Content-Type': file.mimetype,
-    });
-
-    this.logger.log(`Uploaded Ehte file: ${objectName}`);
+    await this.client.putObject(
+      bucketName,
+      objectName,
+      file.buffer,
+      file.size,
+      { 'Content-Type': file.mimetype },
+    );
 
     return objectName;
   }
 
-  /**
-   * Generate a temporary private download URL.
-   */
   async getUrl(bucketName: string, objectName: string): Promise<string> {
     this.assertClient();
-
     return this.client.presignedGetObject(bucketName, objectName, 24 * 60 * 60);
   }
 
-  /**
-   * Delete a file from MinIO.
-   */
   async deleteFile(bucketName: string, objectName: string): Promise<void> {
     this.assertClient();
-
     await this.client.removeObject(bucketName, objectName);
-
-    this.logger.log(`Deleted Ehte file: ${bucketName}/${objectName}`);
   }
 
-  /**
-   * Generate a temporary URL that allows
-   * the mobile application to upload directly
-   * to MinIO.
-   */
+  // Confirms an object actually exists in the bucket before some
+  // other entity (Post, Report, etc.) is allowed to reference its
+  // filepath. Used by PostService/ReportService to validate
+  // incoming media filepaths on create/update, so a record can
+  // never point at an object that was never uploaded.
+  async objectExists(bucketName: string, objectName: string): Promise<boolean> {
+    this.assertClient();
+    try {
+      await this.client.statObject(bucketName, objectName);
+      return true;
+    } catch (err: any) {
+      if (err.code === 'NotFound') {
+        return false;
+      }
+      throw err;
+    }
+  }
+
   async generatePresignedUploadUrl(fileInfo: {
     originalname: string;
     contentType?: string;
-  }): Promise<{
-    presignedUrl: string;
-    file: Record<string, string | undefined>;
-  }> {
+  }): Promise<{ presignedUrl: string; file: Record<string, string | undefined> }> {
     this.assertClient();
-
-    const extension = extname(fileInfo.originalname);
-
-    const filepath = `${randomUUID()}${extension}`;
-
-    const bucketName = this.configService.get<string>('minio.bucketName') ?? 'ehte-media';
-
+    const filepath = randomUUID() + extname(fileInfo.originalname);
+    const bucketName =
+      this.configService.get<string>('minio.bucketName') ?? 'ehte-media';
     const duration = Number(process.env.DURATION_OF_PRE_SIGNED_DOCUMENT ?? 120);
-
-    const presignedUrl = await this.client.presignedPutObject(bucketName, filepath, duration);
+    const presignedUrl = await this.client.presignedPutObject(
+      bucketName,
+      filepath,
+      duration,
+    );
 
     return {
       presignedUrl,
@@ -163,29 +159,12 @@ export class MinioService implements OnModuleInit {
     };
   }
 
-  /**
-   * Generate a temporary private download URL.
-   */
   async generatePresignedDownloadUrl(fileInfo: {
     bucketName: string;
     filepath: string;
   }): Promise<string> {
     this.assertClient();
-
     const duration = Number(process.env.DURATION_OF_PRE_SIGNED_DOCUMENT ?? 120);
-
     return this.client.presignedGetObject(fileInfo.bucketName, fileInfo.filepath, duration);
-  }
-
-  /**
-   * Make sure the MinIO client is available
-   * before performing a storage operation.
-   */
-  private assertClient(): void {
-    if (!this.client) {
-      throw new ServiceUnavailableException(
-        'MinIO is not configured or failed to start. Check MINIO_* environment variables.',
-      );
-    }
   }
 }
