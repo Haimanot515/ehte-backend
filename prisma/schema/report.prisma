@@ -78,7 +78,7 @@ model ReportInformationRequest {
   status InformationRequestStatus @default(PENDING)
 
   responseMessage String?
-  responseFiles   String[] @default([])
+  responseFiles   String[]  @default([])
   respondedAt     DateTime?
 
   createdAt DateTime @default(now())

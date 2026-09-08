@@ -122,7 +122,7 @@ export class AuthService {
         data: {
           name: data.name,
           phone,
-          password: hashedPassword,
+          passwordHash: hashedPassword,
           userRoles: {
             create: { roleId: userRole.id },
           },
@@ -333,7 +333,7 @@ export class AuthService {
       },
     });
 
-    if (!user || !user.password) {
+    if (!user || !user.passwordHash) {
       this.emitAudit({
         userId: user?.id ?? null,
         actorType: resolveActorType(
@@ -370,7 +370,7 @@ export class AuthService {
     }
 
     // Check password before isActive/verified gates to avoid leaking account state
-    const validPassword = await bcrypt.compare(data.password, user.password);
+    const validPassword = await bcrypt.compare(data.password, user.passwordHash);
 
     if (!validPassword) {
       // FIX: count the failure, possibly locking the account
@@ -570,7 +570,7 @@ export class AuthService {
 
       await tx.user.update({
         where: { id: otpRecord.user.id },
-        data: { password: hashedPassword },
+        data: { passwordHash: hashedPassword },
       });
 
       // Invalidate every existing session
@@ -743,11 +743,11 @@ export class AuthService {
       throw new NotFoundException('user_not_found');
     }
 
-    if (!dbUser.password) {
+    if (!dbUser.passwordHash) {
       throw new BadRequestException('password_not_set');
     }
 
-    const validPassword = await bcrypt.compare(data.currentPassword, dbUser.password);
+    const validPassword = await bcrypt.compare(data.currentPassword, dbUser.passwordHash);
 
     if (!validPassword) {
       throw new BadRequestException('wrong_current_password');
@@ -758,7 +758,7 @@ export class AuthService {
     await this.prisma.$transaction([
       this.prisma.user.update({
         where: { id: user.id },
-        data: { password: hashedPassword },
+        data: { passwordHash: hashedPassword },
       }),
 
       // Force re-login after password change
@@ -862,7 +862,7 @@ export class AuthService {
         data: {
           name: data.name,
           phone,
-          password: hashedPassword,
+          passwordHash: hashedPassword,
           isPhoneVerified: false,
           isActive: false,
           userRoles: {
@@ -1082,7 +1082,7 @@ export class AuthService {
       [RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN].includes(role as RolesEnum),
     );
 
-    if (!user || !user.password || !isAdmin) {
+    if (!user || !user.passwordHash || !isAdmin) {
       this.emitAudit({
         userId: user?.id ?? null,
         actorType: resolveActorType(roles),
@@ -1138,7 +1138,7 @@ export class AuthService {
       throw new UnauthorizedException('account_inactive');
     }
 
-    const validPassword = await bcrypt.compare(data.password, user.password);
+    const validPassword = await bcrypt.compare(data.password, user.passwordHash);
 
     if (!validPassword) {
       // FIX: count the failure, possibly locking the account

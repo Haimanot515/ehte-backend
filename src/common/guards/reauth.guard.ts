@@ -34,24 +34,42 @@ export class ReauthGuard {
       throw new UnauthorizedException('authentication_required');
     }
 
-    // GET requests carry the password via the
-    // X-Reauth-Password header (no request body).
-    // POST/PATCH requests carry it in body.password.
-    const password = request.headers['x-reauth-password'] ?? request.body?.password;
+    // FIX: renamed from "password" to "credential" — this can be
+    // either the account password or (when Discreet Mode is on)
+    // the Discreet Mode passcode; calling it "password" everywhere
+    // was misleading given what it actually accepts.
+    //
+    // GET requests carry it via the X-Reauth-Credential header
+    // (no request body). POST/PATCH requests carry it in
+    // body.credential.
+    //
+    // Backward compatibility: the old X-Reauth-Password header and
+    // body.password field are still accepted. Remove these two
+    // fallbacks once every client has migrated to the new names.
+    const credential =
+      request.headers['x-reauth-credential'] ??
+      request.headers['x-reauth-password'] ??
+      request.body?.credential ??
+      request.body?.password;
 
-    if (!password || typeof password !== 'string') {
+    if (!credential || typeof credential !== 'string') {
       throw new UnauthorizedException('reauthentication_required');
     }
 
-    const validPassword = await this.reauthService.verifyPassword(user.id, password);
+    // FIX: call verifyCredential() directly instead of the
+    // verifyPassword() alias, since this guard is the primary
+    // caller ReauthService.verifyPassword()'s docstring names as
+    // still needing migration.
+    const validCredential = await this.reauthService.verifyCredential(user.id, credential);
 
-    if (!validPassword) {
-      throw new UnauthorizedException('wrong_password');
+    if (!validCredential) {
+      throw new UnauthorizedException('invalid_credential');
     }
 
-    // Do not allow the password to reach
-    // the controller/service.
+    // Do not allow the credential to reach the controller/service.
+    // Strip both the new and legacy field names.
     if (request.body && typeof request.body === 'object') {
+      delete request.body.credential;
       delete request.body.password;
     }
 

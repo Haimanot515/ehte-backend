@@ -18,6 +18,11 @@ export enum AuditEventEnum {
   // DISCREET MODE
   DISCREET_MODE_ENABLED = 'DISCREET_MODE_ENABLED',
   DISCREET_MODE_DISABLED = 'DISCREET_MODE_DISABLED',
+  // Added — used by UserService.updateDiscreetMode() when the user
+  // rotates their passcode while Discreet Mode is already enabled.
+  // Distinct from DISCREET_MODE_ENABLED so the audit trail can tell
+  // first-time setup apart from a later passcode change.
+  DISCREET_MODE_PASSCODE_CHANGED = 'DISCREET_MODE_PASSCODE_CHANGED',
   // REPORT
   REPORT_CREATED = 'REPORT_CREATED',
   REPORT_UPDATED = 'REPORT_UPDATED',

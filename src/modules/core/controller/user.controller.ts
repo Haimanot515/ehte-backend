@@ -5,6 +5,7 @@ import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
 
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { RolesEnum } from 'src/common/enums/roles.enum';
+import { RequireReauthentication } from 'src/common/decorators/reauth.decorator';
 
 import {
   AssignUserRoleDto,
@@ -61,10 +62,31 @@ export class UserController {
   // PATCH /users/me/discreet-mode
   // Authenticated USER
   // Global AuthGuard applies
+  //
+  // Enabling requires a new passcode (data.passcode) — this covers
+  // both first-time setup and rotating an existing passcode.
+  // Disabling clears the existing passcode hash.
+  //
+  // FIX: @RequireReauthentication() added. This route configures
+  // Discreet Mode but never itself checked a credential — the
+  // actual gate lives in ReauthGuard, which only activates when a
+  // route carries this decorator. Without it, any valid access
+  // token could enable/rotate/disable Discreet Mode with no
+  // password or passcode at all, contradicting the documented
+  // design in UserService.updateDiscreetMode() and ReauthService.
+  //
+  // ReauthGuard reads the credential from body.password (or the
+  // X-Reauth-Password header for GET-style calls), verifies it via
+  // ReauthService.verifyPassword() — account password always
+  // accepted; Discreet Mode passcode accepted only when Discreet
+  // Mode is currently enabled — then strips body.password before
+  // this handler / UpdateDiscreetModeDto ever sees it. That's why
+  // UpdateDiscreetModeDto has no password field of its own.
   // ─────────────────────────────────────────────
   @Patch('me/discreet-mode')
+  @RequireReauthentication()
   @ApiOperation({
-    summary: 'Enable or disable discreet mode',
+    summary: 'Enable, disable, or change the passcode for Discreet Mode',
   })
   async updateDiscreetMode(
     @CurrentUser()
