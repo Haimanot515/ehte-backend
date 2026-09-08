@@ -18,6 +18,11 @@ export enum AuditEventEnum {
   // DISCREET MODE
   DISCREET_MODE_ENABLED = 'DISCREET_MODE_ENABLED',
   DISCREET_MODE_DISABLED = 'DISCREET_MODE_DISABLED',
+  // Added — used by UserService.updateDiscreetMode() when the user
+  // rotates their passcode while Discreet Mode is already enabled.
+  // Distinct from DISCREET_MODE_ENABLED so the audit trail can tell
+  // first-time setup apart from a later passcode change.
+  DISCREET_MODE_PASSCODE_CHANGED = 'DISCREET_MODE_PASSCODE_CHANGED',
   // REPORT
   REPORT_CREATED = 'REPORT_CREATED',
   REPORT_UPDATED = 'REPORT_UPDATED',
@@ -53,10 +58,22 @@ export enum AuditEventEnum {
   MISSING_PERSON_MORE_INFO_REQUESTED = 'MISSING_PERSON_MORE_INFO_REQUESTED',
   MISSING_PERSON_REDACTED = 'MISSING_PERSON_REDACTED',
   MISSING_PERSON_REWARD_REVIEWED = 'MISSING_PERSON_REWARD_REVIEWED',
+  // Added — used by MissingPersonService.remove. Previously delete
+  // was intentionally left un-audited because this event didn't
+  // exist; deletion now gets its own first-class audit event like
+  // create/update/approve/reject/found.
+  MISSING_PERSON_DELETED = 'MISSING_PERSON_DELETED',
   // INFORMATION SUBMISSION
   INFORMATION_SUBMITTED = 'INFORMATION_SUBMITTED',
+  // Added — used by InformationSubmissionService.updateStatus()
+  // for the PENDING → UNDER_REVIEW transition, which previously
+  // emitted no audit event at all.
+  INFORMATION_UNDER_REVIEW = 'INFORMATION_UNDER_REVIEW',
   INFORMATION_REVIEWED = 'INFORMATION_REVIEWED',
   INFORMATION_REJECTED = 'INFORMATION_REJECTED',
+  // Added — used by InformationSubmissionService.remove(). Only
+  // PENDING submissions are deletable by their owner.
+  INFORMATION_SUBMISSION_DELETED = 'INFORMATION_SUBMISSION_DELETED',
   // VICTIM PROFILE
   VICTIM_PROFILE_CREATED = 'VICTIM_PROFILE_CREATED',
   VICTIM_PROFILE_UPDATED = 'VICTIM_PROFILE_UPDATED',

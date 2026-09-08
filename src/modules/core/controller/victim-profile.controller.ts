@@ -14,6 +14,10 @@ import { VictimProfileService } from '../service/victim-profile.service';
 import {
   CreateVictimProfileDto,
   FindAllVictimProfilesQueryDto,
+  FindPublicVictimProfilesQueryDto,
+  RevokeConsentDto,
+  UpdateBankDetailsDto,
+  UpdateChildSafetyReviewDto,
   UpdateVictimGateDto,
   UpdateVictimProfileDto,
 } from '../dto/victim-profile.dto';
@@ -21,8 +25,8 @@ import {
 // ─────────────────────────────────────────────
 // PRD §19: "Authorized administrators can create or manage a
 // Victim/Survivor Profile." Every mutating and single-record read
-// route below is admin-only. The only public-facing route is
-// GET /victim-profiles/public.
+// route below is admin-only. The only public-facing routes are
+// GET /victim-profiles/public and GET /victim-profiles/public/:id.
 // ─────────────────────────────────────────────
 
 @ApiTags('Victim Profiles')
@@ -33,7 +37,6 @@ export class VictimProfileController {
   // ─────────────────────────────────────────────
   // CREATE
   // POST /victim-profiles
-  // Restricted to ADMIN / SUPER_ADMIN (PRD §19, §24)
   // ─────────────────────────────────────────────
 
   @Post()
@@ -53,9 +56,8 @@ export class VictimProfileController {
   }
 
   // ─────────────────────────────────────────────
-  // PUBLIC PROFILES
+  // PUBLIC PROFILES — LIST
   // GET /victim-profiles/public
-  // Only route accessible to the public app (PRD §20)
   // ─────────────────────────────────────────────
 
   @Get('public')
@@ -63,15 +65,33 @@ export class VictimProfileController {
   @ApiOperation({
     summary: 'Get published victim profiles',
   })
-  async findPublic() {
-    return this.victimProfileService.findPublic();
+  async findPublic(
+    @Query()
+    query: FindPublicVictimProfilesQueryDto,
+  ) {
+    return this.victimProfileService.findPublic(query);
+  }
+
+  // ─────────────────────────────────────────────
+  // PUBLIC PROFILES — SINGLE
+  // GET /victim-profiles/public/:id
+  // ─────────────────────────────────────────────
+
+  @Get('public/:id')
+  @AllowAnonymous()
+  @ApiOperation({
+    summary: 'Get a single published victim profile',
+  })
+  async findOnePublic(
+    @Param('id')
+    id: string,
+  ) {
+    return this.victimProfileService.findOnePublic(id);
   }
 
   // ─────────────────────────────────────────────
   // GET ONE
   // GET /victim-profiles/:id
-  // Restricted to ADMIN / SUPER_ADMIN — pre-approval profiles
-  // contain unreviewed sensitive detail (PRD §19/§20).
   // ─────────────────────────────────────────────
 
   @Get(':id')
@@ -88,9 +108,30 @@ export class VictimProfileController {
   }
 
   // ─────────────────────────────────────────────
+  // GET ONE — SUPPORT/DONATION SUMMARY
+  // GET /victim-profiles/:id/supports
+  //
+  // findOne() already includes confirmed supports, but as support
+  // volume grows a dashboard shouldn't have to pull the whole
+  // profile payload just to show totals.
+  // ─────────────────────────────────────────────
+
+  @Get(':id/supports')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @ApiBearerAuth('access-token')
+  @ApiOperation({
+    summary: 'Admin: get support/donation summary for a victim profile',
+  })
+  async getSupportsSummary(
+    @Param('id')
+    id: string,
+  ) {
+    return this.victimProfileService.getSupportsSummary(id);
+  }
+
+  // ─────────────────────────────────────────────
   // UPDATE
   // PATCH /victim-profiles/:id
-  // Restricted to ADMIN / SUPER_ADMIN (PRD §24)
   // ─────────────────────────────────────────────
 
   @Patch(':id')
@@ -115,7 +156,6 @@ export class VictimProfileController {
   // ─────────────────────────────────────────────
   // DELETE
   // DELETE /victim-profiles/:id
-  // Restricted to ADMIN / SUPER_ADMIN (PRD §24)
   // ─────────────────────────────────────────────
 
   @Delete(':id')
@@ -153,7 +193,64 @@ export class VictimProfileController {
   }
 
   // ─────────────────────────────────────────────
-  // ADMIN — APPROVAL GATES
+  // ADMIN — DASHBOARD STATISTICS
+  // GET /victim-profiles/admin/stats
+  //
+  // Avoids the dashboard having to page through every profile
+  // just to compute per-status counts.
+  // ─────────────────────────────────────────────
+
+  @Get('admin/stats')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @ApiBearerAuth('access-token')
+  @ApiOperation({
+    summary: 'Admin: get victim profile counts by status',
+  })
+  async getStats() {
+    return this.victimProfileService.getStats();
+  }
+
+  // ─────────────────────────────────────────────
+  // ADMIN — AUDIT HISTORY
+  // GET /victim-profiles/admin/:id/history
+  // ─────────────────────────────────────────────
+
+  @Get('admin/:id/history')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @ApiBearerAuth('access-token')
+  @ApiOperation({
+    summary: 'Admin: get audit history for a victim profile',
+  })
+  async getHistory(
+    @Param('id')
+    id: string,
+  ) {
+    return this.victimProfileService.getHistory(id);
+  }
+
+  // ─────────────────────────────────────────────
+  // ADMIN — GET APPROVAL/GATE STATUS
+  // GET /victim-profiles/admin/:id/gates
+  //
+  // Lets the admin dashboard render checklist state without
+  // inspecting the whole profile payload.
+  // ─────────────────────────────────────────────
+
+  @Get('admin/:id/gates')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @ApiBearerAuth('access-token')
+  @ApiOperation({
+    summary: 'Admin: get approval gate status for a victim profile',
+  })
+  async getGates(
+    @Param('id')
+    id: string,
+  ) {
+    return this.victimProfileService.getGates(id);
+  }
+
+  // ─────────────────────────────────────────────
+  // ADMIN — UPDATE APPROVAL GATES
   // PATCH /victim-profiles/admin/:id/gates
   // ─────────────────────────────────────────────
 
@@ -174,6 +271,78 @@ export class VictimProfileController {
     data: UpdateVictimGateDto,
   ) {
     return this.victimProfileService.updateGates(id, data, user.id);
+  }
+
+  // ─────────────────────────────────────────────
+  // ADMIN — CHILD SAFETY REVIEW (§32)
+  // PATCH /victim-profiles/admin/:id/child-safety-review
+  // ─────────────────────────────────────────────
+
+  @Patch('admin/:id/child-safety-review')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @ApiBearerAuth('access-token')
+  @ApiOperation({
+    summary: 'Admin: record child-safety review outcome for a victim profile',
+  })
+  async updateChildSafetyReview(
+    @Param('id')
+    id: string,
+
+    @CurrentUser()
+    user: CurrentUserDto,
+
+    @Body()
+    data: UpdateChildSafetyReviewDto,
+  ) {
+    return this.victimProfileService.updateChildSafetyReview(id, data, user.id);
+  }
+
+  // ─────────────────────────────────────────────
+  // ADMIN — REVOKE CONSENT
+  // PATCH /victim-profiles/admin/:id/consent/revoke
+  // ─────────────────────────────────────────────
+
+  @Patch('admin/:id/consent/revoke')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @ApiBearerAuth('access-token')
+  @ApiOperation({
+    summary: 'Admin: revoke previously recorded consent for a victim profile',
+  })
+  async revokeConsent(
+    @Param('id')
+    id: string,
+
+    @CurrentUser()
+    user: CurrentUserDto,
+
+    @Body()
+    data: RevokeConsentDto,
+  ) {
+    return this.victimProfileService.revokeConsent(id, data, user.id);
+  }
+
+  // ─────────────────────────────────────────────
+  // ADMIN — UPDATE BANK DETAILS
+  // PATCH /victim-profiles/admin/:id/bank-details
+  // ─────────────────────────────────────────────
+
+  @Patch('admin/:id/bank-details')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @ApiBearerAuth('access-token')
+  @ApiOperation({
+    summary: 'Admin: update the off-platform transfer destination on a victim profile',
+  })
+  async updateBankDetails(
+    @Param('id')
+    id: string,
+
+    @CurrentUser()
+    user: CurrentUserDto,
+
+    @Body()
+    data: UpdateBankDetailsDto,
+  ) {
+    return this.victimProfileService.updateBankDetails(id, data, user.id);
   }
 
   // ─────────────────────────────────────────────
@@ -237,5 +406,26 @@ export class VictimProfileController {
     id: string,
   ) {
     return this.victimProfileService.reject(id, user.id);
+  }
+
+  // ─────────────────────────────────────────────
+  // ADMIN — RESUBMIT AFTER REJECTION
+  // PATCH /victim-profiles/admin/:id/resubmit
+  // ─────────────────────────────────────────────
+
+  @Patch('admin/:id/resubmit')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @ApiBearerAuth('access-token')
+  @ApiOperation({
+    summary: 'Admin: return a rejected victim profile to the approval pipeline',
+  })
+  async resubmit(
+    @CurrentUser()
+    user: CurrentUserDto,
+
+    @Param('id')
+    id: string,
+  ) {
+    return this.victimProfileService.resubmit(id, user.id);
   }
 }

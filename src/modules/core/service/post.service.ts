@@ -3,6 +3,7 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { PostStatus, PostType, Prisma } from '@prisma/client';
 
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import { ConfigService } from '@nestjs/config';
 
 import { PrismaService } from 'src/prisma/prisma.service';
 
@@ -21,6 +22,8 @@ import {
   NewPostEvent,
 } from 'src/modules/misc/events/notification.events';
 
+import { MinioService } from 'src/common/minio/minio.service';
+
 import {
   CreatePostDto,
   UpdatePostDto,
@@ -38,18 +41,19 @@ import {
 // back via CHANGES_REQUESTED.
 const OWNER_EDITABLE_STATUSES: PostStatus[] = [PostStatus.DRAFT, PostStatus.CHANGES_REQUESTED];
 
-// ─────────────────────────────────────────────
-// FIX (#7/#8/#9) — Single source of truth for what
-// status can move to what. Previously each method
-// (approve/reject/requestChanges/publish/unpublish)
-// had its own ad hoc, mutually inconsistent guard —
-// e.g. approve() didn't block approving a DRAFT that
-// was never submitted, requestChanges() didn't block
-// a DRAFT either, and reject() allowed rejecting a
-// PUBLISHED post directly instead of requiring
-// unpublish() first. This map is now the single
-// place that encodes the real workflow.
-// ─────────────────────────────────────────────
+// The six media-array fields shared by CreatePostDto/UpdatePostDto
+// and the Post model itself. Kept as a single tuple so every place
+// that needs to loop over "all media fields" stays in sync if a
+// new media kind is ever added.
+const MEDIA_FIELD_NAMES = ['photo', 'video', 'audio', 'pdf', 'document', 'other'] as const;
+type MediaFieldName = (typeof MEDIA_FIELD_NAMES)[number];
+type MediaBearing = Record<MediaFieldName, string[]>;
+type MediaBearingDto = Partial<Record<MediaFieldName, string[] | undefined>>;
+
+// Single source of truth for what status can move to what. Every
+// approve/reject/requestChanges/publish/unpublish/updateStatus call
+// goes through this one map instead of its own ad hoc guard, so the
+// workflow can't be bypassed by hitting a different endpoint.
 const ALLOWED_STATUS_TRANSITIONS: Record<PostStatus, PostStatus[]> = {
   [PostStatus.DRAFT]: [PostStatus.PENDING],
   [PostStatus.PENDING]: [PostStatus.APPROVED, PostStatus.REJECTED, PostStatus.CHANGES_REQUESTED, PostStatus.DRAFT],
@@ -71,6 +75,8 @@ export class PostService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly eventEmitter: EventEmitter2,
+    private readonly minioService: MinioService,
+    private readonly configService: ConfigService,
   ) {}
 
   private emitAudit(payload: AuditEventPayload): void {
@@ -78,10 +84,88 @@ export class PostService {
   }
 
   // ─────────────────────────────────────────────
+  // MEDIA HELPERS
+  //
+  // Post stores media as plain filepath strings in
+  // typed arrays (photo/video/audio/pdf/document/other)
+  // rather than a relational Media table. These helpers
+  // keep every read/write of that shape in one place.
+  // ─────────────────────────────────────────────
+
+  private getMediaBucket(): string {
+    return this.configService.get<string>('minio.bucketName') ?? 'ehte-media';
+  }
+
+  private collectMediaFields(entity: MediaBearing): string[] {
+    return MEDIA_FIELD_NAMES.flatMap((field) => entity[field]);
+  }
+
+  private collectMediaFieldsFromDto(dto: MediaBearingDto): string[] {
+    return MEDIA_FIELD_NAMES.flatMap((field) => dto[field] ?? []);
+  }
+
+  // Diffs each media field individually (not the flattened whole),
+  // so a client resending the same photo array doesn't get treated
+  // as "remove and re-add." Only fields present in the incoming DTO
+  // are considered — an omitted field means "leave this one alone."
+  private diffMediaFields(
+    before: MediaBearing,
+    incoming: MediaBearingDto,
+  ): { added: string[]; removed: string[] } {
+    const added: string[] = [];
+    const removed: string[] = [];
+
+    for (const field of MEDIA_FIELD_NAMES) {
+      const next = incoming[field];
+      if (next === undefined) continue;
+      const prev = before[field];
+      added.push(...next.filter((fp) => !prev.includes(fp)));
+      removed.push(...prev.filter((fp) => !next.includes(fp)));
+    }
+
+    return { added, removed };
+  }
+
+  // Confirms every filepath the client is attaching actually exists
+  // in the media bucket, so a post can't reference an object that
+  // was never uploaded (typo'd path, upload abandoned mid-flow,
+  // filepath copied from an unrelated response, etc.). Only called
+  // on filepaths that are new to the entity — already-attached
+  // filepaths were validated when they were first added.
+  private async validateMediaFilesExist(filepaths: string[]): Promise<void> {
+    if (!filepaths.length) return;
+
+    const bucket = this.getMediaBucket();
+    const checks = await Promise.all(
+      filepaths.map(async (filepath) => ({
+        filepath,
+        exists: await this.minioService.objectExists(bucket, filepath),
+      })),
+    );
+
+    const missing = checks.filter((c) => !c.exists).map((c) => c.filepath);
+    if (missing.length) {
+      throw new BadRequestException(`media_files_not_found:${missing.join(',')}`);
+    }
+  }
+
+  // Best-effort delete against MinIO. A file that's already gone
+  // (or MinIO briefly unreachable) must never block the DB write
+  // that triggered the cleanup — failures are swallowed per-file
+  // via allSettled rather than surfaced to the caller.
+  private async deleteMediaFiles(filepaths: string[]): Promise<void> {
+    if (!filepaths.length) return;
+    const bucket = this.getMediaBucket();
+    await Promise.allSettled(filepaths.map((fp) => this.minioService.deleteFile(bucket, fp)));
+  }
+
+  // ─────────────────────────────────────────────
   // CREATE POST
   // ─────────────────────────────────────────────
 
   async create(userId: string, data: CreatePostDto) {
+    await this.validateMediaFilesExist(this.collectMediaFieldsFromDto(data));
+
     const postType: PostType = data.type;
 
     const post = await this.prisma.post.create({
@@ -119,16 +203,11 @@ export class PostService {
   // ─────────────────────────────────────────────
   // ADMIN — CREATE OFFICIAL POST
   //
-  // FIX (#2/#3) — previously an involvesChild=true
-  // post could be created straight into APPROVED via
-  // this endpoint with NO childSafetyConfirmed field
-  // existing anywhere on the request. Now, when
-  // publishImmediately is true (the straight-to-
-  // APPROVED path) and involvesChild is true, the
-  // caller must explicitly pass childSafetyConfirmed:
-  // true, exactly like approve() requires. The
-  // PENDING path (publishImmediately=false) does not
-  // require it here, because that path still goes
+  // An involvesChild=true post can only reach APPROVED
+  // via this endpoint if the caller explicitly passes
+  // childSafetyConfirmed: true, exactly like approve()
+  // requires. The PENDING path (publishImmediately=false)
+  // doesn't require it here, since that path still goes
   // through approve()'s own gate later.
   // ─────────────────────────────────────────────
 
@@ -139,6 +218,8 @@ export class PostService {
     if (publishImmediately && involvesChild && data.childSafetyConfirmed !== true) {
       throw new BadRequestException('child_safety_confirmation_required');
     }
+
+    await this.validateMediaFilesExist(this.collectMediaFieldsFromDto(data));
 
     const status = publishImmediately ? PostStatus.APPROVED : PostStatus.PENDING;
 
@@ -217,6 +298,12 @@ export class PostService {
   // ─────────────────────────────────────────────
   // UPDATE MY POST
   // Allowed only while DRAFT or CHANGES_REQUESTED.
+  //
+  // Media handling: for each media field present in the
+  // request, diffs against what's currently on the row.
+  // Newly-added filepaths are validated against MinIO
+  // before the write; filepaths dropped from the new
+  // array are deleted from MinIO after the write commits.
   // ─────────────────────────────────────────────
 
   async updateMyPost(userId: string, postId: string, data: UpdatePostDto) {
@@ -236,6 +323,9 @@ export class PostService {
       (key) => data[key as keyof UpdatePostDto] !== undefined,
     );
 
+    const { added, removed } = this.diffMediaFields(existing, data);
+    await this.validateMediaFilesExist(added);
+
     const post = await this.prisma.post.update({
       where: { id: postId },
       data: {
@@ -251,6 +341,10 @@ export class PostService {
         ...(data.other !== undefined ? { other: data.other } : {}),
       },
     });
+
+    // Only after the DB write commits — deleting first and having
+    // the write fail would strand the post pointing at nothing.
+    await this.deleteMediaFiles(removed);
 
     this.emitAudit({
       userId,
@@ -285,8 +379,8 @@ export class PostService {
       throw new BadRequestException('post_cannot_be_submitted_in_current_status');
     }
 
-    // FIX (#11 partial) — conditional update guards against a
-    // concurrent transition landing between findFirst and update.
+    // Conditional update guards against a concurrent transition
+    // landing between findFirst and update.
     const result = await this.prisma.post.updateMany({
       where: { id: postId, status: existing.status },
       data: { status: PostStatus.PENDING },
@@ -321,12 +415,8 @@ export class PostService {
   }
 
   // ─────────────────────────────────────────────
-  // FIX (#4) — CANCEL / WITHDRAW MY POST
-  // PENDING → DRAFT. Previously an owner had no way
-  // to pull a submitted post back; the only exit from
-  // PENDING was an admin acting on it. Withdrawing
-  // returns it to DRAFT so the owner can edit it again
-  // via updateMyPost and resubmit via submitMyPost.
+  // CANCEL / WITHDRAW MY POST
+  // PENDING → DRAFT.
   // ─────────────────────────────────────────────
 
   async cancelMyPost(userId: string, postId: string) {
@@ -371,14 +461,11 @@ export class PostService {
   }
 
   // ─────────────────────────────────────────────
-  // FIX (#5) — DELETE MY POST
-  // Scoped to DRAFT only, mirroring
-  // OWNER_EDITABLE_STATUSES's spirit but deliberately
-  // narrower than "edit" — a post that has ever been
-  // submitted (PENDING/CHANGES_REQUESTED/etc.) keeps
-  // its record rather than disappearing from the
-  // audit trail; owners can still discard a draft
-  // they never intend to submit.
+  // DELETE MY POST
+  // Scoped to DRAFT only. Deletes the DB row, then
+  // removes every attached media object from MinIO —
+  // once the row referencing them is gone, an orphaned
+  // object in the bucket serves no purpose.
   // ─────────────────────────────────────────────
 
   async deleteMyPost(userId: string, postId: string) {
@@ -395,6 +482,8 @@ export class PostService {
     }
 
     await this.prisma.post.delete({ where: { id: postId } });
+
+    await this.deleteMediaFiles(this.collectMediaFields(existing));
 
     this.emitAudit({
       userId,
@@ -463,9 +552,6 @@ export class PostService {
 
   // ─────────────────────────────────────────────
   // ADMIN — GET ALL POSTS
-  //
-  // FIX (#6) — added authorId filter (equivalent of
-  // assignedTo on the Report query).
   // ─────────────────────────────────────────────
 
   async findAll(query: AdminPostQueryDto) {
@@ -517,21 +603,11 @@ export class PostService {
   // ─────────────────────────────────────────────
   // ADMIN — UPDATE STATUS
   //
-  // FIX (#1/#7/#12/#13) — this generic endpoint
-  // previously accepted any PostStatus with zero
-  // transition validation and zero child-safety
-  // check, making it a total bypass of approve()'s
-  // gate (e.g. flipping a DRAFT, involvesChild=true
-  // post straight to PUBLISHED in one call). It now:
-  //   - validates the transition via the shared map
-  //   - requires childSafetyConfirmed when moving an
-  //     involvesChild post to APPROVED or PUBLISHED
-  //   - uses a conditional update to avoid racing
-  //     another concurrent transition
-  // The `status` value itself is now DTO-validated
-  // with @IsEnum at the controller layer (see
-  // UpdatePostStatusDto) instead of being read raw
-  // off the body.
+  // Validates the transition via the shared map,
+  // requires childSafetyConfirmed when moving an
+  // involvesChild post to APPROVED or PUBLISHED, and
+  // uses a conditional update to avoid racing another
+  // concurrent transition.
   // ─────────────────────────────────────────────
 
   async updateStatus(
@@ -579,11 +655,6 @@ export class PostService {
 
   // ─────────────────────────────────────────────
   // ADMIN — APPROVE POST
-  //
-  // FIX (#8) — now uses assertTransitionAllowed, so
-  // approving a DRAFT post that was never submitted
-  // is blocked (previously only APPROVED/REJECTED
-  // were excluded).
   // ─────────────────────────────────────────────
 
   async approve(user: CurrentUserDto, postId: string, data: ApprovePostDto) {
@@ -633,19 +704,13 @@ export class PostService {
   // ─────────────────────────────────────────────
   // ADMIN — REQUEST CHANGES
   //
-  // FIX (#9) — now uses assertTransitionAllowed, so
-  // requesting changes on a DRAFT (never submitted)
-  // is blocked, not just PUBLISHED/REJECTED.
+  // The message is persisted on the Post row
+  // (reviewNote), not just the audit log and
+  // notification payload, so GET /posts/me/:id shows
+  // the owner why without relying on the notification.
   //
-  // FIX (#11) — the message is now also persisted on
-  // the Post row (reviewNote), not just the audit log
-  // and notification payload, so GET /posts/me/:id
-  // shows the owner *why* without relying on them
-  // having caught the notification.
-  //
-  // NOTE: this requires a `reviewNote String?` column
-  // on the Post model — add a Prisma migration for it
-  // if it isn't already there.
+  // NOTE: requires a `reviewNote String?` column on
+  // the Post model. See the migration note in schema.
   // ─────────────────────────────────────────────
 
   async requestChanges(user: CurrentUserDto, postId: string, data: RequestPostChangesDto) {
@@ -729,14 +794,11 @@ export class PostService {
   // ─────────────────────────────────────────────
   // ADMIN — REJECT POST
   //
-  // FIX (#10) — now uses assertTransitionAllowed, so
-  // a PUBLISHED post can no longer be rejected
-  // directly; it must go through unpublish() first,
-  // matching the real-world workflow (you take
-  // something down before you formally reject it).
-  //
-  // FIX (#11) — reason is now also persisted on the
-  // Post row (reviewNote). See migration note above.
+  // A PUBLISHED post can't be rejected directly; it
+  // must go through unpublish() first, matching the
+  // real-world workflow (take something down before
+  // formally rejecting it). Reason is persisted on
+  // the Post row (reviewNote).
   // ─────────────────────────────────────────────
 
   async reject(user: CurrentUserDto, postId: string, data: RejectPostDto) {
@@ -784,11 +846,8 @@ export class PostService {
 
   // ─────────────────────────────────────────────
   // ADMIN — UNPUBLISH POST
-  //
-  // FIX (#14) — now notifies the post owner, matching
-  // approve/reject/requestChanges. Previously a
-  // user's published post could vanish from the
-  // public feed with zero notice to them.
+  // Notifies the post owner, matching
+  // approve/reject/request-changes.
   // ─────────────────────────────────────────────
 
   async unpublish(user: CurrentUserDto, postId: string) {

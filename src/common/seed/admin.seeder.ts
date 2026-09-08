@@ -13,11 +13,20 @@ export class AdminSeeder implements OnApplicationBootstrap {
   ) {}
 
   async onApplicationBootstrap(): Promise<void> {
-    const phone = this.config.get<string>('ADMIN_PHONE', '+251900000000');
+    const phone = this.config.get<string>(
+      'ADMIN_PHONE',
+      '+251900000000',
+    );
 
-    const name = this.config.get<string>('ADMIN_NAME', 'Ehte System Admin');
+    const name = this.config.get<string>(
+      'ADMIN_NAME',
+      'Ehte System Admin',
+    );
 
-    const password = this.config.get<string>('ADMIN_PASSWORD', 'P@ssw0rd');
+    const password = this.config.get<string>(
+      'ADMIN_PASSWORD',
+      'P@ssw0rd',
+    );
 
     const existingUser = await this.prisma.user.findUnique({
       where: {
@@ -35,7 +44,7 @@ export class AdminSeeder implements OnApplicationBootstrap {
       data: {
         name,
         phone,
-        password: hashedPassword,
+        passwordHash: hashedPassword,
         isActive: true,
         isPhoneVerified: true,
       },

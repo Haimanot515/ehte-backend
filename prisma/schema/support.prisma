@@ -1,6 +1,10 @@
 // ─────────────────────────────────────────────
 // EHTE FEATURES — Support
 // ─────────────────────────────────────────────
+// No changes needed here — included for reference alongside the
+// updated VictimProfile model, since getSupportsSummary() in
+// victim-profile.service.ts reads from this model.
+// ─────────────────────────────────────────────
 
 enum SupportType {
   FINANCIAL

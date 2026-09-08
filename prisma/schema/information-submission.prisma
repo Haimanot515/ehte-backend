@@ -26,6 +26,11 @@ model InformationSubmission {
 
   status InformationStatus @default(PENDING)
 
+  // Added — populated by admin on REJECTED so the submitter can
+  // see why their tip wasn't accepted. Same pattern as
+  // MissingPerson.reviewNote.
+  reviewNote String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

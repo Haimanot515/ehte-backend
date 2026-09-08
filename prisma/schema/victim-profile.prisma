@@ -57,6 +57,11 @@ model VictimProfile {
   isPrivacyReviewed Boolean   @default(false)
   isAdminApproved   Boolean   @default(false)
 
+  // Sixth, conditional gate (PRD §32): only enforced when
+  // involvesChild = true. See deriveStatus() / updateChildSafetyReview()
+  // in victim-profile.service.ts for how this feeds into `status`.
+  isChildSafetyReviewed Boolean @default(false)
+
   isPublished Boolean @default(false)
 
   createdAt DateTime @default(now())

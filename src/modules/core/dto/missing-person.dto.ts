@@ -144,6 +144,24 @@ export class UpdateMissingPersonDto {
 }
 
 // ─────────────────────────────────────────────
+// ADMIN — UPDATE STATUS DTO
+// reviewNote is required by the service layer when status is
+// REJECTED or MORE_INFORMATION_REQUESTED (validated in the
+// service, not here, since the requirement is conditional on
+// the value of `status`).
+// ─────────────────────────────────────────────
+
+export class UpdateMissingPersonStatusDto {
+  @IsEnum(MissingPersonStatus)
+  status: MissingPersonStatus;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  reviewNote?: string;
+}
+
+// ─────────────────────────────────────────────
 // LIST QUERY DTOs (pagination)
 // ─────────────────────────────────────────────
 

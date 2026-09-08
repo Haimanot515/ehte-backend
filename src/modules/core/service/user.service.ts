@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import * as bcrypt from 'bcrypt';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
 import {
@@ -15,6 +16,13 @@ import {
 } from '../dto/user.dto';
 import { AuditEventEnum } from 'src/common/enums/shared/audit-events.enum';
 import { RolesEnum } from 'src/common/enums/roles.enum';
+
+// NOTE: this file uses bcrypt directly for the Discreet Mode
+// re-auth check. If AuthService already wraps password hashing in
+// a shared helper/service (e.g. a PasswordService), replace the
+// bcrypt calls below with that helper instead, so there is one
+// hashing code path for the whole app rather than two.
+
 @Injectable()
 export class UserService {
   constructor(
@@ -161,6 +169,25 @@ export class UserService {
   }
   // ─────────────────────────────────────────────
   // DISCREET MODE
+  // PATCH /users/me/discreet-mode
+  //
+  // This is a configuration endpoint only — it does not perform
+  // sensitive-action re-authentication. That is a separate concern,
+  // handled by a re-auth guard/flow elsewhere in the app:
+  //   - Discreet Mode OFF → checks the normal account password
+  //   - Discreet Mode ON  → accepts either the password or the
+  //     Discreet Mode passcode
+  //
+  // ENABLING (data.enabled === true) always requires data.passcode.
+  // This covers two distinct cases, both handled here:
+  //   - First-time setup (discreetModeEnabled was false)
+  //   - Passcode rotation (discreetModeEnabled was already true) —
+  //     this is intentionally NOT a no-op, since the caller may be
+  //     changing their passcode while Discreet Mode stays on.
+  //
+  // DISABLING (data.enabled === false) clears the passcode hash.
+  // Re-enabling later requires setting a brand new passcode, same
+  // as first-time setup.
   // ─────────────────────────────────────────────
   async updateDiscreetMode(currentUser: CurrentUserDto, data: UpdateDiscreetModeDto) {
     const user = await this.prisma.user.findUnique({
@@ -173,28 +200,68 @@ export class UserService {
         discreetModeEnabled: true,
       },
     });
+
     if (!user) {
       throw new NotFoundException('user_not_found');
     }
     if (!user.isActive) {
       throw new BadRequestException('account_inactive');
     }
+
     // ───────────────────────────────────────────
-    // NO CHANGE
+    // DISABLING
     // ───────────────────────────────────────────
-    if (user.discreetModeEnabled === data.enabled) {
+    if (!data.enabled) {
+      const updatedUser = await this.prisma.user.update({
+        where: {
+          id: currentUser.id,
+        },
+        data: {
+          discreetModeEnabled: false,
+          discreetModePasscodeHash: null,
+          discreetModeUpdatedAt: new Date(),
+        },
+        select: {
+          id: true,
+          discreetModeEnabled: true,
+          discreetModeUpdatedAt: true,
+        },
+      });
+
+      // ─────────────────────────────────────────
+      // AUDIT LOG
+      // ─────────────────────────────────────────
+      this.eventEmitter.emit(AuditEventEnum.DISCREET_MODE_DISABLED, {
+        userId: currentUser.id,
+        entityId: currentUser.id,
+        entityType: 'USER',
+        enabled: false,
+      });
+
       return {
-        message: data.enabled ? 'discreet_mode_enabled' : 'discreet_mode_disabled',
-        discreetModeEnabled: user.discreetModeEnabled,
-        discreetModeUpdatedAt: undefined,
+        message: 'discreet_mode_disabled',
+        discreetModeEnabled: updatedUser.discreetModeEnabled,
+        discreetModeUpdatedAt: updatedUser.discreetModeUpdatedAt,
       };
     }
+
+    // ───────────────────────────────────────────
+    // ENABLING (first time) OR CHANGING PASSCODE (already enabled)
+    // ───────────────────────────────────────────
+    if (!data.passcode) {
+      throw new BadRequestException('discreet_mode_passcode_required');
+    }
+
+    const wasAlreadyEnabled = user.discreetModeEnabled;
+    const discreetModePasscodeHash = await bcrypt.hash(data.passcode, 10);
+
     const updatedUser = await this.prisma.user.update({
       where: {
         id: currentUser.id,
       },
       data: {
-        discreetModeEnabled: data.enabled,
+        discreetModeEnabled: true,
+        discreetModePasscodeHash,
         discreetModeUpdatedAt: new Date(),
       },
       select: {
@@ -203,20 +270,24 @@ export class UserService {
         discreetModeUpdatedAt: true,
       },
     });
+
     // ───────────────────────────────────────────
     // AUDIT LOG
     // ───────────────────────────────────────────
     this.eventEmitter.emit(
-      data.enabled ? AuditEventEnum.DISCREET_MODE_ENABLED : AuditEventEnum.DISCREET_MODE_DISABLED,
+      wasAlreadyEnabled
+        ? AuditEventEnum.DISCREET_MODE_PASSCODE_CHANGED
+        : AuditEventEnum.DISCREET_MODE_ENABLED,
       {
         userId: currentUser.id,
         entityId: currentUser.id,
         entityType: 'USER',
-        enabled: data.enabled,
+        enabled: true,
       },
     );
+
     return {
-      message: data.enabled ? 'discreet_mode_enabled' : 'discreet_mode_disabled',
+      message: wasAlreadyEnabled ? 'discreet_mode_passcode_changed' : 'discreet_mode_enabled',
       discreetModeEnabled: updatedUser.discreetModeEnabled,
       discreetModeUpdatedAt: updatedUser.discreetModeUpdatedAt,
     };

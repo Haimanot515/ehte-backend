@@ -3,6 +3,7 @@ import { BadRequestException, ForbiddenException, Injectable, NotFoundException 
 import { InformationRequestStatus, Prisma, ReportStatus } from '@prisma/client';
 
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import { ConfigService } from '@nestjs/config';
 
 import { PrismaService } from 'src/prisma/prisma.service';
 
@@ -16,6 +17,8 @@ import { AuditEventPayload } from 'src/modules/misc/events/audit.events';
 import { NotificationEventEnum } from 'src/common/enums/shared/notification-events.enum';
 
 import { RolesEnum } from 'src/common/enums/roles.enum';
+
+import { MinioService } from 'src/common/minio/minio.service';
 
 import {
   CreateReportDto,
@@ -63,15 +66,101 @@ const ADMIN_ROLE_NAMES = [RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN];
 // constraint collision before giving up.
 const CASE_REFERENCE_MAX_ATTEMPTS = 5;
 
+// The six media-array fields shared by CreateReportDto/UpdateReportDto
+// and the Report model itself. Mirrors PostService's MEDIA_FIELD_NAMES
+// so both modules stay in sync if a new media kind is ever added.
+const MEDIA_FIELD_NAMES = ['photo', 'video', 'audio', 'pdf', 'document', 'other'] as const;
+type MediaFieldName = (typeof MEDIA_FIELD_NAMES)[number];
+type MediaBearing = Record<MediaFieldName, string[]>;
+type MediaBearingDto = Partial<Record<MediaFieldName, string[] | undefined>>;
+
 @Injectable()
 export class ReportService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly eventEmitter: EventEmitter2,
+    private readonly minioService: MinioService,
+    private readonly configService: ConfigService,
   ) {}
 
   private emitAudit(payload: AuditEventPayload): void {
     this.eventEmitter.emit(payload.action, payload);
+  }
+
+  // ─────────────────────────────────────────────
+  // MEDIA HELPERS
+  //
+  // Mirrors PostService's media helpers. Report stores media as
+  // plain filepath strings in typed arrays (photo/video/audio/pdf/
+  // document/other), same as Post — kept in one place so every
+  // read/write of that shape stays consistent.
+  // ─────────────────────────────────────────────
+
+  private getMediaBucket(): string {
+    return this.configService.get<string>('minio.bucketName') ?? 'ehte-media';
+  }
+
+  private collectMediaFields(entity: MediaBearing): string[] {
+    return MEDIA_FIELD_NAMES.flatMap((field) => entity[field]);
+  }
+
+  private collectMediaFieldsFromDto(dto: MediaBearingDto): string[] {
+    return MEDIA_FIELD_NAMES.flatMap((field) => dto[field] ?? []);
+  }
+
+  // Diffs each media field individually (not the flattened whole),
+  // so a client resending the same array doesn't get treated as
+  // "remove and re-add." Only fields present in the incoming DTO
+  // are considered — an omitted field means "leave this one alone."
+  private diffMediaFields(
+    before: MediaBearing,
+    incoming: MediaBearingDto,
+  ): { added: string[]; removed: string[] } {
+    const added: string[] = [];
+    const removed: string[] = [];
+
+    for (const field of MEDIA_FIELD_NAMES) {
+      const next = incoming[field];
+      if (next === undefined) continue;
+      const prev = before[field];
+      added.push(...next.filter((fp) => !prev.includes(fp)));
+      removed.push(...prev.filter((fp) => !next.includes(fp)));
+    }
+
+    return { added, removed };
+  }
+
+  // Confirms every filepath the client is attaching actually exists
+  // in the media bucket, so a report can't reference an object that
+  // was never uploaded (typo'd path, upload abandoned mid-flow,
+  // filepath copied from an unrelated response, etc.). Only called
+  // on filepaths that are new to the entity — already-attached
+  // filepaths were validated when they were first added.
+  private async validateMediaFilesExist(filepaths: string[]): Promise<void> {
+    if (!filepaths.length) return;
+
+    const bucket = this.getMediaBucket();
+    const checks = await Promise.all(
+      filepaths.map(async (filepath) => ({
+        filepath,
+        exists: await this.minioService.objectExists(bucket, filepath),
+      })),
+    );
+
+    const missing = checks.filter((c) => !c.exists).map((c) => c.filepath);
+    if (missing.length) {
+      throw new BadRequestException(`media_files_not_found:${missing.join(',')}`);
+    }
+  }
+
+  // Best-effort delete against MinIO. A file that's already gone
+  // (or MinIO briefly unreachable) must never block the DB write
+  // that triggered the cleanup — failures are swallowed per-file
+  // via allSettled rather than surfaced to the caller.
+  private async deleteMediaFiles(filepaths: string[]): Promise<void> {
+    if (!filepaths.length) return;
+    const bucket = this.getMediaBucket();
+    await Promise.allSettled(filepaths.map((fp) => this.minioService.deleteFile(bucket, fp)));
   }
 
   // ─────────────────────────────────────────────
@@ -99,9 +188,14 @@ export class ReportService {
 
   // ─────────────────────────────────────────────
   // CREATE REPORT
+  //
+  // Media filepaths are validated against MinIO before the
+  // report is created, same as PostService.create.
   // ─────────────────────────────────────────────
 
   async create(user: CurrentUserDto, data: CreateReportDto) {
+    await this.validateMediaFilesExist(this.collectMediaFieldsFromDto(data));
+
     const report = await this.createReportWithUniqueCaseReference(user, data);
 
     this.emitAudit({
@@ -154,6 +248,13 @@ export class ReportService {
 
   // ─────────────────────────────────────────────
   // UPDATE REPORT
+  //
+  // Media handling: diffs each media field present in the
+  // request against what's currently on the row. Newly-added
+  // filepaths are validated against MinIO before the write;
+  // filepaths dropped from the new array are deleted from
+  // MinIO after the write commits — same ordering discipline
+  // as PostService.updateMyPost.
   // ─────────────────────────────────────────────
 
   async update(user: CurrentUserDto, reportId: string, data: UpdateReportDto) {
@@ -168,6 +269,9 @@ export class ReportService {
     if (existing.status !== ReportStatus.PENDING) {
       throw new BadRequestException('only_pending_reports_can_be_updated');
     }
+
+    const { added, removed } = this.diffMediaFields(existing, data);
+    await this.validateMediaFilesExist(added);
 
     const report = await this.prisma.report.update({
       where: { id: reportId },
@@ -184,6 +288,10 @@ export class ReportService {
         ...(data.other !== undefined ? { other: data.other } : {}),
       },
     });
+
+    // Only after the DB write commits — deleting first and having
+    // the write fail would strand the report pointing at nothing.
+    await this.deleteMediaFiles(removed);
 
     this.emitAudit({
       userId: user.id,
@@ -209,7 +317,7 @@ export class ReportService {
   // ─────────────────────────────────────────────
   // WITHDRAW REPORT (USER)
   //
-  // NEW: lets a reporter withdraw their own report while it's
+  // Lets a reporter withdraw their own report while it's
   // still PENDING — the same window during which they can edit
   // it. Reuses ReportStatus.REJECTED since there is no dedicated
   // WITHDRAWN status in the schema. If you want to distinguish
@@ -218,6 +326,12 @@ export class ReportService {
   // audit trail already records REPORT_WITHDRAWN separately so
   // the distinction isn't lost even though status collapses the
   // two together.
+  //
+  // NOTE: the row (and its media) are kept, not deleted — unlike
+  // PostService.deleteMyPost, which only purges media on an actual
+  // row deletion. If withdrawn-report media should also be purged
+  // from MinIO, that's a deliberate policy decision to make
+  // explicitly, not something to infer from this pattern.
   // ─────────────────────────────────────────────
 
   async withdraw(user: CurrentUserDto, reportId: string) {
@@ -488,11 +602,11 @@ export class ReportService {
   // ─────────────────────────────────────────────
   // LIST INFORMATION REQUESTS
   //
-  // NEW: backs GET /reports/:id/information-requests.
-  // The reporter may list requests for their own report.
-  // An admin may list them for any report they're allowed
-  // to open (same rule as findOneForAdmin: SUPER_ADMIN sees
-  // any report, plain ADMIN only unassigned or assigned-to-them).
+  // Backs GET /reports/:id/information-requests. The reporter may
+  // list requests for their own report. An admin may list them for
+  // any report they're allowed to open (same rule as
+  // findOneForAdmin: SUPER_ADMIN sees any report, plain ADMIN only
+  // unassigned or assigned-to-them).
   // ─────────────────────────────────────────────
 
   async findInformationRequests(user: CurrentUserDto, reportId: string) {
@@ -522,10 +636,10 @@ export class ReportService {
   // ─────────────────────────────────────────────
   // GET ONE INFORMATION REQUEST
   //
-  // NEW: backs GET /reports/:id/information-requests/:requestId.
-  // Same access rule as findInformationRequests: the reporter
-  // sees requests on their own report; an admin sees requests on
-  // any report they're allowed to open.
+  // Backs GET /reports/:id/information-requests/:requestId. Same
+  // access rule as findInformationRequests: the reporter sees
+  // requests on their own report; an admin sees requests on any
+  // report they're allowed to open.
   // ─────────────────────────────────────────────
 
   async findOneInformationRequest(user: CurrentUserDto, reportId: string, requestId: string) {
@@ -560,10 +674,10 @@ export class ReportService {
   // ─────────────────────────────────────────────
   // RESPOND TO INFORMATION REQUEST (USER)
   //
-  // NEW: backs the previously-missing
-  // POST /reports/:id/information-requests/:requestId/respond
-  // endpoint. Only the reporter who owns the report may
-  // respond, and only to a request still PENDING.
+  // Backs POST /reports/:id/information-requests/:requestId/respond.
+  // Only the reporter who owns the report may respond, and only to
+  // a request still PENDING. responseFiles is validated against
+  // MinIO before being persisted, same as any other media field.
   // ─────────────────────────────────────────────
 
   async respondToInformationRequest(
@@ -591,6 +705,8 @@ export class ReportService {
     if (infoRequest.status !== InformationRequestStatus.PENDING) {
       throw new BadRequestException('information_request_already_responded');
     }
+
+    await this.validateMediaFilesExist(data.responseFiles ?? []);
 
     const updated = await this.prisma.reportInformationRequest.update({
       where: { id: requestId },
@@ -707,7 +823,7 @@ export class ReportService {
   // ─────────────────────────────────────────────
   // UNASSIGN (ADMIN)
   //
-  // NEW: clears assignedToId back to null. Restricted to
+  // Clears assignedToId back to null. Restricted to
   // SUPER_ADMIN at the controller level, mirroring assign()'s
   // current role restriction. Status is left unchanged — same
   // silent-no-status-change approach assign() already takes;
@@ -743,15 +859,15 @@ export class ReportService {
 
     return report;
   }
+
+  // ─────────────────────────────────────────────
+  // ESCALATE (ADMIN)
   //
-  // Now checks ALLOWED_STATUS_TRANSITIONS directly instead
-  // of a separate terminal-state blocklist. The blocklist
-  // only stopped CLOSED/REJECTED -> ESCALATED but still
-  // allowed transitions the state machine doesn't otherwise
-  // permit (e.g. PENDING -> ESCALATED, RECEIVED -> ESCALATED).
-  // This keeps escalate() and updateStatus() enforcing the
-  // same single rulebook. Also enforces the same admin-access
-  // rule as the other admin operations.
+  // Checks ALLOWED_STATUS_TRANSITIONS directly instead of a
+  // separate terminal-state blocklist, so escalate() and
+  // updateStatus() enforce the same single rulebook. Also
+  // enforces the same admin-access rule as the other admin
+  // operations.
   // ─────────────────────────────────────────────
 
   async escalate(admin: CurrentUserDto, reportId: string, data: EscalateReportDto) {

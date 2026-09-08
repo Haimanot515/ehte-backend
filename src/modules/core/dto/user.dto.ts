@@ -7,6 +7,7 @@ import {
   IsUUID,
   MaxLength,
   MinLength,
+  ValidateIf,
 } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
 
@@ -24,6 +25,27 @@ export class UpdateUserDto {
   name?: string;
 }
 
+// ─────────────────────────────────────────────
+// DISCREET MODE
+// PATCH /users/me/discreet-mode
+//
+// This endpoint only configures Discreet Mode — it does not
+// perform sensitive-action re-authentication. That is a separate
+// concern, handled by a re-auth guard/flow elsewhere: Discreet
+// Mode OFF checks the normal password; Discreet Mode ON accepts
+// either the password or the Discreet Mode passcode.
+//
+// passcode is required when enabled === true (covers both
+// first-time setup and rotating an existing passcode). It is
+// ignored when enabled === false.
+//
+// NOTE: the re-auth credential itself (body.password) is NOT a
+// field on this DTO. ReauthGuard reads and deletes it from the raw
+// request body before NestJS's ValidationPipe ever builds this
+// DTO, so it never reaches the controller/service layer. See
+// ReauthGuard + @RequireReauthentication() on
+// UserController.updateDiscreetMode().
+// ─────────────────────────────────────────────
 export class UpdateDiscreetModeDto {
   @ApiProperty({
     example: true,
@@ -31,6 +53,16 @@ export class UpdateDiscreetModeDto {
   })
   @IsBoolean()
   enabled: boolean;
+
+  @ApiPropertyOptional({
+    example: '482913',
+    description: 'Discreet Mode passcode. Required when enabling Discreet Mode.',
+  })
+  @ValidateIf((o) => o.enabled === true)
+  @IsString()
+  @MinLength(4)
+  @MaxLength(12)
+  passcode?: string;
 }
 
 // ─────────────────────────────────────────────
