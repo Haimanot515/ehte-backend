@@ -83,6 +83,10 @@ async function bootstrap() {
 
   const shouldEnableSwagger = swaggerEnabled;
 
+  // Public URL of this deployment (e.g. https://ehte-api.onrender.com), set on Render's
+  // Environment tab. Falls back to localhost when not set (local dev).
+  const publicUrl = configService.get<string>('APP_URL');
+
   // ─────────────────────────────────────────────
   // LOGGER
   // ─────────────────────────────────────────────
@@ -207,7 +211,7 @@ async function bootstrap() {
     // SWAGGER CONFIG
     // ───────────────────────────────────────────
 
-    const swaggerConfig = new DocumentBuilder()
+    const swaggerConfigBuilder = new DocumentBuilder()
       .setTitle('Ehte API')
       .setDescription(
         `
@@ -251,12 +255,26 @@ Use the **Authorize** button and enter:
           description: 'Enter your JWT access token',
         },
         'access-token',
-      )
+      );
 
-      // LOCAL SERVER
-      .addServer('http://localhost:3000', 'Local Development')
+    // SERVERS: register whichever host is actually reachable from the
+    // browser viewing these docs, so "Execute" never targets the wrong
+    // origin. Local dev sees localhost first; a deployed environment
+    // (Render etc.) sees its own public URL first, with localhost kept
+    // as a secondary option for anyone tunnelling/proxying locally.
 
-      // TAG ORDER
+    if (nodeEnv === 'production' && publicUrl) {
+      swaggerConfigBuilder.addServer(publicUrl, 'Production');
+      swaggerConfigBuilder.addServer('http://localhost:3000', 'Local Development');
+    } else {
+      swaggerConfigBuilder.addServer('http://localhost:3000', 'Local Development');
+      if (publicUrl) {
+        swaggerConfigBuilder.addServer(publicUrl, 'Deployed');
+      }
+    }
+
+    // TAG ORDER
+    swaggerConfigBuilder
       .addTag('Authentication')
       .addTag('Reports')
       .addTag('Posts')
@@ -267,9 +285,9 @@ Use the **Authorize** button and enter:
       .addTag('Notifications')
       .addTag('Users')
       .addTag('Roles')
-      .addTag('Audit Logs')
+      .addTag('Audit Logs');
 
-      .build();
+    const swaggerConfig = swaggerConfigBuilder.build();
 
     // ───────────────────────────────────────────
     // CREATE SWAGGER DOCUMENT
