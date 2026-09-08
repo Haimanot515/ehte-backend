@@ -253,12 +253,21 @@ export class AdminVerifyDto {
 
 // ─────────────────────────────────────────────
 // ADMIN — LOGIN
+//
+// Swagger example values are pulled from .env
+// (ADMIN_PHONE / ADMIN_PASSWORD) so the "Try it out"
+// form is pre-filled with the seeded default admin
+// during local/dev testing. Falls back to a generic
+// placeholder in production so real credentials never
+// appear in Swagger's generated docs/JSON.
 // ─────────────────────────────────────────────
+
+const isProd = process.env.NODE_ENV === 'production';
 
 export class AdminLoginDto {
   @ApiProperty({
     description: 'Registered admin phone number',
-    example: '+251943257078',
+    example: isProd ? '+251900000000' : process.env.ADMIN_PHONE || '+251943257078',
   })
   @IsString()
   @IsNotEmpty()
@@ -266,7 +275,7 @@ export class AdminLoginDto {
 
   @ApiProperty({
     description: 'Admin account password',
-    example: 'StrongPassword123',
+    example: isProd ? 'StrongPassword123' : process.env.ADMIN_PASSWORD || 'StrongPassword123',
   })
   @IsString()
   @IsNotEmpty()
