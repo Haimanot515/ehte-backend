@@ -9,6 +9,15 @@ export default () => ({
     debug: process.env.APP_DEBUG === 'true',
   },
 
+  sms: {
+    afroMessage: {
+      apiUrl: process.env.AFROMESSAGE_URL,
+      apiKey: process.env.AFROMESSAGE_TOKEN,
+      senderName: process.env.AFROMESSAGE_SENDER_NAME || 'Ehte',
+      identifierId: process.env.AFROMESSAGE_IDENTIFIER_ID,
+    },
+  },
+
   database: {
     url: process.env.DATABASE_URL,
   },
