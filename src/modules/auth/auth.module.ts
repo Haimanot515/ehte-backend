@@ -4,6 +4,7 @@ import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
 
 import { PrismaModule } from 'src/prisma/prisma.module';
+import { AfroMessageService } from 'src/common/sms/afro-message.service';
 
 import { AuthController, AdminAuthController } from './controller/auth.controller';
 import { AuthService } from './service/auth.service';
@@ -32,7 +33,7 @@ import { RoleService } from './service/role.service';
 
   controllers: [AuthController, AdminAuthController, RoleController],
 
-  providers: [AuthService, RoleService],
+  providers: [AuthService, RoleService, AfroMessageService],
 
   exports: [AuthService, RoleService],
 })
