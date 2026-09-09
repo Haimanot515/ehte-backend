@@ -57,6 +57,8 @@ export class AfroMessageService implements OnModuleInit {
 
     const senderName = this.configService.get<string>('sms.afroMessage.senderName', 'Ehte');
 
+    const identifierId = this.configService.get<string>('sms.afroMessage.identifierId');
+
     /*
      * Validate AfroMessage configuration.
      */
@@ -66,6 +68,10 @@ export class AfroMessageService implements OnModuleInit {
 
     if (!apiKey) {
       throw new Error('AfroMessage API key is not configured');
+    }
+
+    if (!identifierId) {
+      throw new Error('AfroMessage identifier ID is not configured');
     }
 
     /*
@@ -93,7 +99,8 @@ export class AfroMessageService implements OnModuleInit {
         },
 
         body: JSON.stringify({
-          from: senderName,
+          from: identifierId,
+          sender: senderName,
           to: normalizedPhone,
           message,
         }),
@@ -118,9 +125,9 @@ export class AfroMessageService implements OnModuleInit {
       return {
         success: true,
 
-        messageId: data?.messageId ?? data?.id,
+        messageId: data?.response?.message_id ?? data?.messageId ?? data?.id,
 
-        message: data?.message ?? 'SMS sent successfully',
+        message: data?.response?.message ?? data?.message ?? 'SMS sent successfully',
       };
     } catch (error) {
       /*
