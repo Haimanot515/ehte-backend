@@ -1,37 +1,37 @@
-import { Injectable, OnApplicationBootstrap } from '@nestjs/common';
+import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcrypt';
 
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RolesEnum } from '../enums/roles.enum';
 
+// Seeds the initial SUPER_ADMIN account on boot, keyed by EMAIL — matching
+// AuthService.adminLoginByEmail(), the only admin login path. Phone-based
+// admin seeding/login has been removed; this seeder no longer touches
+// phone at all. Configure via ADMIN_EMAIL / ADMIN_NAME / ADMIN_PASSWORD.
+
 @Injectable()
 export class AdminSeeder implements OnApplicationBootstrap {
+  private readonly logger = new Logger(AdminSeeder.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
   ) {}
 
   async onApplicationBootstrap(): Promise<void> {
-    const phone = this.config.get<string>(
-      'ADMIN_PHONE',
-      '+251900000000',
-    );
+    const rawEmail = this.config.get<string>('ADMIN_EMAIL', 'admin@ehte.com');
 
-    const name = this.config.get<string>(
-      'ADMIN_NAME',
-      'Ehte System Admin',
-    );
+    // Normalize the same way AuthService does (trim + lowercase), so the
+    // seeded row matches what adminLoginByEmail()'s findUnique({ email }) expects
+    const email = rawEmail.trim().toLowerCase();
 
-    const password = this.config.get<string>(
-      'ADMIN_PASSWORD',
-      'P@ssw0rd',
-    );
+    const name = this.config.get<string>('ADMIN_NAME', 'Ehte System Admin');
+
+    const password = this.config.get<string>('ADMIN_PASSWORD', 'P@ssw0rd');
 
     const existingUser = await this.prisma.user.findUnique({
-      where: {
-        phone,
-      },
+      where: { email },
     });
 
     if (existingUser) {
@@ -43,10 +43,12 @@ export class AdminSeeder implements OnApplicationBootstrap {
     const user = await this.prisma.user.create({
       data: {
         name,
-        phone,
+        email,
         passwordHash: hashedPassword,
+        // Email-only admin: no phone at all, matching the invite-created
+        // admin shape (isPhoneVerified left at its schema default of false)
         isActive: true,
-        isPhoneVerified: true,
+        isEmailVerified: true,
       },
     });
 
@@ -66,5 +68,7 @@ export class AdminSeeder implements OnApplicationBootstrap {
         roleId: role.id,
       },
     });
+
+    this.logger.log(`Seeded initial SUPER_ADMIN account: ${email}`);
   }
 }

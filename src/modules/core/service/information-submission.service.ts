@@ -18,7 +18,7 @@ import { AuditEventEnum } from 'src/common/enums/shared/audit-events.enum';
 import { AuditEventPayload } from 'src/modules/misc/events/audit.events';
 import { NotificationEventEnum } from 'src/common/enums/shared/notification-events.enum';
 
-import { MinioService } from 'src/common/minio/minio.service';
+import { MinioService } from 'src/services/minio/minio.service';
 
 import {
   CreateInformationSubmissionDto,
@@ -74,10 +74,6 @@ export class InformationSubmissionService {
   // read/write of that shape stays consistent.
   // ─────────────────────────────────────────────
 
-  private getMediaBucket(): string {
-    return this.configService.get<string>('minio.bucketName') ?? 'ehte-media';
-  }
-
   private collectMediaFields(entity: MediaBearing): string[] {
     return MEDIA_FIELD_NAMES.flatMap((field) => entity[field]);
   }
@@ -114,14 +110,18 @@ export class InformationSubmissionService {
   // mid-flow, filepath copied from an unrelated response, etc.).
   // Only called on filepaths that are new to the entity —
   // already-attached filepaths were validated when first added.
+  //
+  // FIX: MinioService.objectExists() is now bucket-less — the
+  // service holds a single configured bucket internally, so callers
+  // just pass the key. getMediaBucket()/bucket param removed here
+  // to match the new signature.
   private async validateMediaFilesExist(filepaths: string[]): Promise<void> {
     if (!filepaths.length) return;
 
-    const bucket = this.getMediaBucket();
     const checks = await Promise.all(
       filepaths.map(async (filepath) => ({
         filepath,
-        exists: await this.minioService.objectExists(bucket, filepath),
+        exists: await this.minioService.objectExists(filepath),
       })),
     );
 
@@ -135,10 +135,11 @@ export class InformationSubmissionService {
   // (or MinIO briefly unreachable) must never block the DB write
   // that triggered the cleanup — failures are swallowed per-file
   // via allSettled rather than surfaced to the caller.
+  //
+  // FIX: same bucket-less signature change as validateMediaFilesExist().
   private async deleteMediaFiles(filepaths: string[]): Promise<void> {
     if (!filepaths.length) return;
-    const bucket = this.getMediaBucket();
-    await Promise.allSettled(filepaths.map((fp) => this.minioService.deleteFile(bucket, fp)));
+    await Promise.allSettled(filepaths.map((fp) => this.minioService.deleteFile(fp)));
   }
 
   // ─────────────────────────────────────────────
@@ -511,7 +512,12 @@ export class InformationSubmissionService {
   // Only valid from UNDER_REVIEW. reviewNote required on REJECTED.
   // ─────────────────────────────────────────────
 
-  async review(id: string, status: InformationStatus, reviewNote: string | undefined, reviewer: CurrentUserDto) {
+  async review(
+    id: string,
+    status: InformationStatus,
+    reviewNote: string | undefined,
+    reviewer: CurrentUserDto,
+  ) {
     const submission = await this.prisma.informationSubmission.findUnique({ where: { id } });
 
     if (!submission) {

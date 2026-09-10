@@ -1,7 +1,16 @@
 model User {
-  id           String  @id @default(uuid())
-  name         String?
-  phone        String  @unique
+  id   String  @id @default(uuid())
+  name String?
+
+  // FIX: was `phone String @unique` (required). AuthService.adminInvite()
+  // creates admins with email only and no phone at all (by design — see
+  // adminActivateSelf()'s "Admin has no phone at this point" comment and
+  // issueTokens() treating phone/email as independently-optional identity
+  // fields). A required @unique string can't be omitted from a create()
+  // call, which is exactly what was breaking. Nullable @unique columns
+  // allow any number of NULLs in Postgres, so multiple phone-less admins
+  // can coexist without violating uniqueness.
+  phone        String? @unique
   passwordHash String?
   isActive     Boolean @default(true)
 
@@ -9,6 +18,12 @@ model User {
 
   failedLoginAttempts Int       @default(0)
   lockedUntil         DateTime?
+
+  // Email + Email-OTP admin channel (invite, activation, promotion, admin login-by-email)
+  email                String?   @unique
+  isEmailVerified      Boolean   @default(false)
+  inviteTokenHash      String?   @unique
+  inviteTokenExpiresAt DateTime?
 
   // Discreet Mode state (Section 9.1 / 9.5).
   // Toggling this requires re-authentication at the application layer

@@ -1,4 +1,9 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 
 import { MissingPersonStatus } from '@prisma/client';
 
@@ -14,7 +19,7 @@ import { AuditEventPayload } from 'src/modules/misc/events/audit.events';
 
 import { NotificationEventEnum } from 'src/common/enums/shared/notification-events.enum';
 
-import { MinioService } from 'src/common/minio/minio.service';
+import { MinioService } from 'src/services/minio/minio.service';
 
 import {
   CreateMissingPersonDto,
@@ -121,10 +126,6 @@ export class MissingPersonService {
   // consistent.
   // ─────────────────────────────────────────────
 
-  private getMediaBucket(): string {
-    return this.configService.get<string>('minio.bucketName') ?? 'ehte-media';
-  }
-
   private collectMediaFields(entity: MediaBearing): string[] {
     return MEDIA_FIELD_NAMES.flatMap((field) => entity[field]);
   }
@@ -161,14 +162,18 @@ export class MissingPersonService {
   // filepath copied from an unrelated response, etc.). Only called
   // on filepaths that are new to the entity — already-attached
   // filepaths were validated when they were first added.
+  //
+  // FIX: MinioService.objectExists() is now bucket-less — the
+  // service holds a single configured bucket internally, so callers
+  // just pass the key. getMediaBucket()/bucket param removed here
+  // to match the new signature.
   private async validateMediaFilesExist(filepaths: string[]): Promise<void> {
     if (!filepaths.length) return;
 
-    const bucket = this.getMediaBucket();
     const checks = await Promise.all(
       filepaths.map(async (filepath) => ({
         filepath,
-        exists: await this.minioService.objectExists(bucket, filepath),
+        exists: await this.minioService.objectExists(filepath),
       })),
     );
 
@@ -182,10 +187,11 @@ export class MissingPersonService {
   // (or MinIO briefly unreachable) must never block the DB write
   // that triggered the cleanup — failures are swallowed per-file
   // via allSettled rather than surfaced to the caller.
+  //
+  // FIX: same bucket-less signature change as validateMediaFilesExist().
   private async deleteMediaFiles(filepaths: string[]): Promise<void> {
     if (!filepaths.length) return;
-    const bucket = this.getMediaBucket();
-    await Promise.allSettled(filepaths.map((fp) => this.minioService.deleteFile(bucket, fp)));
+    await Promise.allSettled(filepaths.map((fp) => this.minioService.deleteFile(fp)));
   }
 
   // ─────────────────────────────────────────────
@@ -354,7 +360,8 @@ export class MissingPersonService {
     const { added, removed } = this.diffMediaFields(existing, data);
     await this.validateMediaFilesExist(added);
 
-    const shouldReturnToPending = existing.status === MissingPersonStatus.MORE_INFORMATION_REQUESTED;
+    const shouldReturnToPending =
+      existing.status === MissingPersonStatus.MORE_INFORMATION_REQUESTED;
 
     const updated = await this.prisma.missingPerson.update({
       where: { id },
@@ -491,7 +498,12 @@ export class MissingPersonService {
   // rejecting or requesting more information.
   // ─────────────────────────────────────────────
 
-  async updateStatus(admin: CurrentUserDto, id: string, status: MissingPersonStatus, reviewNote?: string) {
+  async updateStatus(
+    admin: CurrentUserDto,
+    id: string,
+    status: MissingPersonStatus,
+    reviewNote?: string,
+  ) {
     const existing = await this.prisma.missingPerson.findUnique({ where: { id } });
 
     if (!existing) {
@@ -509,7 +521,8 @@ export class MissingPersonService {
     }
 
     if (
-      (status === MissingPersonStatus.REJECTED || status === MissingPersonStatus.MORE_INFORMATION_REQUESTED) &&
+      (status === MissingPersonStatus.REJECTED ||
+        status === MissingPersonStatus.MORE_INFORMATION_REQUESTED) &&
       !reviewNote?.trim()
     ) {
       throw new BadRequestException('review_note_required_for_this_status');

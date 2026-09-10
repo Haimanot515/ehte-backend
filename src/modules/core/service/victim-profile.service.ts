@@ -8,7 +8,7 @@ import { Prisma, VictimProfile, VictimProfileStatus } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
 
-import { MinioService } from 'src/common/minio/minio.service';
+import { MinioService } from 'src/services/minio/minio.service';
 
 import {
   CreateVictimProfileDto,
@@ -46,6 +46,13 @@ export class VictimProfileService {
   // as plain filepath strings in typed arrays (photo/video/audio/
   // pdf/document/other), same as Post and Report — kept in one
   // place so every read/write of that shape stays consistent.
+  //
+  // FIX: MinioService.objectExists()/deleteFile() are now
+  // bucket-less — the service holds a single configured bucket
+  // internally, so callers just pass the key. getMediaBucket() is
+  // no longer used by validateMediaFilesExist()/deleteMediaFiles()
+  // to match the new signatures; left in place in case other code
+  // in this file still needs the bucket name for something else.
   // ─────────────────────────────────────────────
 
   private getMediaBucket(): string {
@@ -91,11 +98,10 @@ export class VictimProfileService {
   private async validateMediaFilesExist(filepaths: string[]): Promise<void> {
     if (!filepaths.length) return;
 
-    const bucket = this.getMediaBucket();
     const checks = await Promise.all(
       filepaths.map(async (filepath) => ({
         filepath,
-        exists: await this.minioService.objectExists(bucket, filepath),
+        exists: await this.minioService.objectExists(filepath),
       })),
     );
 
@@ -111,8 +117,7 @@ export class VictimProfileService {
   // via allSettled rather than surfaced to the caller.
   private async deleteMediaFiles(filepaths: string[]): Promise<void> {
     if (!filepaths.length) return;
-    const bucket = this.getMediaBucket();
-    await Promise.allSettled(filepaths.map((fp) => this.minioService.deleteFile(bucket, fp)));
+    await Promise.allSettled(filepaths.map((fp) => this.minioService.deleteFile(fp)));
   }
 
   // ─────────────────────────────────────────────
@@ -735,7 +740,9 @@ export class VictimProfileService {
     return VictimProfileStatus.APPROVED;
   }
 
-  private hasBankDetails(profile: Pick<VictimProfile, 'bankAccountName' | 'bankAccountNumber' | 'bankName'>) {
+  private hasBankDetails(
+    profile: Pick<VictimProfile, 'bankAccountName' | 'bankAccountNumber' | 'bankName'>,
+  ) {
     return !!profile.bankAccountName && !!profile.bankAccountNumber && !!profile.bankName;
   }
 

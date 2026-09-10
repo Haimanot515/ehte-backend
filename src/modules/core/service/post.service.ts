@@ -22,7 +22,7 @@ import {
   NewPostEvent,
 } from 'src/modules/misc/events/notification.events';
 
-import { MinioService } from 'src/common/minio/minio.service';
+import { MinioService } from 'src/services/minio/minio.service';
 
 import {
   CreatePostDto,
@@ -56,7 +56,12 @@ type MediaBearingDto = Partial<Record<MediaFieldName, string[] | undefined>>;
 // workflow can't be bypassed by hitting a different endpoint.
 const ALLOWED_STATUS_TRANSITIONS: Record<PostStatus, PostStatus[]> = {
   [PostStatus.DRAFT]: [PostStatus.PENDING],
-  [PostStatus.PENDING]: [PostStatus.APPROVED, PostStatus.REJECTED, PostStatus.CHANGES_REQUESTED, PostStatus.DRAFT],
+  [PostStatus.PENDING]: [
+    PostStatus.APPROVED,
+    PostStatus.REJECTED,
+    PostStatus.CHANGES_REQUESTED,
+    PostStatus.DRAFT,
+  ],
   [PostStatus.CHANGES_REQUESTED]: [PostStatus.PENDING],
   [PostStatus.APPROVED]: [PostStatus.PUBLISHED, PostStatus.REJECTED],
   [PostStatus.PUBLISHED]: [PostStatus.UNPUBLISHED],
@@ -91,10 +96,6 @@ export class PostService {
   // rather than a relational Media table. These helpers
   // keep every read/write of that shape in one place.
   // ─────────────────────────────────────────────
-
-  private getMediaBucket(): string {
-    return this.configService.get<string>('minio.bucketName') ?? 'ehte-media';
-  }
 
   private collectMediaFields(entity: MediaBearing): string[] {
     return MEDIA_FIELD_NAMES.flatMap((field) => entity[field]);
@@ -132,14 +133,18 @@ export class PostService {
   // filepath copied from an unrelated response, etc.). Only called
   // on filepaths that are new to the entity — already-attached
   // filepaths were validated when they were first added.
+  //
+  // FIX: MinioService.objectExists() is now bucket-less — the
+  // service holds a single configured bucket internally, so callers
+  // just pass the key. getMediaBucket()/bucket param removed here
+  // to match the new signature.
   private async validateMediaFilesExist(filepaths: string[]): Promise<void> {
     if (!filepaths.length) return;
 
-    const bucket = this.getMediaBucket();
     const checks = await Promise.all(
       filepaths.map(async (filepath) => ({
         filepath,
-        exists: await this.minioService.objectExists(bucket, filepath),
+        exists: await this.minioService.objectExists(filepath),
       })),
     );
 
@@ -153,10 +158,11 @@ export class PostService {
   // (or MinIO briefly unreachable) must never block the DB write
   // that triggered the cleanup — failures are swallowed per-file
   // via allSettled rather than surfaced to the caller.
+  //
+  // FIX: same bucket-less signature change as validateMediaFilesExist().
   private async deleteMediaFiles(filepaths: string[]): Promise<void> {
     if (!filepaths.length) return;
-    const bucket = this.getMediaBucket();
-    await Promise.allSettled(filepaths.map((fp) => this.minioService.deleteFile(bucket, fp)));
+    await Promise.allSettled(filepaths.map((fp) => this.minioService.deleteFile(fp)));
   }
 
   // ─────────────────────────────────────────────

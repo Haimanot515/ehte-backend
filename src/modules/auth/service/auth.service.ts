@@ -9,10 +9,10 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 
-import { UserOtpPurposeEnum } from '@prisma/client';
+import { UserOtpPurposeEnum, OtpChannelEnum, Prisma } from '@prisma/client';
 
 import * as bcrypt from 'bcrypt';
-import { randomInt, createHmac, randomUUID } from 'crypto';
+import { randomInt, randomBytes, createHmac, randomUUID } from 'crypto';
 
 import { PrismaService } from 'src/prisma/prisma.service';
 import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
@@ -20,9 +20,24 @@ import { normalizePhoneNumber } from 'src/common/utils/phone.util';
 import { resolveActorType } from 'src/common/utils/actor-type.util';
 import { RolesEnum } from 'src/common/enums/roles.enum';
 
-import { sendSms } from 'src/common/sms/afro-message.service';
+import { sendSms } from 'src/services/sms/afro-message.service';
+import { renderOtpSms } from 'src/services/sms/templates/sms-otp.template';
 
-import { renderOtpSms } from 'src/common/sms/templates/sms-otp.template';
+import { sendEmail } from 'src/services/email/email.service';
+import {
+  renderOtpEmailSubject,
+  renderOtpEmailHtml,
+} from 'src/services/email/templates/otp-email.template';
+
+import {
+  renderAdminInviteEmailSubject,
+  renderAdminInviteEmailHtml,
+} from 'src/services/email/templates/admin-invite-email.template';
+
+import {
+  renderPromotionEmailSubject,
+  renderPromotionEmailHtml,
+} from 'src/services/email/templates/promotion-email.template';
 
 import { AuditEventEnum } from 'src/common/enums/shared/audit-events.enum';
 import { AuditEventPayload } from 'src/modules/misc/events/audit.events';
@@ -41,9 +56,14 @@ import {
   ResetPasswordDto,
   SignupDto,
   SignupVerifyDto,
-  AdminRegisterDto,
-  AdminVerifyDto,
-  AdminLoginDto,
+  AdminInviteDto,
+  AdminInviteResendDto,
+  AdminSetPasswordDto,
+  AdminLoginEmailDto,
+  AdminForgotPasswordDto,
+  PromoteUserDto,
+  PromoteUserResendDto,
+  PromoteVerifyDto,
 } from '../dto/auth.dto';
 
 type TokenPair = {
@@ -66,6 +86,11 @@ type ForgotPasswordResult = {
   purpose?: 'password_reset' | 'phone_verification';
 };
 
+const INVITE_TOKEN_EXPIRES_MINUTES = 60 * 24; // 24h to accept an invite
+const PROMOTION_TOKEN_EXPIRES_MINUTES = 60 * 24; // 24h to click the promotion email link
+
+const ADMIN_ROLES = [RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN];
+
 @Injectable()
 export class AuthService {
   constructor(
@@ -80,6 +105,50 @@ export class AuthService {
 
   private emitAudit(payload: AuditEventPayload): void {
     this.eventEmitter.emit(payload.action, payload);
+  }
+
+  // PHONE ASSERTION: narrows `string | null` -> `string` at call sites where the user
+  // was found or created via a phone-keyed lookup, so phone is structurally guaranteed
+  // to be set even though the column is nullable (email-only admins have no phone).
+  // Throws instead of silently passing null into sendSms()/issueAndSendOtp().
+  private requirePhone(phone: string | null): string {
+    if (!phone) {
+      throw new BadRequestException('phone_number_missing');
+    }
+    return phone;
+  }
+
+  // ROLE CHECK HELPER: shared by forgotPassword() (and elsewhere) so every route agrees on
+  // exactly which roles count as "admin" (Phase 1 #1, #2 — user-facing phone flows
+  // must never authenticate or recover a password for an ADMIN/SUPER_ADMIN account).
+  private hasAdminRole(roles: string[]): boolean {
+    return roles.some((role) => ADMIN_ROLES.includes(role as RolesEnum));
+  }
+
+  // UNIQUE CONSTRAINT CHECK: detects a Prisma P2002 violation so concurrent
+  // signup/invite/promote requests for the same phone or email fail with a
+  // clean 400 instead of an unhandled 500 (closes the check-then-write race).
+
+  private isUniqueConstraintError(error: unknown): boolean {
+    return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002';
+  }
+
+  // OTP ABUSE LOCKOUT: once an OTP hits its max attempts, lock the account the
+  // same way a failed-password lockout does, instead of only logging a
+  // SECURITY_ALERT. Without this, a distributed attacker could keep requesting
+  // fresh OTPs (rate-limited to one per cooldown window) and get 5 free
+  // guesses each, indefinitely, against one target account.
+
+  private async lockAccountForOtpAbuse(userId: string): Promise<void> {
+    const lockoutMinutes = this.configService.get<number>('security.lockoutDurationMinutes', 15);
+
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        lockedUntil: new Date(Date.now() + lockoutMinutes * 60 * 1000),
+        failedLoginAttempts: 0,
+      },
+    });
   }
 
   // SIGN UP
@@ -99,8 +168,9 @@ export class AuthService {
       // Unverified existing account: resend OTP instead of blocking or duplicating
       const { verificationId } = await this.issueAndSendOtp(
         existingUser.id,
-        existingUser.phone,
+        this.requirePhone(existingUser.phone),
         UserOtpPurposeEnum.phone_verification,
+        OtpChannelEnum.sms,
       );
 
       return { verificationId };
@@ -117,39 +187,51 @@ export class AuthService {
     const hashedPassword = await bcrypt.hash(data.password, 10);
 
     // Create user + OTP in one transaction; SMS sent outside it
-    const result = await this.prisma.$transaction(async (tx) => {
-      const user = await tx.user.create({
-        data: {
-          name: data.name,
-          phone,
-          passwordHash: hashedPassword,
-          userRoles: {
-            create: { roleId: userRole.id },
+    let result: { verificationId: string; otp: string; phone: string | null; userId: string };
+
+    try {
+      result = await this.prisma.$transaction(async (tx) => {
+        const user = await tx.user.create({
+          data: {
+            name: data.name,
+            phone,
+            passwordHash: hashedPassword,
+            userRoles: {
+              create: { roleId: userRole.id },
+            },
           },
-        },
-      });
+        });
 
-      const otp = this.generateOtp();
-      const otpHash = await bcrypt.hash(otp, 12);
+        const otp = this.generateOtp();
+        const otpHash = await bcrypt.hash(otp, 12);
 
-      const otpExpiresInMinutes = this.configService.get<number>('otp.expiresInMinutes', 10);
+        const otpExpiresInMinutes = this.configService.get<number>('otp.expiresInMinutes', 10);
 
-      const userOtp = await tx.userOtp.create({
-        data: {
+        const userOtp = await tx.userOtp.create({
+          data: {
+            userId: user.id,
+            otpHash,
+            expiresAt: new Date(Date.now() + otpExpiresInMinutes * 60 * 1000),
+            purpose: UserOtpPurposeEnum.phone_verification,
+            channel: OtpChannelEnum.sms,
+          },
+        });
+
+        return {
+          verificationId: userOtp.id,
+          otp,
+          phone: user.phone,
           userId: user.id,
-          otpHash,
-          expiresAt: new Date(Date.now() + otpExpiresInMinutes * 60 * 1000),
-          purpose: UserOtpPurposeEnum.phone_verification,
-        },
+        };
       });
-
-      return {
-        verificationId: userOtp.id,
-        otp,
-        phone: user.phone,
-        userId: user.id,
-      };
-    });
+    } catch (error) {
+      // A concurrent request created this phone number between our lookup above
+      // and this write — same outcome as finding it up front, just discovered late
+      if (this.isUniqueConstraintError(error)) {
+        throw new BadRequestException('phone_already_registered');
+      }
+      throw error;
+    }
 
     // Send signup OTP SMS
     const smsMessage = renderOtpSms({
@@ -158,7 +240,7 @@ export class AuthService {
     });
 
     try {
-      await sendSms(result.phone, smsMessage);
+      await sendSms(this.requirePhone(result.phone), smsMessage);
     } catch (error) {
       // Log failure only; user/OTP already persisted, client can use resendSignupOtp()
       console.error(`[EHTE SMS] Failed to send signup OTP to ${result.phone}`, error);
@@ -218,6 +300,8 @@ export class AuthService {
 
     // Enforce max OTP attempts
     if (otpRecord.attempts >= 5) {
+      await this.lockAccountForOtpAbuse(otpRecord.user.id);
+
       this.emitAudit({
         userId: otpRecord.user.id,
         actorType: resolveActorType(roles),
@@ -242,8 +326,10 @@ export class AuthService {
         select: { attempts: true },
       });
 
-      // Alert once failed attempts hit the max
+      // Lock the account once failed attempts hit the max, not just alert
       if (updatedOtp.attempts >= 5) {
+        await this.lockAccountForOtpAbuse(otpRecord.user.id);
+
         this.emitAudit({
           userId: otpRecord.user.id,
           actorType: resolveActorType(roles),
@@ -293,7 +379,7 @@ export class AuthService {
       diff: { purpose: 'phone_verification', result: 'success' },
     });
 
-    return this.issueTokens(otpRecord.user.id, otpRecord.user.phone, roles);
+    return this.issueTokens(otpRecord.user.id, { phone: otpRecord.user.phone }, roles);
   }
 
   // RESEND SIGNUP OTP
@@ -314,14 +400,21 @@ export class AuthService {
 
     const { verificationId: newVerificationId } = await this.issueAndSendOtp(
       oldOtp.userId,
-      oldOtp.user.phone,
+      this.requirePhone(oldOtp.user.phone),
       UserOtpPurposeEnum.phone_verification,
+      OtpChannelEnum.sms,
     );
 
     return { verificationId: newVerificationId };
   }
 
-  // LOGIN: Requires User.isPhoneVerified; account lockout enforced via failedLoginAttempts/lockedUntil
+  // LOGIN: Requires User.isPhoneVerified; account lockout enforced via failedLoginAttempts/lockedUntil.
+  // Restricted to accounts holding the USER role (roles are additive — see the
+  // promotion-model note above promoteUserVerify() below). A promoted account
+  // (USER + ADMIN) still logs in here for the ordinary user app; a pure
+  // invite-created admin (ADMIN/SUPER_ADMIN only, no USER role, and usually no
+  // phone at all) is rejected and must use AdminAuthController.login()
+  // (email + password) instead.
 
   async login(data: LoginDto): Promise<LoginResult> {
     const phone = this.normalizePhoneOrThrow(data.phone);
@@ -350,7 +443,57 @@ export class AuthService {
 
     const roles = user.userRoles.map((userRole) => userRole.role.name);
 
-    // FIX: reject before spending a bcrypt compare if the account is currently locked
+    // Password checked before any account-state gate (lock, active, verified,
+    // role) — keeps "no such account", "wrong password", "locked account",
+    // and "this account has no USER role" all indistinguishable to someone
+    // who hasn't already proven they know the password.
+    const validPassword = await bcrypt.compare(data.password, user.passwordHash);
+
+    if (!validPassword) {
+      await this.recordFailedLogin(user.id);
+
+      this.emitAudit({
+        userId: user.id,
+        actorType: resolveActorType(roles),
+        action: AuditEventEnum.LOGIN_FAILED,
+        entity: 'User',
+        entityId: user.id,
+        diff: { method: 'password', result: 'failed' },
+      });
+
+      throw new UnauthorizedException('invalid_credentials');
+    }
+
+    // FIX (Phase 1 #1, revised for additive roles): /auth/login requires the
+    // USER role, checked positively rather than by excluding admin roles.
+    // Roles are additive (Doc §3 promotion model) — a promoted account keeps
+    // USER alongside ADMIN/SUPER_ADMIN and is meant to keep using this
+    // endpoint for the ordinary app. What must stay blocked is an account
+    // that was only ever onboarded as an admin (invite flow) and never held
+    // a USER role at all. Checked only after the password has been proven
+    // correct, so this never becomes an unauthenticated "does this phone
+    // number have a USER role" oracle.
+    if (!roles.includes(RolesEnum.USER)) {
+      this.emitAudit({
+        userId: user.id,
+        actorType: resolveActorType(roles),
+        action: AuditEventEnum.LOGIN_FAILED,
+        entity: 'User',
+        entityId: user.id,
+        diff: {
+          method: 'password',
+          result: 'failed',
+          reason: 'no_user_role_use_admin_login',
+        },
+      });
+
+      throw new UnauthorizedException('use_admin_login');
+    }
+
+    // FIX (previously identified): lock check now runs only after the
+    // password has been verified correct, so a locked account can't be
+    // distinguished from "wrong password"/"no such account" by an attacker
+    // who doesn't already know the password.
     try {
       this.assertNotLocked(user);
     } catch (err) {
@@ -369,26 +512,7 @@ export class AuthService {
       throw err;
     }
 
-    // Check password before isActive/verified gates to avoid leaking account state
-    const validPassword = await bcrypt.compare(data.password, user.passwordHash);
-
-    if (!validPassword) {
-      // FIX: count the failure, possibly locking the account
-      await this.recordFailedLogin(user.id);
-
-      this.emitAudit({
-        userId: user.id,
-        actorType: resolveActorType(roles),
-        action: AuditEventEnum.LOGIN_FAILED,
-        entity: 'User',
-        entityId: user.id,
-        diff: { method: 'password', result: 'failed' },
-      });
-
-      throw new UnauthorizedException('invalid_credentials');
-    }
-
-    // FIX: correct password clears any prior failure count/lock
+    // Correct password clears any prior failure count/lock
     await this.resetLoginAttempts(user);
 
     if (!user.isActive) {
@@ -409,24 +533,16 @@ export class AuthService {
     }
 
     if (!user.isPhoneVerified) {
-      this.emitAudit({
-        userId: user.id,
-        actorType: resolveActorType(roles),
-        action: AuditEventEnum.LOGIN_FAILED,
-        entity: 'User',
-        entityId: user.id,
-        diff: {
-          method: 'password',
-          result: 'failed',
-          reason: 'phone_not_verified',
-        },
-      });
+      // Password WAS correct here — this isn't a failed login, it's a
+      // successful one that's being redirected to verification. Emitting
+      // LOGIN_FAILED would pollute any alerting built on that event.
 
       // Unverified: send fresh OTP and route client to verification instead of dead-ending
       const { verificationId } = await this.issueAndSendOtp(
         user.id,
-        user.phone,
+        this.requirePhone(user.phone),
         UserOtpPurposeEnum.phone_verification,
+        OtpChannelEnum.sms,
       );
 
       return {
@@ -445,29 +561,50 @@ export class AuthService {
       diff: { method: 'password', result: 'success' },
     });
 
-    return this.issueTokens(user.id, user.phone, roles);
+    return this.issueTokens(user.id, { phone: user.phone, email: user.email }, roles);
   }
 
-  // FORGOT PASSWORD: Unverified accounts get a phone_verification OTP instead of password_reset; only "no account" is masked
+  // FORGOT PASSWORD: Unverified accounts get a phone_verification OTP instead of password_reset;
+  // "no account", "deactivated account", and (Phase 1 #2) "account holds an admin role" are all
+  // masked identically — this is intentionally NOT mirrored to login()'s USER-role check.
+  //
+  // Rationale: passwordHash is shared by the whole account — the same password gates both
+  // /auth/login and /admin/auth/login. If a USER+ADMIN account could reset that shared
+  // password over SMS, the admin side would inherit SIM-swap-able recovery, defeating the
+  // point of admin password recovery being email-only. So ANY account holding an admin role
+  // is masked here regardless of whether it also holds USER — admin recovery must always go
+  // through AdminAuthController.forgotPassword() (email-based) instead.
 
   async forgotPassword(data: ForgotPasswordDto): Promise<ForgotPasswordResult> {
     const phone = this.normalizePhoneOrThrow(data.phone);
 
     const user = await this.prisma.user.findUnique({
       where: { phone },
-      select: { id: true, phone: true, isPhoneVerified: true },
+      select: {
+        id: true,
+        phone: true,
+        isPhoneVerified: true,
+        isActive: true,
+        userRoles: { select: { role: { select: { name: true } } } },
+      },
     });
 
-    // Don't reveal whether the phone exists
-    if (!user) {
+    const roles = user?.userRoles.map((userRole) => userRole.role.name) ?? [];
+
+    // FIX (Phase 1 #2): mask "no account", "deactivated account", AND "this
+    // account holds an admin role" identically — see the method-level note
+    // above for why this is a positive admin-role check, not a USER-role
+    // check, and deliberately not symmetric with login().
+    if (!user || !user.isActive || this.hasAdminRole(roles)) {
       return { verificationId: '' };
     }
 
     if (!user.isPhoneVerified) {
       const { verificationId } = await this.issueAndSendOtp(
         user.id,
-        user.phone,
+        this.requirePhone(user.phone),
         UserOtpPurposeEnum.phone_verification,
+        OtpChannelEnum.sms,
       );
 
       return { verificationId, purpose: 'phone_verification' };
@@ -475,8 +612,9 @@ export class AuthService {
 
     const { verificationId } = await this.issueAndSendOtp(
       user.id,
-      user.phone,
+      this.requirePhone(user.phone),
       UserOtpPurposeEnum.password_reset,
+      OtpChannelEnum.sms,
     );
 
     return { verificationId, purpose: 'password_reset' };
@@ -509,6 +647,8 @@ export class AuthService {
     const roles = otpRecord.user.userRoles.map((userRole) => userRole.role.name);
 
     if (otpRecord.attempts >= 5) {
+      await this.lockAccountForOtpAbuse(otpRecord.user.id);
+
       this.emitAudit({
         userId: otpRecord.user.id,
         actorType: resolveActorType(roles),
@@ -534,6 +674,8 @@ export class AuthService {
       });
 
       if (updatedOtp.attempts >= 5) {
+        await this.lockAccountForOtpAbuse(otpRecord.user.id);
+
         this.emitAudit({
           userId: otpRecord.user.id,
           actorType: resolveActorType(roles),
@@ -596,6 +738,42 @@ export class AuthService {
     return { message: 'password_reset_successful' };
   }
 
+  // ADMIN — RESET PASSWORD: thin wrapper around resetPassword() that actually
+  // enforces the route is admin-scoped (gap #7 — previously /admin/auth/reset-password
+  // silently accepted any valid password_reset OTP for any account, admin or not).
+  // Same generic error on mismatch so this can't be used to probe which accounts are admins.
+  //
+  // FIX (Phase 1 #3): AdminAuthController.resetPassword() now calls THIS method
+  // instead of calling resetPassword() directly — otherwise this admin check
+  // was written but never actually wired up to the route it exists to protect.
+
+  async adminResetPassword(data: ResetPasswordDto): Promise<{ message: string }> {
+    const otpRecord = await this.prisma.userOtp.findUnique({
+      where: { id: data.verificationId },
+      select: {
+        user: {
+          select: {
+            userRoles: { select: { role: { select: { name: true } } } },
+          },
+        },
+      },
+    });
+
+    if (!otpRecord) {
+      throw new BadRequestException('invalid_or_expired_otp');
+    }
+
+    const roles = otpRecord.user.userRoles.map((userRole) => userRole.role.name);
+
+    const isAdmin = this.hasAdminRole(roles);
+
+    if (!isAdmin) {
+      throw new BadRequestException('invalid_or_expired_otp');
+    }
+
+    return this.resetPassword(data);
+  }
+
   // REFRESH TOKEN: rotates via soft-revoke (Session.revokedAt) instead of delete,
   // enabling reuse detection — a replayed already-rotated token wipes all sessions for the user
 
@@ -624,7 +802,7 @@ export class AuthService {
       throw new UnauthorizedException('invalid_refresh_token');
     }
 
-    const refreshTokenHash = this.hashRefreshToken(data.refreshToken);
+    const refreshTokenHash = this.hashOpaqueToken(data.refreshToken, 'refresh');
 
     // FIX: look up by hash alone (no expiresAt/revokedAt filter here) so we can
     // distinguish "never existed" from "already used" (reuse) from "expired"
@@ -690,7 +868,7 @@ export class AuthService {
         throw new UnauthorizedException('session_expired_or_invalid');
       }
 
-      return this.issueTokens(user.id, user.phone, roles, tx);
+      return this.issueTokens(user.id, { phone: user.phone, email: user.email }, roles, tx);
     });
   }
 
@@ -703,6 +881,7 @@ export class AuthService {
         id: true,
         name: true,
         phone: true,
+        email: true,
         isActive: true,
         discreetModeEnabled: true,
         discreetModeUpdatedAt: true,
@@ -795,7 +974,7 @@ export class AuthService {
       await this.prisma.session.deleteMany({
         where: {
           userId: user.id,
-          refreshToken: this.hashRefreshToken(refreshToken),
+          refreshToken: this.hashOpaqueToken(refreshToken, 'refresh'),
         },
       });
     } else {
@@ -819,34 +998,557 @@ export class AuthService {
     return { message: 'logout_successful' };
   }
 
-  // ADMIN — REGISTER: Admin/super-admin only; creates a pending admin (inactive/unverified) until adminVerify()
+  // ═══════════════════════════════════════════════════════════
+  // Admin onboarding — invite-based flow (Doc §2). Super Admin
+  // supplies email + full name + roles; no password is created or
+  // known by the creator. The account stays inactive ("INVITED")
+  // until the new admin uses their invite-link token to set their
+  // own password, which also activates the account.
+  // ═══════════════════════════════════════════════════════════
 
-  async adminRegister(
+  // ADMIN — INVITE: Super Admin supplies email + full name + roles.
+  // No password is created or known by the creator. Account is left
+  // inactive/unverified ("INVITED") until the new admin sets their
+  // own password via adminSetPasswordFromInvite().
+
+  async adminInvite(
     creator: CurrentUserDto,
-    data: AdminRegisterDto,
-  ): Promise<{ adminId: string; verificationId: string }> {
-    // Defense-in-depth: don't rely solely on the controller's @Roles guard
+    data: AdminInviteDto,
+  ): Promise<{ adminId: string; message: string }> {
+    // Restricted to SUPER_ADMIN per doc §2 ("Super Admin enters email only").
     const creatorRoles = creator.roles ?? [];
 
-    if (
-      !creatorRoles.some((role) =>
-        [RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN].includes(role as RolesEnum),
-      )
-    ) {
+    if (!creatorRoles.includes(RolesEnum.SUPER_ADMIN)) {
+      throw new UnauthorizedException('insufficient_permissions');
+    }
+
+    const email = data.email.trim().toLowerCase();
+
+    // Defense-in-depth: AdminInviteDto's @IsIn already restricts this, but a
+    // service-level check protects against DTO validation ever being bypassed
+    // (e.g. a future internal caller). Inviting with a non-admin role would
+    // create an account with no phone and no admin role — permanently locked out.
+    const invitableRoles = [RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN];
+    if (data.roles.some((role) => !invitableRoles.includes(role))) {
+      throw new BadRequestException('only_admin_roles_may_be_invited');
+    }
+
+    const existingUser = await this.prisma.user.findUnique({
+      where: { email },
+    });
+
+    if (existingUser) {
+      throw new BadRequestException('email_already_registered');
+    }
+
+    // Resolve every requested role up front so a typo'd/unconfigured role
+    // fails before the user row (and invite email) is created
+    const roleRecords = await this.prisma.role.findMany({
+      where: { name: { in: data.roles } },
+    });
+
+    if (roleRecords.length !== new Set(data.roles).size) {
+      throw new BadRequestException('one_or_more_roles_not_configured');
+    }
+
+    const rawInviteToken = randomBytes(32).toString('hex');
+    const inviteTokenHash = this.hashOpaqueToken(rawInviteToken, 'invite');
+    const inviteTokenExpiresAt = new Date(Date.now() + INVITE_TOKEN_EXPIRES_MINUTES * 60 * 1000);
+
+    let admin: { id: string };
+
+    try {
+      admin = await this.prisma.user.create({
+        data: {
+          email,
+          name: data.name,
+          // No phone, no password — this is the "INVITED" state:
+          passwordHash: null,
+          isPhoneVerified: false,
+          isEmailVerified: false,
+          isActive: false,
+          inviteTokenHash,
+          inviteTokenExpiresAt,
+          userRoles: {
+            create: roleRecords.map((role) => ({ roleId: role.id })),
+          },
+        },
+      });
+    } catch (error) {
+      // FIX: closes the race between the existingUser check above and this write —
+      // a concurrent invite for the same email now fails cleanly instead of 500ing
+      if (this.isUniqueConstraintError(error)) {
+        throw new BadRequestException('email_already_registered');
+      }
+      throw error;
+    }
+
+    // Reuses the same 'app.url' value main.ts and EmailTemplateService already
+    // read (mapped from APP_URL in configuration.ts), so the link always points
+    // at the real deployed frontend instead of a hardcoded placeholder domain.
+    const appUrl = this.configService.get<string>('app.url', 'https://ehte.org');
+    const inviteLink = `${appUrl}/admin/invite?token=${rawInviteToken}`;
+
+    const inviteExpiresInHours = Math.round(INVITE_TOKEN_EXPIRES_MINUTES / 60);
+
+    try {
+      await sendEmail(
+        email,
+        renderAdminInviteEmailSubject(),
+        renderAdminInviteEmailHtml({
+          inviteLink,
+          expiresInHours: inviteExpiresInHours,
+        }),
+      );
+    } catch (error) {
+      console.error(`[EHTE EMAIL] Failed to send admin invite to ${email}`, error);
+    }
+
+    if (this.configService.get<boolean>('app.debug', false)) {
+      console.log(`[EHTE DEV] Admin invite link for ${email}: ${inviteLink}`);
+    }
+
+    this.emitAudit({
+      userId: admin.id,
+      actorType: resolveActorType(data.roles),
+      // TODO: swap for a dedicated ADMIN_INVITED value once AuditEventEnum is extended
+      action: AuditEventEnum.USER_CREATED,
+      entity: 'User',
+      entityId: admin.id,
+      diff: {
+        result: 'success',
+        roles: data.roles,
+        status: 'invited',
+        invitedBy: creator.id,
+      },
+    });
+
+    return { adminId: admin.id, message: 'admin_invited' };
+  }
+
+  // ADMIN — RESEND INVITE (Phase 1 #6): re-sends the invite email with a
+  // freshly generated token. Only valid while the account is still sitting
+  // in the "INVITED" state (no password set, never activated) — this closes
+  // the gap where a failed sendEmail() in adminInvite() left a permanently
+  // stuck, un-onboardable admin account with no recovery path.
+
+  async adminInviteResend(
+    creator: CurrentUserDto,
+    data: AdminInviteResendDto,
+  ): Promise<{ message: string }> {
+    const creatorRoles = creator.roles ?? [];
+
+    if (!creatorRoles.includes(RolesEnum.SUPER_ADMIN)) {
+      throw new UnauthorizedException('insufficient_permissions');
+    }
+
+    const email = data.email.trim().toLowerCase();
+
+    const admin = await this.prisma.user.findUnique({
+      where: { email },
+    });
+
+    if (!admin) {
+      throw new NotFoundException('invite_not_found');
+    }
+
+    // Once a password has been set (or the account activated) the invite
+    // flow is complete — nothing left to resend.
+    if (admin.passwordHash || admin.isActive) {
+      throw new BadRequestException('invite_already_completed');
+    }
+
+    const rawInviteToken = randomBytes(32).toString('hex');
+    const inviteTokenHash = this.hashOpaqueToken(rawInviteToken, 'invite');
+    const inviteTokenExpiresAt = new Date(Date.now() + INVITE_TOKEN_EXPIRES_MINUTES * 60 * 1000);
+
+    // Overwriting the token invalidates any previous unused invite link —
+    // only the most recently sent one can ever be valid.
+    await this.prisma.user.update({
+      where: { id: admin.id },
+      data: { inviteTokenHash, inviteTokenExpiresAt },
+    });
+
+    const appUrl = this.configService.get<string>('app.url', 'https://ehte.org');
+    const inviteLink = `${appUrl}/admin/invite?token=${rawInviteToken}`;
+    const inviteExpiresInHours = Math.round(INVITE_TOKEN_EXPIRES_MINUTES / 60);
+
+    try {
+      await sendEmail(
+        email,
+        renderAdminInviteEmailSubject(),
+        renderAdminInviteEmailHtml({
+          inviteLink,
+          expiresInHours: inviteExpiresInHours,
+        }),
+      );
+    } catch (error) {
+      console.error(`[EHTE EMAIL] Failed to resend admin invite to ${email}`, error);
+    }
+
+    if (this.configService.get<boolean>('app.debug', false)) {
+      console.log(`[EHTE DEV] Resent admin invite link for ${email}: ${inviteLink}`);
+    }
+
+    this.emitAudit({
+      userId: admin.id,
+      actorType: resolveActorType([]),
+      // TODO: swap for a dedicated ADMIN_INVITE_RESENT value once AuditEventEnum is extended
+      action: AuditEventEnum.USER_CREATED,
+      entity: 'User',
+      entityId: admin.id,
+      diff: {
+        result: 'success',
+        context: 'invite_resent',
+        resentBy: creator.id,
+      },
+    });
+
+    return { message: 'invite_resent' };
+  }
+
+  // ADMIN — SET PASSWORD FROM INVITE: anonymous; invited admin uses the raw
+  // token from their invite email to set their own password. Possessing the
+  // token proves control of the invited inbox, so this also activates the
+  // account and returns tokens directly — no separate post-password OTP step.
+
+  async adminSetPasswordFromInvite(data: AdminSetPasswordDto): Promise<TokenPair> {
+    const inviteTokenHash = this.hashOpaqueToken(data.inviteToken, 'invite');
+
+    const admin = await this.prisma.user.findUnique({
+      where: { inviteTokenHash },
+      include: {
+        userRoles: { include: { role: true } },
+      },
+    });
+
+    if (!admin || !admin.inviteTokenExpiresAt || admin.inviteTokenExpiresAt < new Date()) {
+      throw new BadRequestException('invalid_or_expired_invite');
+    }
+
+    if (admin.passwordHash) {
+      // Invite already used to set a password once
+      throw new BadRequestException('invite_already_used');
+    }
+
+    const hashedPassword = await bcrypt.hash(data.password, 10);
+    const roles = admin.userRoles.map((userRole) => userRole.role.name);
+
+    await this.prisma.user.update({
+      where: { id: admin.id },
+      data: {
+        passwordHash: hashedPassword,
+        // Possessing the token proved control of the invited inbox — activate now
+        isEmailVerified: true,
+        isActive: true,
+        // Single-use: clear the invite token now that it's been consumed
+        inviteTokenHash: null,
+        inviteTokenExpiresAt: null,
+      },
+    });
+
+    this.emitAudit({
+      userId: admin.id,
+      actorType: resolveActorType(roles),
+      action: AuditEventEnum.PASSWORD_CHANGED,
+      entity: 'User',
+      entityId: admin.id,
+      diff: { result: 'success', context: 'admin_invite_set_password_and_activate' },
+    });
+
+    if (!admin.email) {
+      // Shouldn't happen for an invite-created admin, but guard anyway
+      throw new BadRequestException('admin_email_missing');
+    }
+
+    // Admin has no phone at this point — issue tokens with email set, phone left null
+    return this.issueTokens(admin.id, { email: admin.email }, roles);
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  // Existing user → admin promotion (Doc §3). Closes gap 3.4.
+  //
+  // ROLE MODEL — ADDITIVE, NOT REPLACEMENT: promoting a USER grants
+  // ADMIN *alongside* the existing USER role, not instead of it.
+  // A promoted account keeps phone + password login on /auth/login
+  // for the ordinary user app, and gains email + password login on
+  // /admin/auth/login for the admin portal. The two role systems
+  // (USER → user app, ADMIN/SUPER_ADMIN → admin portal) are
+  // independent capabilities layered on one identity, not mutually
+  // exclusive states. See promoteUserVerify() below for where this
+  // is enforced, and login()/forgotPassword() above for how the
+  // USER-facing phone routes account for it.
+  // ═══════════════════════════════════════════════════════════
+
+  // ADMIN — PROMOTE EXISTING USER (STEP 1): Super Admin selects an existing
+  // USER by phone and supplies an email to attach. The user's existing
+  // password is untouched. The ADMIN role is NOT granted yet — only once
+  // the email OTP is verified in promoteUserVerify().
+
+  async promoteUserInitiate(
+    actor: CurrentUserDto,
+    data: PromoteUserDto,
+  ): Promise<{ message: string }> {
+    const actorRoles = actor.roles ?? [];
+
+    if (!actorRoles.includes(RolesEnum.SUPER_ADMIN)) {
+      throw new UnauthorizedException('insufficient_permissions');
+    }
+
+    const phone = this.normalizePhoneOrThrow(data.phone);
+    const email = data.email.trim().toLowerCase();
+
+    const user = await this.prisma.user.findUnique({
+      where: { phone },
+      include: { userRoles: { include: { role: true } } },
+    });
+
+    if (!user) {
+      throw new NotFoundException('user_not_found');
+    }
+
+    // FIX (Phase 1 #7 / "Priority 7"): require the existing account to be
+    // active and phone-verified before it can be promoted. A promoted admin
+    // built on an unverified or deactivated identity has a weaker provenance
+    // than one onboarded through the invite flow, which always requires
+    // proof of inbox control before activation.
+    if (!user.isActive) {
+      throw new BadRequestException('user_not_eligible_for_promotion');
+    }
+
+    if (!user.isPhoneVerified) {
+      throw new BadRequestException('user_not_eligible_for_promotion');
+    }
+
+    const roles = user.userRoles.map((userRole) => userRole.role.name);
+
+    if (this.hasAdminRole(roles)) {
+      throw new BadRequestException('user_already_admin');
+    }
+
+    const emailInUse = await this.prisma.user.findUnique({ where: { email } });
+
+    if (emailInUse && emailInUse.id !== user.id) {
+      throw new BadRequestException('email_already_registered');
+    }
+
+    // Attach the email now (unverified) — the ADMIN role is granted only
+    // after promoteUserVerify() confirms the user controls this inbox.
+    try {
+      await this.prisma.user.update({
+        where: { id: user.id },
+        data: { email, isEmailVerified: false },
+      });
+    } catch (error) {
+      // FIX: closes the race between the emailInUse check above and this write
+      if (this.isUniqueConstraintError(error)) {
+        throw new BadRequestException('email_already_registered');
+      }
+      throw error;
+    }
+
+    // A clickable link, not a typed-in code — the link itself is the proof
+    // of inbox ownership, so we issue a high-entropy raw token (same shape
+    // as the admin-invite flow) rather than a bcrypt-hashed 6-digit OTP.
+    // The HMAC hash is deterministic, so promoteUserVerify() can look this
+    // record up directly by token — no verificationId needed on the client.
+    const rawToken = randomBytes(32).toString('hex');
+    const tokenHash = this.hashOpaqueToken(rawToken, 'promotion');
+    const expiresAt = new Date(Date.now() + PROMOTION_TOKEN_EXPIRES_MINUTES * 60 * 1000);
+
+    // Invalidate any previous unused promotion link for this user so only
+    // the most recently sent link can ever be valid
+    await this.prisma.userOtp.updateMany({
+      where: { userId: user.id, purpose: UserOtpPurposeEnum.promotion_verification, usedAt: null },
+      data: { usedAt: new Date() },
+    });
+
+    const promotionOtp = await this.prisma.userOtp.create({
+      data: {
+        userId: user.id,
+        otpHash: tokenHash,
+        purpose: UserOtpPurposeEnum.promotion_verification,
+        channel: OtpChannelEnum.email,
+        expiresAt,
+      },
+    });
+
+    const appUrl = this.configService.get<string>('app.url', 'https://ehte.org');
+    const promotionLink = `${appUrl}/admin/promote/verify?token=${rawToken}`;
+    const expiresInHours = Math.round(PROMOTION_TOKEN_EXPIRES_MINUTES / 60);
+
+    try {
+      await sendEmail(
+        email,
+        renderPromotionEmailSubject(),
+        renderPromotionEmailHtml({ promotionLink, expiresInHours }),
+      );
+    } catch (error) {
+      console.error(`[EHTE EMAIL] Failed to send promotion link to ${email}`, error);
+    }
+
+    if (this.configService.get<boolean>('app.debug', false)) {
+      console.log(`[EHTE DEV] Promotion link for ${email}: ${promotionLink}`);
+    }
+
+    this.emitAudit({
+      userId: user.id,
+      actorType: resolveActorType(roles),
+      // TODO: swap for a dedicated USER_PROMOTION_INITIATED value once AuditEventEnum is extended
+      action: AuditEventEnum.USER_CREATED,
+      entity: 'User',
+      entityId: user.id,
+      diff: {
+        result: 'success',
+        context: 'promotion_initiated',
+        initiatedBy: actor.id,
+        otpId: promotionOtp.id,
+      },
+    });
+
+    return { message: 'promotion_email_sent' };
+  }
+
+  // ADMIN — RESEND PROMOTION (Phase 1 #6): re-sends the promotion email with
+  // a freshly generated token, for a user whose promotion is still pending
+  // (email attached via promoteUserInitiate(), not yet verified). Closes the
+  // gap where a failed sendEmail() there left the user with an attached but
+  // unusable email and no way to complete the promotion.
+
+  async promoteUserResend(
+    actor: CurrentUserDto,
+    data: PromoteUserResendDto,
+  ): Promise<{ message: string }> {
+    const actorRoles = actor.roles ?? [];
+
+    if (!actorRoles.includes(RolesEnum.SUPER_ADMIN)) {
       throw new UnauthorizedException('insufficient_permissions');
     }
 
     const phone = this.normalizePhoneOrThrow(data.phone);
 
-    const existingUser = await this.prisma.user.findUnique({
+    const user = await this.prisma.user.findUnique({
       where: { phone },
+      include: { userRoles: { include: { role: true } } },
     });
 
-    if (existingUser) {
-      throw new BadRequestException('phone_already_registered');
+    if (!user) {
+      throw new NotFoundException('user_not_found');
     }
 
-    // Creator can provision ADMIN only, not SUPER_ADMIN
+    if (!user.email) {
+      // promoteUserInitiate() was never called for this user
+      throw new BadRequestException('promotion_not_initiated');
+    }
+
+    const roles = user.userRoles.map((userRole) => userRole.role.name);
+
+    if (this.hasAdminRole(roles)) {
+      throw new BadRequestException('user_already_admin');
+    }
+
+    if (user.isEmailVerified) {
+      // Already completed — nothing pending to resend
+      throw new BadRequestException('promotion_already_completed');
+    }
+
+    // Invalidate any previous unused promotion link, same as promoteUserInitiate()
+    await this.prisma.userOtp.updateMany({
+      where: { userId: user.id, purpose: UserOtpPurposeEnum.promotion_verification, usedAt: null },
+      data: { usedAt: new Date() },
+    });
+
+    const rawToken = randomBytes(32).toString('hex');
+    const tokenHash = this.hashOpaqueToken(rawToken, 'promotion');
+    const expiresAt = new Date(Date.now() + PROMOTION_TOKEN_EXPIRES_MINUTES * 60 * 1000);
+
+    await this.prisma.userOtp.create({
+      data: {
+        userId: user.id,
+        otpHash: tokenHash,
+        purpose: UserOtpPurposeEnum.promotion_verification,
+        channel: OtpChannelEnum.email,
+        expiresAt,
+      },
+    });
+
+    const appUrl = this.configService.get<string>('app.url', 'https://ehte.org');
+    const promotionLink = `${appUrl}/admin/promote/verify?token=${rawToken}`;
+    const expiresInHours = Math.round(PROMOTION_TOKEN_EXPIRES_MINUTES / 60);
+
+    try {
+      await sendEmail(
+        user.email,
+        renderPromotionEmailSubject(),
+        renderPromotionEmailHtml({ promotionLink, expiresInHours }),
+      );
+    } catch (error) {
+      console.error(`[EHTE EMAIL] Failed to resend promotion link to ${user.email}`, error);
+    }
+
+    if (this.configService.get<boolean>('app.debug', false)) {
+      console.log(`[EHTE DEV] Resent promotion link for ${user.email}: ${promotionLink}`);
+    }
+
+    this.emitAudit({
+      userId: user.id,
+      actorType: resolveActorType(roles),
+      // TODO: swap for a dedicated USER_PROMOTION_RESENT value once AuditEventEnum is extended
+      action: AuditEventEnum.USER_CREATED,
+      entity: 'User',
+      entityId: user.id,
+      diff: {
+        result: 'success',
+        context: 'promotion_resent',
+        resentBy: actor.id,
+      },
+    });
+
+    return { message: 'promotion_email_resent' };
+  }
+
+  // ADMIN — PROMOTE EXISTING USER (STEP 2): the user being promoted clicks
+  // the emailed link and the frontend submits just the token from the URL.
+  // Possessing the token IS the proof of email ownership — same trust model
+  // as adminSetPasswordFromInvite(). No OTP compare, no attempts/lockout
+  // logic: this is a 256-bit random token looked up by exact hash match,
+  // not a 6-digit code that benefits from brute-force protection.
+  //
+  // FIX (revised): promotion is now ADDITIVE, not a role replacement. On
+  // success, isEmailVerified flips to true and the ADMIN role is granted
+  // ALONGSIDE the user's existing roles (USER stays) — USER + ADMIN, not
+  // USER → ADMIN. This is what lets a promoted admin keep logging into the
+  // ordinary user app via /auth/login (see the USER-role check there) while
+  // gaining admin-portal access via /admin/auth/login. promoteUserInitiate()
+  // already guarantees the user holds no admin role yet at this point, so a
+  // plain create (not a delete-then-create) is safe and can't collide with
+  // the @@unique([userId, roleId]) constraint. Their existing password is
+  // unchanged.
+
+  async promoteUserVerify(data: PromoteVerifyDto): Promise<{ message: string }> {
+    const tokenHash = this.hashOpaqueToken(data.token, 'promotion');
+
+    const otpRecord = await this.prisma.userOtp.findFirst({
+      where: {
+        otpHash: tokenHash,
+        purpose: UserOtpPurposeEnum.promotion_verification,
+        usedAt: null,
+        expiresAt: { gt: new Date() },
+      },
+      include: {
+        user: {
+          include: { userRoles: { include: { role: true } } },
+        },
+      },
+    });
+
+    if (!otpRecord) {
+      throw new BadRequestException('invalid_or_expired_token');
+    }
+
+    const user = otpRecord.user;
+    const roles = user.userRoles.map((userRole) => userRole.role.name);
+
     const adminRole = await this.prisma.role.findUnique({
       where: { name: RolesEnum.ADMIN },
     });
@@ -855,222 +1557,110 @@ export class AuthService {
       throw new BadRequestException('admin_role_not_configured');
     }
 
-    const hashedPassword = await bcrypt.hash(data.password, 10);
-
-    const result = await this.prisma.$transaction(async (tx) => {
-      const admin = await tx.user.create({
-        data: {
-          name: data.name,
-          phone,
-          passwordHash: hashedPassword,
-          isPhoneVerified: false,
-          isActive: false,
-          userRoles: {
-            create: { roleId: adminRole.id },
-          },
-        },
-      });
-
-      const otp = this.generateOtp();
-      const otpHash = await bcrypt.hash(otp, 12);
-
-      const otpExpiresInMinutes = this.configService.get<number>('otp.expiresInMinutes', 10);
-
-      const adminOtp = await tx.userOtp.create({
-        data: {
-          userId: admin.id,
-          otpHash,
-          expiresAt: new Date(Date.now() + otpExpiresInMinutes * 60 * 1000),
-          purpose: UserOtpPurposeEnum.admin_verification,
-        },
-      });
-
-      return {
-        adminId: admin.id,
-        verificationId: adminOtp.id,
-        otp,
-        phone: admin.phone,
-      };
-    });
-
-    const smsMessage = renderOtpSms({
-      otp: result.otp,
-      expiresInMinutes: this.configService.get<number>('otp.expiresInMinutes', 10),
-    });
-
-    try {
-      await sendSms(result.phone, smsMessage);
-    } catch (error) {
-      console.error(`[EHTE SMS] Failed to send admin registration OTP to ${result.phone}`, error);
-    }
-
-    // DEV ONLY
-    if (this.configService.get<boolean>('app.debug', false)) {
-      console.log(`[EHTE DEV] Admin registration OTP for ${result.phone}: ${result.otp}`);
-    }
-
-    this.emitAudit({
-      userId: result.adminId,
-      actorType: resolveActorType([RolesEnum.ADMIN]),
-      action: AuditEventEnum.USER_CREATED,
-      entity: 'User',
-      entityId: result.adminId,
-      diff: {
-        result: 'success',
-        role: RolesEnum.ADMIN,
-        createdBy: creator.id,
-      },
-    });
-
-    return {
-      adminId: result.adminId,
-      verificationId: result.verificationId,
-    };
-  }
-
-  // ADMIN — VERIFY REGISTRATION: Looks up pending admin by adminId, verifies against that admin's own stored OTP
-
-  async adminVerify(
-    verifier: CurrentUserDto,
-    adminId: string,
-    data: AdminVerifyDto,
-  ): Promise<{ message: string }> {
-    // Defense-in-depth: don't rely solely on the controller's @Roles guard
-    const verifierRoles = verifier.roles ?? [];
-
-    if (
-      !verifierRoles.some((role) =>
-        [RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN].includes(role as RolesEnum),
-      )
-    ) {
-      throw new UnauthorizedException('insufficient_permissions');
-    }
-
-    const admin = await this.prisma.user.findUnique({
-      where: { id: adminId },
-      include: {
-        userRoles: { include: { role: true } },
-      },
-    });
-
-    const roles = admin?.userRoles.map((userRole) => userRole.role.name) ?? [];
-
-    if (
-      !admin ||
-      !roles.some((role) => [RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN].includes(role as RolesEnum))
-    ) {
-      throw new NotFoundException('admin_not_found');
-    }
-
-    if (admin.isActive) {
-      throw new BadRequestException('admin_already_verified');
-    }
-
-    // Match against the exact verificationId issued by adminRegister()
-    const otpRecord = await this.prisma.userOtp.findUnique({
-      where: { id: data.verificationId },
-    });
-
-    if (
-      !otpRecord ||
-      otpRecord.userId !== admin.id ||
-      otpRecord.purpose !== UserOtpPurposeEnum.admin_verification ||
-      otpRecord.usedAt ||
-      otpRecord.expiresAt < new Date()
-    ) {
-      throw new BadRequestException('invalid_or_expired_otp');
-    }
-
-    if (otpRecord.attempts >= 5) {
-      this.emitAudit({
-        userId: admin.id,
-        actorType: resolveActorType(roles),
-        action: AuditEventEnum.SECURITY_ALERT,
-        entity: 'UserOtp',
-        entityId: otpRecord.id,
-        diff: {
-          reason: 'too_many_otp_attempts',
-          purpose: 'admin_verification',
-          verifiedBy: verifier.id,
-        },
-      });
-
-      throw new BadRequestException('too_many_otp_attempts');
-    }
-
-    const validOtp = await bcrypt.compare(data.otp, otpRecord.otpHash);
-
-    if (!validOtp) {
-      const updatedOtp = await this.prisma.userOtp.update({
-        where: { id: otpRecord.id },
-        data: { attempts: { increment: 1 } },
-        select: { attempts: true },
-      });
-
-      if (updatedOtp.attempts >= 5) {
-        this.emitAudit({
-          userId: admin.id,
-          actorType: resolveActorType(roles),
-          action: AuditEventEnum.SECURITY_ALERT,
-          entity: 'UserOtp',
-          entityId: otpRecord.id,
-          diff: {
-            reason: 'too_many_otp_attempts',
-            purpose: 'admin_verification',
-            verifiedBy: verifier.id,
-          },
-        });
-      }
-
-      throw new BadRequestException('invalid_or_expired_otp');
-    }
-
-    // Same atomic-claim pattern as verifySignupOtp()
     await this.prisma.$transaction(async (tx) => {
+      // Atomically claim the token (usedAt: null in where) so a replayed
+      // link can't be used twice, same pattern as every other OTP claim
       const claimed = await tx.userOtp.updateMany({
         where: {
           id: otpRecord.id,
-          userId: admin.id,
           usedAt: null,
-          attempts: { lt: 5 },
           expiresAt: { gt: new Date() },
         },
         data: { usedAt: new Date() },
       });
 
       if (claimed.count === 0) {
-        throw new BadRequestException('invalid_or_expired_otp');
+        throw new BadRequestException('invalid_or_expired_token');
       }
 
       await tx.user.update({
-        where: { id: admin.id },
-        data: { isPhoneVerified: true, isActive: true },
+        where: { id: user.id },
+        data: { isEmailVerified: true },
+      });
+
+      // FIX: promotion is ADDITIVE — grant ADMIN alongside every role the
+      // user already has (USER stays). promoteUserInitiate() already
+      // guarantees hasAdminRole(roles) was false when this token was
+      // issued, so this create can't collide with an existing ADMIN row
+      // under the @@unique([userId, roleId]) constraint. No deleteMany.
+      await tx.userRole.create({
+        data: { userId: user.id, roleId: adminRole.id },
       });
     });
 
     this.emitAudit({
-      userId: admin.id,
-      actorType: resolveActorType(roles),
+      userId: user.id,
+      actorType: resolveActorType([...roles, RolesEnum.ADMIN]),
       action: AuditEventEnum.OTP_VERIFIED,
       entity: 'UserOtp',
       entityId: otpRecord.id,
       diff: {
-        purpose: 'admin_verification',
+        purpose: 'promotion_verification',
         result: 'success',
-        verifiedBy: verifier.id,
+        previousRoles: roles,
+        addedRole: RolesEnum.ADMIN,
+        retainedRoles: roles,
       },
     });
 
-    return { message: 'admin_verified' };
+    return { message: 'user_promoted_to_admin' };
   }
 
-  // ADMIN — LOGIN: Restricted to ADMIN/SUPER_ADMIN; checks isActive + lockout, not isPhoneVerified (seeded super-admin skips OTP)
+  // ADMIN — FORGOT PASSWORD: email-only, no phone. Masks whether the
+  // email belongs to an admin at all (mirrors forgotPassword()'s masking
+  // of phone existence) so enumeration can't distinguish "no account",
+  // "not an admin", and "inactive admin". Reuses resetPassword() as-is —
+  // that method only ever needed verificationId + otp, never a phone
+  // number, so it already works for this email-delivered OTP unchanged.
 
-  async adminLogin(data: AdminLoginDto): Promise<TokenPair> {
-    const phone = this.normalizePhoneOrThrow(data.phone);
+  async adminForgotPassword(
+    data: AdminForgotPasswordDto,
+  ): Promise<{ verificationId: string }> {
+    const email = data.email.trim().toLowerCase();
 
     const user = await this.prisma.user.findUnique({
-      where: { phone },
+      where: { email },
+      include: { userRoles: { include: { role: true } } },
+    });
+
+    const roles = user?.userRoles.map((userRole) => userRole.role.name) ?? [];
+
+    const isAdmin = this.hasAdminRole(roles);
+
+    // Mask: no account, not an admin, or inactive all look identical externally
+    if (!user || !isAdmin || !user.isActive) {
+      return { verificationId: '' };
+    }
+
+    const { verificationId } = await this.issueAndSendOtp(
+      user.id,
+      email,
+      UserOtpPurposeEnum.password_reset,
+      OtpChannelEnum.email,
+    );
+
+    return { verificationId };
+  }
+
+  // ADMIN — LOGIN BY EMAIL (Doc §1, §7): the only admin credential path.
+  // Phone-based admin login has been removed — admins/super-admins always
+  // authenticate with email + password. Covers admins created via
+  // adminInvite()/adminSetPasswordFromInvite() (who may have no phone at
+  // all) and promoted users who now hold ADMIN alongside their existing
+  // USER role and a verified email.
+  //
+  // FIX (Phase 1 #4 / "Priority 9"): now also requires isEmailVerified.
+  // Both existing paths to a real admin account already guarantee this
+  // (adminSetPasswordFromInvite() sets it on activation; promoteUserVerify()
+  // sets it on promotion) — this is a defense-in-depth check against a
+  // future code path or manual DB edit ever producing an admin account
+  // whose email was never actually proven.
+
+  async adminLoginByEmail(data: AdminLoginEmailDto): Promise<TokenPair> {
+    const email = data.email.trim().toLowerCase();
+
+    const user = await this.prisma.user.findUnique({
+      where: { email },
       include: {
         userRoles: { include: { role: true } },
       },
@@ -1078,11 +1668,9 @@ export class AuthService {
 
     const roles = user?.userRoles.map((userRole) => userRole.role.name) ?? [];
 
-    const isAdmin = roles.some((role) =>
-      [RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN].includes(role as RolesEnum),
-    );
+    const isAdmin = this.hasAdminRole(roles);
 
-    if (!user || !user.passwordHash || !isAdmin) {
+    if (!user || !user.passwordHash || !isAdmin || !user.isEmailVerified) {
       this.emitAudit({
         userId: user?.id ?? null,
         actorType: resolveActorType(roles),
@@ -1091,7 +1679,7 @@ export class AuthService {
         entityId: user?.id ?? null,
         diff: {
           method: 'password',
-          context: 'admin_login',
+          context: 'admin_login_email',
           result: 'failed',
         },
       });
@@ -1099,7 +1687,6 @@ export class AuthService {
       throw new UnauthorizedException('invalid_credentials');
     }
 
-    // FIX: lockout check, before isActive/password
     try {
       this.assertNotLocked(user);
     } catch (err) {
@@ -1111,7 +1698,7 @@ export class AuthService {
         entityId: user.id,
         diff: {
           method: 'password',
-          context: 'admin_login',
+          context: 'admin_login_email',
           result: 'failed',
           reason: 'account_locked',
         },
@@ -1128,20 +1715,18 @@ export class AuthService {
         entityId: user.id,
         diff: {
           method: 'password',
-          context: 'admin_login',
+          context: 'admin_login_email',
           result: 'failed',
           reason: 'account_inactive',
         },
       });
 
-      // Covers deactivated and not-yet-verified admins; activation only via adminVerify()
       throw new UnauthorizedException('account_inactive');
     }
 
     const validPassword = await bcrypt.compare(data.password, user.passwordHash);
 
     if (!validPassword) {
-      // FIX: count the failure, possibly locking the account
       await this.recordFailedLogin(user.id);
 
       this.emitAudit({
@@ -1152,7 +1737,7 @@ export class AuthService {
         entityId: user.id,
         diff: {
           method: 'password',
-          context: 'admin_login',
+          context: 'admin_login_email',
           result: 'failed',
         },
       });
@@ -1160,7 +1745,6 @@ export class AuthService {
       throw new UnauthorizedException('invalid_credentials');
     }
 
-    // FIX: correct password clears any prior failure count/lock
     await this.resetLoginAttempts(user);
 
     this.emitAudit({
@@ -1171,12 +1755,12 @@ export class AuthService {
       entityId: user.id,
       diff: {
         method: 'password',
-        context: 'admin_login',
+        context: 'admin_login_email',
         result: 'success',
       },
     });
 
-    return this.issueTokens(user.id, user.phone, roles);
+    return this.issueTokens(user.id, { phone: user.phone, email: user.email }, roles);
   }
 
   // LOCKOUT — ASSERT NOT LOCKED: throws before password comparison if the account is currently locked
@@ -1230,33 +1814,44 @@ export class AuthService {
 
   private async issueTokens(
     userId: string,
-    phone: string,
+    // FIX: phone and email are now separate, honest fields — previously a caller with
+    // no phone (an email-only admin) had to pass their email into a param literally
+    // named `phone`, which then got embedded in the JWT under the `phone` claim.
+    identity: { phone?: string | null; email?: string | null },
     roles: string[],
     // Optional tx client so refresh() creates the new session inside the same transaction as the old session's revocation
     tx: Pick<typeof this.prisma, 'session'> = this.prisma,
   ): Promise<TokenPair> {
-    let expiresInStr = this.configService.get<string>('jwt.expiresIn', '24h');
+    const phone = identity.phone ?? null;
+    const email = identity.email ?? null;
 
-    // Support bare numbers like "24" -> "24h"
-    if (/^\d+$/.test(expiresInStr)) {
-      expiresInStr = `${expiresInStr}h`;
-    }
+    // FIX: both durations now go through the same bare-number normalization.
+    // Previously only expiresIn special-cased bare numbers as hours; a bare
+    // numeric refreshExpiresIn (e.g. "168" meaning 168 hours) fell through
+    // untouched to jsonwebtoken, which treats bare numbers as SECONDS — so
+    // "168" would silently expire the refresh token in under 3 minutes.
+    const expiresInStr = this.normalizeDurationString(
+      this.configService.get<string>('jwt.expiresIn', '24h'),
+    );
 
     const expiresIn = expiresInStr as any;
 
-    const accessToken = this.jwtService.sign({ sub: userId, phone, roles }, { expiresIn });
+    const accessToken = this.jwtService.sign({ sub: userId, phone, email, roles }, { expiresIn });
 
     // Refresh tokens use a dedicated secret/TTL so a leaked access secret can't forge them
     const refreshSecret =
       this.configService.get<string>('jwt.refreshSecret') ??
       this.configService.getOrThrow<string>('jwt.secret');
 
-    const refreshExpiresIn = this.configService.get<string>('jwt.refreshExpiresIn', '7d');
+    const refreshExpiresIn = this.normalizeDurationString(
+      this.configService.get<string>('jwt.refreshExpiresIn', '7d'),
+    );
 
     const refreshToken = this.jwtService.sign(
       {
         sub: userId,
         phone,
+        email,
         roles,
         type: 'refresh',
         // Unique jti so same-second tokens stay distinguishable (future reuse detection)
@@ -1272,7 +1867,7 @@ export class AuthService {
       data: {
         userId,
         // Store an HMAC hash, not the raw token, so a DB read can't be replayed
-        refreshToken: this.hashRefreshToken(refreshToken),
+        refreshToken: this.hashOpaqueToken(refreshToken, 'refresh'),
         expiresAt: new Date(Date.now() + this.parseDurationToMs(refreshExpiresIn)),
       },
     });
@@ -1280,14 +1875,36 @@ export class AuthService {
     return { accessToken, refreshToken };
   }
 
-  // HASH REFRESH TOKEN: Deterministic HMAC-SHA256 for lookup by equality (bcrypt can't be queried directly)
+  // HASH OPAQUE TOKEN: Deterministic HMAC-SHA256 for lookup by equality (bcrypt can't be
+  // queried directly). FIX (gap #12): refresh tokens and invite tokens now use separate
+  // secrets — previously both shared jwt.refreshSecret, so one HMAC key covered two
+  // structurally different token types. jwt.inviteSecret is optional; falls back to
+  // jwt.refreshSecret then jwt.secret if not configured, so this is non-breaking until
+  // you add a dedicated INVITE_TOKEN_SECRET env var.
 
-  private hashRefreshToken(token: string): string {
-    const refreshSecret =
-      this.configService.get<string>('jwt.refreshSecret') ??
-      this.configService.getOrThrow<string>('jwt.secret');
+  private hashOpaqueToken(
+    token: string,
+    purpose: 'refresh' | 'invite' | 'promotion' = 'refresh',
+  ): string {
+    const secret =
+      purpose !== 'refresh'
+        ? this.configService.get<string>('jwt.inviteSecret') ??
+          this.configService.get<string>('jwt.refreshSecret') ??
+          this.configService.getOrThrow<string>('jwt.secret')
+        : this.configService.get<string>('jwt.refreshSecret') ??
+          this.configService.getOrThrow<string>('jwt.secret');
 
-    return createHmac('sha256', refreshSecret).update(token).digest('hex');
+    return createHmac('sha256', secret).update(token).digest('hex');
+  }
+
+  // NORMALIZE DURATION STRING (gap #11): a bare number means hours, applied
+  // consistently to every duration config value passed to jwtService.sign() or
+  // parseDurationToMs() — not just jwt.expiresIn. jsonwebtoken's own bare-number
+  // handling (seconds) is bypassed entirely so both TTLs behave identically.
+
+  private normalizeDurationString(raw: string): string {
+    const trimmed = raw.trim();
+    return /^\d+$/.test(trimmed) ? `${trimmed}h` : trimmed;
   }
 
   // PARSE DURATION STRING: Converts "7d"/"24h"/"30m"/"45s" or bare seconds into ms, kept in sync with jwt.refreshExpiresIn
@@ -1312,12 +1929,16 @@ export class AuthService {
     return value * unitMs[unit];
   }
 
-  // ISSUE + SEND OTP (shared helper): Invalidates prior unused OTP of this purpose, creates a new one, sends SMS; cooldown reuses existing verificationId instead of throwing
+  // ISSUE + SEND OTP (shared helper): Invalidates prior unused OTP of this purpose, creates a
+  // new one, sends via the requested channel (SMS or email); cooldown reuses existing
+  // verificationId instead of throwing. `contact` is a phone number for channel=sms, or an
+  // email address for channel=email.
 
   private async issueAndSendOtp(
     userId: string,
-    phone: string,
+    contact: string,
     purpose: UserOtpPurposeEnum,
+    channel: OtpChannelEnum = OtpChannelEnum.sms,
   ): Promise<{ verificationId: string }> {
     const cooldownSeconds = this.configService.get<number>('otp.resendCooldownSeconds', 60);
 
@@ -1328,8 +1949,12 @@ export class AuthService {
 
     // Cooldown check + create/invalidate wrapped in one transaction to narrow the race window
     const result = await this.prisma.$transaction(async (tx) => {
+      // FIX (gap #5): scoped to channel too, not just purpose. A user with both
+      // a phone and an email (e.g. a promoted admin) hitting SMS forgot-password
+      // and email forgot-password within the same cooldown window are now
+      // independent — neither silently swallows the other's OTP send.
       const latestOtp = await tx.userOtp.findFirst({
-        where: { userId, purpose },
+        where: { userId, purpose, channel },
         orderBy: { createdAt: 'desc' },
       });
 
@@ -1339,12 +1964,12 @@ export class AuthService {
         Date.now() - latestOtp.createdAt.getTime() < cooldownSeconds * 1000;
 
       if (cooldownActive) {
-        // Reuse existing OTP/verificationId; nothing regenerated, no SMS sent
+        // Reuse existing OTP/verificationId; nothing regenerated, no message sent
         return { reused: true as const, verificationId: latestOtp.id };
       }
 
       await tx.userOtp.updateMany({
-        where: { userId, purpose, usedAt: null },
+        where: { userId, purpose, channel, usedAt: null },
         data: { usedAt: new Date() },
       });
 
@@ -1354,6 +1979,7 @@ export class AuthService {
           otpHash,
           expiresAt: new Date(Date.now() + otpExpiresInMinutes * 60 * 1000),
           purpose,
+          channel,
         },
       });
 
@@ -1361,21 +1987,33 @@ export class AuthService {
     });
 
     if (result.reused) {
-      // Cooldown active: no SMS, no dev log
+      // Cooldown active: no message, no dev log
       return { verificationId: result.verificationId };
     }
 
-    const smsMessage = renderOtpSms({ otp, expiresInMinutes: otpExpiresInMinutes });
+    if (channel === OtpChannelEnum.email) {
+      try {
+        await sendEmail(
+          contact,
+          renderOtpEmailSubject(),
+          renderOtpEmailHtml({ otp, expiresInMinutes: otpExpiresInMinutes }),
+        );
+      } catch (error) {
+        console.error(`[EHTE EMAIL] Failed to send OTP (${purpose}) to ${contact}`, error);
+      }
+    } else {
+      const smsMessage = renderOtpSms({ otp, expiresInMinutes: otpExpiresInMinutes });
 
-    try {
-      await sendSms(phone, smsMessage);
-    } catch (error) {
-      console.error(`[EHTE SMS] Failed to send OTP (${purpose}) to ${phone}`, error);
+      try {
+        await sendSms(contact, smsMessage);
+      } catch (error) {
+        console.error(`[EHTE SMS] Failed to send OTP (${purpose}) to ${contact}`, error);
+      }
     }
 
     // DEV ONLY
     if (this.configService.get<boolean>('app.debug', false)) {
-      console.log(`[EHTE DEV] OTP (${purpose}) for ${phone}: ${otp}`);
+      console.log(`[EHTE DEV] OTP (${purpose}, ${channel}) for ${contact}: ${otp}`);
     }
 
     return { verificationId: result.verificationId };
