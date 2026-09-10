@@ -3,6 +3,7 @@ import { AppModule } from './app.module';
 import { ValidationPipe, VersioningType } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SwaggerModule, DocumentBuilder, SwaggerCustomOptions } from '@nestjs/swagger';
+import { NestExpressApplication } from '@nestjs/platform-express';
 import helmet from 'helmet';
 import compression from 'compression';
 import { json, urlencoded } from 'express';
@@ -48,7 +49,7 @@ async function bootstrap() {
   // CREATE APPLICATION
   // ─────────────────────────────────────────────
 
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
 
   const configService = app.get(ConfigService);
 
@@ -71,6 +72,29 @@ async function bootstrap() {
 
   const corsCredentials = configService.getOrThrow<boolean>('cors.credentials');
 
+  // FIX (weakness review #trust-proxy): without this, Express/Nest sees every
+  // request as originating from Render's (or any) reverse proxy, not the real
+  // client. ThrottlerGuard's per-IP limiting keys off req.ip — with trust proxy
+  // unset that's either the proxy's single IP for everyone (one shared bucket,
+  // effectively breaking rate limiting for all users at once) or spoofable via
+  // X-Forwarded-For (an attacker sets their own IP header and gets a fresh
+  // bucket on every request). `1` trusts exactly one hop (the platform's own
+  // load balancer) — adjust if there's an additional proxy layer in front of it.
+  app.set('trust proxy', 1);
+
+  // FIX (weakness review #cors-wildcard-credentials): origin: '*' combined with
+  // credentials: true is a known misconfiguration pattern — most browsers will
+  // refuse to honor it, but it's a signal something is set up wrong, and some
+  // non-browser HTTP clients don't enforce the restriction at all. Fail fast
+  // instead of shipping a CORS policy that's either broken or unintentionally
+  // permissive.
+  if (corsCredentials && corsOrigin.includes('*')) {
+    throw new Error(
+      '[EHTE] CORS_ORIGIN cannot include "*" while CORS_CREDENTIALS is true. ' +
+        'List explicit allowed origins instead.',
+    );
+  }
+
   // ─────────────────────────────────────────────
   // SWAGGER CONFIGURATION
   // ─────────────────────────────────────────────
@@ -82,6 +106,19 @@ async function bootstrap() {
   const swaggerPassword = configService.get<string>('SWAGGER_PASSWORD');
 
   const shouldEnableSwagger = swaggerEnabled;
+
+  // FIX (weakness review #swagger-unprotected): previously an enabled-but-
+  // uncredentialed Swagger config only logged a warning and still served
+  // /docs openly — easy to miss in deploy logs. Now this fails startup
+  // outright in any environment other than plain local development, so a
+  // misconfigured staging/production deploy can't silently expose the full
+  // API surface (including auth flows) to anyone who finds the URL.
+  if (shouldEnableSwagger && nodeEnv !== 'development' && (!swaggerUser || !swaggerPassword)) {
+    throw new Error(
+      `[EHTE] Swagger is enabled in "${nodeEnv}" but SWAGGER_USER/SWAGGER_PASSWORD are not ` +
+        'configured. Set both, or disable Swagger via SWAGGER_ENABLED=false for this environment.',
+    );
+  }
 
   // Public URL of this deployment (e.g. https://ehte-api.onrender.com), set on Render's
   // Environment tab. Falls back to localhost when not set (local dev).
@@ -114,9 +151,27 @@ async function bootstrap() {
   // SECURITY
   // ─────────────────────────────────────────────
 
+  // FIX (weakness review #csp-disabled): contentSecurityPolicy: false turns
+  // the header off entirely rather than tuning it, which drops a real
+  // defense-in-depth layer against injected-script/XSS-style payloads
+  // reflected anywhere in the app. Swagger UI needs a handful of relaxed
+  // directives (inline styles/scripts, its own assets) to render, so those
+  // are scoped narrowly instead of disabling CSP app-wide. Tighten further
+  // (e.g. drop 'unsafe-inline') if/when Swagger UI is served from behind an
+  // asset pipeline that supports nonces.
   app.use(
     helmet({
-      contentSecurityPolicy: false,
+      contentSecurityPolicy: {
+        directives: {
+          defaultSrc: [`'self'`],
+          scriptSrc: [`'self'`, `'unsafe-inline'`],
+          styleSrc: [`'self'`, `'unsafe-inline'`],
+          imgSrc: [`'self'`, 'data:', 'https:'],
+          connectSrc: [`'self'`],
+          objectSrc: [`'none'`],
+          frameAncestors: [`'none'`],
+        },
+      },
     }),
   );
 
@@ -202,6 +257,8 @@ async function bootstrap() {
 
       logger.log('Swagger Basic Authentication enabled');
     } else {
+      // Reachable only in local development now — the startup check above
+      // throws for every other environment before we get here.
       logger.warn(
         `Swagger is enabled but SWAGGER_USER/SWAGGER_PASSWORD are not configured. /docs is UNPROTECTED. Environment: ${nodeEnv}`,
       );

@@ -1,4 +1,9 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 
 import { InformationRequestStatus, Prisma, ReportStatus } from '@prisma/client';
 
@@ -18,7 +23,7 @@ import { NotificationEventEnum } from 'src/common/enums/shared/notification-even
 
 import { RolesEnum } from 'src/common/enums/roles.enum';
 
-import { MinioService } from 'src/common/minio/minio.service';
+import { MinioService } from 'src/services/minio/minio.service';
 
 import {
   CreateReportDto,
@@ -94,6 +99,13 @@ export class ReportService {
   // plain filepath strings in typed arrays (photo/video/audio/pdf/
   // document/other), same as Post — kept in one place so every
   // read/write of that shape stays consistent.
+  //
+  // FIX: MinioService.objectExists()/deleteFile() are now
+  // bucket-less — the service holds a single configured bucket
+  // internally, so callers just pass the key. getMediaBucket()
+  // is no longer used by validateMediaFilesExist()/deleteMediaFiles()
+  // to match the new signatures; left in place in case other code
+  // in this file still needs the bucket name for something else.
   // ─────────────────────────────────────────────
 
   private getMediaBucket(): string {
@@ -139,11 +151,10 @@ export class ReportService {
   private async validateMediaFilesExist(filepaths: string[]): Promise<void> {
     if (!filepaths.length) return;
 
-    const bucket = this.getMediaBucket();
     const checks = await Promise.all(
       filepaths.map(async (filepath) => ({
         filepath,
-        exists: await this.minioService.objectExists(bucket, filepath),
+        exists: await this.minioService.objectExists(filepath),
       })),
     );
 
@@ -159,8 +170,7 @@ export class ReportService {
   // via allSettled rather than surfaced to the caller.
   private async deleteMediaFiles(filepaths: string[]): Promise<void> {
     if (!filepaths.length) return;
-    const bucket = this.getMediaBucket();
-    await Promise.allSettled(filepaths.map((fp) => this.minioService.deleteFile(bucket, fp)));
+    await Promise.allSettled(filepaths.map((fp) => this.minioService.deleteFile(fp)));
   }
 
   // ─────────────────────────────────────────────
@@ -928,10 +938,7 @@ export class ReportService {
   // caseReference is @unique in the schema, so a collision throws
   // a Prisma P2002 error. Retry a few times with a fresh reference
   // before giving up, rather than letting that error surface raw.
-  private async createReportWithUniqueCaseReference(
-    user: CurrentUserDto,
-    data: CreateReportDto,
-  ) {
+  private async createReportWithUniqueCaseReference(user: CurrentUserDto, data: CreateReportDto) {
     for (let attempt = 1; attempt <= CASE_REFERENCE_MAX_ATTEMPTS; attempt++) {
       try {
         return await this.prisma.report.create({

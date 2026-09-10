@@ -2,7 +2,7 @@ import { ExecutionContext, Injectable, UnauthorizedException } from '@nestjs/com
 
 import { Reflector } from '@nestjs/core';
 
-import { ReauthService } from '../services/reauth.service';
+import { ReauthService } from '../../services/reauthentication/reauth.service';
 
 import { REQUIRE_REAUTH_KEY } from '../decorators/reauth.decorator';
 

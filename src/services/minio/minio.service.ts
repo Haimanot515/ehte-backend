@@ -9,6 +9,7 @@ import type { Express } from 'express';
 export class MinioService implements OnModuleInit {
   private readonly logger = new Logger(MinioService.name);
   private client: Minio.Client;
+  private bucket: string;
 
   constructor(private readonly configService: ConfigService) {}
 
@@ -16,6 +17,8 @@ export class MinioService implements OnModuleInit {
     const endpoint = this.configService.get<string>('minio.endpoint');
     const accessKey = this.configService.get<string>('minio.accessKey');
     const secretKey = this.configService.get<string>('minio.secretKey');
+
+    this.bucket = this.configService.get<string>('minio.bucketName') ?? 'ehte-media';
 
     if (!endpoint || !accessKey || !secretKey) {
       this.logger.warn(
@@ -34,9 +37,7 @@ export class MinioService implements OnModuleInit {
       });
       this.logger.log('MinIO client initialized');
 
-      const bucket =
-        this.configService.get<string>('minio.bucketName') ?? 'ehte-media';
-      await this.ensureBucket(bucket);
+      await this.ensureBucket(this.bucket);
     } catch (e) {
       this.logger.error('Failed to initialize MinIO', e);
     }
@@ -50,7 +51,7 @@ export class MinioService implements OnModuleInit {
     }
   }
 
-  async ensureBucket(bucketName: string): Promise<void> {
+  async ensureBucket(bucketName: string = this.bucket): Promise<void> {
     this.assertClient();
     try {
       const exists = await this.client.bucketExists(bucketName);
@@ -66,53 +67,49 @@ export class MinioService implements OnModuleInit {
     }
   }
 
-  async uploadBuffer(
-    bucketName: string,
-    objectName: string,
+  // FIX (per mentor review): MinioService no longer decides object-key naming.
+  // Every method below now takes a finished `key: string` and just stores/reads/
+  // signs it — key construction (UUID, folder prefix, extension, etc.) is the
+  // caller's responsibility. This collapses the old uploadBuffer()/uploadFile()
+  // duplication into one method and matches generatePresignedUploadUrl(), which
+  // already built its key the same way (randomUUID() + extname(...)).
+
+  async uploadFile(
+    key: string,
     buffer: Buffer,
     contentType: string = 'application/octet-stream',
   ): Promise<string> {
     this.assertClient();
-    await this.client.putObject(bucketName, objectName, buffer, buffer.length, {
+    await this.client.putObject(this.bucket, key, buffer, buffer.length, {
       'Content-Type': contentType,
     });
-    this.logger.log(`Uploaded: ${bucketName}/${objectName}`);
-    return objectName;
+    this.logger.log(`Uploaded: ${this.bucket}/${key}`);
+    return key;
   }
 
-  async uploadFile(
-    bucketName: string,
+  // Convenience helper for callers that still have a raw Multer file and just
+  // want a safe, unique key generated for them. Not required — callers are
+  // free to build their own key and call uploadFile() directly instead.
+  buildObjectKey(originalname: string, folder: string): string {
+    return `${folder}/${randomUUID()}${extname(originalname)}`;
+  }
+
+  async uploadMulterFile(
     file: Express.Multer.File,
     folder: string,
   ): Promise<string> {
-    this.assertClient();
-    const today = new Date();
-    const day = String(today.getDate()).padStart(2, '0');
-    const month = String(today.getMonth() + 1).padStart(2, '0');
-    const year = String(today.getFullYear()).slice(-2);
-    const datePrefix = `${day}-${month}-${year}`;
-    const cleanName = file.originalname.replace(/\s+/g, '_');
-    const objectName = `${folder}/${datePrefix}-${cleanName}`;
-
-    await this.client.putObject(
-      bucketName,
-      objectName,
-      file.buffer,
-      file.size,
-      { 'Content-Type': file.mimetype },
-    );
-
-    return objectName;
+    const key = this.buildObjectKey(file.originalname, folder);
+    return this.uploadFile(key, file.buffer, file.mimetype);
   }
 
-  async getUrl(bucketName: string, objectName: string): Promise<string> {
+  async getUrl(key: string, expirySeconds: number = 24 * 60 * 60): Promise<string> {
     this.assertClient();
-    return this.client.presignedGetObject(bucketName, objectName, 24 * 60 * 60);
+    return this.client.presignedGetObject(this.bucket, key, expirySeconds);
   }
 
-  async deleteFile(bucketName: string, objectName: string): Promise<void> {
+  async deleteFile(key: string): Promise<void> {
     this.assertClient();
-    await this.client.removeObject(bucketName, objectName);
+    await this.client.removeObject(this.bucket, key);
   }
 
   // Confirms an object actually exists in the bucket before some
@@ -120,10 +117,10 @@ export class MinioService implements OnModuleInit {
   // filepath. Used by PostService/ReportService to validate
   // incoming media filepaths on create/update, so a record can
   // never point at an object that was never uploaded.
-  async objectExists(bucketName: string, objectName: string): Promise<boolean> {
+  async objectExists(key: string): Promise<boolean> {
     this.assertClient();
     try {
-      await this.client.statObject(bucketName, objectName);
+      await this.client.statObject(this.bucket, key);
       return true;
     } catch (err: any) {
       if (err.code === 'NotFound') {
@@ -136,35 +133,27 @@ export class MinioService implements OnModuleInit {
   async generatePresignedUploadUrl(fileInfo: {
     originalname: string;
     contentType?: string;
+    folder?: string;
   }): Promise<{ presignedUrl: string; file: Record<string, string | undefined> }> {
     this.assertClient();
-    const filepath = randomUUID() + extname(fileInfo.originalname);
-    const bucketName =
-      this.configService.get<string>('minio.bucketName') ?? 'ehte-media';
+    const key = this.buildObjectKey(fileInfo.originalname, fileInfo.folder ?? 'uploads');
     const duration = Number(process.env.DURATION_OF_PRE_SIGNED_DOCUMENT ?? 120);
-    const presignedUrl = await this.client.presignedPutObject(
-      bucketName,
-      filepath,
-      duration,
-    );
+    const presignedUrl = await this.client.presignedPutObject(this.bucket, key, duration);
 
     return {
       presignedUrl,
       file: {
-        filepath,
-        bucketName,
+        filepath: key,
+        bucketName: this.bucket,
         contentType: fileInfo.contentType,
         originalname: fileInfo.originalname,
       },
     };
   }
 
-  async generatePresignedDownloadUrl(fileInfo: {
-    bucketName: string;
-    filepath: string;
-  }): Promise<string> {
+  async generatePresignedDownloadUrl(key: string): Promise<string> {
     this.assertClient();
     const duration = Number(process.env.DURATION_OF_PRE_SIGNED_DOCUMENT ?? 120);
-    return this.client.presignedGetObject(fileInfo.bucketName, fileInfo.filepath, duration);
+    return this.client.presignedGetObject(this.bucket, key, duration);
   }
 }

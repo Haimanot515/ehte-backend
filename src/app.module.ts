@@ -23,14 +23,16 @@ import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 
 import configuration from './config/configuration';
 import minioConfig from './config/minio.config';
+import emailConfig from './config/email.config';
 
 // ─────────────────────────────────────────────
 // CORE / INFRASTRUCTURE MODULES
 // ─────────────────────────────────────────────
 
 import { PrismaModule } from './prisma/prisma.module';
-import { MinioModule } from './common/minio/minio.module';
+import { MinioModule } from './services/minio/minio.module';
 import { AppLoggerModule } from './common/logger/logger.module';
+import { EmailModule } from './services/email/email.module';
 
 // ─────────────────────────────────────────────
 // APPLICATION CORE MODULE
@@ -68,7 +70,7 @@ import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 
 import { ReauthGuard } from './common/guards/reauth.guard';
-import { ReauthService } from './common/services/reauth.service';
+import { ReauthService } from './services/reauthentication/reauth.service';
 
 // ─────────────────────────────────────────────
 // SEEDERS
@@ -92,7 +94,7 @@ import { RolesSeeder } from './common/seed/roles.seeder';
 
       envFilePath: [`.env.${process.env.NODE_ENV}`, '.env'],
 
-      load: [configuration, minioConfig],
+      load: [configuration, minioConfig, emailConfig],
 
       validationSchema: Joi.object({
         NODE_ENV: Joi.string().valid('development', 'test', 'production').default('development'),
@@ -104,7 +106,8 @@ import { RolesSeeder } from './common/seed/roles.seeder';
         // CORS_ORIGIN may be a single origin or a
         // comma-separated list ("https://a.com,https://b.com").
         // main.ts splits this into an array before
-        // passing it to enableCors().
+        // passing it to enableCors(), and now also rejects
+        // "*" whenever CORS_CREDENTIALS is true (see main.ts).
         CORS_ORIGIN: Joi.string().required(),
 
         CORS_CREDENTIALS: Joi.boolean().default(true),
@@ -112,11 +115,11 @@ import { RolesSeeder } from './common/seed/roles.seeder';
         SWAGGER_ENABLED: Joi.boolean().default(true),
 
         // Optional basic-auth credentials protecting
-        // the /docs route in non-production environments
-        // that are still externally reachable. If either
-        // is unset, /docs is left unprotected (fine for
-        // fully-local dev, not fine for a shared staging
-        // deployment).
+        // the /docs route. FIX (weakness review #swagger-unprotected):
+        // main.ts now throws at boot if SWAGGER_ENABLED is true and
+        // either of these is missing in any environment other than
+        // "development" — so in practice both are effectively required
+        // whenever Swagger is turned on outside local dev.
         SWAGGER_USER: Joi.string().optional(),
 
         SWAGGER_PASSWORD: Joi.string().optional(),
@@ -134,15 +137,35 @@ import { RolesSeeder } from './common/seed/roles.seeder';
         // JWT
         // ─────────────────────────────────────
 
-        JWT_SECRET: Joi.string().min(10).required(),
+        // FIX (weakness review #weak-jwt-secret): 10 characters is roughly
+        // 80 bits at best, and far less if it isn't truly random (e.g. a
+        // short passphrase). For an HMAC-signed JWT, OWASP/NIST-aligned
+        // guidance is a 256-bit (32+ byte) secret. Generate one with, e.g.,
+        // `openssl rand -base64 48`. This raises the floor Joi will accept —
+        // rotate any existing shorter secret in every environment before
+        // deploying this change, since old tokens signed with it will
+        // become unverifiable once the secret changes anyway.
+        JWT_SECRET: Joi.string().min(32).required(),
 
-        JWT_EXPIRES_IN: Joi.string().default('1d'),
+        // FIX (weakness review #long-lived-access-token): access tokens
+        // can't be revoked mid-life (no blocklist), and roles are baked in
+        // at issuance — so a long TTL both extends a stolen token's window
+        // of use and delays how fast a role change (e.g. a promotion being
+        // undone) actually takes effect. Default dropped from 1d to 15m;
+        // the refresh-token flow (with rotation + reuse detection already
+        // implemented in AuthService.refresh()) is what should carry
+        // session longevity, not the access token itself.
+        JWT_EXPIRES_IN: Joi.string().default('15m'),
 
         // Dedicated refresh-token secret/TTL so a
         // leaked access-token secret can't be used to
         // forge refresh tokens. Strongly recommended in
         // production; falls back to JWT_SECRET/7d if unset.
-        JWT_REFRESH_SECRET: Joi.string().min(10).optional(),
+        // FIX (weakness review #weak-jwt-secret): same 32-byte floor as
+        // JWT_SECRET — this key protects both refresh-token forgery and
+        // the invite/promotion token HMAC (via jwt.inviteSecret's fallback
+        // chain in AuthService.hashOpaqueToken()).
+        JWT_REFRESH_SECRET: Joi.string().min(32).optional(),
 
         JWT_REFRESH_EXPIRES_IN: Joi.string().default('7d'),
 
@@ -201,6 +224,13 @@ import { RolesSeeder } from './common/seed/roles.seeder';
 
         // ─────────────────────────────────────
         // RATE LIMITING
+        //
+        // FIX (weakness review #trust-proxy): this global limit is only
+        // meaningful now that main.ts sets `app.set('trust proxy', 1)` —
+        // without that, every request behind the platform's load balancer
+        // shared the same apparent IP, making this limit either useless
+        // (a single shared bucket for all users) or trivially spoofable
+        // via X-Forwarded-For.
         // ─────────────────────────────────────
 
         THROTTLE_TTL_SECONDS: Joi.number().default(60),
@@ -234,6 +264,30 @@ import { RolesSeeder } from './common/seed/roles.seeder';
         MINIO_BUCKET_NAME: Joi.string().required(),
 
         MINIO_USE_SSL: Joi.boolean().default(false),
+
+        // ─────────────────────────────────────
+        // EMAIL / SMTP
+        //
+        // Consumed by common/email/email.config.ts and
+        // common/email/email.service.ts. Required so a
+        // missing SMTP config fails fast at boot instead
+        // of only surfacing the first time an OTP or admin
+        // invite email is sent.
+        // ─────────────────────────────────────
+
+        SMTP_HOST: Joi.string().required(),
+
+        SMTP_PORT: Joi.number().default(587),
+
+        SMTP_SECURE: Joi.boolean().default(false),
+
+        SMTP_USER: Joi.string().required(),
+
+        SMTP_PASSWORD: Joi.string().required(),
+
+        SMTP_FROM: Joi.string().optional(),
+
+        SMTP_FROM_NAME: Joi.string().default('Ehte'),
       }),
 
       validationOptions: {
@@ -274,6 +328,10 @@ import { RolesSeeder } from './common/seed/roles.seeder';
     // additionally set a tighter, endpoint-specific
     // @Throttle() override in AuthController, since
     // this default is app-wide and fairly generous.
+    //
+    // NOTE: this remains IP-keyed only (per-account throttling for a
+    // single targeted phone/email across many source IPs is a separate,
+    // not-yet-implemented gap — see the auth weakness review).
     // ─────────────────────────────────────────
 
     ThrottlerModule.forRootAsync({
@@ -307,7 +365,8 @@ import { RolesSeeder } from './common/seed/roles.seeder';
     // `secret`) — per-call options always override a module-level
     // default, so a signOptions default here would never actually
     // apply. Access-token TTL is controlled solely by
-    // jwt.expiresIn (JWT_EXPIRES_IN) as read in AuthService.
+    // jwt.expiresIn (JWT_EXPIRES_IN, now defaulting to 15m) as read
+    // in AuthService.
     // ─────────────────────────────────────────
 
     JwtModule.registerAsync({
@@ -337,6 +396,12 @@ import { RolesSeeder } from './common/seed/roles.seeder';
     // ─────────────────────────────────────────
 
     MinioModule,
+
+    // ─────────────────────────────────────────
+    // EMAIL
+    // ─────────────────────────────────────────
+
+    EmailModule,
 
     // ─────────────────────────────────────────
     // AUTHENTICATION

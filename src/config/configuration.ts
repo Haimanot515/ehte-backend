@@ -4,6 +4,14 @@ export default () => ({
     env: process.env.NODE_ENV || 'development',
     port: Number(process.env.PORT) || 3000,
 
+    // Public URL of this deployment (e.g. https://ehte-api.onrender.com).
+    // Same value main.ts reads directly via configService.get('APP_URL')
+    // for Swagger's server list. Mapped here too so namespaced lookups
+    // like configService.get('app.url') — used in EmailTemplateService
+    // for building admin invite links — resolve to the real domain
+    // instead of always falling back to their hardcoded default.
+    url: process.env.APP_URL || `http://localhost:${Number(process.env.PORT) || 3000}`,
+
     // Gates dev-only OTP console logging in AuthService. MUST be false
     // in production — leaving it true prints real OTPs to server logs.
     debug: process.env.APP_DEBUG === 'true',
