@@ -658,6 +658,17 @@ export class UserService {
         },
       };
     }
+    // FIX: registration-completion filter. "pending" = invited/promoted but
+    // never set a password (passwordHash null); "completed" = has one.
+    // This is what lets a Super Admin see every registration still stuck
+    // in the "REGISTERING" state alongside the rest of the user list,
+    // instead of only being able to look one up by email via
+    // AuthController's register/resend or register/cancel endpoints.
+    if (query.registrationStatus === 'pending') {
+      where.passwordHash = null;
+    } else if (query.registrationStatus === 'completed') {
+      where.passwordHash = { not: null };
+    }
     const [users, total] = await this.prisma.$transaction([
       this.prisma.user.findMany({
         where,
@@ -707,6 +718,57 @@ export class UserService {
         totalPages: Math.ceil(total / limit),
       },
     };
+  }
+  // ─────────────────────────────────────────────
+  // ADMIN — UNLOCK USER
+  // PATCH /users/:id/unlock
+  // Restricted to SUPER_ADMIN at the controller (Roles guard)
+  //
+  // Manual override for AuthService's lockout mechanism
+  // (recordFailedLogin() / assertNotLocked()), which otherwise only
+  // clears itself after LOCKOUT_DURATION_MINUTES or a correct
+  // password. Lets a Super Admin restore access immediately for a
+  // legitimate admin who got locked out and can't wait it out.
+  // Does not touch isActive or any role — this is purely about the
+  // temporary lockout window, same distinction reactivateUser()
+  // above draws with force-logout (different fields, same target-
+  // user + audit shape).
+  // ─────────────────────────────────────────────
+  async unlockUser(actor: CurrentUserDto, targetUserId: string) {
+    const targetUser = await this.prisma.user.findUnique({
+      where: {
+        id: targetUserId,
+      },
+      select: {
+        id: true,
+        lockedUntil: true,
+        failedLoginAttempts: true,
+      },
+    });
+    if (!targetUser) {
+      throw new NotFoundException('user_not_found');
+    }
+    if (!targetUser.lockedUntil && targetUser.failedLoginAttempts === 0) {
+      throw new BadRequestException('account_not_locked');
+    }
+    await this.prisma.user.update({
+      where: {
+        id: targetUserId,
+      },
+      data: {
+        lockedUntil: null,
+        failedLoginAttempts: 0,
+      },
+    });
+    // ───────────────────────────────────────────
+    // AUDIT LOG
+    // ───────────────────────────────────────────
+    this.eventEmitter.emit(AuditEventEnum.USER_UNLOCKED, {
+      userId: actor.id,
+      entityId: targetUserId,
+      entityType: 'USER',
+    });
+    return this.getUserById(targetUserId);
   }
   // ─────────────────────────────────────────────
   // ADMIN — DASHBOARD STATS

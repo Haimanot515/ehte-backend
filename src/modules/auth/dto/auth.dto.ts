@@ -239,18 +239,18 @@ export class AdminLoginEmailDto {
 }
 
 // ─────────────────────────────────────────────
-// ADMIN — INVITE  (Doc §2, Step 1-2)
+// ADMIN — REGISTER  (Doc §2, Step 1-2)
 //
 // Super Admin supplies email + full name + the roles to grant.
 // Account is created with no password and inactive/unverified — the
-// "INVITED" state — and an invite link (containing a raw, single-use
+// "REGISTERING" state — and a registration link (containing a raw, single-use
 // token) is emailed to the new admin. Used by
-// AuthService.adminInvite().
+// AuthService.adminRegister().
 // ─────────────────────────────────────────────
 
-export class AdminInviteDto {
+export class AdminRegisterDto {
   @ApiProperty({
-    description: "Email address of the admin being invited",
+    description: "Email address of the admin being registered",
     example: 'new.admin@ehte.com',
   })
   @IsEmail()
@@ -258,7 +258,7 @@ export class AdminInviteDto {
   email: string;
 
   @ApiProperty({
-    description: 'Full name of the admin being invited',
+    description: 'Full name of the admin being registered',
     example: 'Haimanot Beka',
   })
   @IsString()
@@ -279,16 +279,16 @@ export class AdminInviteDto {
 }
 
 // ─────────────────────────────────────────────
-// ADMIN — RESEND INVITE  (Phase 1 #6)
+// ADMIN — RESEND REGISTRATION  (Phase 1 #6)
 //
-// Super Admin re-sends an invite email with a freshly generated token
-// for an account still sitting in the "INVITED" state (no password
-// set, never activated). Used by AuthService.adminInviteResend().
+// Super Admin re-sends a registration email with a freshly generated token
+// for an account still sitting in the "REGISTERING" state (no password
+// set, never activated). Used by AuthService.adminRegisterResend().
 // ─────────────────────────────────────────────
 
-export class AdminInviteResendDto {
+export class AdminRegisterResendDto {
   @ApiProperty({
-    description: 'Email address of the pending admin invite to resend',
+    description: 'Email address of the pending admin registration to resend',
     example: 'new.admin@ehte.com',
   })
   @IsEmail()
@@ -297,22 +297,22 @@ export class AdminInviteResendDto {
 }
 
 // ─────────────────────────────────────────────
-// ADMIN — SET PASSWORD FROM INVITE  (Doc §2, Step 3)
+// ADMIN — COMPLETE REGISTRATION  (Doc §2, Step 3)
 //
-// The invited admin calls this anonymously using the raw token from
-// their invite link to set their own password. Possessing the token
-// proves control of the invited inbox, so this also activates the
+// The registering admin calls this anonymously using the raw token from
+// their registration link to set their own password. Possessing the token
+// proves control of the registering inbox, so this also activates the
 // account and returns tokens directly. Used by
-// AuthService.adminSetPasswordFromInvite().
+// AuthService.adminCompleteRegistration().
 // ─────────────────────────────────────────────
 
-export class AdminSetPasswordDto {
+export class AdminCompleteRegistrationDto {
   @ApiProperty({
-    description: 'Raw invite token from the emailed invite link',
+    description: 'Raw registration token from the emailed registration link',
   })
   @IsString()
   @IsNotEmpty()
-  inviteToken: string;
+  registrationToken: string;
 
   @ApiProperty({
     description: 'Password the new admin is choosing for their own account',
@@ -418,6 +418,70 @@ export class PromoteUserResendDto {
 export class PromoteVerifyDto {
   @ApiProperty({
     description: 'Secure promotion token received through the email link',
+    example: 'a1b2c3d4e5f6...',
+  })
+  @IsString()
+  @IsNotEmpty()
+  token: string;
+}
+
+// ─────────────────────────────────────────────
+// ADMIN — CANCEL PENDING REGISTRATION
+//
+// Super Admin revokes a registration that was sent to the wrong
+// address, is no longer wanted, or should be cleaned up before
+// completion. Only valid while the account is still "REGISTERING"
+// (no password set, never activated) — AuthService.adminCancelRegistration()
+// rejects this once the invited admin has already completed
+// registration; use UserController's deactivate/revoke-role
+// endpoints for a completed admin instead.
+// ─────────────────────────────────────────────
+
+export class AdminCancelRegistrationDto {
+  @ApiProperty({
+    description: 'Email address of the pending admin registration to cancel',
+    example: 'new.admin@ehte.com',
+  })
+  @IsEmail()
+  @IsNotEmpty()
+  email: string;
+}
+
+// ─────────────────────────────────────────────
+// ADMIN — CHANGE OWN EMAIL  (self-service)
+//
+// Any authenticated account holding an admin role may change its
+// OWN login email — not a SUPER_ADMIN-on-someone-else action.
+// Gated by @RequireReauthentication() at the controller (same
+// pattern as UserController.updateDiscreetMode()), which reads and
+// strips a `password` field from the raw request body before this
+// DTO is built — that's why there's no password field here, same
+// reasoning as UpdateDiscreetModeDto's note in user.dto.ts.
+// Used by AuthService.adminChangeEmailInitiate().
+// ─────────────────────────────────────────────
+
+export class AdminChangeEmailDto {
+  @ApiProperty({
+    description: 'New email address to use for admin login',
+    example: 'new-address@ehte.com',
+  })
+  @IsEmail()
+  @IsNotEmpty()
+  newEmail: string;
+}
+
+// ─────────────────────────────────────────────
+// ADMIN — CHANGE OWN EMAIL: VERIFY LINK
+//
+// The admin clicks the link sent to their NEW address and the
+// frontend submits the token from the URL. Possessing the token IS
+// the proof of inbox ownership — same trust model as
+// PromoteVerifyDto. Used by AuthService.adminChangeEmailVerify().
+// ─────────────────────────────────────────────
+
+export class AdminChangeEmailVerifyDto {
+  @ApiProperty({
+    description: 'Secure email-change token received through the verification link',
     example: 'a1b2c3d4e5f6...',
   })
   @IsString()

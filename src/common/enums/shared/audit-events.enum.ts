@@ -8,6 +8,12 @@ export enum AuditEventEnum {
   USER_SESSIONS_REVOKED = 'USER_SESSIONS_REVOKED',
   USER_ROLE_ASSIGNED = 'USER_ROLE_ASSIGNED',
   USER_ROLE_REVOKED = 'USER_ROLE_REVOKED',
+  // Added — used by UserService.unlockUser(). Distinct from
+  // USER_REACTIVATED: unlocking clears a temporary login lockout
+  // (lockedUntil/failedLoginAttempts), it does not touch isActive.
+  // Conflating the two in the audit trail would misrepresent which
+  // account state actually changed.
+  USER_UNLOCKED = 'USER_UNLOCKED',
   // AUTH
   LOGIN_SUCCESS = 'LOGIN_SUCCESS',
   LOGIN_FAILED = 'LOGIN_FAILED',
@@ -23,6 +29,24 @@ export enum AuditEventEnum {
   // Distinct from DISCREET_MODE_ENABLED so the audit trail can tell
   // first-time setup apart from a later passcode change.
   DISCREET_MODE_PASSCODE_CHANGED = 'DISCREET_MODE_PASSCODE_CHANGED',
+  // ADMIN ONBOARDING / REGISTRATION
+  // Added — used by AuthService's admin registration-link flow
+  // (adminRegister() / adminRegisterResend() / adminCancelRegistration())
+  // and the self-service email-change flow (adminChangeEmailInitiate() /
+  // adminChangeEmailVerify()). Previously all five fell back to reusing
+  // USER_CREATED, USER_DEACTIVATED_BY_ADMIN, USER_UPDATED, or OTP_VERIFIED
+  // as placeholders — these give each its own first-class event instead.
+  ADMIN_REGISTERED = 'ADMIN_REGISTERED',
+  ADMIN_REGISTRATION_RESENT = 'ADMIN_REGISTRATION_RESENT',
+  ADMIN_REGISTRATION_CANCELLED = 'ADMIN_REGISTRATION_CANCELLED',
+  ADMIN_EMAIL_CHANGE_INITIATED = 'ADMIN_EMAIL_CHANGE_INITIATED',
+  ADMIN_EMAIL_CHANGE_VERIFIED = 'ADMIN_EMAIL_CHANGE_VERIFIED',
+  // USER PROMOTION
+  // Added — used by AuthService.promoteUserInitiate() /
+  // promoteUserResend(). Previously both fell back to reusing
+  // USER_CREATED as a placeholder.
+  USER_PROMOTION_INITIATED = 'USER_PROMOTION_INITIATED',
+  USER_PROMOTION_RESENT = 'USER_PROMOTION_RESENT',
   // REPORT
   REPORT_CREATED = 'REPORT_CREATED',
   REPORT_UPDATED = 'REPORT_UPDATED',
@@ -93,6 +117,14 @@ export enum AuditEventEnum {
   ROLE_CREATED = 'ROLE_CREATED',
   ROLE_UPDATED = 'ROLE_UPDATED',
   ROLE_DELETED = 'ROLE_DELETED',
+  // PERMISSION
+  // Added — used by PermissionService.assignToRole() /
+  // revokeFromRole(). No permission-assignment audit event existed
+  // before PermissionController was built; these mirror the
+  // ROLE_* / USER_ROLE_* pairs above (grant/revoke) for a role's
+  // assigned permissions.
+  PERMISSION_ASSIGNED = 'PERMISSION_ASSIGNED',
+  PERMISSION_REVOKED = 'PERMISSION_REVOKED',
   // SECURITY
   SECURITY_ALERT = 'SECURITY_ALERT',
 }

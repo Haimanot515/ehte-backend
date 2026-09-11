@@ -1,6 +1,34 @@
-// ─────────────────────────────────────────────
-// EHTE FEATURES — MissingPerson
-// ─────────────────────────────────────────────
+model MissingPerson {
+  id                     String                  @id @default(uuid())
+  userId                 String
+  personType             MissingPersonType
+  name                   String?
+  description            String
+  dateLastSeen           DateTime
+  lastKnownArea          String
+  photo                  String[]
+  video                  String[]
+  audio                  String[]
+  pdf                    String[]
+  document               String[]
+  other                  String[]
+  status                 MissingPersonStatus     @default(PENDING)
+  createdAt              DateTime                @default(now())
+  updatedAt              DateTime                @updatedAt
+  childSafetyConfirmed   Boolean                 @default(false)
+  reviewNote             String?
+  rewardAmount           Int?
+  rewardApproved         Boolean                 @default(false)
+  rewardDetails          String?
+  rewardOffered          Boolean                 @default(false)
+  informationSubmissions InformationSubmission[]
+  user                   User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([status])
+  @@index([personType])
+  @@map("missing_person")
+}
 
 enum MissingPersonType {
   WOMAN
@@ -10,50 +38,8 @@ enum MissingPersonType {
 enum MissingPersonStatus {
   PENDING
   UNDER_REVIEW
-  MORE_INFORMATION_REQUESTED
   APPROVED
   REJECTED
   FOUND
-}
-
-model MissingPerson {
-  id     String @id @default(uuid())
-  userId String
-
-  personType MissingPersonType
-
-  name        String?
-  description String
-
-  dateLastSeen  DateTime
-  lastKnownArea String
-
-  photo    String[]
-  video    String[]
-  audio    String[]
-  pdf      String[]
-  document String[]
-  other    String[]
-
-  status MissingPersonStatus @default(PENDING)
-
-  reviewNote String?
-
-  childSafetyConfirmed Boolean @default(false)
-
-  rewardOffered  Boolean @default(false)
-  rewardAmount   Int?
-  rewardDetails  String?
-  rewardApproved Boolean @default(false)
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  user                   User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
-  informationSubmissions InformationSubmission[]
-
-  @@index([userId])
-  @@index([status])
-  @@index([personType])
-  @@map("missing_person")
+  MORE_INFORMATION_REQUESTED
 }

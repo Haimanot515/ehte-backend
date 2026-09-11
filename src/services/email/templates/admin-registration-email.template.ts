@@ -1,5 +1,5 @@
-interface AdminInviteEmailParams {
-  inviteLink: string;
+interface AdminRegistrationEmailParams {
+  registrationLink: string;
   expiresInHours: number;
 }
 
@@ -12,15 +12,15 @@ function escapeHtml(value: string): string {
     .replace(/'/g, '&#039;');
 }
 
-export function renderAdminInviteEmailSubject(): string {
-  return 'You have been invited to Ehte Admin';
+export function renderAdminRegistrationEmailSubject(): string {
+  return 'You have been registered for Ehte Admin';
 }
 
-export function renderAdminInviteEmailHtml({
-  inviteLink,
+export function renderAdminRegistrationEmailHtml({
+  registrationLink,
   expiresInHours,
-}: AdminInviteEmailParams): string {
-  const safeLink = escapeHtml(inviteLink);
+}: AdminRegistrationEmailParams): string {
+  const safeLink = escapeHtml(registrationLink);
   const safeExpiry = escapeHtml(String(expiresInHours));
 
   return `
@@ -32,7 +32,7 @@ export function renderAdminInviteEmailHtml({
     name="viewport"
     content="width=device-width, initial-scale=1.0"
   />
-  <title>Ehte Admin Invitation</title>
+  <title>Ehte Admin Registration</title>
 </head>
 
 <body
@@ -84,7 +84,7 @@ export function renderAdminInviteEmailHtml({
           color: #111827;
         "
       >
-        You have been invited
+        You have been registered
       </h2>
 
       <p
@@ -94,7 +94,7 @@ export function renderAdminInviteEmailHtml({
           color: #4b5563;
         "
       >
-        You have been invited to join the Ehte administration
+        You have been registered to join the Ehte administration
         platform.
       </p>
 
@@ -134,7 +134,7 @@ export function renderAdminInviteEmailHtml({
           font-size: 14px;
         "
       >
-        This invitation expires in
+        This registration link expires in
         <strong>${safeExpiry} hours</strong>.
       </p>
 
@@ -146,7 +146,7 @@ export function renderAdminInviteEmailHtml({
           font-size: 14px;
         "
       >
-        If you were not expecting this invitation, you can
+        If you were not expecting this registration email, you can
         safely ignore this email.
       </p>
     </div>
@@ -184,22 +184,22 @@ export function renderAdminInviteEmailHtml({
 `.trim();
 }
 
-export function renderAdminInviteEmailText({
-  inviteLink,
+export function renderAdminRegistrationEmailText({
+  registrationLink,
   expiresInHours,
-}: AdminInviteEmailParams): string {
+}: AdminRegistrationEmailParams): string {
   return `
 Ehte — My Sister
 
-You have been invited to join the Ehte administration platform.
+You have been registered to join the Ehte administration platform.
 
 Use the following link to set your password and activate your administrator account:
 
-${inviteLink}
+${registrationLink}
 
-This invitation expires in ${expiresInHours} hours.
+This registration link expires in ${expiresInHours} hours.
 
-If you were not expecting this invitation, you can safely ignore this email.
+If you were not expecting this registration email, you can safely ignore this email.
 
 This is an automated email. Please do not reply.
 `.trim();

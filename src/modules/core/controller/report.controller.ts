@@ -20,6 +20,11 @@ import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { RolesEnum } from 'src/common/enums/roles.enum';
 import { RequireReauthentication } from 'src/common/decorators/reauth.decorator';
+// NOTE: adjust these two import paths to match your actual file locations —
+// they were not present in the source file provided, so the names/paths
+// below follow the same convention as Roles / RolesEnum above.
+import { RequirePermissions } from 'src/common/decorators/require-permissions.decorator';
+import { PermissionsEnum } from 'src/common/enums/permissions.enum';
 
 @ApiTags('Reports')
 @ApiBearerAuth('access-token')
@@ -54,6 +59,7 @@ export class ReportController {
 
   @Get('assigned-to-me')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.REPORT_READ)
   @Header('Cache-Control', 'no-store')
   @ApiOperation({ summary: 'Get reports assigned to the current admin' })
   @ApiQuery({ name: 'page', required: false })
@@ -68,6 +74,7 @@ export class ReportController {
 
   @Get()
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.REPORT_READ)
   @ApiOperation({ summary: 'List all reports (admin)' })
   @ApiQuery({ name: 'status', required: false })
   @ApiQuery({ name: 'category', required: false })
@@ -103,6 +110,10 @@ export class ReportController {
 
   @Get(':id/admin')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(
+    PermissionsEnum.REPORT_READ,
+    PermissionsEnum.REPORTER_INFO_READ,
+  )
   @ApiOperation({ summary: 'Get full report detail including reporter information (admin)' })
   async findOneForAdmin(@CurrentUser() admin: CurrentUserDto, @Param('id') reportId: string) {
     return this.reportService.findOneForAdmin(admin, reportId);
@@ -110,6 +121,7 @@ export class ReportController {
 
   @Patch(':id/status')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.REPORT_UPDATE_STATUS)
   @ApiOperation({ summary: 'Update report status (admin)' })
   async updateStatus(
     @CurrentUser() admin: CurrentUserDto,
@@ -147,6 +159,7 @@ export class ReportController {
 
   @Patch(':id/request-information')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.REPORT_REQUEST_INFO)
   @ApiOperation({ summary: 'Request more information from reporter (admin)' })
   async requestMoreInformation(
     @CurrentUser() admin: CurrentUserDto,
@@ -169,6 +182,7 @@ export class ReportController {
 
   @Patch(':id/assign')
   @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.REPORT_ASSIGN)
   @ApiOperation({ summary: 'Assign report to an administrator (super admin)' })
   async assign(
     @CurrentUser() admin: CurrentUserDto,
@@ -180,6 +194,7 @@ export class ReportController {
 
   @Patch(':id/unassign')
   @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.REPORT_ASSIGN)
   @ApiOperation({ summary: 'Unassign report from its current administrator (super admin)' })
   async unassign(@CurrentUser() admin: CurrentUserDto, @Param('id') reportId: string) {
     return this.reportService.unassign(admin, reportId);
@@ -187,6 +202,7 @@ export class ReportController {
 
   @Patch(':id/escalate')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.REPORT_ESCALATE)
   @ApiOperation({ summary: 'Escalate an urgent report (admin)' })
   async escalate(
     @CurrentUser() admin: CurrentUserDto,

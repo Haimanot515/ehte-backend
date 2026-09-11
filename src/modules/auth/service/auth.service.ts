@@ -30,9 +30,9 @@ import {
 } from 'src/services/email/templates/otp-email.template';
 
 import {
-  renderAdminInviteEmailSubject,
-  renderAdminInviteEmailHtml,
-} from 'src/services/email/templates/admin-invite-email.template';
+  renderAdminRegistrationEmailSubject,
+  renderAdminRegistrationEmailHtml,
+} from 'src/services/email/templates/admin-registration-email.template';
 
 import {
   renderPromotionEmailSubject,
@@ -56,11 +56,14 @@ import {
   ResetPasswordDto,
   SignupDto,
   SignupVerifyDto,
-  AdminInviteDto,
-  AdminInviteResendDto,
-  AdminSetPasswordDto,
+  AdminRegisterDto,
+  AdminRegisterResendDto,
+  AdminCompleteRegistrationDto,
   AdminLoginEmailDto,
   AdminForgotPasswordDto,
+  AdminCancelRegistrationDto,
+  AdminChangeEmailDto,
+  AdminChangeEmailVerifyDto,
   PromoteUserDto,
   PromoteUserResendDto,
   PromoteVerifyDto,
@@ -86,10 +89,22 @@ type ForgotPasswordResult = {
   purpose?: 'password_reset' | 'phone_verification';
 };
 
-const INVITE_TOKEN_EXPIRES_MINUTES = 60 * 24; // 24h to accept an invite
+const REGISTRATION_TOKEN_EXPIRES_MINUTES = 60 * 24; // 24h to complete registration
 const PROMOTION_TOKEN_EXPIRES_MINUTES = 60 * 24; // 24h to click the promotion email link
+const EMAIL_CHANGE_TOKEN_EXPIRES_MINUTES = 60; // 1h to click the email-change verification link
 
 const ADMIN_ROLES = [RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN];
+
+// Shape shared by every `userRoles: { include: { role: { include: { rolePermissions:
+// { include: { permission: true } } } } } }` query result, used by derivePermissions()
+// below. Matches the actual Prisma relation names: Role.rolePermissions ->
+// RolePermission.permission -> Permission.name.
+type UserRoleWithPermissions = {
+  role: {
+    name: string;
+    rolePermissions: { permission: { name: string } }[];
+  };
+};
 
 @Injectable()
 export class AuthService {
@@ -125,8 +140,23 @@ export class AuthService {
     return roles.some((role) => ADMIN_ROLES.includes(role as RolesEnum));
   }
 
+  // PERMISSIONS DERIVATION: flattens every permission across every role a user
+  // holds into a single deduped string array, mirroring how roles are already
+  // flattened at each call site. Relies on Role.rolePermissions ->
+  // RolePermission.permission.name (per schema.prisma) — any query feeding this
+  // must include that nested relation, not just `role: true`.
+  private derivePermissions(userRoles: UserRoleWithPermissions[]): string[] {
+    return [
+      ...new Set(
+        userRoles.flatMap((userRole) =>
+          userRole.role.rolePermissions.map((rp) => rp.permission.name),
+        ),
+      ),
+    ];
+  }
+
   // UNIQUE CONSTRAINT CHECK: detects a Prisma P2002 violation so concurrent
-  // signup/invite/promote requests for the same phone or email fail with a
+  // signup/registration/promote requests for the same phone or email fail with a
   // clean 400 instead of an unhandled 500 (closes the check-then-write race).
 
   private isUniqueConstraintError(error: unknown): boolean {
@@ -274,7 +304,15 @@ export class AuthService {
       include: {
         user: {
           include: {
-            userRoles: { include: { role: true } },
+            userRoles: {
+              include: {
+                role: {
+                  include: {
+                    rolePermissions: { include: { permission: true } },
+                  },
+                },
+              },
+            },
           },
         },
       },
@@ -297,6 +335,7 @@ export class AuthService {
     }
 
     const roles = otpRecord.user.userRoles.map((userRole) => userRole.role.name);
+    const permissions = this.derivePermissions(otpRecord.user.userRoles);
 
     // Enforce max OTP attempts
     if (otpRecord.attempts >= 5) {
@@ -379,7 +418,12 @@ export class AuthService {
       diff: { purpose: 'phone_verification', result: 'success' },
     });
 
-    return this.issueTokens(otpRecord.user.id, { phone: otpRecord.user.phone }, roles);
+    return this.issueTokens(
+      otpRecord.user.id,
+      { phone: otpRecord.user.phone },
+      roles,
+      permissions,
+    );
   }
 
   // RESEND SIGNUP OTP
@@ -412,7 +456,7 @@ export class AuthService {
   // Restricted to accounts holding the USER role (roles are additive — see the
   // promotion-model note above promoteUserVerify() below). A promoted account
   // (USER + ADMIN) still logs in here for the ordinary user app; a pure
-  // invite-created admin (ADMIN/SUPER_ADMIN only, no USER role, and usually no
+  // registration-created admin (ADMIN/SUPER_ADMIN only, no USER role, and usually no
   // phone at all) is rejected and must use AdminAuthController.login()
   // (email + password) instead.
 
@@ -422,7 +466,15 @@ export class AuthService {
     const user = await this.prisma.user.findUnique({
       where: { phone },
       include: {
-        userRoles: { include: { role: true } },
+        userRoles: {
+          include: {
+            role: {
+              include: {
+                rolePermissions: { include: { permission: true } },
+              },
+            },
+          },
+        },
       },
     });
 
@@ -442,6 +494,7 @@ export class AuthService {
     }
 
     const roles = user.userRoles.map((userRole) => userRole.role.name);
+    const permissions = this.derivePermissions(user.userRoles);
 
     // Password checked before any account-state gate (lock, active, verified,
     // role) — keeps "no such account", "wrong password", "locked account",
@@ -469,7 +522,7 @@ export class AuthService {
     // Roles are additive (Doc §3 promotion model) — a promoted account keeps
     // USER alongside ADMIN/SUPER_ADMIN and is meant to keep using this
     // endpoint for the ordinary app. What must stay blocked is an account
-    // that was only ever onboarded as an admin (invite flow) and never held
+    // that was only ever onboarded as an admin (registration flow) and never held
     // a USER role at all. Checked only after the password has been proven
     // correct, so this never becomes an unauthenticated "does this phone
     // number have a USER role" oracle.
@@ -561,7 +614,12 @@ export class AuthService {
       diff: { method: 'password', result: 'success' },
     });
 
-    return this.issueTokens(user.id, { phone: user.phone, email: user.email }, roles);
+    return this.issueTokens(
+      user.id,
+      { phone: user.phone, email: user.email },
+      roles,
+      permissions,
+    );
   }
 
   // FORGOT PASSWORD: Unverified accounts get a phone_verification OTP instead of password_reset;
@@ -845,7 +903,15 @@ export class AuthService {
     const user = await this.prisma.user.findUnique({
       where: { id: payload.sub },
       include: {
-        userRoles: { include: { role: true } },
+        userRoles: {
+          include: {
+            role: {
+              include: {
+                rolePermissions: { include: { permission: true } },
+              },
+            },
+          },
+        },
       },
     });
 
@@ -854,6 +920,7 @@ export class AuthService {
     }
 
     const roles = user.userRoles.map((userRole) => userRole.role.name);
+    const permissions = this.derivePermissions(user.userRoles);
 
     // FIX: soft-revoke (not delete) the old session, then mint a new one, in one
     // transaction — the revoked row stays so a replay of this token is detectable
@@ -868,7 +935,13 @@ export class AuthService {
         throw new UnauthorizedException('session_expired_or_invalid');
       }
 
-      return this.issueTokens(user.id, { phone: user.phone, email: user.email }, roles, tx);
+      return this.issueTokens(
+        user.id,
+        { phone: user.phone, email: user.email },
+        roles,
+        permissions,
+        tx,
+      );
     });
   }
 
@@ -999,21 +1072,21 @@ export class AuthService {
   }
 
   // ═══════════════════════════════════════════════════════════
-  // Admin onboarding — invite-based flow (Doc §2). Super Admin
+  // Admin onboarding — registration-link flow (Doc §2). Super Admin
   // supplies email + full name + roles; no password is created or
-  // known by the creator. The account stays inactive ("INVITED")
-  // until the new admin uses their invite-link token to set their
+  // known by the creator. The account stays inactive ("REGISTERING")
+  // until the new admin uses their registration-link token to set their
   // own password, which also activates the account.
   // ═══════════════════════════════════════════════════════════
 
-  // ADMIN — INVITE: Super Admin supplies email + full name + roles.
+  // ADMIN — REGISTER: Super Admin supplies email + full name + roles.
   // No password is created or known by the creator. Account is left
-  // inactive/unverified ("INVITED") until the new admin sets their
-  // own password via adminSetPasswordFromInvite().
+  // inactive/unverified ("REGISTERING") until the new admin sets their
+  // own password via adminCompleteRegistration().
 
-  async adminInvite(
+  async adminRegister(
     creator: CurrentUserDto,
-    data: AdminInviteDto,
+    data: AdminRegisterDto,
   ): Promise<{ adminId: string; message: string }> {
     // Restricted to SUPER_ADMIN per doc §2 ("Super Admin enters email only").
     const creatorRoles = creator.roles ?? [];
@@ -1024,13 +1097,13 @@ export class AuthService {
 
     const email = data.email.trim().toLowerCase();
 
-    // Defense-in-depth: AdminInviteDto's @IsIn already restricts this, but a
+    // Defense-in-depth: AdminRegisterDto's @IsIn already restricts this, but a
     // service-level check protects against DTO validation ever being bypassed
     // (e.g. a future internal caller). Inviting with a non-admin role would
     // create an account with no phone and no admin role — permanently locked out.
     const invitableRoles = [RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN];
     if (data.roles.some((role) => !invitableRoles.includes(role))) {
-      throw new BadRequestException('only_admin_roles_may_be_invited');
+      throw new BadRequestException('only_admin_roles_may_be_registered');
     }
 
     const existingUser = await this.prisma.user.findUnique({
@@ -1042,7 +1115,7 @@ export class AuthService {
     }
 
     // Resolve every requested role up front so a typo'd/unconfigured role
-    // fails before the user row (and invite email) is created
+    // fails before the user row (and registration email) is created
     const roleRecords = await this.prisma.role.findMany({
       where: { name: { in: data.roles } },
     });
@@ -1051,9 +1124,9 @@ export class AuthService {
       throw new BadRequestException('one_or_more_roles_not_configured');
     }
 
-    const rawInviteToken = randomBytes(32).toString('hex');
-    const inviteTokenHash = this.hashOpaqueToken(rawInviteToken, 'invite');
-    const inviteTokenExpiresAt = new Date(Date.now() + INVITE_TOKEN_EXPIRES_MINUTES * 60 * 1000);
+    const rawRegistrationToken = randomBytes(32).toString('hex');
+    const inviteTokenHash = this.hashOpaqueToken(rawRegistrationToken, 'registration');
+    const inviteTokenExpiresAt = new Date(Date.now() + REGISTRATION_TOKEN_EXPIRES_MINUTES * 60 * 1000);
 
     let admin: { id: string };
 
@@ -1062,7 +1135,7 @@ export class AuthService {
         data: {
           email,
           name: data.name,
-          // No phone, no password — this is the "INVITED" state:
+          // No phone, no password — this is the "REGISTERING" state:
           passwordHash: null,
           isPhoneVerified: false,
           isEmailVerified: false,
@@ -1076,65 +1149,65 @@ export class AuthService {
       });
     } catch (error) {
       // FIX: closes the race between the existingUser check above and this write —
-      // a concurrent invite for the same email now fails cleanly instead of 500ing
+      // a concurrent registration for the same email now fails cleanly instead of 500ing
       if (this.isUniqueConstraintError(error)) {
         throw new BadRequestException('email_already_registered');
       }
       throw error;
     }
 
-    // Reuses the same 'app.url' value main.ts and EmailTemplateService already
-    // read (mapped from APP_URL in configuration.ts), so the link always points
-    // at the real deployed frontend instead of a hardcoded placeholder domain.
-    const appUrl = this.configService.get<string>('app.url', 'https://ehte.org');
-    const inviteLink = `${appUrl}/admin/invite?token=${rawInviteToken}`;
+    // FIX (admin client separation): reads app.adminUrl (falls back to
+    // app.url, so non-breaking) instead of app.url directly — registration links
+    // must land on the admin website, not the main user-facing app, since
+    // they can be different deployments/domains entirely.
+    const appUrl = this.configService.get<string>('app.adminUrl', 'https://ehte.org');
+    const registrationLink = `${appUrl}/admin/register?token=${rawRegistrationToken}`;
 
-    const inviteExpiresInHours = Math.round(INVITE_TOKEN_EXPIRES_MINUTES / 60);
+    const registrationExpiresInHours = Math.round(REGISTRATION_TOKEN_EXPIRES_MINUTES / 60);
 
     try {
       await sendEmail(
         email,
-        renderAdminInviteEmailSubject(),
-        renderAdminInviteEmailHtml({
-          inviteLink,
-          expiresInHours: inviteExpiresInHours,
+        renderAdminRegistrationEmailSubject(),
+        renderAdminRegistrationEmailHtml({
+          registrationLink,
+          expiresInHours: registrationExpiresInHours,
         }),
       );
     } catch (error) {
-      console.error(`[EHTE EMAIL] Failed to send admin invite to ${email}`, error);
+      console.error(`[EHTE EMAIL] Failed to send admin registration email to ${email}`, error);
     }
 
     if (this.configService.get<boolean>('app.debug', false)) {
-      console.log(`[EHTE DEV] Admin invite link for ${email}: ${inviteLink}`);
+      console.log(`[EHTE DEV] Admin registration link for ${email}: ${registrationLink}`);
     }
 
     this.emitAudit({
       userId: admin.id,
       actorType: resolveActorType(data.roles),
-      // TODO: swap for a dedicated ADMIN_INVITED value once AuditEventEnum is extended
-      action: AuditEventEnum.USER_CREATED,
+      action: AuditEventEnum.ADMIN_REGISTERED,
       entity: 'User',
       entityId: admin.id,
       diff: {
         result: 'success',
         roles: data.roles,
-        status: 'invited',
-        invitedBy: creator.id,
+        status: 'registered',
+        registeredBy: creator.id,
       },
     });
 
-    return { adminId: admin.id, message: 'admin_invited' };
+    return { adminId: admin.id, message: 'admin_registered' };
   }
 
-  // ADMIN — RESEND INVITE (Phase 1 #6): re-sends the invite email with a
+  // ADMIN — RESEND REGISTRATION (Phase 1 #6): re-sends the registration email with a
   // freshly generated token. Only valid while the account is still sitting
-  // in the "INVITED" state (no password set, never activated) — this closes
-  // the gap where a failed sendEmail() in adminInvite() left a permanently
+  // in the "REGISTERING" state (no password set, never activated) — this closes
+  // the gap where a failed sendEmail() in adminRegister() left a permanently
   // stuck, un-onboardable admin account with no recovery path.
 
-  async adminInviteResend(
+  async adminRegisterResend(
     creator: CurrentUserDto,
-    data: AdminInviteResendDto,
+    data: AdminRegisterResendDto,
   ): Promise<{ message: string }> {
     const creatorRoles = creator.roles ?? [];
 
@@ -1149,99 +1222,108 @@ export class AuthService {
     });
 
     if (!admin) {
-      throw new NotFoundException('invite_not_found');
+      throw new NotFoundException('registration_not_found');
     }
 
-    // Once a password has been set (or the account activated) the invite
+    // Once a password has been set (or the account activated) the registration
     // flow is complete — nothing left to resend.
     if (admin.passwordHash || admin.isActive) {
-      throw new BadRequestException('invite_already_completed');
+      throw new BadRequestException('registration_already_completed');
     }
 
-    const rawInviteToken = randomBytes(32).toString('hex');
-    const inviteTokenHash = this.hashOpaqueToken(rawInviteToken, 'invite');
-    const inviteTokenExpiresAt = new Date(Date.now() + INVITE_TOKEN_EXPIRES_MINUTES * 60 * 1000);
+    const rawRegistrationToken = randomBytes(32).toString('hex');
+    const inviteTokenHash = this.hashOpaqueToken(rawRegistrationToken, 'registration');
+    const inviteTokenExpiresAt = new Date(Date.now() + REGISTRATION_TOKEN_EXPIRES_MINUTES * 60 * 1000);
 
-    // Overwriting the token invalidates any previous unused invite link —
+    // Overwriting the token invalidates any previous unused registration link —
     // only the most recently sent one can ever be valid.
     await this.prisma.user.update({
       where: { id: admin.id },
       data: { inviteTokenHash, inviteTokenExpiresAt },
     });
 
-    const appUrl = this.configService.get<string>('app.url', 'https://ehte.org');
-    const inviteLink = `${appUrl}/admin/invite?token=${rawInviteToken}`;
-    const inviteExpiresInHours = Math.round(INVITE_TOKEN_EXPIRES_MINUTES / 60);
+    // FIX (admin client separation): same app.adminUrl switch as adminRegister()
+    const appUrl = this.configService.get<string>('app.adminUrl', 'https://ehte.org');
+    const registrationLink = `${appUrl}/admin/register?token=${rawRegistrationToken}`;
+    const registrationExpiresInHours = Math.round(REGISTRATION_TOKEN_EXPIRES_MINUTES / 60);
 
     try {
       await sendEmail(
         email,
-        renderAdminInviteEmailSubject(),
-        renderAdminInviteEmailHtml({
-          inviteLink,
-          expiresInHours: inviteExpiresInHours,
+        renderAdminRegistrationEmailSubject(),
+        renderAdminRegistrationEmailHtml({
+          registrationLink,
+          expiresInHours: registrationExpiresInHours,
         }),
       );
     } catch (error) {
-      console.error(`[EHTE EMAIL] Failed to resend admin invite to ${email}`, error);
+      console.error(`[EHTE EMAIL] Failed to resend admin registration email to ${email}`, error);
     }
 
     if (this.configService.get<boolean>('app.debug', false)) {
-      console.log(`[EHTE DEV] Resent admin invite link for ${email}: ${inviteLink}`);
+      console.log(`[EHTE DEV] Resent admin registration link for ${email}: ${registrationLink}`);
     }
 
     this.emitAudit({
       userId: admin.id,
       actorType: resolveActorType([]),
-      // TODO: swap for a dedicated ADMIN_INVITE_RESENT value once AuditEventEnum is extended
-      action: AuditEventEnum.USER_CREATED,
+      action: AuditEventEnum.ADMIN_REGISTRATION_RESENT,
       entity: 'User',
       entityId: admin.id,
       diff: {
         result: 'success',
-        context: 'invite_resent',
+        context: 'registration_resent',
         resentBy: creator.id,
       },
     });
 
-    return { message: 'invite_resent' };
+    return { message: 'registration_resent' };
   }
 
-  // ADMIN — SET PASSWORD FROM INVITE: anonymous; invited admin uses the raw
-  // token from their invite email to set their own password. Possessing the
-  // token proves control of the invited inbox, so this also activates the
+  // ADMIN — COMPLETE REGISTRATION: anonymous; the registering admin uses the raw
+  // token from their registration email to set their own password. Possessing the
+  // token proves control of the registering inbox, so this also activates the
   // account and returns tokens directly — no separate post-password OTP step.
 
-  async adminSetPasswordFromInvite(data: AdminSetPasswordDto): Promise<TokenPair> {
-    const inviteTokenHash = this.hashOpaqueToken(data.inviteToken, 'invite');
+  async adminCompleteRegistration(data: AdminCompleteRegistrationDto): Promise<TokenPair> {
+    const inviteTokenHash = this.hashOpaqueToken(data.registrationToken, 'registration');
 
     const admin = await this.prisma.user.findUnique({
       where: { inviteTokenHash },
       include: {
-        userRoles: { include: { role: true } },
+        userRoles: {
+          include: {
+            role: {
+              include: {
+                rolePermissions: { include: { permission: true } },
+              },
+            },
+          },
+        },
       },
     });
 
     if (!admin || !admin.inviteTokenExpiresAt || admin.inviteTokenExpiresAt < new Date()) {
-      throw new BadRequestException('invalid_or_expired_invite');
+      throw new BadRequestException('invalid_or_expired_registration_token');
     }
 
     if (admin.passwordHash) {
-      // Invite already used to set a password once
-      throw new BadRequestException('invite_already_used');
+      // Registration token already used to set a password once
+      throw new BadRequestException('registration_token_already_used');
     }
 
     const hashedPassword = await bcrypt.hash(data.password, 10);
     const roles = admin.userRoles.map((userRole) => userRole.role.name);
+    const permissions = this.derivePermissions(admin.userRoles);
 
     await this.prisma.user.update({
       where: { id: admin.id },
       data: {
         passwordHash: hashedPassword,
-        // Possessing the token proved control of the invited inbox — activate now
+        // Possessing the token proved control of the registering inbox — activate now
         isEmailVerified: true,
         isActive: true,
-        // Single-use: clear the invite token now that it's been consumed
+        // Single-use: clear the registration token now that it's been consumed
         inviteTokenHash: null,
         inviteTokenExpiresAt: null,
       },
@@ -1253,16 +1335,74 @@ export class AuthService {
       action: AuditEventEnum.PASSWORD_CHANGED,
       entity: 'User',
       entityId: admin.id,
-      diff: { result: 'success', context: 'admin_invite_set_password_and_activate' },
+      diff: { result: 'success', context: 'admin_registration_completed' },
     });
 
     if (!admin.email) {
-      // Shouldn't happen for an invite-created admin, but guard anyway
+      // Shouldn't happen for a registration-created admin, but guard anyway
       throw new BadRequestException('admin_email_missing');
     }
 
     // Admin has no phone at this point — issue tokens with email set, phone left null
-    return this.issueTokens(admin.id, { email: admin.email }, roles);
+    return this.issueTokens(admin.id, { email: admin.email }, roles, permissions);
+  }
+
+  // ADMIN — CANCEL PENDING REGISTRATION: Super Admin revokes a registration
+  // that was sent to the wrong address, is no longer wanted, or should just
+  // be cleaned up before it's completed. Only valid while the account is
+  // still sitting in the "REGISTERING" state (passwordHash null, never
+  // activated) — this is deliberately NOT allowed once the invited admin has
+  // already set a password and activated their account; use
+  // UserController's deactivate/revoke-role endpoints for a completed admin
+  // instead. Since a pending registration has no real identity yet (no
+  // password, no verified email, no phone), the row is deleted outright
+  // rather than soft-disabled the way an activated account would be.
+
+  async adminCancelRegistration(
+    actor: CurrentUserDto,
+    data: AdminCancelRegistrationDto,
+  ): Promise<{ message: string }> {
+    const actorRoles = actor.roles ?? [];
+
+    if (!actorRoles.includes(RolesEnum.SUPER_ADMIN)) {
+      throw new UnauthorizedException('insufficient_permissions');
+    }
+
+    const email = data.email.trim().toLowerCase();
+
+    const admin = await this.prisma.user.findUnique({
+      where: { email },
+    });
+
+    if (!admin) {
+      throw new NotFoundException('registration_not_found');
+    }
+
+    if (admin.passwordHash || admin.isActive) {
+      // Already completed — this isn't a pending registration anymore.
+      // Use UserController's deactivate/revoke-role endpoints instead.
+      throw new BadRequestException('registration_already_completed');
+    }
+
+    await this.prisma.user.delete({
+      where: { id: admin.id },
+    });
+
+    this.emitAudit({
+      userId: actor.id,
+      actorType: resolveActorType(actorRoles),
+      action: AuditEventEnum.ADMIN_REGISTRATION_CANCELLED,
+      entity: 'User',
+      entityId: admin.id,
+      diff: {
+        result: 'success',
+        context: 'registration_cancelled',
+        cancelledEmail: email,
+        cancelledBy: actor.id,
+      },
+    });
+
+    return { message: 'registration_cancelled' };
   }
 
   // ═══════════════════════════════════════════════════════════
@@ -1310,7 +1450,7 @@ export class AuthService {
     // FIX (Phase 1 #7 / "Priority 7"): require the existing account to be
     // active and phone-verified before it can be promoted. A promoted admin
     // built on an unverified or deactivated identity has a weaker provenance
-    // than one onboarded through the invite flow, which always requires
+    // than one onboarded through the registration flow, which always requires
     // proof of inbox control before activation.
     if (!user.isActive) {
       throw new BadRequestException('user_not_eligible_for_promotion');
@@ -1349,7 +1489,7 @@ export class AuthService {
 
     // A clickable link, not a typed-in code — the link itself is the proof
     // of inbox ownership, so we issue a high-entropy raw token (same shape
-    // as the admin-invite flow) rather than a bcrypt-hashed 6-digit OTP.
+    // as the admin-registration flow) rather than a bcrypt-hashed 6-digit OTP.
     // The HMAC hash is deterministic, so promoteUserVerify() can look this
     // record up directly by token — no verificationId needed on the client.
     const rawToken = randomBytes(32).toString('hex');
@@ -1373,7 +1513,9 @@ export class AuthService {
       },
     });
 
-    const appUrl = this.configService.get<string>('app.url', 'https://ehte.org');
+    // FIX (admin client separation): reads app.adminUrl instead of app.url —
+    // the promotion-verify link is an admin-portal destination too.
+    const appUrl = this.configService.get<string>('app.adminUrl', 'https://ehte.org');
     const promotionLink = `${appUrl}/admin/promote/verify?token=${rawToken}`;
     const expiresInHours = Math.round(PROMOTION_TOKEN_EXPIRES_MINUTES / 60);
 
@@ -1394,8 +1536,7 @@ export class AuthService {
     this.emitAudit({
       userId: user.id,
       actorType: resolveActorType(roles),
-      // TODO: swap for a dedicated USER_PROMOTION_INITIATED value once AuditEventEnum is extended
-      action: AuditEventEnum.USER_CREATED,
+      action: AuditEventEnum.USER_PROMOTION_INITIATED,
       entity: 'User',
       entityId: user.id,
       diff: {
@@ -1472,7 +1613,8 @@ export class AuthService {
       },
     });
 
-    const appUrl = this.configService.get<string>('app.url', 'https://ehte.org');
+    // FIX (admin client separation): same app.adminUrl switch as promoteUserInitiate()
+    const appUrl = this.configService.get<string>('app.adminUrl', 'https://ehte.org');
     const promotionLink = `${appUrl}/admin/promote/verify?token=${rawToken}`;
     const expiresInHours = Math.round(PROMOTION_TOKEN_EXPIRES_MINUTES / 60);
 
@@ -1493,8 +1635,7 @@ export class AuthService {
     this.emitAudit({
       userId: user.id,
       actorType: resolveActorType(roles),
-      // TODO: swap for a dedicated USER_PROMOTION_RESENT value once AuditEventEnum is extended
-      action: AuditEventEnum.USER_CREATED,
+      action: AuditEventEnum.USER_PROMOTION_RESENT,
       entity: 'User',
       entityId: user.id,
       diff: {
@@ -1510,7 +1651,7 @@ export class AuthService {
   // ADMIN — PROMOTE EXISTING USER (STEP 2): the user being promoted clicks
   // the emailed link and the frontend submits just the token from the URL.
   // Possessing the token IS the proof of email ownership — same trust model
-  // as adminSetPasswordFromInvite(). No OTP compare, no attempts/lockout
+  // as adminCompleteRegistration(). No OTP compare, no attempts/lockout
   // logic: this is a 256-bit random token looked up by exact hash match,
   // not a 6-digit code that benefits from brute-force protection.
   //
@@ -1645,13 +1786,13 @@ export class AuthService {
   // ADMIN — LOGIN BY EMAIL (Doc §1, §7): the only admin credential path.
   // Phone-based admin login has been removed — admins/super-admins always
   // authenticate with email + password. Covers admins created via
-  // adminInvite()/adminSetPasswordFromInvite() (who may have no phone at
+  // adminRegister()/adminCompleteRegistration() (who may have no phone at
   // all) and promoted users who now hold ADMIN alongside their existing
   // USER role and a verified email.
   //
   // FIX (Phase 1 #4 / "Priority 9"): now also requires isEmailVerified.
   // Both existing paths to a real admin account already guarantee this
-  // (adminSetPasswordFromInvite() sets it on activation; promoteUserVerify()
+  // (adminCompleteRegistration() sets it on activation; promoteUserVerify()
   // sets it on promotion) — this is a defense-in-depth check against a
   // future code path or manual DB edit ever producing an admin account
   // whose email was never actually proven.
@@ -1662,11 +1803,20 @@ export class AuthService {
     const user = await this.prisma.user.findUnique({
       where: { email },
       include: {
-        userRoles: { include: { role: true } },
+        userRoles: {
+          include: {
+            role: {
+              include: {
+                rolePermissions: { include: { permission: true } },
+              },
+            },
+          },
+        },
       },
     });
 
     const roles = user?.userRoles.map((userRole) => userRole.role.name) ?? [];
+    const permissions = user ? this.derivePermissions(user.userRoles) : [];
 
     const isAdmin = this.hasAdminRole(roles);
 
@@ -1760,7 +1910,210 @@ export class AuthService {
       },
     });
 
-    return this.issueTokens(user.id, { phone: user.phone, email: user.email }, roles);
+    return this.issueTokens(
+      user.id,
+      { phone: user.phone, email: user.email },
+      roles,
+      permissions,
+    );
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  // Self-service admin email change. Any authenticated account
+  // holding an admin role may change its OWN login email — this is
+  // deliberately NOT a SUPER_ADMIN-on-someone-else action like
+  // deactivate/revoke-role in UserController; there's no legitimate
+  // case for one admin to change another admin's email address
+  // without their knowledge.
+  //
+  // Same two-step, token-proves-inbox-control shape as promotion:
+  // the new email is attached immediately (unverified), and a link
+  // is sent to the NEW address; clicking it flips isEmailVerified.
+  //
+  // TRADE-OFF (flagged deliberately): unlike promotion — where the
+  // account isn't logging in via email yet anyway — this admin
+  // ALREADY has working email-based login. Attaching the new email
+  // immediately means adminLoginByEmail()'s isEmailVerified check
+  // will reject them until they verify the new address, so they
+  // lose admin-portal access for up to EMAIL_CHANGE_TOKEN_EXPIRES_MINUTES
+  // if they don't finish the flow. If that risk isn't acceptable,
+  // the safer alternative is a dedicated nullable `pendingEmail`
+  // column on User that only overwrites `email` at verify-time —
+  // that needs a schema change I can't make without schema.prisma.
+  // ═══════════════════════════════════════════════════════════
+
+  // ADMIN — CHANGE EMAIL (STEP 1): the authenticated admin requests to
+  // change their own login email. Gated by @RequireReauthentication() at
+  // the controller (same pattern as UserController.updateDiscreetMode()) —
+  // this is a sensitive credential change and must re-prove the caller's
+  // current password, not just a valid access token.
+
+  async adminChangeEmailInitiate(
+    actor: CurrentUserDto,
+    data: AdminChangeEmailDto,
+  ): Promise<{ message: string }> {
+    const actorRoles = actor.roles ?? [];
+
+    if (!this.hasAdminRole(actorRoles)) {
+      throw new UnauthorizedException('insufficient_permissions');
+    }
+
+    const newEmail = data.newEmail.trim().toLowerCase();
+
+    const admin = await this.prisma.user.findUnique({
+      where: { id: actor.id },
+    });
+
+    if (!admin) {
+      throw new NotFoundException('user_not_found');
+    }
+
+    if (admin.email === newEmail) {
+      throw new BadRequestException('email_unchanged');
+    }
+
+    const emailInUse = await this.prisma.user.findUnique({ where: { email: newEmail } });
+
+    if (emailInUse && emailInUse.id !== admin.id) {
+      throw new BadRequestException('email_already_registered');
+    }
+
+    // Attach the new email now (unverified) — same immediate-attach pattern
+    // as promoteUserInitiate(). See the trade-off note above this section.
+    try {
+      await this.prisma.user.update({
+        where: { id: admin.id },
+        data: { email: newEmail, isEmailVerified: false },
+      });
+    } catch (error) {
+      if (this.isUniqueConstraintError(error)) {
+        throw new BadRequestException('email_already_registered');
+      }
+      throw error;
+    }
+
+    const rawToken = randomBytes(32).toString('hex');
+    const tokenHash = this.hashOpaqueToken(rawToken, 'email_change');
+    const expiresAt = new Date(Date.now() + EMAIL_CHANGE_TOKEN_EXPIRES_MINUTES * 60 * 1000);
+
+    // NOTE: reuses UserOtpPurposeEnum.email_verification — there's no dedicated
+    // "email change" purpose in the real Prisma enum (confirmed: it only has
+    // email_verification, phone_verification, password_reset, login_2fa,
+    // admin_verification, admin_invite_activation, promotion_verification).
+    // Reusing email_verification means an email-change OTP/token and a
+    // first-time email-verification OTP/token are now indistinguishable by
+    // purpose alone — harmless for the atomic-claim logic here (both just
+    // check usedAt/expiresAt), but worth knowing if you ever query UserOtp
+    // by purpose for reporting/cleanup and need to tell them apart. Add a
+    // dedicated enum value later if that distinction starts to matter.
+    // Invalidate any previous unused email-change request for this admin.
+    await this.prisma.userOtp.updateMany({
+      where: {
+        userId: admin.id,
+        purpose: UserOtpPurposeEnum.email_verification,
+        usedAt: null,
+      },
+      data: { usedAt: new Date() },
+    });
+
+    await this.prisma.userOtp.create({
+      data: {
+        userId: admin.id,
+        otpHash: tokenHash,
+        purpose: UserOtpPurposeEnum.email_verification,
+        channel: OtpChannelEnum.email,
+        expiresAt,
+      },
+    });
+
+    const appUrl = this.configService.get<string>('app.adminUrl', 'https://ehte.org');
+    const changeEmailLink = `${appUrl}/admin/change-email/verify?token=${rawToken}`;
+    const expiresInHours = Math.round(EMAIL_CHANGE_TOKEN_EXPIRES_MINUTES / 60) || 1;
+
+    // Re-uses the OTP email template's rendering pair as a stand-in — swap for
+    // a dedicated renderEmailChangeEmailSubject/Html() pair once you have a
+    // template written for this specific email; this compiles today but the
+    // copy will read "your OTP" rather than "confirm your new email".
+    try {
+      await sendEmail(
+        newEmail,
+        renderOtpEmailSubject(),
+        renderOtpEmailHtml({ otp: changeEmailLink, expiresInMinutes: EMAIL_CHANGE_TOKEN_EXPIRES_MINUTES }),
+      );
+    } catch (error) {
+      console.error(`[EHTE EMAIL] Failed to send email-change verification to ${newEmail}`, error);
+    }
+
+    if (this.configService.get<boolean>('app.debug', false)) {
+      console.log(`[EHTE DEV] Email-change verification link for ${newEmail}: ${changeEmailLink}`);
+    }
+
+    this.emitAudit({
+      userId: admin.id,
+      actorType: resolveActorType(actorRoles),
+      action: AuditEventEnum.ADMIN_EMAIL_CHANGE_INITIATED,
+      entity: 'User',
+      entityId: admin.id,
+      diff: {
+        result: 'success',
+        context: 'admin_email_change_initiated',
+        newEmail,
+      },
+    });
+
+    return { message: 'email_change_verification_sent' };
+  }
+
+  // ADMIN — CHANGE EMAIL (STEP 2): anonymous; the admin clicks the link sent
+  // to their NEW address. Possessing the token is the proof of inbox
+  // control — same trust model as promoteUserVerify()/adminCompleteRegistration().
+
+  async adminChangeEmailVerify(data: AdminChangeEmailVerifyDto): Promise<{ message: string }> {
+    const tokenHash = this.hashOpaqueToken(data.token, 'email_change');
+
+    const otpRecord = await this.prisma.userOtp.findFirst({
+      where: {
+        otpHash: tokenHash,
+        purpose: UserOtpPurposeEnum.email_verification,
+        usedAt: null,
+        expiresAt: { gt: new Date() },
+      },
+    });
+
+    if (!otpRecord) {
+      throw new BadRequestException('invalid_or_expired_token');
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      const claimed = await tx.userOtp.updateMany({
+        where: {
+          id: otpRecord.id,
+          usedAt: null,
+          expiresAt: { gt: new Date() },
+        },
+        data: { usedAt: new Date() },
+      });
+
+      if (claimed.count === 0) {
+        throw new BadRequestException('invalid_or_expired_token');
+      }
+
+      await tx.user.update({
+        where: { id: otpRecord.userId },
+        data: { isEmailVerified: true },
+      });
+    });
+
+    this.emitAudit({
+      userId: otpRecord.userId,
+      actorType: resolveActorType([]),
+      action: AuditEventEnum.ADMIN_EMAIL_CHANGE_VERIFIED,
+      entity: 'UserOtp',
+      entityId: otpRecord.id,
+      diff: { purpose: 'email_change_verification', result: 'success' },
+    });
+
+    return { message: 'email_changed' };
   }
 
   // LOCKOUT — ASSERT NOT LOCKED: throws before password comparison if the account is currently locked
@@ -1819,6 +2172,10 @@ export class AuthService {
     // named `phone`, which then got embedded in the JWT under the `phone` claim.
     identity: { phone?: string | null; email?: string | null },
     roles: string[],
+    // Flattened, deduped permission names derived via derivePermissions() at every
+    // call site — baked into both the access and refresh token payloads alongside
+    // roles, so PermissionsGuard can read request.user.permissions with no extra query.
+    permissions: string[],
     // Optional tx client so refresh() creates the new session inside the same transaction as the old session's revocation
     tx: Pick<typeof this.prisma, 'session'> = this.prisma,
   ): Promise<TokenPair> {
@@ -1836,7 +2193,10 @@ export class AuthService {
 
     const expiresIn = expiresInStr as any;
 
-    const accessToken = this.jwtService.sign({ sub: userId, phone, email, roles }, { expiresIn });
+    const accessToken = this.jwtService.sign(
+      { sub: userId, phone, email, roles, permissions },
+      { expiresIn },
+    );
 
     // Refresh tokens use a dedicated secret/TTL so a leaked access secret can't forge them
     const refreshSecret =
@@ -1853,6 +2213,7 @@ export class AuthService {
         phone,
         email,
         roles,
+        permissions,
         type: 'refresh',
         // Unique jti so same-second tokens stay distinguishable (future reuse detection)
         jti: randomUUID(),
@@ -1876,19 +2237,19 @@ export class AuthService {
   }
 
   // HASH OPAQUE TOKEN: Deterministic HMAC-SHA256 for lookup by equality (bcrypt can't be
-  // queried directly). FIX (gap #12): refresh tokens and invite tokens now use separate
+  // queried directly). FIX (gap #12): refresh tokens and registration tokens now use separate
   // secrets — previously both shared jwt.refreshSecret, so one HMAC key covered two
-  // structurally different token types. jwt.inviteSecret is optional; falls back to
+  // structurally different token types. jwt.registrationSecret is optional; falls back to
   // jwt.refreshSecret then jwt.secret if not configured, so this is non-breaking until
-  // you add a dedicated INVITE_TOKEN_SECRET env var.
+  // you add a dedicated REGISTRATION_TOKEN_SECRET env var.
 
   private hashOpaqueToken(
     token: string,
-    purpose: 'refresh' | 'invite' | 'promotion' = 'refresh',
+    purpose: 'refresh' | 'registration' | 'promotion' | 'email_change' = 'refresh',
   ): string {
     const secret =
       purpose !== 'refresh'
-        ? this.configService.get<string>('jwt.inviteSecret') ??
+        ? this.configService.get<string>('jwt.registrationSecret') ??
           this.configService.get<string>('jwt.refreshSecret') ??
           this.configService.getOrThrow<string>('jwt.secret')
         : this.configService.get<string>('jwt.refreshSecret') ??

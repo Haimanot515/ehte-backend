@@ -1,14 +1,9 @@
-// ─────────────────────────────────────────────
-// AUTHORIZATION — Role
-// ─────────────────────────────────────────────
-
 model Role {
-  id        String   @id @default(uuid())
-  name      String   @unique
-  createdAt DateTime @default(now())
-
-  userRoles       UserRole[]
+  id              String           @id @default(uuid())
+  name            String           @unique
+  createdAt       DateTime         @default(now())
   rolePermissions RolePermission[]
+  userRoles       UserRole[]
 
   @@map("role")
 }

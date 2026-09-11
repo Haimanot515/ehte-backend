@@ -12,6 +12,9 @@ import { AuthService } from './service/auth.service';
 import { RoleController } from './controller/role.controller';
 import { RoleService } from './service/role.service';
 
+import { PermissionController } from './controller/permission.controller';
+import { PermissionService } from './service/permission.service';
+
 @Module({
   imports: [
     PrismaModule,
@@ -33,10 +36,10 @@ import { RoleService } from './service/role.service';
     }),
   ],
 
-  controllers: [AuthController, AdminAuthController, RoleController],
+  controllers: [AuthController, AdminAuthController, RoleController, PermissionController],
 
-  providers: [AuthService, RoleService],
+  providers: [AuthService, RoleService, PermissionService],
 
-  exports: [AuthService, RoleService],
+  exports: [AuthService, RoleService, PermissionService],
 })
 export class AuthModule {}

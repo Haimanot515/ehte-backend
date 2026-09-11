@@ -6,6 +6,10 @@ import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { RolesEnum } from 'src/common/enums/roles.enum';
 import { RequireReauthentication } from 'src/common/decorators/reauth.decorator';
+// NOTE: adjust these two import paths to match your actual file locations —
+// same convention as Roles / RolesEnum above.
+import { RequirePermissions } from 'src/common/decorators/require-permissions.decorator';
+import { PermissionsEnum } from 'src/common/enums/permissions.enum';
 
 import {
   AssignUserRoleDto,
@@ -125,6 +129,7 @@ export class UserController {
   // ─────────────────────────────────────────────
   @Get()
   @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.USER_READ)
   @ApiOperation({
     summary: 'List all users (admin)',
   })
@@ -146,6 +151,7 @@ export class UserController {
   // ─────────────────────────────────────────────
   @Get('stats')
   @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.DASHBOARD_READ)
   @ApiOperation({
     summary: 'User-related dashboard stats (totals, active/inactive, by role, growth)',
   })
@@ -164,6 +170,7 @@ export class UserController {
   // ─────────────────────────────────────────────
   @Get(':id')
   @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.USER_READ)
   @ApiOperation({
     summary: 'Get a single user by id (admin)',
   })
@@ -186,6 +193,7 @@ export class UserController {
   // ─────────────────────────────────────────────
   @Patch(':id/role')
   @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.ROLE_UPDATE)
   @ApiOperation({
     summary: "Grant an admin or super_admin role to a user's account",
   })
@@ -213,6 +221,7 @@ export class UserController {
   // ─────────────────────────────────────────────
   @Delete(':id/role/:role')
   @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.ROLE_UPDATE)
   @ApiOperation({
     summary: "Revoke an admin or super_admin role from a user's account",
   })
@@ -245,6 +254,7 @@ export class UserController {
   // ─────────────────────────────────────────────
   @Patch(':id/deactivate')
   @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.USER_SUSPEND)
   @ApiOperation({
     summary: "Deactivate a user's account (admin)",
   })
@@ -269,6 +279,7 @@ export class UserController {
   // ─────────────────────────────────────────────
   @Patch(':id/reactivate')
   @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.USER_RESTORE)
   @ApiOperation({
     summary: "Reactivate a user's account (admin)",
   })
@@ -286,6 +297,42 @@ export class UserController {
   }
 
   // ─────────────────────────────────────────────
+  // ADMIN — UNLOCK USER
+  // PATCH /users/:id/unlock
+  // Restricted to SUPER_ADMIN
+  //
+  // Manual override for the lockout AuthService applies after too
+  // many failed login attempts (recordFailedLogin()/assertNotLocked()
+  // — see AuthController). That lock only clears itself after
+  // LOCKOUT_DURATION_MINUTES or a correct password; this lets a
+  // Super Admin restore access immediately instead of making a
+  // legitimate admin wait it out. Distinct from reactivate/deactivate
+  // above — this only touches the lockout fields, not isActive.
+  //
+  // NOTE: PermissionsEnum.USER_UNLOCK is assumed here, matching the
+  // naming pattern of USER_SUSPEND/USER_RESTORE next to it — confirm
+  // it exists in the real enum (or add it) before relying on this.
+  // ─────────────────────────────────────────────
+  @Patch(':id/unlock')
+  @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.USER_UNLOCK)
+  @ApiOperation({
+    summary: "Clear a user's login lockout (admin)",
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Id of the user being unlocked',
+  })
+  async unlockUser(
+    @CurrentUser()
+    actor: CurrentUserDto,
+    @Param('id')
+    id: string,
+  ) {
+    return this.userService.unlockUser(actor, id);
+  }
+
+  // ─────────────────────────────────────────────
   // ADMIN — FORCE LOGOUT
   // POST /users/:id/force-logout
   // Restricted to SUPER_ADMIN
@@ -294,6 +341,7 @@ export class UserController {
   // ─────────────────────────────────────────────
   @Post(':id/force-logout')
   @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.USER_FORCE_LOGOUT)
   @ApiOperation({
     summary: "Revoke all of a user's active sessions (admin)",
   })
