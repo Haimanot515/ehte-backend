@@ -53,6 +53,8 @@ export enum PermissionsEnum {
   USER_RESTORE = 'USER_RESTORE',
   USER_DELETE = 'USER_DELETE',
   USER_FORCE_LOGOUT = 'USER_FORCE_LOGOUT',
+  USER_UNLOCK = 'USER_UNLOCK',
+
 
   // Roles
   ROLE_READ = 'ROLE_READ',

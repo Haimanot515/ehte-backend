@@ -424,3 +424,67 @@ export class PromoteVerifyDto {
   @IsNotEmpty()
   token: string;
 }
+
+// ─────────────────────────────────────────────
+// ADMIN — CANCEL PENDING REGISTRATION
+//
+// Super Admin revokes a registration that was sent to the wrong
+// address, is no longer wanted, or should be cleaned up before
+// completion. Only valid while the account is still "REGISTERING"
+// (no password set, never activated) — AuthService.adminCancelRegistration()
+// rejects this once the invited admin has already completed
+// registration; use UserController's deactivate/revoke-role
+// endpoints for a completed admin instead.
+// ─────────────────────────────────────────────
+
+export class AdminCancelRegistrationDto {
+  @ApiProperty({
+    description: 'Email address of the pending admin registration to cancel',
+    example: 'new.admin@ehte.com',
+  })
+  @IsEmail()
+  @IsNotEmpty()
+  email: string;
+}
+
+// ─────────────────────────────────────────────
+// ADMIN — CHANGE OWN EMAIL  (self-service)
+//
+// Any authenticated account holding an admin role may change its
+// OWN login email — not a SUPER_ADMIN-on-someone-else action.
+// Gated by @RequireReauthentication() at the controller (same
+// pattern as UserController.updateDiscreetMode()), which reads and
+// strips a `password` field from the raw request body before this
+// DTO is built — that's why there's no password field here, same
+// reasoning as UpdateDiscreetModeDto's note in user.dto.ts.
+// Used by AuthService.adminChangeEmailInitiate().
+// ─────────────────────────────────────────────
+
+export class AdminChangeEmailDto {
+  @ApiProperty({
+    description: 'New email address to use for admin login',
+    example: 'new-address@ehte.com',
+  })
+  @IsEmail()
+  @IsNotEmpty()
+  newEmail: string;
+}
+
+// ─────────────────────────────────────────────
+// ADMIN — CHANGE OWN EMAIL: VERIFY LINK
+//
+// The admin clicks the link sent to their NEW address and the
+// frontend submits the token from the URL. Possessing the token IS
+// the proof of inbox ownership — same trust model as
+// PromoteVerifyDto. Used by AuthService.adminChangeEmailVerify().
+// ─────────────────────────────────────────────
+
+export class AdminChangeEmailVerifyDto {
+  @ApiProperty({
+    description: 'Secure email-change token received through the verification link',
+    example: 'a1b2c3d4e5f6...',
+  })
+  @IsString()
+  @IsNotEmpty()
+  token: string;
+}

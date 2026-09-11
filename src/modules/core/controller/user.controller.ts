@@ -297,6 +297,42 @@ export class UserController {
   }
 
   // ─────────────────────────────────────────────
+  // ADMIN — UNLOCK USER
+  // PATCH /users/:id/unlock
+  // Restricted to SUPER_ADMIN
+  //
+  // Manual override for the lockout AuthService applies after too
+  // many failed login attempts (recordFailedLogin()/assertNotLocked()
+  // — see AuthController). That lock only clears itself after
+  // LOCKOUT_DURATION_MINUTES or a correct password; this lets a
+  // Super Admin restore access immediately instead of making a
+  // legitimate admin wait it out. Distinct from reactivate/deactivate
+  // above — this only touches the lockout fields, not isActive.
+  //
+  // NOTE: PermissionsEnum.USER_UNLOCK is assumed here, matching the
+  // naming pattern of USER_SUSPEND/USER_RESTORE next to it — confirm
+  // it exists in the real enum (or add it) before relying on this.
+  // ─────────────────────────────────────────────
+  @Patch(':id/unlock')
+  @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.USER_UNLOCK)
+  @ApiOperation({
+    summary: "Clear a user's login lockout (admin)",
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Id of the user being unlocked',
+  })
+  async unlockUser(
+    @CurrentUser()
+    actor: CurrentUserDto,
+    @Param('id')
+    id: string,
+  ) {
+    return this.userService.unlockUser(actor, id);
+  }
+
+  // ─────────────────────────────────────────────
   // ADMIN — FORCE LOGOUT
   // POST /users/:id/force-logout
   // Restricted to SUPER_ADMIN

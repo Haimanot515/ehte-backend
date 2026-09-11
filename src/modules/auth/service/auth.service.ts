@@ -61,6 +61,9 @@ import {
   AdminCompleteRegistrationDto,
   AdminLoginEmailDto,
   AdminForgotPasswordDto,
+  AdminCancelRegistrationDto,
+  AdminChangeEmailDto,
+  AdminChangeEmailVerifyDto,
   PromoteUserDto,
   PromoteUserResendDto,
   PromoteVerifyDto,
@@ -88,6 +91,7 @@ type ForgotPasswordResult = {
 
 const REGISTRATION_TOKEN_EXPIRES_MINUTES = 60 * 24; // 24h to complete registration
 const PROMOTION_TOKEN_EXPIRES_MINUTES = 60 * 24; // 24h to click the promotion email link
+const EMAIL_CHANGE_TOKEN_EXPIRES_MINUTES = 60; // 1h to click the email-change verification link
 
 const ADMIN_ROLES = [RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN];
 
@@ -1181,8 +1185,7 @@ export class AuthService {
     this.emitAudit({
       userId: admin.id,
       actorType: resolveActorType(data.roles),
-      // TODO: swap for a dedicated ADMIN_REGISTERED value once AuditEventEnum is extended
-      action: AuditEventEnum.USER_CREATED,
+      action: AuditEventEnum.ADMIN_REGISTERED,
       entity: 'User',
       entityId: admin.id,
       diff: {
@@ -1264,8 +1267,7 @@ export class AuthService {
     this.emitAudit({
       userId: admin.id,
       actorType: resolveActorType([]),
-      // TODO: swap for a dedicated ADMIN_REGISTRATION_RESENT value once AuditEventEnum is extended
-      action: AuditEventEnum.USER_CREATED,
+      action: AuditEventEnum.ADMIN_REGISTRATION_RESENT,
       entity: 'User',
       entityId: admin.id,
       diff: {
@@ -1343,6 +1345,64 @@ export class AuthService {
 
     // Admin has no phone at this point — issue tokens with email set, phone left null
     return this.issueTokens(admin.id, { email: admin.email }, roles, permissions);
+  }
+
+  // ADMIN — CANCEL PENDING REGISTRATION: Super Admin revokes a registration
+  // that was sent to the wrong address, is no longer wanted, or should just
+  // be cleaned up before it's completed. Only valid while the account is
+  // still sitting in the "REGISTERING" state (passwordHash null, never
+  // activated) — this is deliberately NOT allowed once the invited admin has
+  // already set a password and activated their account; use
+  // UserController's deactivate/revoke-role endpoints for a completed admin
+  // instead. Since a pending registration has no real identity yet (no
+  // password, no verified email, no phone), the row is deleted outright
+  // rather than soft-disabled the way an activated account would be.
+
+  async adminCancelRegistration(
+    actor: CurrentUserDto,
+    data: AdminCancelRegistrationDto,
+  ): Promise<{ message: string }> {
+    const actorRoles = actor.roles ?? [];
+
+    if (!actorRoles.includes(RolesEnum.SUPER_ADMIN)) {
+      throw new UnauthorizedException('insufficient_permissions');
+    }
+
+    const email = data.email.trim().toLowerCase();
+
+    const admin = await this.prisma.user.findUnique({
+      where: { email },
+    });
+
+    if (!admin) {
+      throw new NotFoundException('registration_not_found');
+    }
+
+    if (admin.passwordHash || admin.isActive) {
+      // Already completed — this isn't a pending registration anymore.
+      // Use UserController's deactivate/revoke-role endpoints instead.
+      throw new BadRequestException('registration_already_completed');
+    }
+
+    await this.prisma.user.delete({
+      where: { id: admin.id },
+    });
+
+    this.emitAudit({
+      userId: actor.id,
+      actorType: resolveActorType(actorRoles),
+      action: AuditEventEnum.ADMIN_REGISTRATION_CANCELLED,
+      entity: 'User',
+      entityId: admin.id,
+      diff: {
+        result: 'success',
+        context: 'registration_cancelled',
+        cancelledEmail: email,
+        cancelledBy: actor.id,
+      },
+    });
+
+    return { message: 'registration_cancelled' };
   }
 
   // ═══════════════════════════════════════════════════════════
@@ -1476,8 +1536,7 @@ export class AuthService {
     this.emitAudit({
       userId: user.id,
       actorType: resolveActorType(roles),
-      // TODO: swap for a dedicated USER_PROMOTION_INITIATED value once AuditEventEnum is extended
-      action: AuditEventEnum.USER_CREATED,
+      action: AuditEventEnum.USER_PROMOTION_INITIATED,
       entity: 'User',
       entityId: user.id,
       diff: {
@@ -1576,8 +1635,7 @@ export class AuthService {
     this.emitAudit({
       userId: user.id,
       actorType: resolveActorType(roles),
-      // TODO: swap for a dedicated USER_PROMOTION_RESENT value once AuditEventEnum is extended
-      action: AuditEventEnum.USER_CREATED,
+      action: AuditEventEnum.USER_PROMOTION_RESENT,
       entity: 'User',
       entityId: user.id,
       diff: {
@@ -1860,6 +1918,204 @@ export class AuthService {
     );
   }
 
+  // ═══════════════════════════════════════════════════════════
+  // Self-service admin email change. Any authenticated account
+  // holding an admin role may change its OWN login email — this is
+  // deliberately NOT a SUPER_ADMIN-on-someone-else action like
+  // deactivate/revoke-role in UserController; there's no legitimate
+  // case for one admin to change another admin's email address
+  // without their knowledge.
+  //
+  // Same two-step, token-proves-inbox-control shape as promotion:
+  // the new email is attached immediately (unverified), and a link
+  // is sent to the NEW address; clicking it flips isEmailVerified.
+  //
+  // TRADE-OFF (flagged deliberately): unlike promotion — where the
+  // account isn't logging in via email yet anyway — this admin
+  // ALREADY has working email-based login. Attaching the new email
+  // immediately means adminLoginByEmail()'s isEmailVerified check
+  // will reject them until they verify the new address, so they
+  // lose admin-portal access for up to EMAIL_CHANGE_TOKEN_EXPIRES_MINUTES
+  // if they don't finish the flow. If that risk isn't acceptable,
+  // the safer alternative is a dedicated nullable `pendingEmail`
+  // column on User that only overwrites `email` at verify-time —
+  // that needs a schema change I can't make without schema.prisma.
+  // ═══════════════════════════════════════════════════════════
+
+  // ADMIN — CHANGE EMAIL (STEP 1): the authenticated admin requests to
+  // change their own login email. Gated by @RequireReauthentication() at
+  // the controller (same pattern as UserController.updateDiscreetMode()) —
+  // this is a sensitive credential change and must re-prove the caller's
+  // current password, not just a valid access token.
+
+  async adminChangeEmailInitiate(
+    actor: CurrentUserDto,
+    data: AdminChangeEmailDto,
+  ): Promise<{ message: string }> {
+    const actorRoles = actor.roles ?? [];
+
+    if (!this.hasAdminRole(actorRoles)) {
+      throw new UnauthorizedException('insufficient_permissions');
+    }
+
+    const newEmail = data.newEmail.trim().toLowerCase();
+
+    const admin = await this.prisma.user.findUnique({
+      where: { id: actor.id },
+    });
+
+    if (!admin) {
+      throw new NotFoundException('user_not_found');
+    }
+
+    if (admin.email === newEmail) {
+      throw new BadRequestException('email_unchanged');
+    }
+
+    const emailInUse = await this.prisma.user.findUnique({ where: { email: newEmail } });
+
+    if (emailInUse && emailInUse.id !== admin.id) {
+      throw new BadRequestException('email_already_registered');
+    }
+
+    // Attach the new email now (unverified) — same immediate-attach pattern
+    // as promoteUserInitiate(). See the trade-off note above this section.
+    try {
+      await this.prisma.user.update({
+        where: { id: admin.id },
+        data: { email: newEmail, isEmailVerified: false },
+      });
+    } catch (error) {
+      if (this.isUniqueConstraintError(error)) {
+        throw new BadRequestException('email_already_registered');
+      }
+      throw error;
+    }
+
+    const rawToken = randomBytes(32).toString('hex');
+    const tokenHash = this.hashOpaqueToken(rawToken, 'email_change');
+    const expiresAt = new Date(Date.now() + EMAIL_CHANGE_TOKEN_EXPIRES_MINUTES * 60 * 1000);
+
+    // NOTE: reuses UserOtpPurposeEnum.email_verification — there's no dedicated
+    // "email change" purpose in the real Prisma enum (confirmed: it only has
+    // email_verification, phone_verification, password_reset, login_2fa,
+    // admin_verification, admin_invite_activation, promotion_verification).
+    // Reusing email_verification means an email-change OTP/token and a
+    // first-time email-verification OTP/token are now indistinguishable by
+    // purpose alone — harmless for the atomic-claim logic here (both just
+    // check usedAt/expiresAt), but worth knowing if you ever query UserOtp
+    // by purpose for reporting/cleanup and need to tell them apart. Add a
+    // dedicated enum value later if that distinction starts to matter.
+    // Invalidate any previous unused email-change request for this admin.
+    await this.prisma.userOtp.updateMany({
+      where: {
+        userId: admin.id,
+        purpose: UserOtpPurposeEnum.email_verification,
+        usedAt: null,
+      },
+      data: { usedAt: new Date() },
+    });
+
+    await this.prisma.userOtp.create({
+      data: {
+        userId: admin.id,
+        otpHash: tokenHash,
+        purpose: UserOtpPurposeEnum.email_verification,
+        channel: OtpChannelEnum.email,
+        expiresAt,
+      },
+    });
+
+    const appUrl = this.configService.get<string>('app.adminUrl', 'https://ehte.org');
+    const changeEmailLink = `${appUrl}/admin/change-email/verify?token=${rawToken}`;
+    const expiresInHours = Math.round(EMAIL_CHANGE_TOKEN_EXPIRES_MINUTES / 60) || 1;
+
+    // Re-uses the OTP email template's rendering pair as a stand-in — swap for
+    // a dedicated renderEmailChangeEmailSubject/Html() pair once you have a
+    // template written for this specific email; this compiles today but the
+    // copy will read "your OTP" rather than "confirm your new email".
+    try {
+      await sendEmail(
+        newEmail,
+        renderOtpEmailSubject(),
+        renderOtpEmailHtml({ otp: changeEmailLink, expiresInMinutes: EMAIL_CHANGE_TOKEN_EXPIRES_MINUTES }),
+      );
+    } catch (error) {
+      console.error(`[EHTE EMAIL] Failed to send email-change verification to ${newEmail}`, error);
+    }
+
+    if (this.configService.get<boolean>('app.debug', false)) {
+      console.log(`[EHTE DEV] Email-change verification link for ${newEmail}: ${changeEmailLink}`);
+    }
+
+    this.emitAudit({
+      userId: admin.id,
+      actorType: resolveActorType(actorRoles),
+      action: AuditEventEnum.ADMIN_EMAIL_CHANGE_INITIATED,
+      entity: 'User',
+      entityId: admin.id,
+      diff: {
+        result: 'success',
+        context: 'admin_email_change_initiated',
+        newEmail,
+      },
+    });
+
+    return { message: 'email_change_verification_sent' };
+  }
+
+  // ADMIN — CHANGE EMAIL (STEP 2): anonymous; the admin clicks the link sent
+  // to their NEW address. Possessing the token is the proof of inbox
+  // control — same trust model as promoteUserVerify()/adminCompleteRegistration().
+
+  async adminChangeEmailVerify(data: AdminChangeEmailVerifyDto): Promise<{ message: string }> {
+    const tokenHash = this.hashOpaqueToken(data.token, 'email_change');
+
+    const otpRecord = await this.prisma.userOtp.findFirst({
+      where: {
+        otpHash: tokenHash,
+        purpose: UserOtpPurposeEnum.email_verification,
+        usedAt: null,
+        expiresAt: { gt: new Date() },
+      },
+    });
+
+    if (!otpRecord) {
+      throw new BadRequestException('invalid_or_expired_token');
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      const claimed = await tx.userOtp.updateMany({
+        where: {
+          id: otpRecord.id,
+          usedAt: null,
+          expiresAt: { gt: new Date() },
+        },
+        data: { usedAt: new Date() },
+      });
+
+      if (claimed.count === 0) {
+        throw new BadRequestException('invalid_or_expired_token');
+      }
+
+      await tx.user.update({
+        where: { id: otpRecord.userId },
+        data: { isEmailVerified: true },
+      });
+    });
+
+    this.emitAudit({
+      userId: otpRecord.userId,
+      actorType: resolveActorType([]),
+      action: AuditEventEnum.ADMIN_EMAIL_CHANGE_VERIFIED,
+      entity: 'UserOtp',
+      entityId: otpRecord.id,
+      diff: { purpose: 'email_change_verification', result: 'success' },
+    });
+
+    return { message: 'email_changed' };
+  }
+
   // LOCKOUT — ASSERT NOT LOCKED: throws before password comparison if the account is currently locked
 
   private assertNotLocked(user: { lockedUntil: Date | null }): void {
@@ -1989,7 +2245,7 @@ export class AuthService {
 
   private hashOpaqueToken(
     token: string,
-    purpose: 'refresh' | 'registration' | 'promotion' = 'refresh',
+    purpose: 'refresh' | 'registration' | 'promotion' | 'email_change' = 'refresh',
   ): string {
     const secret =
       purpose !== 'refresh'

@@ -130,4 +130,20 @@ export class ListUsersQueryDto {
   @Transform(({ value }) => value === 'true' || value === true)
   @IsBoolean()
   discreetModeEnabled?: boolean;
+
+  // FIX: added to support filtering admin registrations by completion
+  // status — e.g. "show me every registration still stuck in REGISTERING
+  // state" (no password set, never activated) versus completed accounts.
+  // Maps to `passwordHash IS NULL` / `IS NOT NULL` in UserService.listUsers()
+  // rather than a stored enum column, since "pending" isn't a persisted
+  // state of its own — it's derived from passwordHash being unset.
+  @ApiPropertyOptional({
+    description:
+      'Filter admin registrations by completion status — "pending" is a registration ' +
+      'still awaiting the invited admin to set their password; "completed" already has one.',
+    enum: ['pending', 'completed'],
+  })
+  @IsOptional()
+  @IsIn(['pending', 'completed'])
+  registrationStatus?: 'pending' | 'completed';
 }

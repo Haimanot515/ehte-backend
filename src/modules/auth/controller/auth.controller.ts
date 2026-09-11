@@ -19,6 +19,9 @@ import {
   AdminCompleteRegistrationDto,
   AdminLoginEmailDto,
   AdminForgotPasswordDto,
+  AdminCancelRegistrationDto,
+  AdminChangeEmailDto,
+  AdminChangeEmailVerifyDto,
   PromoteUserDto,
   PromoteUserResendDto,
   PromoteVerifyDto,
@@ -29,6 +32,7 @@ import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { RolesEnum } from 'src/common/enums/roles.enum';
+import { RequireReauthentication } from 'src/common/decorators/reauth.decorator';
 
 @ApiTags('Authentication')
 @Controller('auth')
@@ -237,6 +241,63 @@ export class AdminAuthController {
   })
   async completeRegistration(@Body() data: AdminCompleteRegistrationDto) {
     return this.authService.adminCompleteRegistration(data);
+  }
+
+  // ADMIN — CANCEL PENDING REGISTRATION (POST /admin/auth/register/cancel,
+  // SUPER_ADMIN): revokes a registration sent to the wrong address or no
+  // longer wanted. Only valid while the account is still "REGISTERING" (no
+  // password set, never activated) — deletes the row outright since there's
+  // no real identity yet to soft-disable.
+  // FIX: throttled — same class of action as invite/promote resends
+
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @Post('register/cancel')
+  @ApiBearerAuth('access-token')
+  @Roles(RolesEnum.SUPER_ADMIN)
+  @ApiOperation({
+    summary: 'Cancel a pending admin registration before it is completed',
+  })
+  async cancelRegistration(
+    @CurrentUser() user: CurrentUserDto,
+    @Body() data: AdminCancelRegistrationDto,
+  ) {
+    return this.authService.adminCancelRegistration(user, data);
+  }
+
+  // ── Self-service: admin changes their own login email ──
+
+  // ADMIN — CHANGE EMAIL (POST /admin/auth/change-email): the authenticated
+  // admin requests to change their OWN login email — not a SUPER_ADMIN
+  // action on someone else. Gated by @RequireReauthentication(), same as
+  // UserController.updateDiscreetMode() — the caller's current password
+  // must be re-proven via body.password (stripped by ReauthGuard before
+  // AdminChangeEmailDto is built, so it has no password field of its own).
+  // FIX: throttled — email-send cost per request
+
+  @Throttle({ default: { limit: 3, ttl: 60000 } })
+  @Post('change-email')
+  @ApiBearerAuth('access-token')
+  @RequireReauthentication()
+  @ApiOperation({
+    summary: "Request to change the authenticated admin's own login email (requires re-authentication)",
+  })
+  async changeEmail(@CurrentUser() user: CurrentUserDto, @Body() data: AdminChangeEmailDto) {
+    return this.authService.adminChangeEmailInitiate(user, data);
+  }
+
+  // ADMIN — CHANGE EMAIL: VERIFY (POST /admin/auth/change-email/verify,
+  // ANONYMOUS): the admin clicks the link sent to their NEW address;
+  // possessing the token is the proof of inbox ownership.
+  // FIX: throttled — token-guessing surface
+
+  @AllowAnonymous()
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @Post('change-email/verify')
+  @ApiOperation({
+    summary: "Verify the admin's new email via the emailed token",
+  })
+  async changeEmailVerify(@Body() data: AdminChangeEmailVerifyDto) {
+    return this.authService.adminChangeEmailVerify(data);
   }
 
   // ── Existing user → admin promotion (Doc §3) ──
