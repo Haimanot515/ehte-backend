@@ -265,6 +265,13 @@ import { RolesSeeder } from './common/seed/roles.seeder';
 
         MINIO_USE_SSL: Joi.boolean().default(false),
 
+        // FIX: previously read directly off process.env inside
+        // MinioService with no validation at all — a non-numeric value
+        // silently became NaN at request time instead of failing at boot
+        // like every other misconfigured var here. Now validated and
+        // mapped through configuration.ts as minio.presignDurationSeconds.
+        DURATION_OF_PRE_SIGNED_DOCUMENT: Joi.number().default(120),
+
         // ─────────────────────────────────────
         // EMAIL / SMTP
         //

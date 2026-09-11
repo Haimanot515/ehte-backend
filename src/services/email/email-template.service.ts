@@ -8,10 +8,10 @@ import {
 } from './templates/otp-email.template';
 
 import {
-  renderAdminInviteEmailSubject,
-  renderAdminInviteEmailHtml,
-  renderAdminInviteEmailText,
-} from './templates/admin-invite-email.template';
+  renderAdminRegistrationEmailSubject,
+  renderAdminRegistrationEmailHtml,
+  renderAdminRegistrationEmailText,
+} from './templates/admin-registration-email.template';
 
 @Injectable()
 export class EmailTemplateService {
@@ -56,21 +56,21 @@ export class EmailTemplateService {
     });
   }
 
-  adminInviteSubject(): string {
-    return renderAdminInviteEmailSubject();
+  adminRegistrationSubject(): string {
+    return renderAdminRegistrationEmailSubject();
   }
 
-  adminInviteHtml(params: {
-    inviteLink: string;
+  adminRegistrationHtml(params: {
+    registrationLink: string;
     expiresInHours: number;
   }): string {
-    return renderAdminInviteEmailHtml(params);
+    return renderAdminRegistrationEmailHtml(params);
   }
 
-  adminInviteText(params: {
-    inviteLink: string;
+  adminRegistrationText(params: {
+    registrationLink: string;
     expiresInHours: number;
   }): string {
-    return renderAdminInviteEmailText(params);
+    return renderAdminRegistrationEmailText(params);
   }
 }

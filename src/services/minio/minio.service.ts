@@ -10,6 +10,12 @@ export class MinioService implements OnModuleInit {
   private readonly logger = new Logger(MinioService.name);
   private client: Minio.Client;
   private bucket: string;
+  // FIX: was read from process.env.DURATION_OF_PRE_SIGNED_DOCUMENT directly
+  // inside each presign method, bypassing ConfigService/Joi entirely — a
+  // non-numeric value would silently become NaN at request time instead of
+  // failing fast at boot. Now resolved once here from configuration.ts's
+  // minio.presignDurationSeconds, same pattern as every other config value.
+  private presignDurationSeconds: number;
 
   constructor(private readonly configService: ConfigService) {}
 
@@ -18,7 +24,16 @@ export class MinioService implements OnModuleInit {
     const accessKey = this.configService.get<string>('minio.accessKey');
     const secretKey = this.configService.get<string>('minio.secretKey');
 
+    // FIX: was `minio.bucketName ?? 'ehte-media'`, but configuration.ts used
+    // to expose this value under the key `minio.bucket` (not `bucketName`),
+    // so this lookup always returned undefined and silently fell back to
+    // 'ehte-media' regardless of what MINIO_BUCKET_NAME was set to. Fixed at
+    // the source in configuration.ts; this line is unchanged but now
+    // actually resolves the configured bucket name correctly.
     this.bucket = this.configService.get<string>('minio.bucketName') ?? 'ehte-media';
+
+    this.presignDurationSeconds =
+      this.configService.get<number>('minio.presignDurationSeconds') ?? 120;
 
     if (!endpoint || !accessKey || !secretKey) {
       this.logger.warn(
@@ -137,8 +152,11 @@ export class MinioService implements OnModuleInit {
   }): Promise<{ presignedUrl: string; file: Record<string, string | undefined> }> {
     this.assertClient();
     const key = this.buildObjectKey(fileInfo.originalname, fileInfo.folder ?? 'uploads');
-    const duration = Number(process.env.DURATION_OF_PRE_SIGNED_DOCUMENT ?? 120);
-    const presignedUrl = await this.client.presignedPutObject(this.bucket, key, duration);
+    const presignedUrl = await this.client.presignedPutObject(
+      this.bucket,
+      key,
+      this.presignDurationSeconds,
+    );
 
     return {
       presignedUrl,
@@ -153,7 +171,6 @@ export class MinioService implements OnModuleInit {
 
   async generatePresignedDownloadUrl(key: string): Promise<string> {
     this.assertClient();
-    const duration = Number(process.env.DURATION_OF_PRE_SIGNED_DOCUMENT ?? 120);
-    return this.client.presignedGetObject(this.bucket, key, duration);
+    return this.client.presignedGetObject(this.bucket, key, this.presignDurationSeconds);
   }
 }

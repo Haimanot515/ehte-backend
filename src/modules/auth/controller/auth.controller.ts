@@ -14,9 +14,9 @@ import {
   ResetPasswordDto,
   ChangePasswordDto,
   RefreshTokenDto,
-  AdminInviteDto,
-  AdminInviteResendDto,
-  AdminSetPasswordDto,
+  AdminRegisterDto,
+  AdminRegisterResendDto,
+  AdminCompleteRegistrationDto,
   AdminLoginEmailDto,
   AdminForgotPasswordDto,
   PromoteUserDto,
@@ -190,53 +190,53 @@ export class AuthController {
 export class AdminAuthController {
   constructor(private readonly authService: AuthService) {}
 
-  // ── Admin onboarding — email + roles + full name, invite-link flow (Doc §2) ──
+  // ── Admin onboarding — email + roles + full name, registration-link flow (Doc §2) ──
 
-  // ADMIN — INVITE (POST /admin/auth/invite, SUPER_ADMIN): Super Admin supplies
+  // ADMIN — REGISTER (POST /admin/auth/register, SUPER_ADMIN): Super Admin supplies
   // email + full name + roles only; no password set by creator
   // FIX: throttled — account-creation + email-send cost per request
 
   @Throttle({ default: { limit: 5, ttl: 60000 } })
-  @Post('invite')
+  @Post('register')
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.SUPER_ADMIN)
   @ApiOperation({
-    summary: 'Invite a new admin by email + name + roles (invite-link flow, no creator-set password)',
+    summary: 'Register a new admin by email + name + roles (registration-link flow, no creator-set password)',
   })
-  async invite(@CurrentUser() user: CurrentUserDto, @Body() data: AdminInviteDto) {
-    return this.authService.adminInvite(user, data);
+  async register(@CurrentUser() user: CurrentUserDto, @Body() data: AdminRegisterDto) {
+    return this.authService.adminRegister(user, data);
   }
 
-  // ADMIN — RESEND INVITE (POST /admin/auth/invite/resend, SUPER_ADMIN):
-  // re-sends the invite email with a fresh token if the original never
+  // ADMIN — RESEND REGISTRATION (POST /admin/auth/register/resend, SUPER_ADMIN):
+  // re-sends the registration email with a fresh token if the original never
   // arrived (e.g. sendEmail() failed) or the link expired before use.
   // FIX: throttled — email-send cost per request
 
   @Throttle({ default: { limit: 3, ttl: 60000 } })
-  @Post('invite/resend')
+  @Post('register/resend')
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.SUPER_ADMIN)
   @ApiOperation({
-    summary: 'Resend a pending admin invite email with a freshly generated token',
+    summary: 'Resend a pending admin registration email with a freshly generated token',
   })
-  async resendInvite(@CurrentUser() user: CurrentUserDto, @Body() data: AdminInviteResendDto) {
-    return this.authService.adminInviteResend(user, data);
+  async resendRegistration(@CurrentUser() user: CurrentUserDto, @Body() data: AdminRegisterResendDto) {
+    return this.authService.adminRegisterResend(user, data);
   }
 
-  // ADMIN — SET PASSWORD FROM INVITE (POST /admin/auth/invite/set-password, ANONYMOUS):
-  // invited admin uses their raw invite token to set their own password. Possessing
-  // the token proves control of the invited inbox, so this also activates the
+  // ADMIN — COMPLETE REGISTRATION (POST /admin/auth/register/complete, ANONYMOUS):
+  // registering admin uses their raw registration token to set their own password. Possessing
+  // the token proves control of the registering inbox, so this also activates the
   // account and returns tokens — no separate post-password OTP step.
   // FIX: throttled — token-guessing surface
 
   @AllowAnonymous()
   @Throttle({ default: { limit: 5, ttl: 60000 } })
-  @Post('invite/set-password')
+  @Post('register/complete')
   @ApiOperation({
-    summary: 'Invited admin sets their own password using their invite token; activates the account and returns tokens',
+    summary: 'Registering admin sets their own password using their registration token; activates the account and returns tokens',
   })
-  async setPasswordFromInvite(@Body() data: AdminSetPasswordDto) {
-    return this.authService.adminSetPasswordFromInvite(data);
+  async completeRegistration(@Body() data: AdminCompleteRegistrationDto) {
+    return this.authService.adminCompleteRegistration(data);
   }
 
   // ── Existing user → admin promotion (Doc §3) ──
@@ -291,7 +291,7 @@ export class AdminAuthController {
   // ADMIN — LOGIN (POST /admin/auth/login, ANONYMOUS): the only admin credential
   // path. Phone-based admin login has been removed — admins and super admins
   // always authenticate with email + password (Doc §1, §7). Required for admins
-  // created via the invite flow, who may have no phone at all. Also now requires
+  // created via the registration flow, who may have no phone at all. Also now requires
   // isEmailVerified (see AuthService.adminLoginByEmail()).
   // FIX: throttled — credential-guessing surface, high-privilege target
 

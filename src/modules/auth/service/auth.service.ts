@@ -30,9 +30,9 @@ import {
 } from 'src/services/email/templates/otp-email.template';
 
 import {
-  renderAdminInviteEmailSubject,
-  renderAdminInviteEmailHtml,
-} from 'src/services/email/templates/admin-invite-email.template';
+  renderAdminRegistrationEmailSubject,
+  renderAdminRegistrationEmailHtml,
+} from 'src/services/email/templates/admin-registration-email.template';
 
 import {
   renderPromotionEmailSubject,
@@ -56,9 +56,9 @@ import {
   ResetPasswordDto,
   SignupDto,
   SignupVerifyDto,
-  AdminInviteDto,
-  AdminInviteResendDto,
-  AdminSetPasswordDto,
+  AdminRegisterDto,
+  AdminRegisterResendDto,
+  AdminCompleteRegistrationDto,
   AdminLoginEmailDto,
   AdminForgotPasswordDto,
   PromoteUserDto,
@@ -86,7 +86,7 @@ type ForgotPasswordResult = {
   purpose?: 'password_reset' | 'phone_verification';
 };
 
-const INVITE_TOKEN_EXPIRES_MINUTES = 60 * 24; // 24h to accept an invite
+const REGISTRATION_TOKEN_EXPIRES_MINUTES = 60 * 24; // 24h to complete registration
 const PROMOTION_TOKEN_EXPIRES_MINUTES = 60 * 24; // 24h to click the promotion email link
 
 const ADMIN_ROLES = [RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN];
@@ -126,7 +126,7 @@ export class AuthService {
   }
 
   // UNIQUE CONSTRAINT CHECK: detects a Prisma P2002 violation so concurrent
-  // signup/invite/promote requests for the same phone or email fail with a
+  // signup/registration/promote requests for the same phone or email fail with a
   // clean 400 instead of an unhandled 500 (closes the check-then-write race).
 
   private isUniqueConstraintError(error: unknown): boolean {
@@ -412,7 +412,7 @@ export class AuthService {
   // Restricted to accounts holding the USER role (roles are additive — see the
   // promotion-model note above promoteUserVerify() below). A promoted account
   // (USER + ADMIN) still logs in here for the ordinary user app; a pure
-  // invite-created admin (ADMIN/SUPER_ADMIN only, no USER role, and usually no
+  // registration-created admin (ADMIN/SUPER_ADMIN only, no USER role, and usually no
   // phone at all) is rejected and must use AdminAuthController.login()
   // (email + password) instead.
 
@@ -469,7 +469,7 @@ export class AuthService {
     // Roles are additive (Doc §3 promotion model) — a promoted account keeps
     // USER alongside ADMIN/SUPER_ADMIN and is meant to keep using this
     // endpoint for the ordinary app. What must stay blocked is an account
-    // that was only ever onboarded as an admin (invite flow) and never held
+    // that was only ever onboarded as an admin (registration flow) and never held
     // a USER role at all. Checked only after the password has been proven
     // correct, so this never becomes an unauthenticated "does this phone
     // number have a USER role" oracle.
@@ -999,21 +999,21 @@ export class AuthService {
   }
 
   // ═══════════════════════════════════════════════════════════
-  // Admin onboarding — invite-based flow (Doc §2). Super Admin
+  // Admin onboarding — registration-link flow (Doc §2). Super Admin
   // supplies email + full name + roles; no password is created or
-  // known by the creator. The account stays inactive ("INVITED")
-  // until the new admin uses their invite-link token to set their
+  // known by the creator. The account stays inactive ("REGISTERING")
+  // until the new admin uses their registration-link token to set their
   // own password, which also activates the account.
   // ═══════════════════════════════════════════════════════════
 
-  // ADMIN — INVITE: Super Admin supplies email + full name + roles.
+  // ADMIN — REGISTER: Super Admin supplies email + full name + roles.
   // No password is created or known by the creator. Account is left
-  // inactive/unverified ("INVITED") until the new admin sets their
-  // own password via adminSetPasswordFromInvite().
+  // inactive/unverified ("REGISTERING") until the new admin sets their
+  // own password via adminCompleteRegistration().
 
-  async adminInvite(
+  async adminRegister(
     creator: CurrentUserDto,
-    data: AdminInviteDto,
+    data: AdminRegisterDto,
   ): Promise<{ adminId: string; message: string }> {
     // Restricted to SUPER_ADMIN per doc §2 ("Super Admin enters email only").
     const creatorRoles = creator.roles ?? [];
@@ -1024,13 +1024,13 @@ export class AuthService {
 
     const email = data.email.trim().toLowerCase();
 
-    // Defense-in-depth: AdminInviteDto's @IsIn already restricts this, but a
+    // Defense-in-depth: AdminRegisterDto's @IsIn already restricts this, but a
     // service-level check protects against DTO validation ever being bypassed
     // (e.g. a future internal caller). Inviting with a non-admin role would
     // create an account with no phone and no admin role — permanently locked out.
     const invitableRoles = [RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN];
     if (data.roles.some((role) => !invitableRoles.includes(role))) {
-      throw new BadRequestException('only_admin_roles_may_be_invited');
+      throw new BadRequestException('only_admin_roles_may_be_registered');
     }
 
     const existingUser = await this.prisma.user.findUnique({
@@ -1042,7 +1042,7 @@ export class AuthService {
     }
 
     // Resolve every requested role up front so a typo'd/unconfigured role
-    // fails before the user row (and invite email) is created
+    // fails before the user row (and registration email) is created
     const roleRecords = await this.prisma.role.findMany({
       where: { name: { in: data.roles } },
     });
@@ -1051,9 +1051,9 @@ export class AuthService {
       throw new BadRequestException('one_or_more_roles_not_configured');
     }
 
-    const rawInviteToken = randomBytes(32).toString('hex');
-    const inviteTokenHash = this.hashOpaqueToken(rawInviteToken, 'invite');
-    const inviteTokenExpiresAt = new Date(Date.now() + INVITE_TOKEN_EXPIRES_MINUTES * 60 * 1000);
+    const rawRegistrationToken = randomBytes(32).toString('hex');
+    const inviteTokenHash = this.hashOpaqueToken(rawRegistrationToken, 'registration');
+    const inviteTokenExpiresAt = new Date(Date.now() + REGISTRATION_TOKEN_EXPIRES_MINUTES * 60 * 1000);
 
     let admin: { id: string };
 
@@ -1062,7 +1062,7 @@ export class AuthService {
         data: {
           email,
           name: data.name,
-          // No phone, no password — this is the "INVITED" state:
+          // No phone, no password — this is the "REGISTERING" state:
           passwordHash: null,
           isPhoneVerified: false,
           isEmailVerified: false,
@@ -1076,65 +1076,66 @@ export class AuthService {
       });
     } catch (error) {
       // FIX: closes the race between the existingUser check above and this write —
-      // a concurrent invite for the same email now fails cleanly instead of 500ing
+      // a concurrent registration for the same email now fails cleanly instead of 500ing
       if (this.isUniqueConstraintError(error)) {
         throw new BadRequestException('email_already_registered');
       }
       throw error;
     }
 
-    // Reuses the same 'app.url' value main.ts and EmailTemplateService already
-    // read (mapped from APP_URL in configuration.ts), so the link always points
-    // at the real deployed frontend instead of a hardcoded placeholder domain.
-    const appUrl = this.configService.get<string>('app.url', 'https://ehte.org');
-    const inviteLink = `${appUrl}/admin/invite?token=${rawInviteToken}`;
+    // FIX (admin client separation): reads app.adminUrl (falls back to
+    // app.url, so non-breaking) instead of app.url directly — registration links
+    // must land on the admin website, not the main user-facing app, since
+    // they can be different deployments/domains entirely.
+    const appUrl = this.configService.get<string>('app.adminUrl', 'https://ehte.org');
+    const registrationLink = `${appUrl}/admin/register?token=${rawRegistrationToken}`;
 
-    const inviteExpiresInHours = Math.round(INVITE_TOKEN_EXPIRES_MINUTES / 60);
+    const registrationExpiresInHours = Math.round(REGISTRATION_TOKEN_EXPIRES_MINUTES / 60);
 
     try {
       await sendEmail(
         email,
-        renderAdminInviteEmailSubject(),
-        renderAdminInviteEmailHtml({
-          inviteLink,
-          expiresInHours: inviteExpiresInHours,
+        renderAdminRegistrationEmailSubject(),
+        renderAdminRegistrationEmailHtml({
+          registrationLink,
+          expiresInHours: registrationExpiresInHours,
         }),
       );
     } catch (error) {
-      console.error(`[EHTE EMAIL] Failed to send admin invite to ${email}`, error);
+      console.error(`[EHTE EMAIL] Failed to send admin registration email to ${email}`, error);
     }
 
     if (this.configService.get<boolean>('app.debug', false)) {
-      console.log(`[EHTE DEV] Admin invite link for ${email}: ${inviteLink}`);
+      console.log(`[EHTE DEV] Admin registration link for ${email}: ${registrationLink}`);
     }
 
     this.emitAudit({
       userId: admin.id,
       actorType: resolveActorType(data.roles),
-      // TODO: swap for a dedicated ADMIN_INVITED value once AuditEventEnum is extended
+      // TODO: swap for a dedicated ADMIN_REGISTERED value once AuditEventEnum is extended
       action: AuditEventEnum.USER_CREATED,
       entity: 'User',
       entityId: admin.id,
       diff: {
         result: 'success',
         roles: data.roles,
-        status: 'invited',
-        invitedBy: creator.id,
+        status: 'registered',
+        registeredBy: creator.id,
       },
     });
 
-    return { adminId: admin.id, message: 'admin_invited' };
+    return { adminId: admin.id, message: 'admin_registered' };
   }
 
-  // ADMIN — RESEND INVITE (Phase 1 #6): re-sends the invite email with a
+  // ADMIN — RESEND REGISTRATION (Phase 1 #6): re-sends the registration email with a
   // freshly generated token. Only valid while the account is still sitting
-  // in the "INVITED" state (no password set, never activated) — this closes
-  // the gap where a failed sendEmail() in adminInvite() left a permanently
+  // in the "REGISTERING" state (no password set, never activated) — this closes
+  // the gap where a failed sendEmail() in adminRegister() left a permanently
   // stuck, un-onboardable admin account with no recovery path.
 
-  async adminInviteResend(
+  async adminRegisterResend(
     creator: CurrentUserDto,
-    data: AdminInviteResendDto,
+    data: AdminRegisterResendDto,
   ): Promise<{ message: string }> {
     const creatorRoles = creator.roles ?? [];
 
@@ -1149,71 +1150,72 @@ export class AuthService {
     });
 
     if (!admin) {
-      throw new NotFoundException('invite_not_found');
+      throw new NotFoundException('registration_not_found');
     }
 
-    // Once a password has been set (or the account activated) the invite
+    // Once a password has been set (or the account activated) the registration
     // flow is complete — nothing left to resend.
     if (admin.passwordHash || admin.isActive) {
-      throw new BadRequestException('invite_already_completed');
+      throw new BadRequestException('registration_already_completed');
     }
 
-    const rawInviteToken = randomBytes(32).toString('hex');
-    const inviteTokenHash = this.hashOpaqueToken(rawInviteToken, 'invite');
-    const inviteTokenExpiresAt = new Date(Date.now() + INVITE_TOKEN_EXPIRES_MINUTES * 60 * 1000);
+    const rawRegistrationToken = randomBytes(32).toString('hex');
+    const inviteTokenHash = this.hashOpaqueToken(rawRegistrationToken, 'registration');
+    const inviteTokenExpiresAt = new Date(Date.now() + REGISTRATION_TOKEN_EXPIRES_MINUTES * 60 * 1000);
 
-    // Overwriting the token invalidates any previous unused invite link —
+    // Overwriting the token invalidates any previous unused registration link —
     // only the most recently sent one can ever be valid.
     await this.prisma.user.update({
       where: { id: admin.id },
       data: { inviteTokenHash, inviteTokenExpiresAt },
     });
 
-    const appUrl = this.configService.get<string>('app.url', 'https://ehte.org');
-    const inviteLink = `${appUrl}/admin/invite?token=${rawInviteToken}`;
-    const inviteExpiresInHours = Math.round(INVITE_TOKEN_EXPIRES_MINUTES / 60);
+    // FIX (admin client separation): same app.adminUrl switch as adminRegister()
+    const appUrl = this.configService.get<string>('app.adminUrl', 'https://ehte.org');
+    const registrationLink = `${appUrl}/admin/register?token=${rawRegistrationToken}`;
+    const registrationExpiresInHours = Math.round(REGISTRATION_TOKEN_EXPIRES_MINUTES / 60);
 
     try {
       await sendEmail(
         email,
-        renderAdminInviteEmailSubject(),
-        renderAdminInviteEmailHtml({
-          inviteLink,
-          expiresInHours: inviteExpiresInHours,
+        renderAdminRegistrationEmailSubject(),
+        renderAdminRegistrationEmailHtml({
+          registrationLink,
+          expiresInHours: registrationExpiresInHours,
         }),
       );
     } catch (error) {
-      console.error(`[EHTE EMAIL] Failed to resend admin invite to ${email}`, error);
+      console.error(`[EHTE EMAIL] Failed to resend admin registration email to ${email}`, error);
     }
 
     if (this.configService.get<boolean>('app.debug', false)) {
-      console.log(`[EHTE DEV] Resent admin invite link for ${email}: ${inviteLink}`);
+      console.log(`[EHTE DEV] Resent admin registration link for ${email}: ${registrationLink}`);
     }
 
     this.emitAudit({
       userId: admin.id,
       actorType: resolveActorType([]),
-      // TODO: swap for a dedicated ADMIN_INVITE_RESENT value once AuditEventEnum is extended
+      // TODO: swap for a dedicated ADMIN_REGISTRATION_RESENT value once AuditEventEnum is extended
       action: AuditEventEnum.USER_CREATED,
       entity: 'User',
       entityId: admin.id,
       diff: {
         result: 'success',
-        context: 'invite_resent',
+        context: 'registration_resent',
         resentBy: creator.id,
       },
     });
 
-    return { message: 'invite_resent' };
+    return { message: 'registration_resent' };
   }
 
-  // ADMIN — SET PASSWORD FROM INVITE: anonymous; invited admin uses the raw
-  // token from their invite email to set their own password. Possessing the
-  // token proves control of the invited inbox, so this also activates the
+  // ADMIN — COMPLETE REGISTRATION: anonymous; the registering admin uses the raw
+  // token from their registration email to set their own password. Possessing the
+  // token proves control of the registering inbox, so this also activates the
   // account and returns tokens directly — no separate post-password OTP step.
 
-  async adminSetPasswordFromInvite(data: AdminSetPasswordDto): Promise<TokenPair> {
-    const inviteTokenHash = this.hashOpaqueToken(data.inviteToken, 'invite');
+  async adminCompleteRegistration(data: AdminCompleteRegistrationDto): Promise<TokenPair> {
+    const inviteTokenHash = this.hashOpaqueToken(data.registrationToken, 'registration');
 
     const admin = await this.prisma.user.findUnique({
       where: { inviteTokenHash },
@@ -1223,12 +1225,12 @@ export class AuthService {
     });
 
     if (!admin || !admin.inviteTokenExpiresAt || admin.inviteTokenExpiresAt < new Date()) {
-      throw new BadRequestException('invalid_or_expired_invite');
+      throw new BadRequestException('invalid_or_expired_registration_token');
     }
 
     if (admin.passwordHash) {
-      // Invite already used to set a password once
-      throw new BadRequestException('invite_already_used');
+      // Registration token already used to set a password once
+      throw new BadRequestException('registration_token_already_used');
     }
 
     const hashedPassword = await bcrypt.hash(data.password, 10);
@@ -1238,10 +1240,10 @@ export class AuthService {
       where: { id: admin.id },
       data: {
         passwordHash: hashedPassword,
-        // Possessing the token proved control of the invited inbox — activate now
+        // Possessing the token proved control of the registering inbox — activate now
         isEmailVerified: true,
         isActive: true,
-        // Single-use: clear the invite token now that it's been consumed
+        // Single-use: clear the registration token now that it's been consumed
         inviteTokenHash: null,
         inviteTokenExpiresAt: null,
       },
@@ -1253,11 +1255,11 @@ export class AuthService {
       action: AuditEventEnum.PASSWORD_CHANGED,
       entity: 'User',
       entityId: admin.id,
-      diff: { result: 'success', context: 'admin_invite_set_password_and_activate' },
+      diff: { result: 'success', context: 'admin_registration_completed' },
     });
 
     if (!admin.email) {
-      // Shouldn't happen for an invite-created admin, but guard anyway
+      // Shouldn't happen for a registration-created admin, but guard anyway
       throw new BadRequestException('admin_email_missing');
     }
 
@@ -1310,7 +1312,7 @@ export class AuthService {
     // FIX (Phase 1 #7 / "Priority 7"): require the existing account to be
     // active and phone-verified before it can be promoted. A promoted admin
     // built on an unverified or deactivated identity has a weaker provenance
-    // than one onboarded through the invite flow, which always requires
+    // than one onboarded through the registration flow, which always requires
     // proof of inbox control before activation.
     if (!user.isActive) {
       throw new BadRequestException('user_not_eligible_for_promotion');
@@ -1349,7 +1351,7 @@ export class AuthService {
 
     // A clickable link, not a typed-in code — the link itself is the proof
     // of inbox ownership, so we issue a high-entropy raw token (same shape
-    // as the admin-invite flow) rather than a bcrypt-hashed 6-digit OTP.
+    // as the admin-registration flow) rather than a bcrypt-hashed 6-digit OTP.
     // The HMAC hash is deterministic, so promoteUserVerify() can look this
     // record up directly by token — no verificationId needed on the client.
     const rawToken = randomBytes(32).toString('hex');
@@ -1373,7 +1375,9 @@ export class AuthService {
       },
     });
 
-    const appUrl = this.configService.get<string>('app.url', 'https://ehte.org');
+    // FIX (admin client separation): reads app.adminUrl instead of app.url —
+    // the promotion-verify link is an admin-portal destination too.
+    const appUrl = this.configService.get<string>('app.adminUrl', 'https://ehte.org');
     const promotionLink = `${appUrl}/admin/promote/verify?token=${rawToken}`;
     const expiresInHours = Math.round(PROMOTION_TOKEN_EXPIRES_MINUTES / 60);
 
@@ -1472,7 +1476,8 @@ export class AuthService {
       },
     });
 
-    const appUrl = this.configService.get<string>('app.url', 'https://ehte.org');
+    // FIX (admin client separation): same app.adminUrl switch as promoteUserInitiate()
+    const appUrl = this.configService.get<string>('app.adminUrl', 'https://ehte.org');
     const promotionLink = `${appUrl}/admin/promote/verify?token=${rawToken}`;
     const expiresInHours = Math.round(PROMOTION_TOKEN_EXPIRES_MINUTES / 60);
 
@@ -1510,7 +1515,7 @@ export class AuthService {
   // ADMIN — PROMOTE EXISTING USER (STEP 2): the user being promoted clicks
   // the emailed link and the frontend submits just the token from the URL.
   // Possessing the token IS the proof of email ownership — same trust model
-  // as adminSetPasswordFromInvite(). No OTP compare, no attempts/lockout
+  // as adminCompleteRegistration(). No OTP compare, no attempts/lockout
   // logic: this is a 256-bit random token looked up by exact hash match,
   // not a 6-digit code that benefits from brute-force protection.
   //
@@ -1645,13 +1650,13 @@ export class AuthService {
   // ADMIN — LOGIN BY EMAIL (Doc §1, §7): the only admin credential path.
   // Phone-based admin login has been removed — admins/super-admins always
   // authenticate with email + password. Covers admins created via
-  // adminInvite()/adminSetPasswordFromInvite() (who may have no phone at
+  // adminRegister()/adminCompleteRegistration() (who may have no phone at
   // all) and promoted users who now hold ADMIN alongside their existing
   // USER role and a verified email.
   //
   // FIX (Phase 1 #4 / "Priority 9"): now also requires isEmailVerified.
   // Both existing paths to a real admin account already guarantee this
-  // (adminSetPasswordFromInvite() sets it on activation; promoteUserVerify()
+  // (adminCompleteRegistration() sets it on activation; promoteUserVerify()
   // sets it on promotion) — this is a defense-in-depth check against a
   // future code path or manual DB edit ever producing an admin account
   // whose email was never actually proven.
@@ -1876,19 +1881,19 @@ export class AuthService {
   }
 
   // HASH OPAQUE TOKEN: Deterministic HMAC-SHA256 for lookup by equality (bcrypt can't be
-  // queried directly). FIX (gap #12): refresh tokens and invite tokens now use separate
+  // queried directly). FIX (gap #12): refresh tokens and registration tokens now use separate
   // secrets — previously both shared jwt.refreshSecret, so one HMAC key covered two
-  // structurally different token types. jwt.inviteSecret is optional; falls back to
+  // structurally different token types. jwt.registrationSecret is optional; falls back to
   // jwt.refreshSecret then jwt.secret if not configured, so this is non-breaking until
-  // you add a dedicated INVITE_TOKEN_SECRET env var.
+  // you add a dedicated REGISTRATION_TOKEN_SECRET env var.
 
   private hashOpaqueToken(
     token: string,
-    purpose: 'refresh' | 'invite' | 'promotion' = 'refresh',
+    purpose: 'refresh' | 'registration' | 'promotion' = 'refresh',
   ): string {
     const secret =
       purpose !== 'refresh'
-        ? this.configService.get<string>('jwt.inviteSecret') ??
+        ? this.configService.get<string>('jwt.registrationSecret') ??
           this.configService.get<string>('jwt.refreshSecret') ??
           this.configService.getOrThrow<string>('jwt.secret')
         : this.configService.get<string>('jwt.refreshSecret') ??

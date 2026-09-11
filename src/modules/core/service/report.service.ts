@@ -383,6 +383,20 @@ export class ReportService {
     return report;
   }
 
+  // ─────────────────────────────────────────────
+  // GET ALL REPORTS (ADMIN)
+  //
+  // Intentionally unscoped by assignment: viewing the report list
+  // (and opening a report's full detail — see findOneForAdmin) is
+  // a read action available to any ADMIN or SUPER_ADMIN. Only
+  // *acting* on a report — changing its status, requesting more
+  // information, escalating it — is restricted to the report's
+  // assigned admin (or left open if unassigned); see
+  // assertAdminCanAccessReport() and its callers below for that
+  // rule. Do not add assignment scoping here without also revisiting
+  // findOneForAdmin(), since the two are meant to stay symmetric.
+  // ─────────────────────────────────────────────
+
   async findAllForAdmin(query: AdminReportQueryDto) {
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
@@ -448,9 +462,11 @@ export class ReportService {
   // ─────────────────────────────────────────────
   // GET ONE REPORT — FULL DETAIL (ADMIN)
   //
-  // SUPER_ADMIN sees any report. A plain ADMIN may
-  // only open reports that are unassigned or assigned
-  // specifically to them.
+  // Open to any ADMIN or SUPER_ADMIN — viewing is not gated by
+  // assignment (see the note on findAllForAdmin above). Assignment
+  // only gates the write-side admin actions further down
+  // (updateStatus, requestMoreInformation, escalate), via
+  // assertAdminCanAccessReport().
   // ─────────────────────────────────────────────
 
   async findOneForAdmin(admin: CurrentUserDto, reportId: string) {
@@ -469,8 +485,6 @@ export class ReportService {
     if (!report) {
       throw new NotFoundException('report_not_found');
     }
-
-    this.assertAdminCanAccessReport(admin, report);
 
     const roles = this.getRoles(admin);
     const actorType = resolveActorType(roles);
@@ -631,9 +645,9 @@ export class ReportService {
       throw new NotFoundException('report_not_found');
     }
 
-    if (isAdmin) {
-      this.assertAdminCanAccessReport(user, report);
-    } else if (report.userId !== user.id) {
+    // Viewing is open to any admin (see findOneForAdmin note); only the
+    // non-admin path stays ownership-restricted to the reporter themselves.
+    if (!isAdmin && report.userId !== user.id) {
       throw new NotFoundException('report_not_found');
     }
 
@@ -664,9 +678,9 @@ export class ReportService {
       throw new NotFoundException('report_not_found');
     }
 
-    if (isAdmin) {
-      this.assertAdminCanAccessReport(user, report);
-    } else if (report.userId !== user.id) {
+    // Viewing is open to any admin (see findOneForAdmin note); only the
+    // non-admin path stays ownership-restricted to the reporter themselves.
+    if (!isAdmin && report.userId !== user.id) {
       throw new NotFoundException('report_not_found');
     }
 

@@ -12,6 +12,19 @@ export default () => ({
     // instead of always falling back to their hardcoded default.
     url: process.env.APP_URL || `http://localhost:${Number(process.env.PORT) || 3000}`,
 
+    // Public URL of the ADMIN-facing web client (e.g. https://admin.ehte.org),
+    // as opposed to `url` above which is this API's own deployment / the main
+    // user-facing app. Used by AuthService.adminInvite() / adminInviteResend()
+    // / promoteUserInitiate() / promoteUserResend() to build invite and
+    // promotion links that land on the admin site's /admin/invite and
+    // /admin/promote/verify routes, not the main app. Falls back to `url` so
+    // this is non-breaking if ADMIN_APP_URL is never set (e.g. single-client
+    // deployments where the admin panel and main app share one domain).
+    adminUrl:
+      process.env.ADMIN_APP_URL ||
+      process.env.APP_URL ||
+      `http://localhost:${Number(process.env.PORT) || 3000}`,
+
     // Gates dev-only OTP console logging in AuthService. MUST be false
     // in production — leaving it true prints real OTPs to server logs.
     debug: process.env.APP_DEBUG === 'true',
@@ -76,9 +89,22 @@ export default () => ({
 
     secretKey: process.env.MINIO_SECRET_KEY,
 
-    bucket: process.env.MINIO_BUCKET || 'ehte',
+    // FIX: was `bucket: process.env.MINIO_BUCKET`, but MinioService reads
+    // `minio.bucketName` and app.module.ts's Joi schema requires the env var
+    // MINIO_BUCKET_NAME — three different names that never lined up, so the
+    // configured bucket was silently ignored and MinioService always fell
+    // back to its own hardcoded 'ehte-media' default. Now matches end to end:
+    // MINIO_BUCKET_NAME (env) -> minio.bucketName (config) -> configService.get('minio.bucketName').
+    bucketName: process.env.MINIO_BUCKET_NAME || 'ehte',
 
     useSSL: process.env.MINIO_USE_SSL === 'true',
+
+    // FIX: previously read directly off process.env in MinioService,
+    // bypassing ConfigService/Joi entirely — a non-numeric value would
+    // silently become NaN instead of failing fast at boot. Centralized
+    // here like every other config value; MinioService now reads
+    // configService.get<number>('minio.presignDurationSeconds').
+    presignDurationSeconds: parseInt(process.env.DURATION_OF_PRE_SIGNED_DOCUMENT ?? '120', 10),
   },
 
   security: {
