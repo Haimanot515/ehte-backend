@@ -18,6 +18,12 @@ import { Roles } from 'src/common/decorators/roles.decorator';
 
 import { RolesEnum } from 'src/common/enums/roles.enum';
 
+// NOTE: adjust these two import paths to match your actual file locations —
+// same convention as Roles / RolesEnum above.
+import { RequirePermissions } from 'src/common/decorators/require-permissions.decorator';
+
+import { PermissionsEnum } from 'src/common/enums/permissions.enum';
+
 @Controller('notifications')
 @ApiTags('Notifications')
 @ApiBearerAuth('access-token')
@@ -108,6 +114,7 @@ export class NotificationController {
 
   @Post('admin')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.NOTIFICATION_MANAGE)
   @ApiOperation({
     summary: 'Admin: create a notification (targeted or broadcast)',
   })
@@ -131,6 +138,7 @@ export class NotificationController {
 
   @Get('admin/list')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.NOTIFICATION_READ)
   @ApiOperation({
     summary: 'Admin: get broadcast notifications',
   })
@@ -150,6 +158,7 @@ export class NotificationController {
 
   @Get('admin/unread-count')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.NOTIFICATION_READ)
   @ApiOperation({
     summary: 'Admin: get unread broadcast notification count',
   })
@@ -171,6 +180,7 @@ export class NotificationController {
 
   @Get('admin/:id')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.NOTIFICATION_READ)
   @ApiOperation({
     summary: 'Admin: get one broadcast notification',
   })
@@ -194,6 +204,7 @@ export class NotificationController {
 
   @Patch('admin/:id/read')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.NOTIFICATION_MANAGE)
   @ApiOperation({
     summary: 'Admin: mark broadcast notification as read',
   })
@@ -210,6 +221,7 @@ export class NotificationController {
 
   @Patch('admin/bulk/read')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.NOTIFICATION_MANAGE)
   @ApiOperation({
     summary: 'Admin: mark multiple broadcast notifications as read',
   })
@@ -225,6 +237,7 @@ export class NotificationController {
 
   @Patch('admin/read-all')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.NOTIFICATION_MANAGE)
   @ApiOperation({
     summary: 'Admin: mark all broadcast notifications as read',
   })
@@ -245,6 +258,7 @@ export class NotificationController {
 
   @Delete('admin/:id')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.NOTIFICATION_MANAGE)
   @ApiOperation({
     summary: 'Admin: delete a broadcast notification',
   })

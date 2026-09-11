@@ -9,6 +9,10 @@ import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { RolesEnum } from 'src/common/enums/roles.enum';
+// NOTE: adjust these two import paths to match your actual file locations —
+// same convention as Roles / RolesEnum above.
+import { RequirePermissions } from 'src/common/decorators/require-permissions.decorator';
+import { PermissionsEnum } from 'src/common/enums/permissions.enum';
 
 import { InformationSubmissionService } from '../service/information-submission.service';
 
@@ -139,6 +143,7 @@ export class InformationSubmissionController {
 
   @Get('admin/all')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.MISSING_PERSON_INFO_READ)
   @ApiOperation({ summary: 'Admin: list information submissions' })
   @ApiQuery({ name: 'status', required: false, enum: InformationStatus })
   @ApiQuery({ name: 'page', required: false })
@@ -158,6 +163,7 @@ export class InformationSubmissionController {
 
   @Get('admin/:id')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.MISSING_PERSON_INFO_READ)
   @ApiOperation({ summary: 'Admin: get full detail for one information submission' })
   async findOneForAdmin(@Param('id') id: string) {
     return this.informationSubmissionService.findOneForAdmin(id);
@@ -171,6 +177,7 @@ export class InformationSubmissionController {
 
   @Patch('admin/:id/status')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.MISSING_PERSON_INFO_REVIEW)
   @ApiOperation({ summary: 'Admin: move information submission to under review' })
   async updateStatus(
     @Param('id') id: string,
@@ -189,6 +196,7 @@ export class InformationSubmissionController {
 
   @Patch('admin/:id/review')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.MISSING_PERSON_INFO_REVIEW)
   @ApiOperation({ summary: 'Admin: review information submission' })
   async review(
     @Param('id') id: string,

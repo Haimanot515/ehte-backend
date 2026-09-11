@@ -8,6 +8,10 @@ import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
 
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { RolesEnum } from 'src/common/enums/roles.enum';
+// NOTE: adjust these two import paths to match your actual file locations —
+// same convention as Roles / RolesEnum above.
+import { RequirePermissions } from 'src/common/decorators/require-permissions.decorator';
+import { PermissionsEnum } from 'src/common/enums/permissions.enum';
 
 import { VictimProfileService } from '../service/victim-profile.service';
 
@@ -41,6 +45,7 @@ export class VictimProfileController {
 
   @Post()
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.PROFILE_CREATE)
   @ApiBearerAuth('access-token')
   @ApiOperation({
     summary: 'Admin: create a victim/survivor support profile',
@@ -96,6 +101,7 @@ export class VictimProfileController {
 
   @Get(':id')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.PROFILE_READ)
   @ApiBearerAuth('access-token')
   @ApiOperation({
     summary: 'Admin: get a victim profile',
@@ -118,6 +124,7 @@ export class VictimProfileController {
 
   @Get(':id/supports')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.SUPPORT_READ)
   @ApiBearerAuth('access-token')
   @ApiOperation({
     summary: 'Admin: get support/donation summary for a victim profile',
@@ -136,6 +143,7 @@ export class VictimProfileController {
 
   @Patch(':id')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.PROFILE_UPDATE)
   @ApiBearerAuth('access-token')
   @ApiOperation({
     summary: 'Admin: update a victim profile',
@@ -160,6 +168,7 @@ export class VictimProfileController {
 
   @Delete(':id')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.PROFILE_UPDATE)
   @ApiBearerAuth('access-token')
   @ApiOperation({
     summary: 'Admin: delete a victim profile',
@@ -181,6 +190,7 @@ export class VictimProfileController {
 
   @Get('admin/all')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.PROFILE_READ)
   @ApiBearerAuth('access-token')
   @ApiOperation({
     summary: 'Admin: list victim profiles',
@@ -202,6 +212,7 @@ export class VictimProfileController {
 
   @Get('admin/stats')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.DASHBOARD_READ)
   @ApiBearerAuth('access-token')
   @ApiOperation({
     summary: 'Admin: get victim profile counts by status',
@@ -217,6 +228,7 @@ export class VictimProfileController {
 
   @Get('admin/:id/history')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_READ)
   @ApiBearerAuth('access-token')
   @ApiOperation({
     summary: 'Admin: get audit history for a victim profile',
@@ -238,6 +250,7 @@ export class VictimProfileController {
 
   @Get('admin/:id/gates')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.PROFILE_REVIEW)
   @ApiBearerAuth('access-token')
   @ApiOperation({
     summary: 'Admin: get approval gate status for a victim profile',
@@ -256,6 +269,7 @@ export class VictimProfileController {
 
   @Patch('admin/:id/gates')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.PROFILE_REVIEW)
   @ApiBearerAuth('access-token')
   @ApiOperation({
     summary: 'Admin: update victim profile approval gates',
@@ -280,6 +294,7 @@ export class VictimProfileController {
 
   @Patch('admin/:id/child-safety-review')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.PROFILE_REVIEW)
   @ApiBearerAuth('access-token')
   @ApiOperation({
     summary: 'Admin: record child-safety review outcome for a victim profile',
@@ -304,6 +319,7 @@ export class VictimProfileController {
 
   @Patch('admin/:id/consent/revoke')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.PROFILE_UPDATE)
   @ApiBearerAuth('access-token')
   @ApiOperation({
     summary: 'Admin: revoke previously recorded consent for a victim profile',
@@ -324,10 +340,17 @@ export class VictimProfileController {
   // ─────────────────────────────────────────────
   // ADMIN — UPDATE BANK DETAILS
   // PATCH /victim-profiles/admin/:id/bank-details
+  //
+  // Sensitive financial operation. NOTE: SUPPORT_PAYMENT_MANAGE is
+  // currently not in adminPermissions, so an ordinary ADMIN will be
+  // denied here even with this decorator in place — only
+  // SUPER_ADMIN gets it, by design (least privilege). If an ADMIN
+  // reports being blocked on this route, that is expected, not a bug.
   // ─────────────────────────────────────────────
 
   @Patch('admin/:id/bank-details')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.SUPPORT_PAYMENT_MANAGE)
   @ApiBearerAuth('access-token')
   @ApiOperation({
     summary: 'Admin: update the off-platform transfer destination on a victim profile',
@@ -352,6 +375,7 @@ export class VictimProfileController {
 
   @Patch('admin/:id/publish')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.PROFILE_PUBLISH)
   @ApiBearerAuth('access-token')
   @ApiOperation({
     summary: 'Admin: publish approved victim profile',
@@ -373,6 +397,7 @@ export class VictimProfileController {
 
   @Patch('admin/:id/unpublish')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.PROFILE_UNPUBLISH)
   @ApiBearerAuth('access-token')
   @ApiOperation({
     summary: 'Admin: unpublish victim profile',
@@ -394,6 +419,7 @@ export class VictimProfileController {
 
   @Patch('admin/:id/reject')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.PROFILE_REVIEW)
   @ApiBearerAuth('access-token')
   @ApiOperation({
     summary: 'Admin: reject victim profile',
@@ -415,6 +441,7 @@ export class VictimProfileController {
 
   @Patch('admin/:id/resubmit')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.PROFILE_REVIEW)
   @ApiBearerAuth('access-token')
   @ApiOperation({
     summary: 'Admin: return a rejected victim profile to the approval pipeline',

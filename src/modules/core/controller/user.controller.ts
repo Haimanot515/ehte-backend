@@ -6,6 +6,10 @@ import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { RolesEnum } from 'src/common/enums/roles.enum';
 import { RequireReauthentication } from 'src/common/decorators/reauth.decorator';
+// NOTE: adjust these two import paths to match your actual file locations —
+// same convention as Roles / RolesEnum above.
+import { RequirePermissions } from 'src/common/decorators/require-permissions.decorator';
+import { PermissionsEnum } from 'src/common/enums/permissions.enum';
 
 import {
   AssignUserRoleDto,
@@ -125,6 +129,7 @@ export class UserController {
   // ─────────────────────────────────────────────
   @Get()
   @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.USER_READ)
   @ApiOperation({
     summary: 'List all users (admin)',
   })
@@ -146,6 +151,7 @@ export class UserController {
   // ─────────────────────────────────────────────
   @Get('stats')
   @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.DASHBOARD_READ)
   @ApiOperation({
     summary: 'User-related dashboard stats (totals, active/inactive, by role, growth)',
   })
@@ -164,6 +170,7 @@ export class UserController {
   // ─────────────────────────────────────────────
   @Get(':id')
   @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.USER_READ)
   @ApiOperation({
     summary: 'Get a single user by id (admin)',
   })
@@ -186,6 +193,7 @@ export class UserController {
   // ─────────────────────────────────────────────
   @Patch(':id/role')
   @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.ROLE_UPDATE)
   @ApiOperation({
     summary: "Grant an admin or super_admin role to a user's account",
   })
@@ -213,6 +221,7 @@ export class UserController {
   // ─────────────────────────────────────────────
   @Delete(':id/role/:role')
   @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.ROLE_UPDATE)
   @ApiOperation({
     summary: "Revoke an admin or super_admin role from a user's account",
   })
@@ -245,6 +254,7 @@ export class UserController {
   // ─────────────────────────────────────────────
   @Patch(':id/deactivate')
   @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.USER_SUSPEND)
   @ApiOperation({
     summary: "Deactivate a user's account (admin)",
   })
@@ -269,6 +279,7 @@ export class UserController {
   // ─────────────────────────────────────────────
   @Patch(':id/reactivate')
   @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.USER_RESTORE)
   @ApiOperation({
     summary: "Reactivate a user's account (admin)",
   })
@@ -294,6 +305,7 @@ export class UserController {
   // ─────────────────────────────────────────────
   @Post(':id/force-logout')
   @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.USER_FORCE_LOGOUT)
   @ApiOperation({
     summary: "Revoke all of a user's active sessions (admin)",
   })

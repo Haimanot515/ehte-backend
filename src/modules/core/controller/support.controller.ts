@@ -7,6 +7,10 @@ import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { RolesEnum } from 'src/common/enums/roles.enum';
+// NOTE: adjust these two import paths to match your actual file locations —
+// same convention as Roles / RolesEnum above.
+import { RequirePermissions } from 'src/common/decorators/require-permissions.decorator';
+import { PermissionsEnum } from 'src/common/enums/permissions.enum';
 import { CreateSupportDto } from '../dto/support.dto';
 
 @ApiTags('Support')
@@ -81,7 +85,10 @@ export class SupportController {
   //
   // NOTE:
   // No @Roles() restriction is currently applied
-  // to this endpoint.
+  // to this endpoint, and per the reviewed permissions
+  // plan no @RequirePermissions() is added here either —
+  // this stays a service-level ownership/authorization
+  // concern, not an admin-permission gate.
   // ─────────────────────────────────────────────
 
   @Get('victim/:victimProfileId')
@@ -107,7 +114,8 @@ export class SupportController {
   //
   // NOTE:
   // No @Roles() restriction is currently applied
-  // to this endpoint.
+  // to this endpoint, and no @RequirePermissions()
+  // is added here either — see note above.
   // ─────────────────────────────────────────────
 
   @Get(':id')
@@ -135,10 +143,16 @@ export class SupportController {
   // - Admin manually verifies that the transfer
   //   was actually received.
   // - Changes status to CONFIRMED.
+  //
+  // NOTE: SUPPORT_PAYMENT_MANAGE is currently not in
+  // adminPermissions, so an ordinary ADMIN will be denied
+  // on this route even with the decorator present — only
+  // SUPER_ADMIN gets it, by design (least privilege).
   // ─────────────────────────────────────────────
 
   @Patch(':id/confirm')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.SUPPORT_PAYMENT_MANAGE)
   @ApiOperation({
     summary: 'Confirm support payment (Admin)',
     description:
@@ -164,6 +178,7 @@ export class SupportController {
 
   @Patch(':id/complete')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.SUPPORT_REVIEW)
   @ApiOperation({
     summary: 'Complete support (Admin)',
     description:
@@ -189,7 +204,9 @@ export class SupportController {
   //
   // NOTE:
   // A normal user cannot cancel a support that has
-  // already been CONFIRMED.
+  // already been CONFIRMED. This is a mixed
+  // ownership/admin endpoint handled at the service
+  // level, so no @RequirePermissions() is added here.
   // ─────────────────────────────────────────────
 
   @Patch(':id/cancel')

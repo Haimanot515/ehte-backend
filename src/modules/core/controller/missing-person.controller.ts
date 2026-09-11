@@ -8,6 +8,10 @@ import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { RolesEnum } from 'src/common/enums/roles.enum';
 import { MissingPersonStatus } from '@prisma/client';
+// NOTE: adjust these two import paths to match your actual file locations —
+// same convention as Roles / RolesEnum above.
+import { RequirePermissions } from 'src/common/decorators/require-permissions.decorator';
+import { PermissionsEnum } from 'src/common/enums/permissions.enum';
 
 import {
   CreateMissingPersonDto,
@@ -83,6 +87,7 @@ export class MissingPersonController {
   @Get('admin/all')
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.MISSING_PERSON_READ)
   @ApiOperation({ summary: 'Admin: get all missing person submissions' })
   @ApiQuery({ name: 'status', required: false, enum: MissingPersonStatus })
   @ApiQuery({ name: 'page', required: false })
@@ -97,11 +102,20 @@ export class MissingPersonController {
   // ADMIN / SUPER_ADMIN
   //
   // Registered before the public ':id' route below.
+  //
+  // Requires both MISSING_PERSON_READ and
+  // MISSING_PERSON_INFO_READ because the payload includes
+  // the related information submissions, not just the
+  // missing-person record itself.
   // ─────────────────────────────────────────────
 
   @Get('admin/:id')
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(
+    PermissionsEnum.MISSING_PERSON_READ,
+    PermissionsEnum.MISSING_PERSON_INFO_READ,
+  )
   @ApiOperation({ summary: 'Admin: get full detail for one missing person' })
   async findOneForAdmin(@Param('id') id: string) {
     return this.missingPersonService.findOneForAdmin(id);
@@ -163,6 +177,7 @@ export class MissingPersonController {
   @Patch('admin/:id/status')
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.MISSING_PERSON_REVIEW)
   @ApiOperation({ summary: 'Admin: update missing person status' })
   async updateStatus(
     @CurrentUser() admin: CurrentUserDto,

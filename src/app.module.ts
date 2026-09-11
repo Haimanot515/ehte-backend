@@ -69,6 +69,12 @@ import { JwtStrategy } from './common/guards/jwt.strategy';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 
+// PermissionsGuard: fine-grained authorization layer that runs after
+// RolesGuard. Role gets a caller in the door for a resource; permission
+// decides what they can actually do to it. See
+// common/decorators/require-permissions.decorator.ts for @RequirePermissions().
+import { PermissionsGuard } from './common/guards/permissions.guard';
+
 import { ReauthGuard } from './common/guards/reauth.guard';
 import { ReauthService } from './services/reauthentication/reauth.service';
 
@@ -78,6 +84,7 @@ import { ReauthService } from './services/reauthentication/reauth.service';
 
 import { AdminSeeder } from './common/seed/admin.seeder';
 import { RolesSeeder } from './common/seed/roles.seeder';
+import { PermissionsSeeder } from './common/seed/permissions.seeder';
 
 // ─────────────────────────────────────────────
 // APP MODULE
@@ -495,10 +502,31 @@ import { RolesSeeder } from './common/seed/roles.seeder';
     },
 
     // ─────────────────────────────────────────
+    // GLOBAL PERMISSIONS GUARD
+    //
+    // Order is load-bearing: runs AFTER RolesGuard.
+    // RolesGuard gets a caller in the door for a
+    // resource (coarse-grained); PermissionsGuard then
+    // decides exactly what they're allowed to do to it
+    // (fine-grained), via @RequirePermissions(...).
+    // Requires request.user.permissions, populated by
+    // JwtStrategy.validate() from the JWT payload that
+    // AuthService.issueTokens() now bakes in alongside
+    // roles (see AuthService.derivePermissions()).
+    // ─────────────────────────────────────────
+
+    {
+      provide: APP_GUARD,
+      useClass: PermissionsGuard,
+    },
+
+    // ─────────────────────────────────────────
     // SEEDERS
     // ─────────────────────────────────────────
 
     RolesSeeder,
+
+    PermissionsSeeder,
 
     AdminSeeder,
   ],

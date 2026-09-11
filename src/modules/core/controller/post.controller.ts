@@ -7,6 +7,10 @@ import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { RolesEnum } from 'src/common/enums/roles.enum';
 import { RequireReauthentication } from 'src/common/decorators/reauth.decorator';
+// NOTE: adjust these two import paths to match your actual file locations —
+// same convention as Roles / RolesEnum above.
+import { RequirePermissions } from 'src/common/decorators/require-permissions.decorator';
+import { PermissionsEnum } from 'src/common/enums/permissions.enum';
 import {
   CreatePostDto,
   UpdatePostDto,
@@ -200,6 +204,7 @@ export class PostController {
   @Post('official')
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.POST_CREATE_OFFICIAL)
   @ApiOperation({
     summary: 'Admin: create an official post',
   })
@@ -219,6 +224,7 @@ export class PostController {
   @Get()
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.POST_READ)
   @ApiOperation({
     summary: 'Admin: get all posts',
   })
@@ -240,6 +246,7 @@ export class PostController {
   @Get(':id')
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.POST_READ)
   @ApiOperation({
     summary: 'Admin: get one post',
   })
@@ -261,6 +268,7 @@ export class PostController {
   @Patch(':id/status')
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.POST_REVIEW)
   @ApiOperation({
     summary: 'Admin: update post status',
   })
@@ -285,6 +293,7 @@ export class PostController {
   @Patch(':id/approve')
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.POST_APPROVE)
   @ApiOperation({
     summary: 'Admin: approve a post',
   })
@@ -309,6 +318,7 @@ export class PostController {
   @Patch(':id/request-changes')
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.POST_REQUEST_CHANGES)
   @ApiOperation({
     summary: 'Admin: request changes to a post',
   })
@@ -328,6 +338,7 @@ export class PostController {
   @Patch(':id/publish')
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.POST_PUBLISH)
   @ApiOperation({
     summary: 'Admin: publish an approved post',
   })
@@ -351,6 +362,7 @@ export class PostController {
   @Patch(':id/reject')
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.POST_REJECT)
   @ApiOperation({
     summary: 'Admin: reject a post',
   })
@@ -374,6 +386,7 @@ export class PostController {
   @Patch(':id/unpublish')
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.POST_UNPUBLISH)
   @ApiOperation({
     summary: 'Admin: unpublish a post',
   })

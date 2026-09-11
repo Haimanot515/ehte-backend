@@ -93,6 +93,14 @@ export enum AuditEventEnum {
   ROLE_CREATED = 'ROLE_CREATED',
   ROLE_UPDATED = 'ROLE_UPDATED',
   ROLE_DELETED = 'ROLE_DELETED',
+  // PERMISSION
+  // Added — used by PermissionService.assignToRole() /
+  // revokeFromRole(). No permission-assignment audit event existed
+  // before PermissionController was built; these mirror the
+  // ROLE_* / USER_ROLE_* pairs above (grant/revoke) for a role's
+  // assigned permissions.
+  PERMISSION_ASSIGNED = 'PERMISSION_ASSIGNED',
+  PERMISSION_REVOKED = 'PERMISSION_REVOKED',
   // SECURITY
   SECURITY_ALERT = 'SECURITY_ALERT',
 }

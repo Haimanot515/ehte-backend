@@ -91,6 +91,17 @@ const PROMOTION_TOKEN_EXPIRES_MINUTES = 60 * 24; // 24h to click the promotion e
 
 const ADMIN_ROLES = [RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN];
 
+// Shape shared by every `userRoles: { include: { role: { include: { rolePermissions:
+// { include: { permission: true } } } } } }` query result, used by derivePermissions()
+// below. Matches the actual Prisma relation names: Role.rolePermissions ->
+// RolePermission.permission -> Permission.name.
+type UserRoleWithPermissions = {
+  role: {
+    name: string;
+    rolePermissions: { permission: { name: string } }[];
+  };
+};
+
 @Injectable()
 export class AuthService {
   constructor(
@@ -123,6 +134,21 @@ export class AuthService {
   // must never authenticate or recover a password for an ADMIN/SUPER_ADMIN account).
   private hasAdminRole(roles: string[]): boolean {
     return roles.some((role) => ADMIN_ROLES.includes(role as RolesEnum));
+  }
+
+  // PERMISSIONS DERIVATION: flattens every permission across every role a user
+  // holds into a single deduped string array, mirroring how roles are already
+  // flattened at each call site. Relies on Role.rolePermissions ->
+  // RolePermission.permission.name (per schema.prisma) — any query feeding this
+  // must include that nested relation, not just `role: true`.
+  private derivePermissions(userRoles: UserRoleWithPermissions[]): string[] {
+    return [
+      ...new Set(
+        userRoles.flatMap((userRole) =>
+          userRole.role.rolePermissions.map((rp) => rp.permission.name),
+        ),
+      ),
+    ];
   }
 
   // UNIQUE CONSTRAINT CHECK: detects a Prisma P2002 violation so concurrent
@@ -274,7 +300,15 @@ export class AuthService {
       include: {
         user: {
           include: {
-            userRoles: { include: { role: true } },
+            userRoles: {
+              include: {
+                role: {
+                  include: {
+                    rolePermissions: { include: { permission: true } },
+                  },
+                },
+              },
+            },
           },
         },
       },
@@ -297,6 +331,7 @@ export class AuthService {
     }
 
     const roles = otpRecord.user.userRoles.map((userRole) => userRole.role.name);
+    const permissions = this.derivePermissions(otpRecord.user.userRoles);
 
     // Enforce max OTP attempts
     if (otpRecord.attempts >= 5) {
@@ -379,7 +414,12 @@ export class AuthService {
       diff: { purpose: 'phone_verification', result: 'success' },
     });
 
-    return this.issueTokens(otpRecord.user.id, { phone: otpRecord.user.phone }, roles);
+    return this.issueTokens(
+      otpRecord.user.id,
+      { phone: otpRecord.user.phone },
+      roles,
+      permissions,
+    );
   }
 
   // RESEND SIGNUP OTP
@@ -422,7 +462,15 @@ export class AuthService {
     const user = await this.prisma.user.findUnique({
       where: { phone },
       include: {
-        userRoles: { include: { role: true } },
+        userRoles: {
+          include: {
+            role: {
+              include: {
+                rolePermissions: { include: { permission: true } },
+              },
+            },
+          },
+        },
       },
     });
 
@@ -442,6 +490,7 @@ export class AuthService {
     }
 
     const roles = user.userRoles.map((userRole) => userRole.role.name);
+    const permissions = this.derivePermissions(user.userRoles);
 
     // Password checked before any account-state gate (lock, active, verified,
     // role) — keeps "no such account", "wrong password", "locked account",
@@ -561,7 +610,12 @@ export class AuthService {
       diff: { method: 'password', result: 'success' },
     });
 
-    return this.issueTokens(user.id, { phone: user.phone, email: user.email }, roles);
+    return this.issueTokens(
+      user.id,
+      { phone: user.phone, email: user.email },
+      roles,
+      permissions,
+    );
   }
 
   // FORGOT PASSWORD: Unverified accounts get a phone_verification OTP instead of password_reset;
@@ -845,7 +899,15 @@ export class AuthService {
     const user = await this.prisma.user.findUnique({
       where: { id: payload.sub },
       include: {
-        userRoles: { include: { role: true } },
+        userRoles: {
+          include: {
+            role: {
+              include: {
+                rolePermissions: { include: { permission: true } },
+              },
+            },
+          },
+        },
       },
     });
 
@@ -854,6 +916,7 @@ export class AuthService {
     }
 
     const roles = user.userRoles.map((userRole) => userRole.role.name);
+    const permissions = this.derivePermissions(user.userRoles);
 
     // FIX: soft-revoke (not delete) the old session, then mint a new one, in one
     // transaction — the revoked row stays so a replay of this token is detectable
@@ -868,7 +931,13 @@ export class AuthService {
         throw new UnauthorizedException('session_expired_or_invalid');
       }
 
-      return this.issueTokens(user.id, { phone: user.phone, email: user.email }, roles, tx);
+      return this.issueTokens(
+        user.id,
+        { phone: user.phone, email: user.email },
+        roles,
+        permissions,
+        tx,
+      );
     });
   }
 
@@ -1220,7 +1289,15 @@ export class AuthService {
     const admin = await this.prisma.user.findUnique({
       where: { inviteTokenHash },
       include: {
-        userRoles: { include: { role: true } },
+        userRoles: {
+          include: {
+            role: {
+              include: {
+                rolePermissions: { include: { permission: true } },
+              },
+            },
+          },
+        },
       },
     });
 
@@ -1235,6 +1312,7 @@ export class AuthService {
 
     const hashedPassword = await bcrypt.hash(data.password, 10);
     const roles = admin.userRoles.map((userRole) => userRole.role.name);
+    const permissions = this.derivePermissions(admin.userRoles);
 
     await this.prisma.user.update({
       where: { id: admin.id },
@@ -1264,7 +1342,7 @@ export class AuthService {
     }
 
     // Admin has no phone at this point — issue tokens with email set, phone left null
-    return this.issueTokens(admin.id, { email: admin.email }, roles);
+    return this.issueTokens(admin.id, { email: admin.email }, roles, permissions);
   }
 
   // ═══════════════════════════════════════════════════════════
@@ -1667,11 +1745,20 @@ export class AuthService {
     const user = await this.prisma.user.findUnique({
       where: { email },
       include: {
-        userRoles: { include: { role: true } },
+        userRoles: {
+          include: {
+            role: {
+              include: {
+                rolePermissions: { include: { permission: true } },
+              },
+            },
+          },
+        },
       },
     });
 
     const roles = user?.userRoles.map((userRole) => userRole.role.name) ?? [];
+    const permissions = user ? this.derivePermissions(user.userRoles) : [];
 
     const isAdmin = this.hasAdminRole(roles);
 
@@ -1765,7 +1852,12 @@ export class AuthService {
       },
     });
 
-    return this.issueTokens(user.id, { phone: user.phone, email: user.email }, roles);
+    return this.issueTokens(
+      user.id,
+      { phone: user.phone, email: user.email },
+      roles,
+      permissions,
+    );
   }
 
   // LOCKOUT — ASSERT NOT LOCKED: throws before password comparison if the account is currently locked
@@ -1824,6 +1916,10 @@ export class AuthService {
     // named `phone`, which then got embedded in the JWT under the `phone` claim.
     identity: { phone?: string | null; email?: string | null },
     roles: string[],
+    // Flattened, deduped permission names derived via derivePermissions() at every
+    // call site — baked into both the access and refresh token payloads alongside
+    // roles, so PermissionsGuard can read request.user.permissions with no extra query.
+    permissions: string[],
     // Optional tx client so refresh() creates the new session inside the same transaction as the old session's revocation
     tx: Pick<typeof this.prisma, 'session'> = this.prisma,
   ): Promise<TokenPair> {
@@ -1841,7 +1937,10 @@ export class AuthService {
 
     const expiresIn = expiresInStr as any;
 
-    const accessToken = this.jwtService.sign({ sub: userId, phone, email, roles }, { expiresIn });
+    const accessToken = this.jwtService.sign(
+      { sub: userId, phone, email, roles, permissions },
+      { expiresIn },
+    );
 
     // Refresh tokens use a dedicated secret/TTL so a leaked access secret can't forge them
     const refreshSecret =
@@ -1858,6 +1957,7 @@ export class AuthService {
         phone,
         email,
         roles,
+        permissions,
         type: 'refresh',
         // Unique jti so same-second tokens stay distinguishable (future reuse detection)
         jti: randomUUID(),

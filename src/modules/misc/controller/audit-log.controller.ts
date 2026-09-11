@@ -7,6 +7,10 @@ import { AuditLogService } from '../service/audit-log.service';
 import { GetAuditLogsDto } from '../dto/audit-log.dto';
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { RolesEnum } from 'src/common/enums/roles.enum';
+// NOTE: adjust these two import paths to match your actual file locations —
+// same convention as Roles / RolesEnum above.
+import { RequirePermissions } from 'src/common/decorators/require-permissions.decorator';
+import { PermissionsEnum } from 'src/common/enums/permissions.enum';
 
 @Controller('audit-logs')
 @ApiTags('Audit Logs')
@@ -23,6 +27,7 @@ export class AuditLogController {
   // ─────────────────────────────────────────────
 
   @Get()
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_READ)
   @ApiOperation({
     summary: 'Get audit logs',
     description: 'Returns audit logs for authorized administrators.',
@@ -52,6 +57,7 @@ export class AuditLogController {
   // ─────────────────────────────────────────────
 
   @Get('stats')
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_READ)
   @ApiOperation({
     summary: 'Get audit log statistics',
   })
@@ -72,6 +78,7 @@ export class AuditLogController {
   // ─────────────────────────────────────────────
 
   @Get('actions')
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_READ)
   @ApiOperation({
     summary: 'Get distinct audit log action values',
   })
@@ -92,6 +99,7 @@ export class AuditLogController {
   // ─────────────────────────────────────────────
 
   @Get('entities')
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_READ)
   @ApiOperation({
     summary: 'Get distinct audit log entity values',
   })
@@ -113,6 +121,7 @@ export class AuditLogController {
   // ─────────────────────────────────────────────
 
   @Get('export')
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_READ)
   @ApiOperation({
     summary: 'Export audit logs as CSV',
   })
@@ -144,6 +153,7 @@ export class AuditLogController {
   // ─────────────────────────────────────────────
 
   @Get('entity/:entity/:entityId')
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_READ)
   @ApiOperation({
     summary: 'Get audit logs for a specific entity record',
   })
@@ -171,6 +181,7 @@ export class AuditLogController {
   // ─────────────────────────────────────────────
 
   @Get('user/:userId')
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_READ)
   @ApiOperation({
     summary: 'Get audit logs for a specific user',
   })
@@ -194,6 +205,10 @@ export class AuditLogController {
   // ordering reason as above.
   //
   // SUPER_ADMIN ONLY
+  // No @RequirePermissions() here — per the reviewed
+  // plan, the @Roles(SUPER_ADMIN) override is
+  // sufficient for now; no dedicated purge permission
+  // exists in the enum yet.
   // ─────────────────────────────────────────────
 
   @Delete('purge')
@@ -224,6 +239,7 @@ export class AuditLogController {
   // ─────────────────────────────────────────────
 
   @Get(':id')
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_READ)
   @ApiOperation({
     summary: 'Get one audit log entry',
   })

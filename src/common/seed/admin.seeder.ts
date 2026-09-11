@@ -28,7 +28,10 @@ export class AdminSeeder implements OnApplicationBootstrap {
 
     const name = this.config.get<string>('ADMIN_NAME', 'Ehte System Admin');
 
-    const password = this.config.get<string>('ADMIN_PASSWORD', 'P@ssw0rd');
+    const password = this.config.get<string>(
+      'ADMIN_PASSWORD',
+      'P@ssw0rd',
+    );
 
     const existingUser = await this.prisma.user.findUnique({
       where: { email },
@@ -52,15 +55,17 @@ export class AdminSeeder implements OnApplicationBootstrap {
       },
     });
 
-    const role = await this.prisma.role.upsert({
+    const role = await this.prisma.role.findUnique({
       where: {
         name: RolesEnum.SUPER_ADMIN,
       },
-      create: {
-        name: RolesEnum.SUPER_ADMIN,
-      },
-      update: {},
     });
+
+    if (!role) {
+      throw new Error(
+        `Required role "${RolesEnum.SUPER_ADMIN}" was not found. Ensure RolesSeeder runs before AdminSeeder.`,
+      );
+    }
 
     await this.prisma.userRole.create({
       data: {
