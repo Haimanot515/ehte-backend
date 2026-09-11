@@ -1,6 +1,52 @@
-// ─────────────────────────────────────────────
-// EHTE FEATURES — Report
-// ─────────────────────────────────────────────
+model Report {
+  id                  String                     @id @default(uuid())
+  userId              String
+  caseReference       String                     @unique
+  description         String
+  location            String?
+  incidentAt          DateTime?
+  photo               String[]
+  video               String[]
+  audio               String[]
+  pdf                 String[]
+  document            String[]
+  other               String[]
+  status              ReportStatus               @default(PENDING)
+  createdAt           DateTime                   @default(now())
+  updatedAt           DateTime                   @updatedAt
+  assignedToId        String?
+  category            ReportCategory
+  assignedTo          User?                      @relation("ReportAssignee", fields: [assignedToId], references: [id])
+  user                User                       @relation("ReportReporter", fields: [userId], references: [id], onDelete: Cascade)
+  informationRequests ReportInformationRequest[]
+
+  @@index([userId])
+  @@index([status])
+  @@index([assignedToId])
+  @@index([caseReference])
+  @@index([category])
+  @@map("report")
+}
+
+model ReportInformationRequest {
+  id              String                   @id @default(uuid())
+  reportId        String
+  requestedById   String
+  message         String
+  status          InformationRequestStatus @default(PENDING)
+  responseMessage String?
+  responseFiles   String[]                 @default([])
+  respondedAt     DateTime?
+  createdAt       DateTime                 @default(now())
+  updatedAt       DateTime                 @updatedAt
+  report          Report                   @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  requestedBy     User                     @relation("InfoRequestRequestedBy", fields: [requestedById], references: [id], onDelete: Cascade)
+
+  @@index([reportId])
+  @@index([requestedById])
+  @@index([status])
+  @@map("report_information_request")
+}
 
 enum ReportCategory {
   HARASSMENT
@@ -27,68 +73,4 @@ enum ReportStatus {
 enum InformationRequestStatus {
   PENDING
   RESPONDED
-}
-
-model Report {
-  id     String @id @default(uuid())
-  userId String
-
-  caseReference String @unique
-
-  category    ReportCategory
-  description String
-
-  location   String?
-  incidentAt DateTime?
-
-  photo    String[]
-  video    String[]
-  audio    String[]
-  pdf      String[]
-  document String[]
-  other    String[]
-
-  status ReportStatus @default(PENDING)
-
-  assignedToId String?
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  user       User  @relation("ReportReporter", fields: [userId], references: [id], onDelete: Cascade)
-  assignedTo User? @relation("ReportAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
-
-  informationRequests ReportInformationRequest[]
-
-  @@index([userId])
-  @@index([status])
-  @@index([assignedToId])
-  @@index([caseReference])
-  @@index([category])
-  @@map("report")
-}
-
-model ReportInformationRequest {
-  id       String @id @default(uuid())
-  reportId String
-
-  requestedById String
-  message       String
-
-  status InformationRequestStatus @default(PENDING)
-
-  responseMessage String?
-  responseFiles   String[]  @default([])
-  respondedAt     DateTime?
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  report      Report @relation(fields: [reportId], references: [id], onDelete: Cascade)
-  requestedBy User   @relation("InfoRequestRequestedBy", fields: [requestedById], references: [id], onDelete: Cascade)
-
-  @@index([reportId])
-  @@index([requestedById])
-  @@index([status])
-  @@map("report_information_request")
 }

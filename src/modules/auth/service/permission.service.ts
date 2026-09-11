@@ -8,31 +8,24 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
 
 import { AuditEventEnum } from 'src/common/enums/shared/audit-events.enum';
-// NOTE: adjust this import path to match your actual file location.
 import { PermissionsEnum } from 'src/common/enums/permissions.enum';
 
 import { AssignPermissionsDto } from '../dto/permission.dto';
 
 // ─────────────────────────────────────────────
-// ASSUMPTIONS ABOUT THE SCHEMA (not verified against your
-// schema.prisma, which wasn't provided):
+// ASSUMPTIONS ABOUT THE SCHEMA (verify against your schema.prisma):
 //
-// - `permission` table: seeded 1:1 from PermissionsEnum values,
-//   analogous to how `role` rows are seeded from RolesEnum-style
-//   names but remain freely creatable/renameable beyond that.
-//   Permissions, by contrast, are assumed FIXED — defined in code,
-//   not creatable/renameable through this API — so there is no
-//   PermissionController.create()/update()/remove(), only read and
-//   role-assignment.
+// - `permission` table: seeded 1:1 from PermissionsEnum values.
+//   Permissions are assumed FIXED — defined in code, not
+//   creatable/renameable through this API — so there is no
+//   PermissionController.create()/update()/remove(), only read
+//   and role-assignment.
 // - `rolePermission` join table: (roleId, permissionId), mirroring
-//   the existing `userRole` join table used in RoleService/
-//   UserService for role assignment.
+//   the existing `userRole` join table used for role assignment.
 //
-// If your schema differs (e.g. permissions are just enum literals
-// checked at runtime with no DB table at all, or the join table has
-// a different name), the prisma calls below need to be adjusted —
-// the audit-log emission shape and method signatures should still
-// be a reasonable starting point either way.
+// If your schema differs, adjust the prisma calls below —
+// the audit-log emission shape and method signatures should
+// still be a reasonable starting point either way.
 // ─────────────────────────────────────────────
 
 @Injectable()
@@ -228,6 +221,7 @@ export class PermissionService {
     this.eventEmitter.emit(AuditEventEnum.PERMISSION_REVOKED, {
       userId: actor.id,
       entityId: roleId,
+
       entityType: 'ROLE',
 
       diff: {

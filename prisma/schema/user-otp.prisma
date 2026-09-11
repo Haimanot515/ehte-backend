@@ -1,6 +1,20 @@
-// ─────────────────────────────────────────────
-// AUTHENTICATION — UserOtp
-// ─────────────────────────────────────────────
+model UserOtp {
+  id        String             @id @default(uuid())
+  userId    String
+  purpose   UserOtpPurposeEnum
+  otpHash   String
+  expiresAt DateTime
+  attempts  Int                @default(0)
+  usedAt    DateTime?
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
+  channel   OtpChannelEnum     @default(sms)
+  user      User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, purpose])
+  @@index([expiresAt])
+  @@map("user_otps")
+}
 
 enum UserOtpPurposeEnum {
   email_verification
@@ -8,46 +22,11 @@ enum UserOtpPurposeEnum {
   password_reset
   login_2fa
   admin_verification
-
-  // FIX: added — required by AuthService's invite-based admin flow
-  // (adminSetPasswordFromInvite() -> adminActivateSelf()) and the
-  // existing-user promotion flow (promoteUserInitiate() ->
-  // promoteUserVerify()). Both were already implemented in
-  // auth.service.ts but had no matching enum values here.
   admin_invite_activation
   promotion_verification
 }
 
-// FIX: added — AuthService.issueAndSendOtp() and every call site
-// (signup, admin register, forgot-password, invite activation,
-// promotion) already pass an OtpChannelEnum.sms/.email value into
-// UserOtp.create(), but this enum didn't exist yet and UserOtp had
-// no field to store it on.
 enum OtpChannelEnum {
   sms
   email
-}
-
-model UserOtp {
-  id      String             @id @default(uuid())
-  userId  String
-  purpose UserOtpPurposeEnum
-
-  // FIX: added — see OtpChannelEnum above. Defaults to sms so any
-  // existing rows (or code paths that don't set it) keep working.
-  channel OtpChannelEnum @default(sms)
-
-  otpHash   String
-  expiresAt DateTime
-  attempts  Int       @default(0)
-  usedAt    DateTime?
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@index([userId, purpose])
-  @@index([expiresAt])
-  @@map("user_otps")
 }

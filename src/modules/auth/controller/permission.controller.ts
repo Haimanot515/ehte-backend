@@ -9,20 +9,17 @@ import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
 
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { RolesEnum } from 'src/common/enums/roles.enum';
-// NOTE: adjust these two import paths to match your actual file locations —
-// same convention as Roles / RolesEnum above.
+
 import { RequirePermissions } from 'src/common/decorators/require-permissions.decorator';
 import { PermissionsEnum } from 'src/common/enums/permissions.enum';
 
 import { AssignPermissionsDto } from '../dto/permission.dto';
 
 // ─────────────────────────────────────────────
-// New controller — not part of the original reviewed
-// endpoint-by-endpoint pass. Every route here is admin-only by
-// design (there is no user-facing concept of "my permissions" the
-// way there is "my reports" or "my posts"), so unlike the other
-// controllers there are no unrestricted/self-service routes to
-// leave undecorated.
+// Every route here is admin-only by design (there is no
+// user-facing concept of "my permissions" the way there is "my
+// reports" or "my posts"), so unlike other controllers there are
+// no unrestricted/self-service routes to leave undecorated.
 // ─────────────────────────────────────────────
 
 @Controller('permissions')
