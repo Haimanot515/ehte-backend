@@ -33,7 +33,7 @@ export class MinioService implements OnModuleInit {
     this.bucket = this.configService.get<string>('minio.bucketName') ?? 'ehte-media';
 
     this.presignDurationSeconds =
-      this.configService.get<number>('minio.presignDurationSeconds') ?? 120;
+      this.configService.get<number>('minio.presignDurationSeconds') ?? 600;
 
     if (!endpoint || !accessKey || !secretKey) {
       this.logger.warn(
@@ -47,6 +47,14 @@ export class MinioService implements OnModuleInit {
         endPoint: endpoint,
         port: this.configService.get<number>('minio.port') ?? 9000,
         useSSL: this.configService.get<boolean>('minio.useSSL') ?? false,
+        // ADDED: without this, the SDK falls back to auto-detecting the
+        // bucket region via a GetBucketLocation call before it can sign
+        // requests — an extra round-trip on every operation, and a source
+        // of real breakage against some non-AWS S3-compatible stores.
+        // Cloudflare R2 requires 'auto' (configured via MINIO_REGION=auto
+        // in production); local MinIO is happy with the 'us-east-1'
+        // fallback below.
+        region: this.configService.get<string>('minio.region') ?? 'us-east-1',
         accessKey,
         secretKey,
       });

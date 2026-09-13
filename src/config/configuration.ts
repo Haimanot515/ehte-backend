@@ -81,30 +81,44 @@ export default () => ({
   },
 
   minio: {
+    // Production (Render -> Cloudflare R2): <ACCOUNT_ID>.r2.cloudflarestorage.com
+    // Local (Docker Compose -> MinIO): minio
     endpoint: process.env.MINIO_ENDPOINT || 'localhost',
 
+    // Production: 443 (R2, over HTTPS). Local: 9000 (MinIO's default).
     port: Number(process.env.MINIO_PORT || 9000),
 
     accessKey: process.env.MINIO_ACCESS_KEY,
 
     secretKey: process.env.MINIO_SECRET_KEY,
 
-    // FIX: was `bucket: process.env.MINIO_BUCKET`, but MinioService reads
-    // `minio.bucketName` and app.module.ts's Joi schema requires the env var
-    // MINIO_BUCKET_NAME — three different names that never lined up, so the
-    // configured bucket was silently ignored and MinioService always fell
-    // back to its own hardcoded 'ehte-media' default. Now matches end to end:
-    // MINIO_BUCKET_NAME (env) -> minio.bucketName (config) -> configService.get('minio.bucketName').
-    bucketName: process.env.MINIO_BUCKET_NAME || 'ehte',
+    // FIX: default was 'ehte', but the actual bucket — both the local MinIO
+    // bucket and the one already created in Cloudflare R2 — is 'ehte-media'.
+    // This only matters when MINIO_BUCKET_NAME is unset, but it was wrong
+    // and would silently point at a bucket that doesn't exist.
+    bucketName: process.env.MINIO_BUCKET_NAME || 'ehte-media',
 
+    // Production: true (R2 requires HTTPS). Local: false (plain MinIO).
     useSSL: process.env.MINIO_USE_SSL === 'true',
+
+    // ADDED: was missing entirely, so MinioService's own fallback
+    // ('us-east-1') was always used regardless of what MINIO_REGION was
+    // set to. R2 requires this to be 'auto' in production — 'us-east-1'
+    // and an empty value are Cloudflare-documented aliases for 'auto',
+    // but setting it explicitly avoids relying on that alias and matches
+    // every official R2 SDK example (boto3, aws-sdk, etc.), which always
+    // pass region explicitly rather than omitting it.
+    region: process.env.MINIO_REGION || 'us-east-1',
 
     // FIX: previously read directly off process.env in MinioService,
     // bypassing ConfigService/Joi entirely — a non-numeric value would
     // silently become NaN instead of failing fast at boot. Centralized
     // here like every other config value; MinioService now reads
     // configService.get<number>('minio.presignDurationSeconds').
-    presignDurationSeconds: parseInt(process.env.DURATION_OF_PRE_SIGNED_DOCUMENT ?? '120', 10),
+    // Default lowered from 120s to 600s (10 min) — long enough for a
+    // real upload/download, short enough that a leaked presigned URL
+    // doesn't stay exploitable for long.
+    presignDurationSeconds: parseInt(process.env.DURATION_OF_PRE_SIGNED_DOCUMENT ?? '600', 10),
   },
 
   security: {

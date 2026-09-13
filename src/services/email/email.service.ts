@@ -1,4 +1,3 @@
-import { ConfigService } from '@nestjs/config';
 import * as nodemailer from 'nodemailer';
 
 interface SendEmailOptions {
@@ -15,13 +14,11 @@ function getTransporter(): nodemailer.Transporter {
     return transporter;
   }
 
-  const configService = new ConfigService();
-
-  const host = configService.get<string>('email.host');
-  const port = configService.get<number>('email.port', 587);
-  const secure = configService.get<boolean>('email.secure', false);
-  const user = configService.get<string>('email.user');
-  const password = configService.get<string>('email.password');
+  const host = process.env.SMTP_HOST;
+  const port = Number(process.env.SMTP_PORT || 587);
+  const secure = process.env.SMTP_SECURE === 'true';
+  const user = process.env.SMTP_USER;
+  const password = process.env.SMTP_PASSWORD;
 
   if (!host) {
     throw new Error('[EHTE EMAIL] SMTP_HOST is not configured.');
@@ -35,7 +32,7 @@ function getTransporter(): nodemailer.Transporter {
     throw new Error('[EHTE EMAIL] SMTP_PASSWORD is not configured.');
   }
 
-  transporter = nodemailer.createTransport({
+  const transportOptions = {
     host,
     port,
     secure,
@@ -43,7 +40,16 @@ function getTransporter(): nodemailer.Transporter {
       user,
       pass: password,
     },
-  });
+    // FIX: some networks (WSL, certain home routers/VPNs) advertise IPv6
+    // DNS records for smtp.gmail.com but have no actual IPv6 route, causing
+    // ENETUNREACH on connect. Forcing IPv4 here sidesteps that entirely.
+    // NOTE: 'family' is a genuine, working nodemailer/net.connect option at
+    // runtime, but this project's installed @types for nodemailer don't
+    // declare it — hence the `as any` cast below rather than a type fix.
+    family: 4,
+  };
+
+  transporter = nodemailer.createTransport(transportOptions as any);
 
   return transporter;
 }
@@ -54,17 +60,8 @@ export async function sendEmail(
   html: string,
   text?: string,
 ): Promise<void> {
-  const configService = new ConfigService();
-
-  const from = configService.get<string>(
-    'email.from',
-    'no-reply@ehte.org',
-  );
-
-  const fromName = configService.get<string>(
-    'email.fromName',
-    'Ehte',
-  );
+  const from = process.env.SMTP_FROM || 'no-reply@ehte.org';
+  const fromName = process.env.SMTP_FROM_NAME || 'Ehte';
 
   const mailTransporter = getTransporter();
 
@@ -87,4 +84,4 @@ export async function sendEmail(
     html: options.html,
     text: options.text,
   });
-}
+}  
