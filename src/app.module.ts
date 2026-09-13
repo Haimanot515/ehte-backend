@@ -258,6 +258,10 @@ import { PermissionsSeeder } from './common/seed/permissions.seeder';
 
         // ─────────────────────────────────────
         // MINIO
+        //
+        // ENDPOINT/ACCESS_KEY/SECRET_KEY/BUCKET_NAME were already required
+        // here (unchanged) — good, that already fails fast at boot if
+        // Cloudflare R2 credentials are missing in production.
         // ─────────────────────────────────────
 
         MINIO_ENDPOINT: Joi.string().required(),
@@ -272,12 +276,26 @@ import { PermissionsSeeder } from './common/seed/permissions.seeder';
 
         MINIO_USE_SSL: Joi.boolean().default(false),
 
+        // ADDED: was missing from this schema entirely, even though
+        // configuration.ts now maps MINIO_REGION -> minio.region and
+        // MinioService passes it to the Minio client constructor. Without
+        // this entry, Joi's `allowUnknown: true` meant a typo'd or
+        // unexpected value here would pass validation silently instead of
+        // being checked at all. Default of 'us-east-1' is correct for
+        // local MinIO; production (Render -> R2) must set
+        // MINIO_REGION=auto explicitly via its own env var — not required
+        // here since 'auto' is only the right value for one environment,
+        // not a universal default.
+        MINIO_REGION: Joi.string().default('us-east-1'),
+
         // FIX: previously read directly off process.env inside
         // MinioService with no validation at all — a non-numeric value
         // silently became NaN at request time instead of failing at boot
         // like every other misconfigured var here. Now validated and
         // mapped through configuration.ts as minio.presignDurationSeconds.
-        DURATION_OF_PRE_SIGNED_DOCUMENT: Joi.number().default(120),
+        // Default raised from 120 to 600 (10 min) to match the value
+        // configuration.ts now falls back to.
+        DURATION_OF_PRE_SIGNED_DOCUMENT: Joi.number().default(600),
 
         // ─────────────────────────────────────
         // EMAIL / SMTP
@@ -529,6 +547,6 @@ import { PermissionsSeeder } from './common/seed/permissions.seeder';
     PermissionsSeeder,
 
     AdminSeeder,
-  ],
+  ],  
 })
 export class AppModule {}
