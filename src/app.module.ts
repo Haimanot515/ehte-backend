@@ -49,6 +49,22 @@ import { EmailModule } from './services/email/email.module';
 import { CoreModule } from './modules/core/core.module';
 
 // ─────────────────────────────────────────────
+// MEDIA MODULE
+//
+// Generic presigned-upload + delete-by-key endpoints
+// (POST /media/presigned-upload, DELETE /media?key=...).
+// Deliberately domain-agnostic and standalone — no other
+// module imports it, since MinioService is @Global() and
+// already resolvable app-wide without going through here.
+// Download/read authorization intentionally does NOT live
+// in this module; see VictimProfileService /
+// InformationSubmissionService's own getMediaDownloadUrl /
+// getPublicMediaDownloadUrl methods for that.
+// ─────────────────────────────────────────────
+
+import { MediaModule } from './modules/media/media.module';
+
+// ─────────────────────────────────────────────
 // MISC / SYSTEM MODULE
 //
 // Audit Logs
@@ -446,6 +462,16 @@ import { PermissionsSeeder } from './common/seed/permissions.seeder';
     // ─────────────────────────────────────────
 
     CoreModule,
+
+    // ─────────────────────────────────────────
+    // MEDIA
+    //
+    // Presigned-upload + delete-by-key endpoints only.
+    // Standalone: no other module needs to import this one,
+    // since MinioService is @Global().
+    // ─────────────────────────────────────────
+
+    MediaModule,
 
     // ─────────────────────────────────────────
     // MISC / SYSTEM FEATURES
