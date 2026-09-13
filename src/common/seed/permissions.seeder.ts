@@ -109,6 +109,10 @@ export class PermissionsSeeder implements OnApplicationBootstrap {
 
       // Dashboard
       PermissionsEnum.DASHBOARD_READ,
+
+      // Media
+      PermissionsEnum.MEDIA_UPLOAD,
+      PermissionsEnum.MEDIA_DELETE,
     ];
 
     /*

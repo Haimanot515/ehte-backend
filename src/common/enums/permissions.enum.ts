@@ -55,7 +55,6 @@ export enum PermissionsEnum {
   USER_FORCE_LOGOUT = 'USER_FORCE_LOGOUT',
   USER_UNLOCK = 'USER_UNLOCK',
 
-
   // Roles
   ROLE_READ = 'ROLE_READ',
   ROLE_CREATE = 'ROLE_CREATE',
@@ -81,4 +80,8 @@ export enum PermissionsEnum {
 
   // Dashboard
   DASHBOARD_READ = 'DASHBOARD_READ',
+
+  // Media
+  MEDIA_UPLOAD = 'MEDIA_UPLOAD',
+  MEDIA_DELETE = 'MEDIA_DELETE',
 }

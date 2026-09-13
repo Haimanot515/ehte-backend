@@ -14,6 +14,10 @@ import { RolesEnum } from 'src/common/enums/roles.enum';
 import { RequirePermissions } from 'src/common/decorators/require-permissions.decorator';
 import { PermissionsEnum } from 'src/common/enums/permissions.enum';
 
+// NOTE: adjust this path to wherever MediaModule actually lives —
+// same DTO used by VictimProfileController for its media routes.
+import { MediaKeyQueryDto } from 'src/modules/media/dto/media-key-query.dto';
+
 import { InformationSubmissionService } from '../service/information-submission.service';
 
 import {
@@ -23,6 +27,15 @@ import {
   UpdateInformationSubmissionDto,
   UpdateInformationSubmissionStatusDto,
 } from '../dto/information-submission.dto';
+
+// ─────────────────────────────────────────────
+// Media download URLs are deliberately NOT served by a generic
+// media module — same reasoning as VictimProfileController.
+// Authorization for "can this caller download this specific
+// object" has to go through the same visibility rules findOne()/
+// findForMissingPerson()/findOneForAdmin() already enforce, so it
+// lives here, split into owner / public / admin variants.
+// ─────────────────────────────────────────────
 
 @ApiTags('Information Submissions')
 @ApiBearerAuth('access-token')
@@ -95,6 +108,26 @@ export class InformationSubmissionController {
   }
 
   // ─────────────────────────────────────────────
+  // PUBLIC — MEDIA DOWNLOAD URL
+  // GET /information-submissions/public/:id/media?key=...
+  //
+  // Registered before the owner ':id' route below so 'public' is
+  // never swallowed as a submission id value.
+  //
+  // Returns a download URL only for media on a submission that has
+  // reached REVIEWED — same visibility contract as
+  // findForMissingPerson(). A submission that exists but isn't
+  // reviewed yet, or a key not actually attached to it, both 404.
+  // ─────────────────────────────────────────────
+
+  @Get('public/:id/media')
+  @AllowAnonymous()
+  @ApiOperation({ summary: "Get a short-lived download URL for a reviewed submission's media" })
+  async getPublicMedia(@Param('id') id: string, @Query() query: MediaKeyQueryDto) {
+    return this.informationSubmissionService.getPublicMediaDownloadUrl(id, query.key);
+  }
+
+  // ─────────────────────────────────────────────
   // GET ONE
   // GET /information-submissions/:id
   // ─────────────────────────────────────────────
@@ -103,6 +136,25 @@ export class InformationSubmissionController {
   @ApiOperation({ summary: 'Get my information submission' })
   async findOne(@Param('id') id: string, @CurrentUser() user: CurrentUserDto) {
     return this.informationSubmissionService.findOne(id, user.id);
+  }
+
+  // ─────────────────────────────────────────────
+  // MEDIA — DOWNLOAD URL (owner)
+  // GET /information-submissions/:id/media?key=...
+  //
+  // Owner can request a download URL for any media key actually
+  // attached to their own submission, regardless of status — same
+  // admin-style ownership check as findOne(), scoped to the caller.
+  // ─────────────────────────────────────────────
+
+  @Get(':id/media')
+  @ApiOperation({ summary: 'Get a short-lived download URL for my submission media' })
+  async getMedia(
+    @Param('id') id: string,
+    @CurrentUser() user: CurrentUserDto,
+    @Query() query: MediaKeyQueryDto,
+  ) {
+    return this.informationSubmissionService.getMediaDownloadUrl(id, user.id, query.key);
   }
 
   // ─────────────────────────────────────────────
@@ -167,6 +219,23 @@ export class InformationSubmissionController {
   @ApiOperation({ summary: 'Admin: get full detail for one information submission' })
   async findOneForAdmin(@Param('id') id: string) {
     return this.informationSubmissionService.findOneForAdmin(id);
+  }
+
+  // ─────────────────────────────────────────────
+  // ADMIN — MEDIA DOWNLOAD URL
+  // GET /information-submissions/admin/:id/media?key=...
+  //
+  // Admins can request a download URL for any media key actually
+  // attached to the submission, regardless of status — same
+  // admin-only, no-visibility-filtering access as findOneForAdmin().
+  // ─────────────────────────────────────────────
+
+  @Get('admin/:id/media')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.MISSING_PERSON_INFO_READ)
+  @ApiOperation({ summary: "Admin: get a short-lived download URL for a submission's media" })
+  async getMediaForAdmin(@Param('id') id: string, @Query() query: MediaKeyQueryDto) {
+    return this.informationSubmissionService.getMediaDownloadUrlForAdmin(id, query.key);
   }
 
   // ─────────────────────────────────────────────

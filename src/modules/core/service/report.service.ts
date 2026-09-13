@@ -174,6 +174,92 @@ export class ReportService {
   }
 
   // ─────────────────────────────────────────────
+  // GET MEDIA DOWNLOAD URL (REPORTER — OWN REPORT)
+  // GET /reports/:id/media?key=...
+  //
+  // Mirrors VictimProfileService/PostService's admin media-download
+  // method, but scoped the same way findOne()/update() already are:
+  // the reporter may only request a URL for a key actually attached
+  // to a report *they own*. There is no public equivalent here —
+  // unlike Post/VictimProfile, reports are never publicly visible,
+  // so only the reporter and admins (below) can ever reach this.
+  // ─────────────────────────────────────────────
+
+  async getMediaDownloadUrl(
+    user: CurrentUserDto,
+    reportId: string,
+    key: string,
+  ): Promise<{ url: string }> {
+    const report = await this.prisma.report.findFirst({
+      where: { id: reportId, userId: user.id },
+    });
+
+    if (!report) {
+      throw new NotFoundException('report_not_found');
+    }
+
+    const owned = this.collectMediaFields(report).includes(key);
+    if (!owned) {
+      throw new NotFoundException('media_not_found_on_report');
+    }
+
+    const url = await this.minioService.generatePresignedDownloadUrl(key);
+    return { url };
+  }
+
+  // ─────────────────────────────────────────────
+  // GET MEDIA DOWNLOAD URL (ADMIN)
+  // GET /reports/:id/admin/media?key=...
+  //
+  // Viewing a report's media is open to any ADMIN or SUPER_ADMIN,
+  // matching findOneForAdmin()'s access rule — assignment
+  // (assertAdminCanAccessReport) only gates *acting* on a report
+  // (updateStatus, requestMoreInformation, escalate), not reading
+  // it. Same key-ownership check as the reporter-facing method
+  // above.
+  //
+  // ASSUMPTION: emits an audit event the same way findOneForAdmin()
+  // does for REPORTER_INFORMATION_OPENED — downloading media is
+  // itself a way to access sensitive reporter-submitted content,
+  // so it shouldn't go unaudited just because it bypasses the
+  // detail-view endpoint. AuditEventEnum.REPORT_MEDIA_DOWNLOADED
+  // is assumed to be a new enum member; add it alongside the other
+  // REPORT_* entries if it doesn't already exist.
+  // ─────────────────────────────────────────────
+
+  async getMediaDownloadUrlForAdmin(
+    admin: CurrentUserDto,
+    reportId: string,
+    key: string,
+  ): Promise<{ url: string }> {
+    const report = await this.prisma.report.findUnique({
+      where: { id: reportId },
+    });
+
+    if (!report) {
+      throw new NotFoundException('report_not_found');
+    }
+
+    const owned = this.collectMediaFields(report).includes(key);
+    if (!owned) {
+      throw new NotFoundException('media_not_found_on_report');
+    }
+
+    const url = await this.minioService.generatePresignedDownloadUrl(key);
+
+    this.emitAudit({
+      userId: admin.id,
+      actorType: resolveActorType(this.getRoles(admin)),
+      action: AuditEventEnum.REPORT_MEDIA_DOWNLOADED,
+      entity: 'Report',
+      entityId: reportId,
+      diff: { result: 'success', key },
+    });
+
+    return { url };
+  }
+
+  // ─────────────────────────────────────────────
   // ACCESS CONTROL HELPER
   //
   // Shared by every admin-facing report operation.

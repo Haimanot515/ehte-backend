@@ -120,6 +120,94 @@ export class VictimProfileService {
     await Promise.allSettled(filepaths.map((fp) => this.minioService.deleteFile(fp)));
   }
 
+  // The only media field ever exposed on a public profile today is
+  // `photo` (see serializePublicProfile below), and only when the
+  // profile doesn't involve a child. This mirrors that exact rule
+  // so the two stay in sync — if serializePublicProfile's exposure
+  // ever changes, update this alongside it.
+  private getPubliclyVisibleMediaKeys(
+    profile: Pick<VictimProfile, 'photo' | 'involvesChild'>,
+  ): string[] {
+    return profile.involvesChild ? [] : profile.photo;
+  }
+
+  // ─────────────────────────────────────────────
+  // ADMIN — GET MEDIA DOWNLOAD URL
+  // GET /victim-profiles/:id/media?key=...
+  //
+  // Admins can request a download URL for any media key actually
+  // attached to the profile, regardless of publish/review state —
+  // matches findOne()'s admin-only, no-visibility-filtering access.
+  // Confirming the key belongs to this profile (rather than trusting
+  // any key the caller supplies) is what stops this from becoming a
+  // generic "download anything in the bucket" endpoint — the
+  // MediaModule deliberately has no such endpoint of its own.
+  // ─────────────────────────────────────────────
+
+  async getMediaDownloadUrl(id: string, key: string): Promise<{ url: string }> {
+    const profile = await this.prisma.victimProfile.findUnique({
+      where: { id },
+    });
+
+    if (!profile) {
+      throw new NotFoundException('victim_profile_not_found');
+    }
+
+    const owned = this.collectMediaFields(profile).includes(key);
+    if (!owned) {
+      throw new NotFoundException('media_not_found_on_profile');
+    }
+
+    const url = await this.minioService.generatePresignedDownloadUrl(key);
+    return { url };
+  }
+
+  // ─────────────────────────────────────────────
+  // PUBLIC — GET MEDIA DOWNLOAD URL
+  // GET /victim-profiles/public/:id/media?key=...
+  //
+  // Same visibility gate as findOnePublic() (published + every
+  // review gate satisfied), PLUS the key must be one of the keys
+  // getPubliclyVisibleMediaKeys() would actually expose — so a
+  // child profile's photos remain unreachable here exactly as they
+  // are in serializePublicProfile's response body, even though the
+  // photo's key technically still exists in the DB row.
+  // ─────────────────────────────────────────────
+
+  async getPublicMediaDownloadUrl(id: string, key: string): Promise<{ url: string }> {
+    const profile = await this.prisma.victimProfile.findFirst({
+      where: {
+        id,
+
+        status: VictimProfileStatus.PUBLISHED,
+        isPublished: true,
+
+        isVerified: true,
+        isSafetyReviewed: true,
+        hasConsent: true,
+        isPrivacyReviewed: true,
+        isAdminApproved: true,
+      },
+
+      select: {
+        photo: true,
+        involvesChild: true,
+      },
+    });
+
+    if (!profile) {
+      throw new NotFoundException('victim_profile_not_found');
+    }
+
+    const allowedKeys = this.getPubliclyVisibleMediaKeys(profile);
+    if (!allowedKeys.includes(key)) {
+      throw new NotFoundException('media_not_found_on_profile');
+    }
+
+    const url = await this.minioService.generatePresignedDownloadUrl(key);
+    return { url };
+  }
+
   // ─────────────────────────────────────────────
   // CREATE
   //

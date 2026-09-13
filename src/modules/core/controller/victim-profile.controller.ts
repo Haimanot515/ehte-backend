@@ -13,6 +13,9 @@ import { RolesEnum } from 'src/common/enums/roles.enum';
 import { RequirePermissions } from 'src/common/decorators/require-permissions.decorator';
 import { PermissionsEnum } from 'src/common/enums/permissions.enum';
 
+// NOTE: adjust this path to wherever MediaModule actually lives.
+import { MediaKeyQueryDto } from 'src/modules/media/dto/media-key-query.dto';
+
 import { VictimProfileService } from '../service/victim-profile.service';
 
 import {
@@ -29,8 +32,16 @@ import {
 // ─────────────────────────────────────────────
 // PRD §19: "Authorized administrators can create or manage a
 // Victim/Survivor Profile." Every mutating and single-record read
-// route below is admin-only. The only public-facing routes are
-// GET /victim-profiles/public and GET /victim-profiles/public/:id.
+// route below is admin-only. The public-facing routes are
+// GET /victim-profiles/public, GET /victim-profiles/public/:id, and
+// GET /victim-profiles/public/:id/media.
+//
+// Media download URLs are deliberately NOT served by a generic
+// media module — see MediaService's header comment. Authorization
+// for "can this caller download this specific object" has to go
+// through the same visibility rules findOne()/findOnePublic() and
+// serializePublicProfile() already enforce (child-profile photo
+// suppression, publish/review-state gating), so it lives here.
 // ─────────────────────────────────────────────
 
 @ApiTags('Victim Profiles')
@@ -95,6 +106,31 @@ export class VictimProfileController {
   }
 
   // ─────────────────────────────────────────────
+  // PUBLIC PROFILES — MEDIA DOWNLOAD URL
+  // GET /victim-profiles/public/:id/media?key=...
+  //
+  // Returns only a key that getPubliclyVisibleMediaKeys() would
+  // actually expose — i.e. never a child profile's photos, never an
+  // unpublished profile's media at all (findFirst's WHERE 404s
+  // first). Same visibility contract as findOnePublic().
+  // ─────────────────────────────────────────────
+
+  @Get('public/:id/media')
+  @AllowAnonymous()
+  @ApiOperation({
+    summary: "Get a short-lived download URL for a published profile's media",
+  })
+  async getPublicMedia(
+    @Param('id')
+    id: string,
+
+    @Query()
+    query: MediaKeyQueryDto,
+  ) {
+    return this.victimProfileService.getPublicMediaDownloadUrl(id, query.key);
+  }
+
+  // ─────────────────────────────────────────────
   // GET ONE
   // GET /victim-profiles/:id
   // ─────────────────────────────────────────────
@@ -134,6 +170,32 @@ export class VictimProfileController {
     id: string,
   ) {
     return this.victimProfileService.getSupportsSummary(id);
+  }
+
+  // ─────────────────────────────────────────────
+  // GET MEDIA DOWNLOAD URL (admin)
+  // GET /victim-profiles/:id/media?key=...
+  //
+  // Admins can request a download URL for any media key actually
+  // attached to the profile, regardless of publish/review state —
+  // same admin-only, no-visibility-filtering access as findOne().
+  // ─────────────────────────────────────────────
+
+  @Get(':id/media')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.PROFILE_READ)
+  @ApiBearerAuth('access-token')
+  @ApiOperation({
+    summary: "Admin: get a short-lived download URL for a profile's media",
+  })
+  async getMedia(
+    @Param('id')
+    id: string,
+
+    @Query()
+    query: MediaKeyQueryDto,
+  ) {
+    return this.victimProfileService.getMediaDownloadUrl(id, query.key);
   }
 
   // ─────────────────────────────────────────────
