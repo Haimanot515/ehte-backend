@@ -106,6 +106,23 @@ export class CreateReportDto {
   @IsArray()
   @IsString({ each: true })
   other?: string[];
+
+  // ─────────────────────────────────────────
+  // RE-AUTHENTICATION
+  //
+  // Verified and stripped by ReauthGuard before this DTO's data
+  // reaches ReportService.create() — never persisted or returned.
+  // Optional here since it can instead be supplied via the
+  // X-Reauth-Credential header; the guard accepts either.
+  // ─────────────────────────────────────────
+  @ApiPropertyOptional({
+    description:
+      'Account password (or Discreet Mode passcode, if enabled) confirming this sensitive action. Optional here if provided instead via the X-Reauth-Credential header.',
+    example: 'StrongPassword123',
+  })
+  @IsOptional()
+  @IsString()
+  credential?: string;
 }
 
 export class UpdateReportDto {
