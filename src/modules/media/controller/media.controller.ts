@@ -36,14 +36,21 @@ export class MediaController {
 
   // ─────────────────────────────────────────────
   // POST /media/presigned-upload
+  //
+  // Open to any authenticated user (PRD §10/§27: reporters attach
+  // their own photo/video/audio evidence directly). Gated only by
+  // the global JwtAuthGuard — no role/permission check here.
+  // Uploading a file does not by itself grant access to any report,
+  // post, or profile; a key only becomes meaningful once it's
+  // referenced in a create/update call the caller is authorized to
+  // make (e.g. their own report), so opening this endpoint does not
+  // expand write access anywhere else.
   // ─────────────────────────────────────────────
 
   @Post('presigned-upload')
-  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
-  @RequirePermissions(PermissionsEnum.MEDIA_UPLOAD)
   @ApiBearerAuth('access-token')
   @ApiOperation({
-    summary: 'Admin: get a presigned upload URL for a direct-to-storage upload',
+    summary: 'Get a presigned upload URL for a direct-to-storage upload',
   })
   async createPresignedUpload(
     @Body()
@@ -54,6 +61,10 @@ export class MediaController {
 
   // ─────────────────────────────────────────────
   // DELETE /media?key=...
+  //
+  // Stays admin-only: deleting an object by key has no ownership
+  // check, so opening this to regular users would let anyone
+  // delete media they don't own if they can guess/see the key.
   //
   // key is a query param, not a route param — object keys contain
   // slashes (e.g. victim-profiles/photos/<uuid>.jpg) and a plain
