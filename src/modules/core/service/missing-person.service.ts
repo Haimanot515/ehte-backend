@@ -195,6 +195,94 @@ export class MissingPersonService {
   }
 
   // ─────────────────────────────────────────────
+  // OWNER — GET MEDIA DOWNLOAD URL
+  // GET /missing-persons/mine/:id/media?key=...
+  //
+  // The submitter can request a download URL for a key attached to
+  // their own submission, in any status — mirrors
+  // ReportService.getMediaDownloadUrl's reporter-owned scoping.
+  // findMine() returns raw filepaths with no way to turn them into
+  // an actual URL; this closes that gap without waiting on
+  // approval, since the submitter should be able to confirm their
+  // own uploads regardless of review state.
+  // ─────────────────────────────────────────────
+
+  async getMediaDownloadUrlForOwner(
+    user: CurrentUserDto,
+    id: string,
+    key: string,
+  ): Promise<{ url: string }> {
+    const missingPerson = await this.prisma.missingPerson.findUnique({ where: { id } });
+
+    if (!missingPerson || missingPerson.userId !== user.id) {
+      throw new NotFoundException('missing_person_not_found');
+    }
+
+    const owned = this.collectMediaFields(missingPerson).includes(key);
+    if (!owned) {
+      throw new NotFoundException('media_not_found_on_missing_person');
+    }
+
+    const url = await this.minioService.generatePresignedDownloadUrl(key);
+    return { url };
+  }
+
+  // ─────────────────────────────────────────────
+  // ADMIN — GET MEDIA DOWNLOAD URL
+  // GET /missing-persons/admin/:id/media?key=...
+  //
+  // Admins can request a download URL for any media key actually
+  // attached to the submission, regardless of status — matches
+  // findOneForAdmin()'s admin-only, no-visibility-filtering access.
+  // ─────────────────────────────────────────────
+
+  async getMediaDownloadUrl(id: string, key: string): Promise<{ url: string }> {
+    const missingPerson = await this.prisma.missingPerson.findUnique({ where: { id } });
+
+    if (!missingPerson) {
+      throw new NotFoundException('missing_person_not_found');
+    }
+
+    const owned = this.collectMediaFields(missingPerson).includes(key);
+    if (!owned) {
+      throw new NotFoundException('media_not_found_on_missing_person');
+    }
+
+    const url = await this.minioService.generatePresignedDownloadUrl(key);
+    return { url };
+  }
+
+  // ─────────────────────────────────────────────
+  // PUBLIC — GET MEDIA DOWNLOAD URL
+  // GET /missing-persons/:id/media?key=...
+  //
+  // Same visibility gate as findOne(): the record must be
+  // APPROVED. Unlike VictimProfile/Post there's no child-safety
+  // suppression concept on MissingPerson, so every media field
+  // attached to an approved case is fair game here — matches
+  // publicSelect already exposing all six media arrays as-is.
+  // ─────────────────────────────────────────────
+
+  async getPublicMediaDownloadUrl(id: string, key: string): Promise<{ url: string }> {
+    const missingPerson = await this.prisma.missingPerson.findUnique({
+      where: { id },
+      select: this.publicSelect,
+    });
+
+    if (!missingPerson || missingPerson.status !== MissingPersonStatus.APPROVED) {
+      throw new NotFoundException('missing_person_not_found');
+    }
+
+    const owned = this.collectMediaFields(missingPerson).includes(key);
+    if (!owned) {
+      throw new NotFoundException('media_not_found_on_missing_person');
+    }
+
+    const url = await this.minioService.generatePresignedDownloadUrl(key);
+    return { url };
+  }
+
+  // ─────────────────────────────────────────────
   // CREATE
   //
   // Media filepaths are validated against MinIO before the case

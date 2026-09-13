@@ -165,6 +165,82 @@ export class PostService {
     await Promise.allSettled(filepaths.map((fp) => this.minioService.deleteFile(fp)));
   }
 
+  // The only media fields ever exposed on a public post are the
+  // media arrays themselves — but never when the post involves a
+  // child. Mirrors VictimProfileService.getPubliclyVisibleMediaKeys
+  // so the two stay in sync.
+  private getPubliclyVisibleMediaKeys(
+    post: Pick<MediaBearing, MediaFieldName> & { involvesChild: boolean },
+  ): string[] {
+    return post.involvesChild ? [] : this.collectMediaFields(post);
+  }
+
+  // ─────────────────────────────────────────────
+  // ADMIN — GET MEDIA DOWNLOAD URL
+  // GET /posts/:id/media?key=...
+  //
+  // Admins can request a download URL for any media key actually
+  // attached to the post, regardless of status — matches findOne()'s
+  // admin-only, no-visibility-filtering access.
+  // ─────────────────────────────────────────────
+
+  async getMediaDownloadUrl(postId: string, key: string): Promise<{ url: string }> {
+    const post = await this.prisma.post.findUnique({
+      where: { id: postId },
+    });
+
+    if (!post) {
+      throw new NotFoundException('post_not_found');
+    }
+
+    const owned = this.collectMediaFields(post).includes(key);
+    if (!owned) {
+      throw new NotFoundException('media_not_found_on_post');
+    }
+
+    const url = await this.minioService.generatePresignedDownloadUrl(key);
+    return { url };
+  }
+
+  // ─────────────────────────────────────────────
+  // PUBLIC — GET MEDIA DOWNLOAD URL
+  // GET /posts/published/:id/media?key=...
+  //
+  // Same visibility gate as findPublishedPost() (status must be
+  // PUBLISHED), PLUS the key must be one of the keys
+  // getPubliclyVisibleMediaKeys() would actually expose — so a
+  // child-involving post's media stays unreachable here, even
+  // though the key technically still exists in the DB row.
+  // ─────────────────────────────────────────────
+
+  async getPublicMediaDownloadUrl(postId: string, key: string): Promise<{ url: string }> {
+    const post = await this.prisma.post.findFirst({
+      where: { id: postId, status: PostStatus.PUBLISHED },
+
+      select: {
+        photo: true,
+        video: true,
+        audio: true,
+        pdf: true,
+        document: true,
+        other: true,
+        involvesChild: true,
+      },
+    });
+
+    if (!post) {
+      throw new NotFoundException('post_not_found');
+    }
+
+    const allowedKeys = this.getPubliclyVisibleMediaKeys(post);
+    if (!allowedKeys.includes(key)) {
+      throw new NotFoundException('media_not_found_on_post');
+    }
+
+    const url = await this.minioService.generatePresignedDownloadUrl(key);
+    return { url };
+  }
+
   // ─────────────────────────────────────────────
   // CREATE POST
   // ─────────────────────────────────────────────

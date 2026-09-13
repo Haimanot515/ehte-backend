@@ -28,8 +28,9 @@ import {
 
 // The six media-array fields shared by CreateInformationSubmissionDto/
 // UpdateInformationSubmissionDto and the InformationSubmission model
-// itself. Mirrors PostService's MEDIA_FIELD_NAMES so every module
-// stays in sync if a new media kind is ever added.
+// itself. Mirrors PostService's / VictimProfileService's
+// MEDIA_FIELD_NAMES so every module stays in sync if a new media
+// kind is ever added.
 const MEDIA_FIELD_NAMES = ['photo', 'video', 'audio', 'pdf', 'document', 'other'] as const;
 type MediaFieldName = (typeof MEDIA_FIELD_NAMES)[number];
 type MediaBearing = Record<MediaFieldName, string[]>;
@@ -67,11 +68,11 @@ export class InformationSubmissionService {
   // ─────────────────────────────────────────────
   // MEDIA HELPERS
   //
-  // Mirrors PostService's media helpers. InformationSubmission
-  // stores media as plain filepath strings in typed arrays
-  // (photo/video/audio/pdf/document/other), same as Post, Report,
-  // VictimProfile, and MissingPerson — kept in one place so every
-  // read/write of that shape stays consistent.
+  // Mirrors PostService's / VictimProfileService's media helpers.
+  // InformationSubmission stores media as plain filepath strings in
+  // typed arrays (photo/video/audio/pdf/document/other), same as
+  // Post, Report, VictimProfile, and MissingPerson — kept in one
+  // place so every read/write of that shape stays consistent.
   // ─────────────────────────────────────────────
 
   private collectMediaFields(entity: MediaBearing): string[] {
@@ -111,10 +112,9 @@ export class InformationSubmissionService {
   // Only called on filepaths that are new to the entity —
   // already-attached filepaths were validated when first added.
   //
-  // FIX: MinioService.objectExists() is now bucket-less — the
-  // service holds a single configured bucket internally, so callers
-  // just pass the key. getMediaBucket()/bucket param removed here
-  // to match the new signature.
+  // MinioService.objectExists() is bucket-less — the service holds
+  // a single configured bucket internally, so callers just pass the
+  // key.
   private async validateMediaFilesExist(filepaths: string[]): Promise<void> {
     if (!filepaths.length) return;
 
@@ -136,10 +136,109 @@ export class InformationSubmissionService {
   // that triggered the cleanup — failures are swallowed per-file
   // via allSettled rather than surfaced to the caller.
   //
-  // FIX: same bucket-less signature change as validateMediaFilesExist().
+  // Same bucket-less signature as validateMediaFilesExist().
   private async deleteMediaFiles(filepaths: string[]): Promise<void> {
     if (!filepaths.length) return;
     await Promise.allSettled(filepaths.map((fp) => this.minioService.deleteFile(fp)));
+  }
+
+  // ─────────────────────────────────────────────
+  // MEDIA — DOWNLOAD URL (owner)
+  // GET /information-submissions/:id/media?key=...
+  //
+  // Mirrors VictimProfileService.getMediaDownloadUrl: confirms the
+  // key actually belongs to this submission (rather than trusting
+  // any key the caller supplies) before generating a presigned URL.
+  // Restricted to the submission's own owner — this is not the
+  // admin-wide variant.
+  // ─────────────────────────────────────────────
+
+  async getMediaDownloadUrl(id: string, userId: string, key: string): Promise<{ url: string }> {
+    const submission = await this.prisma.informationSubmission.findUnique({
+      where: { id },
+    });
+
+    if (!submission) {
+      throw new NotFoundException('information_submission_not_found');
+    }
+
+    if (submission.userId !== userId) {
+      throw new ForbiddenException('not_authorized');
+    }
+
+    const owned = this.collectMediaFields(submission).includes(key);
+    if (!owned) {
+      throw new NotFoundException('media_not_found_on_submission');
+    }
+
+    const url = await this.minioService.generatePresignedDownloadUrl(key);
+    return { url };
+  }
+
+  // ─────────────────────────────────────────────
+  // ADMIN — MEDIA DOWNLOAD URL
+  // GET /information-submissions/admin/:id/media?key=...
+  //
+  // Admins can request a download URL for any media key actually
+  // attached to the submission, regardless of status — matches
+  // findOneForAdmin()'s admin-only, no-visibility-filtering access.
+  // ─────────────────────────────────────────────
+
+  async getMediaDownloadUrlForAdmin(id: string, key: string): Promise<{ url: string }> {
+    const submission = await this.prisma.informationSubmission.findUnique({
+      where: { id },
+    });
+
+    if (!submission) {
+      throw new NotFoundException('information_submission_not_found');
+    }
+
+    const owned = this.collectMediaFields(submission).includes(key);
+    if (!owned) {
+      throw new NotFoundException('media_not_found_on_submission');
+    }
+
+    const url = await this.minioService.generatePresignedDownloadUrl(key);
+    return { url };
+  }
+
+  // ─────────────────────────────────────────────
+  // PUBLIC — MEDIA DOWNLOAD URL
+  // GET /information-submissions/public/:id/media?key=...
+  //
+  // Same visibility gate as findForMissingPerson(): media on a
+  // submission is only reachable once it has been REVIEWED. A
+  // submission that exists but isn't reviewed yet should 404 here,
+  // not leak its existence via a different error shape.
+  // ─────────────────────────────────────────────
+
+  async getPublicMediaDownloadUrl(id: string, key: string): Promise<{ url: string }> {
+    const submission = await this.prisma.informationSubmission.findFirst({
+      where: {
+        id,
+        status: InformationStatus.REVIEWED,
+      },
+      select: {
+        photo: true,
+        video: true,
+        audio: true,
+        pdf: true,
+        document: true,
+        other: true,
+      },
+    });
+
+    if (!submission) {
+      throw new NotFoundException('information_submission_not_found');
+    }
+
+    const owned = this.collectMediaFields(submission).includes(key);
+    if (!owned) {
+      throw new NotFoundException('media_not_found_on_submission');
+    }
+
+    const url = await this.minioService.generatePresignedDownloadUrl(key);
+    return { url };
   }
 
   // ─────────────────────────────────────────────

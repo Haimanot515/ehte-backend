@@ -12,6 +12,10 @@ import { MissingPersonStatus } from '@prisma/client';
 // same convention as Roles / RolesEnum above.
 import { RequirePermissions } from 'src/common/decorators/require-permissions.decorator';
 import { PermissionsEnum } from 'src/common/enums/permissions.enum';
+// NOTE: adjust this path to wherever MediaModule actually lives — same
+// DTO VictimProfileController/PostController/ReportController already
+// use for their media routes.
+import { MediaKeyQueryDto } from 'src/modules/media/dto/media-key-query.dto';
 
 import {
   CreateMissingPersonDto,
@@ -57,6 +61,34 @@ export class MissingPersonController {
   @ApiQuery({ name: 'limit', required: false })
   async findMine(@CurrentUser() user: CurrentUserDto, @Query() query: ListMissingPersonsQueryDto) {
     return this.missingPersonService.findMine(user, query);
+  }
+
+  // ─────────────────────────────────────────────
+  // OWNER — GET MEDIA DOWNLOAD URL
+  // GET /missing-persons/mine/:id/media?key=...
+  //
+  // Lets the submitter request a download URL for a key attached
+  // to their own submission, in any status — mirrors
+  // ReportController's reporter-owned media route. findMine()
+  // returns raw filepaths with no way to turn them into an actual
+  // URL otherwise.
+  //
+  // Different path depth from 'mine' (1 segment) and from the
+  // public ':id' route below (1 segment), so declaration order
+  // relative to those doesn't matter — grouped here for readability.
+  //
+  // Authenticated USER
+  // ─────────────────────────────────────────────
+
+  @Get('mine/:id/media')
+  @ApiBearerAuth('access-token')
+  @ApiOperation({ summary: 'Get a short-lived download URL for one of my own submission\'s media' })
+  async getMediaForOwner(
+    @CurrentUser() user: CurrentUserDto,
+    @Param('id') id: string,
+    @Query() query: MediaKeyQueryDto,
+  ) {
+    return this.missingPersonService.getMediaDownloadUrlForOwner(user, id, query.key);
   }
 
   // ─────────────────────────────────────────────
@@ -122,6 +154,24 @@ export class MissingPersonController {
   }
 
   // ─────────────────────────────────────────────
+  // ADMIN — GET MEDIA DOWNLOAD URL
+  // GET /missing-persons/admin/:id/media?key=...
+  //
+  // Admins can request a download URL for any media key actually
+  // attached to the submission, regardless of status — same
+  // admin-only, no-visibility-filtering access as findOneForAdmin().
+  // ─────────────────────────────────────────────
+
+  @Get('admin/:id/media')
+  @ApiBearerAuth('access-token')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.MISSING_PERSON_READ)
+  @ApiOperation({ summary: "Admin: get a short-lived download URL for a submission's media" })
+  async getMedia(@Param('id') id: string, @Query() query: MediaKeyQueryDto) {
+    return this.missingPersonService.getMediaDownloadUrl(id, query.key);
+  }
+
+  // ─────────────────────────────────────────────
   // PUBLIC ONE
   // GET /missing-persons/:id
   // Anonymous — only ever returns APPROVED records
@@ -132,6 +182,25 @@ export class MissingPersonController {
   @ApiOperation({ summary: 'Get one approved missing person' })
   async findOne(@Param('id') id: string) {
     return this.missingPersonService.findOne(id);
+  }
+
+  // ─────────────────────────────────────────────
+  // PUBLIC — GET MEDIA DOWNLOAD URL
+  // GET /missing-persons/:id/media?key=...
+  //
+  // Same visibility gate as findOne(): the record must be
+  // APPROVED. Different path depth from the single-segment ':id'
+  // route above, so order relative to it doesn't matter — grouped
+  // here for readability.
+  //
+  // Anonymous
+  // ─────────────────────────────────────────────
+
+  @Get(':id/media')
+  @AllowAnonymous()
+  @ApiOperation({ summary: "Get a short-lived download URL for an approved submission's media" })
+  async getPublicMedia(@Param('id') id: string, @Query() query: MediaKeyQueryDto) {
+    return this.missingPersonService.getPublicMediaDownloadUrl(id, query.key);
   }
 
   // ─────────────────────────────────────────────

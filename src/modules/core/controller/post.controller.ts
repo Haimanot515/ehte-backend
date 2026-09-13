@@ -11,6 +11,9 @@ import { RequireReauthentication } from 'src/common/decorators/reauth.decorator'
 // same convention as Roles / RolesEnum above.
 import { RequirePermissions } from 'src/common/decorators/require-permissions.decorator';
 import { PermissionsEnum } from 'src/common/enums/permissions.enum';
+// NOTE: adjust this path to wherever MediaModule actually lives —
+// same DTO VictimProfileController already uses for its media routes.
+import { MediaKeyQueryDto } from 'src/modules/media/dto/media-key-query.dto';
 import {
   CreatePostDto,
   UpdatePostDto,
@@ -176,6 +179,28 @@ export class PostController {
   }
 
   // ─────────────────────────────────────────────
+  // PUBLIC POST — MEDIA DOWNLOAD URL
+  // GET /posts/published/:id/media?key=...
+  //
+  // Returns only a key that getPubliclyVisibleMediaKeys() would
+  // actually expose — i.e. never a child-involving post's media,
+  // never an unpublished post's media at all (findFirst's WHERE
+  // 404s first). Same visibility contract as findPublishedPost().
+  //
+  // Declared BEFORE 'published/:id' so Nest matches this more
+  // specific path first — route order matters here.
+  // ANONYMOUS
+  // ─────────────────────────────────────────────
+  @Get('published/:id/media')
+  @AllowAnonymous()
+  @ApiOperation({
+    summary: "Get a short-lived download URL for a published post's media",
+  })
+  async getPublicMedia(@Param('id') postId: string, @Query() query: MediaKeyQueryDto) {
+    return this.postService.getPublicMediaDownloadUrl(postId, query.key);
+  }
+
+  // ─────────────────────────────────────────────
   // PUBLIC POST
   // GET /posts/published/:id
   // ANONYMOUS
@@ -236,6 +261,30 @@ export class PostController {
   @ApiQuery({ name: 'limit', required: false })
   async findAll(@Query() query: AdminPostQueryDto) {
     return this.postService.findAll(query);
+  }
+
+  // ─────────────────────────────────────────────
+  // ADMIN — GET MEDIA DOWNLOAD URL
+  // GET /posts/:id/media?key=...
+  //
+  // Admins can request a download URL for any media key actually
+  // attached to the post, regardless of status — same admin-only,
+  // no-visibility-filtering access as findOne().
+  //
+  // Declared BEFORE ':id' so Nest matches this more specific path
+  // first — route order matters here.
+  //
+  // ADMIN / SUPER_ADMIN
+  // ─────────────────────────────────────────────
+  @Get(':id/media')
+  @ApiBearerAuth('access-token')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.POST_READ)
+  @ApiOperation({
+    summary: "Admin: get a short-lived download URL for a post's media",
+  })
+  async getMedia(@Param('id') postId: string, @Query() query: MediaKeyQueryDto) {
+    return this.postService.getMediaDownloadUrl(postId, query.key);
   }
 
   // ─────────────────────────────────────────────

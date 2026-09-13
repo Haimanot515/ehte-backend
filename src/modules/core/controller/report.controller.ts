@@ -25,6 +25,10 @@ import { RequireReauthentication } from 'src/common/decorators/reauth.decorator'
 // below follow the same convention as Roles / RolesEnum above.
 import { RequirePermissions } from 'src/common/decorators/require-permissions.decorator';
 import { PermissionsEnum } from 'src/common/enums/permissions.enum';
+// NOTE: adjust this path to wherever MediaModule actually lives — same
+// DTO VictimProfileController/PostController already use for their
+// media routes.
+import { MediaKeyQueryDto } from 'src/modules/media/dto/media-key-query.dto';
 
 @ApiTags('Reports')
 @ApiBearerAuth('access-token')
@@ -92,6 +96,24 @@ export class ReportController {
     return this.reportService.findOne(user, reportId);
   }
 
+  // ─────────────────────────────────────────────
+  // GET MEDIA DOWNLOAD URL (REPORTER — OWN REPORT)
+  // GET /reports/:id/media?key=...
+  //
+  // Mirrors VictimProfileController/PostController's media-download
+  // routes, scoped the same way findOne() already is: a reporter may
+  // only request a URL for a key attached to a report they own.
+  // ─────────────────────────────────────────────
+  @Get(':id/media')
+  @ApiOperation({ summary: "Get a short-lived download URL for one of my report's media" })
+  async getMedia(
+    @CurrentUser() user: CurrentUserDto,
+    @Param('id') reportId: string,
+    @Query() query: MediaKeyQueryDto,
+  ) {
+    return this.reportService.getMediaDownloadUrl(user, reportId, query.key);
+  }
+
   @Patch(':id')
   @ApiOperation({ summary: 'Update a pending report' })
   async update(
@@ -117,6 +139,28 @@ export class ReportController {
   @ApiOperation({ summary: 'Get full report detail including reporter information (admin)' })
   async findOneForAdmin(@CurrentUser() admin: CurrentUserDto, @Param('id') reportId: string) {
     return this.reportService.findOneForAdmin(admin, reportId);
+  }
+
+  // ─────────────────────────────────────────────
+  // GET MEDIA DOWNLOAD URL (ADMIN)
+  // GET /reports/:id/admin/media?key=...
+  //
+  // Viewing a report's media is open to any ADMIN or SUPER_ADMIN,
+  // matching findOneForAdmin()'s access rule — same permissions as
+  // that route, since this is another way to access the same
+  // reporter-submitted content. Assignment only gates *acting* on a
+  // report elsewhere in this controller.
+  // ─────────────────────────────────────────────
+  @Get(':id/admin/media')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.REPORT_READ, PermissionsEnum.REPORTER_INFO_READ)
+  @ApiOperation({ summary: "Admin: get a short-lived download URL for a report's media" })
+  async getMediaForAdmin(
+    @CurrentUser() admin: CurrentUserDto,
+    @Param('id') reportId: string,
+    @Query() query: MediaKeyQueryDto,
+  ) {
+    return this.reportService.getMediaDownloadUrlForAdmin(admin, reportId, query.key);
   }
 
   @Patch(':id/status')
