@@ -47,13 +47,12 @@ export class MinioService implements OnModuleInit {
         endPoint: endpoint,
         port: this.configService.get<number>('minio.port') ?? 9000,
         useSSL: this.configService.get<boolean>('minio.useSSL') ?? false,
-        // ADDED: without this, the SDK falls back to auto-detecting the
-        // bucket region via a GetBucketLocation call before it can sign
-        // requests — an extra round-trip on every operation, and a source
-        // of real breakage against some non-AWS S3-compatible stores.
-        // Cloudflare R2 requires 'auto' (configured via MINIO_REGION=auto
-        // in production); local MinIO is happy with the 'us-east-1'
-        // fallback below.
+        // Region is required for S3-compatible providers like Backblaze B2
+        // and Cloudflare R2 to skip the SDK's GetBucketLocation
+        // auto-detection call and sign requests correctly. Local MinIO is
+        // happy with the 'us-east-1' fallback below; production sets
+        // MINIO_REGION explicitly (e.g. a real B2 region like us-west-004,
+        // or 'auto' if this ever points at R2 instead).
         region: this.configService.get<string>('minio.region') ?? 'us-east-1',
         accessKey,
         secretKey,
@@ -61,8 +60,17 @@ export class MinioService implements OnModuleInit {
       this.logger.log('MinIO client initialized');
 
       await this.ensureBucket(this.bucket);
-    } catch (e) {
-      this.logger.error('Failed to initialize MinIO', e);
+    } catch (e: any) {
+      // FIX: was `this.logger.error('Failed to initialize MinIO', e)`, which
+      // silently dropped the actual error details under a Pino-backed
+      // Nest logger (Pino's .error() expects the error as the FIRST
+      // argument, not the second — passing it second means it never gets
+      // serialized into the log line). Inlining the fields we actually need
+      // into the message string guarantees they show up regardless of the
+      // logger's argument-handling quirks.
+      this.logger.error(
+        `Failed to initialize MinIO: code=${e?.code ?? 'unknown'} status=${e?.statusCode ?? 'unknown'} message=${e?.message ?? 'unknown'}`,
+      );
     }
   }
 
