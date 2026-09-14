@@ -1,0 +1,11 @@
+#!/bin/sh
+
+echo "Running Ehte pre-push checks..."
+
+echo "📦 Building application..."
+npm run build
+
+echo "🗄️ Validating Prisma schema..."
+npx prisma validate --schema=./prisma/schema
+
+echo "✅ Pre-push checks passed!"
