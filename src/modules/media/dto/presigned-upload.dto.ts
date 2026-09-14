@@ -1,7 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { IsEnum, IsNotEmpty, IsOptional, IsString } from 'class-validator';
 
-import { MediaFolder } from '../media-folder.enum';
+import { MediaFolder } from '../../../common/enums/media-folder.enum';
 
 export class PresignedUploadDto {
   @ApiProperty({
