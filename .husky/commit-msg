@@ -1,0 +1,23 @@
+#!/bin/sh
+
+commit_msg=$(cat "$1")
+
+if ! echo "$commit_msg" | grep -Eq '^(feat|fix|refactor|docs|test|chore|perf|build|ci|revert)(\([a-z0-9._/-]+\))?!?: .+'; then
+  echo ""
+  echo "❌ Invalid commit message format."
+  echo ""
+  echo "Expected format:"
+  echo "  type(scope): description"
+  echo ""
+  echo "Examples:"
+  echo "  feat(auth): add phone verification"
+  echo "  fix(media): fix presigned upload"
+  echo "  refactor(media): move media folder enum"
+  echo "  docs(readme): update documentation"
+  echo "  test(auth): add login tests"
+  echo "  chore(deps): update dependencies"
+  echo ""
+  exit 1
+fi
+
+echo "✅ Commit message format passed!"
