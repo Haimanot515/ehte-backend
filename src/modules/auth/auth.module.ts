@@ -6,7 +6,7 @@ import { PassportModule } from '@nestjs/passport';
 import { PrismaModule } from 'src/prisma/prisma.module';
 import { SmsModule } from 'src/services/sms/sms.module';
 
-import { AuthController, AdminAuthController } from './controller/auth.controller';
+import { AuthController } from './controller/auth.controller';
 import { AuthService } from './service/auth.service';
 
 import { RoleController } from './controller/role.controller';
@@ -14,6 +14,10 @@ import { RoleService } from './service/role.service';
 
 import { PermissionController } from './controller/permission.controller';
 import { PermissionService } from './service/permission.service';
+
+import { OtpUtil } from 'src/common/utils/otp.util';
+import { LockoutUtil } from 'src/common/utils/lockout.util';
+import { TokenUtil } from 'src/common/utils/token.util';
 
 @Module({
   imports: [
@@ -36,9 +40,9 @@ import { PermissionService } from './service/permission.service';
     }),
   ],
 
-  controllers: [AuthController, AdminAuthController, RoleController, PermissionController],
+  controllers: [AuthController, RoleController, PermissionController],
 
-  providers: [AuthService, RoleService, PermissionService],
+  providers: [AuthService, RoleService, PermissionService, OtpUtil, LockoutUtil, TokenUtil],
 
   exports: [AuthService, RoleService, PermissionService],
 })
