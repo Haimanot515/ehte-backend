@@ -124,7 +124,8 @@ stages:
       pool:
         name: pitron-dev
       steps:
-        - checkout: none
+        - checkout: self
+          clean: 'true'
 
         - task: DownloadSecureFile@1
           name: envFile
@@ -133,7 +134,7 @@ stages:
             secureFile: "ehte_dev.env"
 
         - script: |
-            cp $(envFile.secureFilePath) $(System.DefaultWorkingDirectory)/ehte.env
+            cp $(envFile.secureFilePath) $(Build.SourcesDirectory)/.env
           displayName: "Place env file in workspace"
 
         - script: |
@@ -142,10 +143,10 @@ stages:
               -u "$REGISTRY_USER" \
               --password-stdin
             docker pull $REGISTRY_HOST/$IMAGE_NAME:dev-latest
-            docker compose down || true
-            docker compose up -d
-            docker ps
+            docker compose up -d --pull always --force-recreate
+            docker compose ps
           displayName: "Deploy DEV"
+          workingDirectory: $(Build.SourcesDirectory)
           env:
             REGISTRY_HOST: $(REGISTRY_HOST)
             REGISTRY_USER: $(REGISTRY_USER)
@@ -182,11 +183,6 @@ stages:
             npm run test --if-present || true
             npm run build
           displayName: "Install, Format, Type-check, Lint, Test & Build"
-
-# ─────────────────────────────────────────────
- 
-          displayName: "Install, Test & Build"
-
 
 # ============================================================
 # MERGE → MASTER : CD PROD
@@ -264,7 +260,8 @@ stages:
       pool:
         name: pitron-dev
       steps:
-        - checkout: none
+        - checkout: self
+          clean: 'true'
 
         - task: DownloadSecureFile@1
           name: envFile
@@ -273,7 +270,7 @@ stages:
             secureFile: "ehte_prod.env"
 
         - script: |
-            cp $(envFile.secureFilePath) $(System.DefaultWorkingDirectory)/ehte.env
+            cp $(envFile.secureFilePath) $(Build.SourcesDirectory)/.env
           displayName: "Place env file in workspace"
 
         - script: |
@@ -282,10 +279,10 @@ stages:
               -u "$REGISTRY_USER" \
               --password-stdin
             docker pull $REGISTRY_HOST/$IMAGE_NAME:prod-latest
-            docker compose down || true
-            docker compose up -d
-            docker ps
+            docker compose up -d --pull always --force-recreate
+            docker compose ps
           displayName: "Deploy PROD"
+          workingDirectory: $(Build.SourcesDirectory)
           env:
             REGISTRY_HOST: $(REGISTRY_HOST)
             REGISTRY_USER: $(REGISTRY_USER)
