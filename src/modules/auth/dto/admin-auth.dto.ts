@@ -70,7 +70,8 @@ export class AdminRegisterDto {
   name: string;
 
   @ApiProperty({
-    description: 'Roles to grant the new admin — must be ADMIN or SUPER_ADMIN. Any other value ' +
+    description:
+      'Roles to grant the new admin — must be ADMIN or SUPER_ADMIN. Any other value ' +
       'would create an account with no phone and no admin role, which could never log in anywhere.',
     example: [RolesEnum.ADMIN],
     enum: [RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN],

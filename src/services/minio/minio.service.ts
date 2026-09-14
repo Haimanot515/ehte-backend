@@ -125,10 +125,7 @@ export class MinioService implements OnModuleInit {
     return `${folder}/${randomUUID()}${extname(originalname)}`;
   }
 
-  async uploadMulterFile(
-    file: Express.Multer.File,
-    folder: string,
-  ): Promise<string> {
+  async uploadMulterFile(file: Express.Multer.File, folder: string): Promise<string> {
     const key = this.buildObjectKey(file.originalname, folder);
     return this.uploadFile(key, file.buffer, file.mimetype);
   }

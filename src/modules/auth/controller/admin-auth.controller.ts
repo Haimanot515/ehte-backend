@@ -40,7 +40,8 @@ export class AdminAuthController {
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.SUPER_ADMIN)
   @ApiOperation({
-    summary: 'Register a new admin by email + name + roles (registration-link flow, no creator-set password)',
+    summary:
+      'Register a new admin by email + name + roles (registration-link flow, no creator-set password)',
   })
   async register(@CurrentUser() user: CurrentUserDto, @Body() data: AdminRegisterDto) {
     return this.adminAuthService.adminRegister(user, data);
@@ -55,7 +56,10 @@ export class AdminAuthController {
   @ApiOperation({
     summary: 'Resend a pending admin registration email with a freshly generated token',
   })
-  async resendRegistration(@CurrentUser() user: CurrentUserDto, @Body() data: AdminRegisterResendDto) {
+  async resendRegistration(
+    @CurrentUser() user: CurrentUserDto,
+    @Body() data: AdminRegisterResendDto,
+  ) {
     return this.adminAuthService.adminRegisterResend(user, data);
   }
 
@@ -65,7 +69,8 @@ export class AdminAuthController {
   @Throttle({ default: { limit: 5, ttl: 60000 } })
   @Post('register/complete')
   @ApiOperation({
-    summary: 'Registering admin sets their own password using their registration token; activates the account and returns tokens',
+    summary:
+      'Registering admin sets their own password using their registration token; activates the account and returns tokens',
   })
   async completeRegistration(@Body() data: AdminCompleteRegistrationDto) {
     return this.adminAuthService.adminCompleteRegistration(data);
@@ -94,7 +99,8 @@ export class AdminAuthController {
   @ApiBearerAuth('access-token')
   @RequireReauthentication()
   @ApiOperation({
-    summary: "Request to change the authenticated admin's own login email (requires re-authentication)",
+    summary:
+      "Request to change the authenticated admin's own login email (requires re-authentication)",
   })
   async changeEmail(@CurrentUser() user: CurrentUserDto, @Body() data: AdminChangeEmailDto) {
     return this.adminAuthService.adminChangeEmailInitiate(user, data);
@@ -119,7 +125,8 @@ export class AdminAuthController {
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.SUPER_ADMIN)
   @ApiOperation({
-    summary: 'Promote an existing (active, phone-verified) user to admin: attach + send OTP to their new email',
+    summary:
+      'Promote an existing (active, phone-verified) user to admin: attach + send OTP to their new email',
   })
   async promote(@CurrentUser() user: CurrentUserDto, @Body() data: PromoteUserDto) {
     return this.adminAuthService.promoteUserInitiate(user, data);

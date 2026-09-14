@@ -68,7 +68,10 @@ export class InformationSubmissionController {
   @ApiQuery({ name: 'status', required: false, enum: InformationStatus })
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
-  async findMine(@CurrentUser() user: CurrentUserDto, @Query() query: ListInformationSubmissionsQueryDto) {
+  async findMine(
+    @CurrentUser() user: CurrentUserDto,
+    @Query() query: ListInformationSubmissionsQueryDto,
+  ) {
     return this.informationSubmissionService.findMine(user.id, query);
   }
 

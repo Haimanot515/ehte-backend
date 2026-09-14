@@ -132,10 +132,7 @@ export class ReportController {
 
   @Get(':id/admin')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
-  @RequirePermissions(
-    PermissionsEnum.REPORT_READ,
-    PermissionsEnum.REPORTER_INFO_READ,
-  )
+  @RequirePermissions(PermissionsEnum.REPORT_READ, PermissionsEnum.REPORTER_INFO_READ)
   @ApiOperation({ summary: 'Get full report detail including reporter information (admin)' })
   async findOneForAdmin(@CurrentUser() admin: CurrentUserDto, @Param('id') reportId: string) {
     return this.reportService.findOneForAdmin(admin, reportId);

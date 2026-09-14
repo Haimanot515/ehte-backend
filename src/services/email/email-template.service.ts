@@ -19,15 +19,9 @@ export class EmailTemplateService {
   private readonly appUrl: string;
 
   constructor(private readonly configService: ConfigService) {
-    this.appName = this.configService.get<string>(
-      'app.name',
-      'Ehte',
-    );
+    this.appName = this.configService.get<string>('app.name', 'Ehte');
 
-    this.appUrl = this.configService.get<string>(
-      'app.url',
-      'https://ehte.org',
-    );
+    this.appUrl = this.configService.get<string>('app.url', 'https://ehte.org');
   }
 
   getAppName(): string {
@@ -60,17 +54,11 @@ export class EmailTemplateService {
     return renderAdminRegistrationEmailSubject();
   }
 
-  adminRegistrationHtml(params: {
-    registrationLink: string;
-    expiresInHours: number;
-  }): string {
+  adminRegistrationHtml(params: { registrationLink: string; expiresInHours: number }): string {
     return renderAdminRegistrationEmailHtml(params);
   }
 
-  adminRegistrationText(params: {
-    registrationLink: string;
-    expiresInHours: number;
-  }): string {
+  adminRegistrationText(params: { registrationLink: string; expiresInHours: number }): string {
     return renderAdminRegistrationEmailText(params);
   }
 }

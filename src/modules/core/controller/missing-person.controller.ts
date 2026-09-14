@@ -82,7 +82,7 @@ export class MissingPersonController {
 
   @Get('mine/:id/media')
   @ApiBearerAuth('access-token')
-  @ApiOperation({ summary: 'Get a short-lived download URL for one of my own submission\'s media' })
+  @ApiOperation({ summary: "Get a short-lived download URL for one of my own submission's media" })
   async getMediaForOwner(
     @CurrentUser() user: CurrentUserDto,
     @Param('id') id: string,
@@ -144,10 +144,7 @@ export class MissingPersonController {
   @Get('admin/:id')
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
-  @RequirePermissions(
-    PermissionsEnum.MISSING_PERSON_READ,
-    PermissionsEnum.MISSING_PERSON_INFO_READ,
-  )
+  @RequirePermissions(PermissionsEnum.MISSING_PERSON_READ, PermissionsEnum.MISSING_PERSON_INFO_READ)
   @ApiOperation({ summary: 'Admin: get full detail for one missing person' })
   async findOneForAdmin(@Param('id') id: string) {
     return this.missingPersonService.findOneForAdmin(id);
