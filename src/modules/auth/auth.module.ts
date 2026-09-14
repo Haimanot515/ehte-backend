@@ -9,6 +9,9 @@ import { SmsModule } from 'src/services/sms/sms.module';
 import { AuthController } from './controller/auth.controller';
 import { AuthService } from './service/auth.service';
 
+import { AdminAuthController } from './controller/admin-auth.controller';
+import { AdminAuthService } from './service/admin-auth.service';
+
 import { RoleController } from './controller/role.controller';
 import { RoleService } from './service/role.service';
 
@@ -40,10 +43,18 @@ import { TokenUtil } from 'src/common/utils/token.util';
     }),
   ],
 
-  controllers: [AuthController, RoleController, PermissionController],
+  controllers: [AuthController, AdminAuthController, RoleController, PermissionController],
 
-  providers: [AuthService, RoleService, PermissionService, OtpUtil, LockoutUtil, TokenUtil],
+  providers: [
+    AuthService,
+    AdminAuthService,
+    RoleService,
+    PermissionService,
+    OtpUtil,
+    LockoutUtil,
+    TokenUtil,
+  ],
 
-  exports: [AuthService, RoleService, PermissionService],
+  exports: [AuthService, AdminAuthService, RoleService, PermissionService],
 })
 export class AuthModule {}
