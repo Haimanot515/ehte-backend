@@ -1,59 +1,78 @@
-# compiled output
-/dist
-/node_modules
-/build
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+.tmp/
+.temp/
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
 
 # Logs
-logs
+logs/
 *.log
 npm-debug.log*
-pnpm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-lerna-debug.log*
+pnpm-debug.log*
 
-# OS
-.DS_Store
+# Test and coverage
+coverage/
+.nyc_output/
+*.lcov
 
-# Tests
-/coverage
-/.nyc_output
+# Prisma local/generated artifacts
+prisma/generated/
+prisma/.cache/
 
-# IDEs and editors
-/.idea
-.project
-.classpath
-.c9/
-*.launch
-.settings/
-*.sublime-workspace
-
-# IDE - VSCode
-.vscode/*
-!.vscode/settings.json
-!.vscode/tasks.json
-!.vscode/launch.json
-!.vscode/extensions.json
-
-# dotenv environment variable files
-.env
-.env.development
-.env.test
-.env.staging
-.env.production
-.env.local
-
-# temp directory
-.temp
-.tmp
-
-# Runtime data
-pids
+# Runtime files
 *.pid
-*.seed
 *.pid.lock
 
-# Diagnostic reports (https://nodejs.org/api/report.html)
-report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+# Uploads and local storage
+uploads/
+storage/
+tmp/
+temp/
 
-/generated/prisma
+# OS files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Editor temporary files
+*.swp
+*.swo
+*~
+.vscode/*.log
+
+# IDE metadata
+.idea/
+*.iml
+
+# TypeScript incremental build files
+*.tsbuildinfo
+
+# Debug files
+.npm/
+.eslintcache
+.stylelintcache
+
+# Local databases
+*.sqlite
+*.sqlite3
+*.db
+
+# Docker local overrides
+docker-compose.override.yml
+
+# Render/local deployment artifacts
+.render/
+
+# Generated documentation/site output
+docs/.vitepress/dist/
