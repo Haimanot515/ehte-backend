@@ -46,7 +46,7 @@
     "compression": "^1.8.1",
     "express-basic-auth": "^1.2.1",
     "helmet": "^8.1.0",
-    "joi": "^18.0.2",
+    "joi": "^18.2.8",
     "minio": "^8.0.7",
     "nestjs-pino": "^4.6.0",
     "nodemailer": "^10.0.2",
