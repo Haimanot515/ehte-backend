@@ -28,10 +28,7 @@ export class AdminSeeder implements OnApplicationBootstrap {
 
     const name = this.config.get<string>('ADMIN_NAME', 'Ehte System Admin');
 
-    const password = this.config.get<string>(
-      'ADMIN_PASSWORD',
-      'P@ssw0rd',
-    );
+    const password = this.config.get<string>('ADMIN_PASSWORD', 'P@ssw0rd');
 
     const existingUser = await this.prisma.user.findUnique({
       where: { email },

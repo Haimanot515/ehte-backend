@@ -84,4 +84,4 @@ export async function sendEmail(
     html: options.html,
     text: options.text,
   });
-}  
+}

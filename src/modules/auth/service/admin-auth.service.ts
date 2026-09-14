@@ -155,7 +155,9 @@ export class AdminAuthService {
 
     const rawRegistrationToken = randomBytes(32).toString('hex');
     const inviteTokenHash = this.tokenUtil.hashOpaqueToken(rawRegistrationToken, 'registration');
-    const inviteTokenExpiresAt = new Date(Date.now() + REGISTRATION_TOKEN_EXPIRES_MINUTES * 60 * 1000);
+    const inviteTokenExpiresAt = new Date(
+      Date.now() + REGISTRATION_TOKEN_EXPIRES_MINUTES * 60 * 1000,
+    );
 
     let admin: { id: string };
 
@@ -253,7 +255,9 @@ export class AdminAuthService {
 
     const rawRegistrationToken = randomBytes(32).toString('hex');
     const inviteTokenHash = this.tokenUtil.hashOpaqueToken(rawRegistrationToken, 'registration');
-    const inviteTokenExpiresAt = new Date(Date.now() + REGISTRATION_TOKEN_EXPIRES_MINUTES * 60 * 1000);
+    const inviteTokenExpiresAt = new Date(
+      Date.now() + REGISTRATION_TOKEN_EXPIRES_MINUTES * 60 * 1000,
+    );
 
     // Overwriting the token invalidates any previous unused registration link.
     await this.prisma.user.update({
@@ -698,9 +702,7 @@ export class AdminAuthService {
 
   // ADMIN — FORGOT PASSWORD: email-only; masks "no account"/"not admin"/"inactive" identically.
 
-  async adminForgotPassword(
-    data: AdminForgotPasswordDto,
-  ): Promise<{ verificationId: string }> {
+  async adminForgotPassword(data: AdminForgotPasswordDto): Promise<{ verificationId: string }> {
     const email = this.normalizeEmailOrThrow(data.email);
 
     const user = await this.prisma.user.findUnique({
@@ -1052,7 +1054,10 @@ export class AdminAuthService {
       await sendEmail(
         newEmail,
         renderOtpEmailSubject(),
-        renderOtpEmailHtml({ otp: changeEmailLink, expiresInMinutes: EMAIL_CHANGE_TOKEN_EXPIRES_MINUTES }),
+        renderOtpEmailHtml({
+          otp: changeEmailLink,
+          expiresInMinutes: EMAIL_CHANGE_TOKEN_EXPIRES_MINUTES,
+        }),
       );
     } catch (error) {
       console.error(`[EHTE EMAIL] Failed to send email-change verification to ${newEmail}`, error);

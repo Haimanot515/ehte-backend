@@ -93,11 +93,11 @@ export class TokenUtil {
   ): string {
     const secret =
       purpose !== 'refresh'
-        ? this.configService.get<string>('jwt.registrationSecret') ??
+        ? (this.configService.get<string>('jwt.registrationSecret') ??
           this.configService.get<string>('jwt.refreshSecret') ??
-          this.configService.getOrThrow<string>('jwt.secret')
-        : this.configService.get<string>('jwt.refreshSecret') ??
-          this.configService.getOrThrow<string>('jwt.secret');
+          this.configService.getOrThrow<string>('jwt.secret'))
+        : (this.configService.get<string>('jwt.refreshSecret') ??
+          this.configService.getOrThrow<string>('jwt.secret'));
 
     return createHmac('sha256', secret).update(token).digest('hex');
   }

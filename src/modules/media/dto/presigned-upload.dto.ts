@@ -14,7 +14,8 @@ export class PresignedUploadDto {
 
   @ApiProperty({
     enum: MediaFolder,
-    description: 'Which media kind this upload belongs to — maps 1:1 onto the domain media arrays (photo/video/audio/pdf/document/other).',
+    description:
+      'Which media kind this upload belongs to — maps 1:1 onto the domain media arrays (photo/video/audio/pdf/document/other).',
     example: MediaFolder.PHOTO,
   })
   @IsEnum(MediaFolder)

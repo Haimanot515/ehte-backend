@@ -36,42 +36,63 @@ export class CreatePostDto {
   // Flags content involving a child, driving the additional-review
   // gate required by PRD §32. Optional so existing clients that
   // don't send it keep working (defaults to false in the service).
-  @ApiPropertyOptional({ default: false, description: 'Triggers additional child-safety review (PRD §32).' })
+  @ApiPropertyOptional({
+    default: false,
+    description: 'Triggers additional child-safety review (PRD §32).',
+  })
   @IsOptional()
   @IsBoolean()
   involvesChild?: boolean;
 
-  @ApiPropertyOptional({ type: [String], description: 'MinIO filepaths returned by POST /media/upload-url' })
+  @ApiPropertyOptional({
+    type: [String],
+    description: 'MinIO filepaths returned by POST /media/upload-url',
+  })
   @IsOptional()
   @IsArray()
   @IsString({ each: true })
   photo?: string[];
 
-  @ApiPropertyOptional({ type: [String], description: 'MinIO filepaths returned by POST /media/upload-url' })
+  @ApiPropertyOptional({
+    type: [String],
+    description: 'MinIO filepaths returned by POST /media/upload-url',
+  })
   @IsOptional()
   @IsArray()
   @IsString({ each: true })
   video?: string[];
 
-  @ApiPropertyOptional({ type: [String], description: 'MinIO filepaths returned by POST /media/upload-url' })
+  @ApiPropertyOptional({
+    type: [String],
+    description: 'MinIO filepaths returned by POST /media/upload-url',
+  })
   @IsOptional()
   @IsArray()
   @IsString({ each: true })
   audio?: string[];
 
-  @ApiPropertyOptional({ type: [String], description: 'MinIO filepaths returned by POST /media/upload-url' })
+  @ApiPropertyOptional({
+    type: [String],
+    description: 'MinIO filepaths returned by POST /media/upload-url',
+  })
   @IsOptional()
   @IsArray()
   @IsString({ each: true })
   pdf?: string[];
 
-  @ApiPropertyOptional({ type: [String], description: 'MinIO filepaths returned by POST /media/upload-url' })
+  @ApiPropertyOptional({
+    type: [String],
+    description: 'MinIO filepaths returned by POST /media/upload-url',
+  })
   @IsOptional()
   @IsArray()
   @IsString({ each: true })
   document?: string[];
 
-  @ApiPropertyOptional({ type: [String], description: 'MinIO filepaths returned by POST /media/upload-url' })
+  @ApiPropertyOptional({
+    type: [String],
+    description: 'MinIO filepaths returned by POST /media/upload-url',
+  })
   @IsOptional()
   @IsArray()
   @IsString({ each: true })
@@ -126,37 +147,55 @@ export class UpdatePostDto {
   @IsBoolean()
   involvesChild?: boolean;
 
-  @ApiPropertyOptional({ type: [String], description: 'MinIO filepaths returned by POST /media/upload-url' })
+  @ApiPropertyOptional({
+    type: [String],
+    description: 'MinIO filepaths returned by POST /media/upload-url',
+  })
   @IsOptional()
   @IsArray()
   @IsString({ each: true })
   photo?: string[];
 
-  @ApiPropertyOptional({ type: [String], description: 'MinIO filepaths returned by POST /media/upload-url' })
+  @ApiPropertyOptional({
+    type: [String],
+    description: 'MinIO filepaths returned by POST /media/upload-url',
+  })
   @IsOptional()
   @IsArray()
   @IsString({ each: true })
   video?: string[];
 
-  @ApiPropertyOptional({ type: [String], description: 'MinIO filepaths returned by POST /media/upload-url' })
+  @ApiPropertyOptional({
+    type: [String],
+    description: 'MinIO filepaths returned by POST /media/upload-url',
+  })
   @IsOptional()
   @IsArray()
   @IsString({ each: true })
   audio?: string[];
 
-  @ApiPropertyOptional({ type: [String], description: 'MinIO filepaths returned by POST /media/upload-url' })
+  @ApiPropertyOptional({
+    type: [String],
+    description: 'MinIO filepaths returned by POST /media/upload-url',
+  })
   @IsOptional()
   @IsArray()
   @IsString({ each: true })
   pdf?: string[];
 
-  @ApiPropertyOptional({ type: [String], description: 'MinIO filepaths returned by POST /media/upload-url' })
+  @ApiPropertyOptional({
+    type: [String],
+    description: 'MinIO filepaths returned by POST /media/upload-url',
+  })
   @IsOptional()
   @IsArray()
   @IsString({ each: true })
   document?: string[];
 
-  @ApiPropertyOptional({ type: [String], description: 'MinIO filepaths returned by POST /media/upload-url' })
+  @ApiPropertyOptional({
+    type: [String],
+    description: 'MinIO filepaths returned by POST /media/upload-url',
+  })
   @IsOptional()
   @IsArray()
   @IsString({ each: true })
@@ -216,7 +255,8 @@ export class AdminCreatePostDto extends CreatePostDto {
   // request-changes flow like a user post.
   @ApiPropertyOptional({
     default: true,
-    description: 'If true, skips straight to APPROVED. If false, goes through normal PENDING review.',
+    description:
+      'If true, skips straight to APPROVED. If false, goes through normal PENDING review.',
   })
   @IsOptional()
   @IsBoolean()
@@ -226,7 +266,8 @@ export class AdminCreatePostDto extends CreatePostDto {
   // is true. Not required on the PENDING path, since that path
   // still goes through approve()'s own gate later.
   @ApiPropertyOptional({
-    description: 'Required (must be true) when involvesChild is true and publishImmediately is true.',
+    description:
+      'Required (must be true) when involvesChild is true and publishImmediately is true.',
   })
   @IsOptional()
   @IsBoolean()
@@ -323,7 +364,8 @@ export class UpdatePostStatusDto {
   // the bypass where this generic endpoint could skip
   // approve()'s child-safety gate entirely.
   @ApiPropertyOptional({
-    description: 'Required (must be true) when moving an involvesChild post to APPROVED or PUBLISHED.',
+    description:
+      'Required (must be true) when moving an involvesChild post to APPROVED or PUBLISHED.',
   })
   @IsOptional()
   @IsBoolean()

@@ -71,9 +71,7 @@ export class RolesSeeder implements OnApplicationBootstrap {
       }
     }
 
-    this.logger.error(
-      `Failed to seed role "${name}" after ${MAX_ATTEMPTS} attempts. Giving up.`,
-    );
+    this.logger.error(`Failed to seed role "${name}" after ${MAX_ATTEMPTS} attempts. Giving up.`);
 
     throw lastError;
   }

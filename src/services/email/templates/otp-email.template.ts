@@ -16,10 +16,7 @@ export function renderOtpEmailSubject(): string {
   return 'Your Ehte verification code';
 }
 
-export function renderOtpEmailHtml({
-  otp,
-  expiresInMinutes,
-}: OtpEmailParams): string {
+export function renderOtpEmailHtml({ otp, expiresInMinutes }: OtpEmailParams): string {
   const safeOtp = escapeHtml(otp);
   const safeExpiry = escapeHtml(String(expiresInMinutes));
 
@@ -183,10 +180,7 @@ export function renderOtpEmailHtml({
 `.trim();
 }
 
-export function renderOtpEmailText({
-  otp,
-  expiresInMinutes,
-}: OtpEmailParams): string {
+export function renderOtpEmailText({ otp, expiresInMinutes }: OtpEmailParams): string {
   return `
 Ehte — My Sister
 

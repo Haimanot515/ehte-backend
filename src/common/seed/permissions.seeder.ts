@@ -126,9 +126,7 @@ export class PermissionsSeeder implements OnApplicationBootstrap {
       });
 
       if (!permission) {
-        throw new Error(
-          `Permission "${permissionName}" was not found after seeding.`,
-        );
+        throw new Error(`Permission "${permissionName}" was not found after seeding.`);
       }
 
       await this.prisma.rolePermission.upsert({
@@ -157,9 +155,7 @@ export class PermissionsSeeder implements OnApplicationBootstrap {
       });
 
       if (!permission) {
-        throw new Error(
-          `Permission "${permissionName}" was not found after seeding.`,
-        );
+        throw new Error(`Permission "${permissionName}" was not found after seeding.`);
       }
 
       await this.prisma.rolePermission.upsert({

@@ -573,6 +573,6 @@ import { PermissionsSeeder } from './common/seed/permissions.seeder';
     PermissionsSeeder,
 
     AdminSeeder,
-  ],  
+  ],
 })
 export class AppModule {}

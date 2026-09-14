@@ -8,7 +8,8 @@ export class AssignPermissionsDto {
     enum: PermissionsEnum,
     isArray: true,
     example: [PermissionsEnum.REPORT_READ, PermissionsEnum.REPORT_ASSIGN],
-    description: 'One or more permissions to grant to the role. Already-granted ' +
+    description:
+      'One or more permissions to grant to the role. Already-granted ' +
       'permissions in this list are silently ignored (idempotent).',
   })
   @IsArray()
