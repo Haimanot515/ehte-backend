@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Header, Param, Patch, Post, Query } from '@nestjs/common';
 
 import { ApiBearerAuth, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 
@@ -8,13 +8,9 @@ import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { RolesEnum } from 'src/common/enums/roles.enum';
 import { MissingPersonStatus } from '@prisma/client';
-// NOTE: adjust these two import paths to match your actual file locations —
-// same convention as Roles / RolesEnum above.
 import { RequirePermissions } from 'src/common/decorators/require-permissions.decorator';
 import { PermissionsEnum } from 'src/common/enums/permissions.enum';
-// NOTE: adjust this path to wherever MediaModule actually lives — same
-// DTO VictimProfileController/PostController/ReportController already
-// use for their media routes.
+import { RequireReauthentication } from 'src/common/decorators/reauth.decorator';
 import { MediaKeyQueryDto } from 'src/modules/media/dto/media-key-query.dto';
 
 import {
@@ -36,12 +32,17 @@ export class MissingPersonController {
   // CREATE
   // POST /missing-persons
   // Authenticated USER
-  // TODO: apply the project's re-authentication guard here
-  // (sensitive-data endpoint — see review item 7).
+  //
+  // FIX: TODO resolved — gated behind ReauthGuard, same as
+  // ReportController.create(). Submitting a missing-person case
+  // discloses sensitive personal details about a third party
+  // (the missing person), so it gets the same re-authentication
+  // treatment as filing a report.
   // ─────────────────────────────────────────────
 
   @Post()
   @ApiBearerAuth('access-token')
+  @RequireReauthentication()
   @ApiOperation({ summary: 'Submit a missing person report' })
   async create(@CurrentUser() user: CurrentUserDto, @Body() data: CreateMissingPersonDto) {
     return this.missingPersonService.create(user, data);
@@ -51,11 +52,18 @@ export class MissingPersonController {
   // MY SUBMISSIONS (paginated)
   // GET /missing-persons/mine
   // Authenticated USER
-  // TODO: apply the project's re-authentication guard here.
+  //
+  // FIX: TODO resolved — gated behind ReauthGuard and marked
+  // no-store, mirroring ReportController.findMyReports(). This
+  // list can include cases still in MORE_INFORMATION_REQUESTED /
+  // UNDER_REVIEW, i.e. content not yet public, so it shouldn't be
+  // cached by an intermediary or left in browser history.
   // ─────────────────────────────────────────────
 
   @Get('mine')
   @ApiBearerAuth('access-token')
+  @RequireReauthentication()
+  @Header('Cache-Control', 'no-store')
   @ApiOperation({ summary: 'Get my missing person submissions' })
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
@@ -120,6 +128,7 @@ export class MissingPersonController {
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.MISSING_PERSON_READ)
+  @Header('Cache-Control', 'no-store')
   @ApiOperation({ summary: 'Admin: get all missing person submissions' })
   @ApiQuery({ name: 'status', required: false, enum: MissingPersonStatus })
   @ApiQuery({ name: 'page', required: false })
@@ -145,6 +154,7 @@ export class MissingPersonController {
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.MISSING_PERSON_READ, PermissionsEnum.MISSING_PERSON_INFO_READ)
+  @Header('Cache-Control', 'no-store')
   @ApiOperation({ summary: 'Admin: get full detail for one missing person' })
   async findOneForAdmin(@Param('id') id: string) {
     return this.missingPersonService.findOneForAdmin(id);
@@ -205,11 +215,15 @@ export class MissingPersonController {
   // PATCH /missing-persons/:id
   // Authenticated USER — only while PENDING or
   // MORE_INFORMATION_REQUESTED (enforced in service)
-  // TODO: apply the project's re-authentication guard here.
+  //
+  // FIX: TODO resolved — gated behind ReauthGuard, same reasoning
+  // as create(): editing still touches sensitive third-party
+  // details.
   // ─────────────────────────────────────────────
 
   @Patch(':id')
   @ApiBearerAuth('access-token')
+  @RequireReauthentication()
   @ApiOperation({ summary: 'Update my missing person submission' })
   async update(
     @CurrentUser() user: CurrentUserDto,
@@ -223,11 +237,16 @@ export class MissingPersonController {
   // DELETE MY SUBMISSION
   // DELETE /missing-persons/:id
   // Authenticated USER — only while PENDING (enforced in service)
-  // TODO: apply the project's re-authentication guard here.
+  //
+  // FIX: TODO resolved — gated behind ReauthGuard. Deleting a
+  // submission also purges its media from storage, so it's
+  // treated as a sensitive, irreversible action requiring
+  // re-authentication, same as create()/update() above.
   // ─────────────────────────────────────────────
 
   @Delete(':id')
   @ApiBearerAuth('access-token')
+  @RequireReauthentication()
   @ApiOperation({ summary: 'Delete my missing person submission' })
   async remove(@CurrentUser() user: CurrentUserDto, @Param('id') id: string) {
     return this.missingPersonService.remove(user, id);

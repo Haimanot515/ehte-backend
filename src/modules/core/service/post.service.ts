@@ -2,7 +2,7 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 
 import { PostStatus, PostType, Prisma } from '@prisma/client';
 
-import { EventEmitter2 } from '@nestjs/event-emitter';
+import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { ConfigService } from '@nestjs/config';
 
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -75,6 +75,22 @@ function assertTransitionAllowed(from: PostStatus, to: PostStatus): void {
   }
 }
 
+// Fields that must never leave the process on a PUBLIC route.
+// userId would deanonymize the poster (item #7); reviewNote,
+// claim and dual-confirmation fields are internal review
+// metadata that means nothing to the public and shouldn't leak
+// admin identities either.
+const PUBLIC_POST_OMIT_FIELDS = [
+  'userId',
+  'reviewNote',
+  'idempotencyKey',
+  'claimedByUserId',
+  'claimedAt',
+  'childSafetyFirstConfirmedByUserId',
+  'childSafetyFirstConfirmedAt',
+  'ownerSuspendedAt',
+] as const;
+
 @Injectable()
 export class PostService {
   constructor(
@@ -134,23 +150,76 @@ export class PostService {
   // on filepaths that are new to the entity — already-attached
   // filepaths were validated when they were first added.
   //
-  // FIX: MinioService.objectExists() is now bucket-less — the
-  // service holds a single configured bucket internally, so callers
-  // just pass the key. getMediaBucket()/bucket param removed here
-  // to match the new signature.
+  // FIX (item #3, partial): now also rejects files that are too
+  // large or of a disallowed content-type.
+  //
+  // FIX (config-name mismatch): reads MEDIA_MAX_FILE_SIZE and
+  // MEDIA_ALLOWED_MIME_TYPES — the names that already exist in
+  // .env — rather than the MEDIA_MAX_FILE_SIZE_BYTES name an
+  // earlier draft of this file invented. Keep the media-upload
+  // module reading these same two keys so upload-time and
+  // attach-time validation can never disagree.
+  //
+  // NOTE: MEDIA_ALLOWED_MIME_TYPES must include application/pdf
+  // (and whatever document types you accept), otherwise the pdf
+  // and document DTO fields are unusable in practice.
+  //
+  // ASSUMPTION: this calls `minioService.statObject(filepath)`,
+  // which does not exist on MinioService yet in the code you
+  // shared (only objectExists/generatePresignedDownloadUrl/
+  // deleteFile were shown). Add a method there that stats the
+  // object and returns `{ size: number; contentType: string }`
+  // (e.g. via the underlying S3/MinIO client's statObject/headObject
+  // call) for this to work as written.
+  //
+  // NOTE (item #3, virus scanning): out of scope here — scanning
+  // needs to happen once, at upload time, in the media-upload
+  // module (e.g. pipe the buffer through ClamAV/clamscan before
+  // MinioService ever stores it). Re-scanning on every post
+  // create/update would be redundant and slow.
+  //
+  // NOTE (item #4, EXIF/GPS stripping): also belongs in the
+  // media-upload module, applied to image bytes before they're
+  // written to MinIO — Post only ever sees filepaths of objects
+  // that already exist, so it has no image bytes left to strip.
   private async validateMediaFilesExist(filepaths: string[]): Promise<void> {
     if (!filepaths.length) return;
 
-    const checks = await Promise.all(
-      filepaths.map(async (filepath) => ({
-        filepath,
-        exists: await this.minioService.objectExists(filepath),
-      })),
+    const maxFileSizeBytes = Number(
+      this.configService.get<string>('MEDIA_MAX_FILE_SIZE') ?? 52_428_800,
+    );
+    const allowedMimeTypes = new Set(
+      (this.configService.get<string>('MEDIA_ALLOWED_MIME_TYPES') ?? '')
+        .split(',')
+        .map((t) => t.trim())
+        .filter(Boolean),
     );
 
-    const missing = checks.filter((c) => !c.exists).map((c) => c.filepath);
-    if (missing.length) {
-      throw new BadRequestException(`media_files_not_found:${missing.join(',')}`);
+    const checks = await Promise.all(
+      filepaths.map(async (filepath) => {
+        const exists = await this.minioService.objectExists(filepath);
+        if (!exists) {
+          return { filepath, ok: false as const, reason: 'not_found' };
+        }
+
+        // ASSUMPTION: see note above — add statObject() to MinioService.
+        const stat = await this.minioService.statObject(filepath);
+
+        if (stat.size > maxFileSizeBytes) {
+          return { filepath, ok: false as const, reason: 'too_large' };
+        }
+        if (allowedMimeTypes.size > 0 && !allowedMimeTypes.has(stat.contentType)) {
+          return { filepath, ok: false as const, reason: 'disallowed_type' };
+        }
+        return { filepath, ok: true as const };
+      }),
+    );
+
+    const bad = checks.filter((c) => !c.ok);
+    if (bad.length) {
+      throw new BadRequestException(
+        `media_validation_failed:${bad.map((b) => `${b.filepath}:${b.reason}`).join(',')}`,
+      );
     }
   }
 
@@ -158,8 +227,6 @@ export class PostService {
   // (or MinIO briefly unreachable) must never block the DB write
   // that triggered the cleanup — failures are swallowed per-file
   // via allSettled rather than surfaced to the caller.
-  //
-  // FIX: same bucket-less signature change as validateMediaFilesExist().
   private async deleteMediaFiles(filepaths: string[]): Promise<void> {
     if (!filepaths.length) return;
     await Promise.allSettled(filepaths.map((fp) => this.minioService.deleteFile(fp)));
@@ -173,6 +240,177 @@ export class PostService {
     post: Pick<MediaBearing, MediaFieldName> & { involvesChild: boolean },
   ): string[] {
     return post.involvesChild ? [] : this.collectMediaFields(post);
+  }
+
+  // FIX (item #7): strips every field a public reader has no
+  // business seeing — most importantly userId, which the raw
+  // Prisma row otherwise leaks straight through on both
+  // GET /posts/published and GET /posts/published/:id, completely
+  // defeating anonymous posting.
+  private toPublicPost<T extends Record<string, unknown>>(
+    post: T,
+  ): Omit<T, (typeof PUBLIC_POST_OMIT_FIELDS)[number]> {
+    const copy: Record<string, unknown> = { ...post };
+    for (const field of PUBLIC_POST_OMIT_FIELDS) {
+      delete copy[field];
+    }
+    return copy as Omit<T, (typeof PUBLIC_POST_OMIT_FIELDS)[number]>;
+  }
+
+  // ─────────────────────────────────────────────
+  // CLAIM HELPERS (item #11)
+  //
+  // Lets one admin "claim" a case so a second admin
+  // doesn't start reviewing it in parallel. Enforced
+  // on every review-decision write; NOT enforced on
+  // read endpoints or on publish/unpublish, which are
+  // routine operational actions rather than case review.
+  // ─────────────────────────────────────────────
+
+  private assertNotClaimedByOther(
+    post: { claimedByUserId: string | null },
+    actorUserId: string,
+  ): void {
+    if (post.claimedByUserId && post.claimedByUserId !== actorUserId) {
+      throw new BadRequestException('post_claimed_by_another_admin');
+    }
+  }
+
+  async claimPost(user: CurrentUserDto, postId: string) {
+    const post = await this.findOne(postId);
+    this.assertNotClaimedByOther(post, user.id);
+
+    const updated = await this.prisma.post.update({
+      where: { id: postId },
+      data: { claimedByUserId: user.id, claimedAt: new Date() },
+    });
+
+    this.emitAudit({
+      userId: user.id,
+      actorType: resolveActorType(user.roles ?? []),
+      action: AuditEventEnum.POST_UPDATED,
+      entity: 'Post',
+      entityId: postId,
+      diff: { claimedBy: user.id, result: 'success' },
+    });
+
+    return updated;
+  }
+
+  async unclaimPost(user: CurrentUserDto, postId: string) {
+    const post = await this.findOne(postId);
+    this.assertNotClaimedByOther(post, user.id);
+
+    const updated = await this.prisma.post.update({
+      where: { id: postId },
+      data: { claimedByUserId: null, claimedAt: null },
+    });
+
+    this.emitAudit({
+      userId: user.id,
+      actorType: resolveActorType(user.roles ?? []),
+      action: AuditEventEnum.POST_UPDATED,
+      entity: 'Post',
+      entityId: postId,
+      diff: { unclaimedBy: user.id, result: 'success' },
+    });
+
+    return updated;
+  }
+
+  // ─────────────────────────────────────────────
+  // CHILD-SAFETY DUAL CONTROL (item #10)
+  //
+  // A single admin ticking childSafetyConfirmed is no
+  // longer enough to move an involvesChild post to
+  // APPROVED/PUBLISHED. The first admin to confirm only
+  // has their confirmation recorded; a second, DIFFERENT
+  // admin must confirm again before the transition
+  // actually goes through.
+  // ─────────────────────────────────────────────
+
+  private async ensureChildSafetySatisfied(
+    post: {
+      id: string;
+      involvesChild: boolean;
+      childSafetyFirstConfirmedByUserId: string | null;
+    },
+    actorUserId: string,
+    confirmed: boolean | undefined,
+  ): Promise<'not_required' | 'first_confirmation_recorded' | 'satisfied'> {
+    if (!post.involvesChild) return 'not_required';
+
+    if (confirmed !== true) {
+      throw new BadRequestException('child_safety_confirmation_required');
+    }
+
+    if (!post.childSafetyFirstConfirmedByUserId) {
+      await this.prisma.post.update({
+        where: { id: post.id },
+        data: {
+          childSafetyFirstConfirmedByUserId: actorUserId,
+          childSafetyFirstConfirmedAt: new Date(),
+        },
+      });
+      return 'first_confirmation_recorded';
+    }
+
+    if (post.childSafetyFirstConfirmedByUserId === actorUserId) {
+      throw new BadRequestException('child_safety_requires_second_distinct_admin');
+    }
+
+    return 'satisfied';
+  }
+
+  // ─────────────────────────────────────────────
+  // BANNED / SUSPENDED OWNER HANDLING (item #6)
+  //
+  // ASSUMPTION: the user module emits 'user.suspended' /
+  // 'user.deleted' events with a { userId } payload — adjust
+  // the event names/payload shape to whatever your UserService
+  // actually emits. Hard deletes are already handled for you by
+  // the `onDelete: Cascade` on Post.user, so the deleted-user
+  // handler here is a no-op safety net in case cascade behavior
+  // ever changes; the real work is for suspension, where the
+  // user row (and their posts) still exist.
+  //
+  // On suspension: any PENDING post is withdrawn back to DRAFT
+  // (bypassing the normal transition map on purpose — this is a
+  // system safety action, not a user or admin one) so it drops out
+  // of the admin review queue, and every non-terminal post owned
+  // by the user is timestamped via ownerSuspendedAt so admin
+  // tooling can filter/flag them.
+  // ─────────────────────────────────────────────
+
+  @OnEvent('user.suspended')
+  async handleUserSuspended(payload: { userId: string }): Promise<void> {
+    const now = new Date();
+
+    await this.prisma.post.updateMany({
+      where: { userId: payload.userId, status: PostStatus.PENDING },
+      data: { status: PostStatus.DRAFT, ownerSuspendedAt: now },
+    });
+
+    await this.prisma.post.updateMany({
+      where: {
+        userId: payload.userId,
+        status: { in: [PostStatus.DRAFT, PostStatus.CHANGES_REQUESTED] },
+        ownerSuspendedAt: null,
+      },
+      data: { ownerSuspendedAt: now },
+    });
+
+    this.emitAudit({
+      userId: payload.userId,
+      // ASSUMPTION: resolveActorType only knows about role-bearing
+      // actors; cast until AuditEventPayload's actorType union is
+      // extended with a SYSTEM variant.
+      actorType: 'SYSTEM' as unknown as ReturnType<typeof resolveActorType>,
+      action: AuditEventEnum.POST_UPDATED,
+      entity: 'Post',
+      entityId: `user:${payload.userId}`,
+      diff: { reason: 'owner_account_suspended', result: 'success' },
+    });
   }
 
   // ─────────────────────────────────────────────
@@ -243,9 +481,57 @@ export class PostService {
 
   // ─────────────────────────────────────────────
   // CREATE POST
+  //
+  // FIX (item #1): a per-user cooldown between post creations
+  // (CONTENT_CREATE_RATE_LIMIT_WINDOW_SECONDS — shared across
+  // Reports, Posts, Missing Person requests, etc., since a
+  // double-tap or scripted flood is the same risk everywhere;
+  // set POST_CREATE_RATE_LIMIT_WINDOW_SECONDS to override just
+  // this module if it ever needs a different value) blocks
+  // rapid-fire spam creation. The complementary "max N posts
+  // waiting for review" limit lives in submitMyPost(), since
+  // that's the step that actually puts a post in front of admins.
+  //
+  // FIX (item #5): an optional Idempotency-Key (sent as a header
+  // by the controller) lets a client safely retry a create call
+  // after a dropped response — a repeat with the same key returns
+  // the original post instead of creating a duplicate.
   // ─────────────────────────────────────────────
 
-  async create(userId: string, data: CreatePostDto) {
+  private async enforceCreateRateLimit(userId: string): Promise<void> {
+    // Module-specific override, falling back to the shared
+    // CONTENT_* default used by every submission type.
+    const cooldownSeconds = Number(
+      this.configService.get<string>('POST_CREATE_RATE_LIMIT_WINDOW_SECONDS') ??
+        this.configService.get<string>('CONTENT_CREATE_RATE_LIMIT_WINDOW_SECONDS') ??
+        60,
+    );
+
+    const lastPost = await this.prisma.post.findFirst({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+      select: { createdAt: true },
+    });
+
+    if (lastPost && Date.now() - lastPost.createdAt.getTime() < cooldownSeconds * 1000) {
+      throw new BadRequestException('post_creation_rate_limited');
+    }
+  }
+
+  async create(userId: string, data: CreatePostDto, idempotencyKey?: string) {
+    if (idempotencyKey) {
+      const existing = await this.prisma.post.findFirst({
+        where: { userId, idempotencyKey },
+      });
+      if (existing) {
+        // Safe replay of a duplicate submission (double-tap, retried
+        // request after a flaky connection) — return the original
+        // instead of creating a second post.
+        return existing;
+      }
+    }
+
+    await this.enforceCreateRateLimit(userId);
     await this.validateMediaFilesExist(this.collectMediaFieldsFromDto(data));
 
     const postType: PostType = data.type;
@@ -264,6 +550,7 @@ export class PostService {
         pdf: data.pdf ?? [],
         document: data.document ?? [],
         other: data.other ?? [],
+        idempotencyKey: idempotencyKey ?? null,
       },
     });
 
@@ -291,6 +578,9 @@ export class PostService {
   // requires. The PENDING path (publishImmediately=false)
   // doesn't require it here, since that path still goes
   // through approve()'s own gate later.
+  //
+  // NOTE: the dual-control rule (#10) intentionally does
+  // NOT apply here — see the comment on AdminCreatePostDto.
   // ─────────────────────────────────────────────
 
   async createOfficial(actor: CurrentUserDto, data: AdminCreatePostDto) {
@@ -446,6 +736,15 @@ export class PostService {
   // ─────────────────────────────────────────────
   // SUBMIT MY POST
   // Moves DRAFT or CHANGES_REQUESTED → PENDING.
+  //
+  // FIX (item #1): enforces a max-pending-per-user cap —
+  // a user can only have so many posts sitting in the
+  // admin review queue at once. This is where the limit
+  // is checked, since submit is the step that actually
+  // adds a post to that queue. Uses the shared
+  // CONTENT_MAX_PENDING_PER_USER default (same rule applies
+  // to Reports, Missing Person requests, etc.); set
+  // POST_MAX_PENDING_PER_USER to give Posts its own limit.
   // ─────────────────────────────────────────────
 
   async submitMyPost(userId: string, postId: string) {
@@ -459,6 +758,18 @@ export class PostService {
 
     if (!OWNER_EDITABLE_STATUSES.includes(existing.status)) {
       throw new BadRequestException('post_cannot_be_submitted_in_current_status');
+    }
+
+    const maxPending = Number(
+      this.configService.get<string>('POST_MAX_PENDING_PER_USER') ??
+        this.configService.get<string>('CONTENT_MAX_PENDING_PER_USER') ??
+        5,
+    );
+    const pendingCount = await this.prisma.post.count({
+      where: { userId, status: PostStatus.PENDING },
+    });
+    if (pendingCount >= maxPending) {
+      throw new BadRequestException('too_many_pending_posts');
     }
 
     // Conditional update guards against a concurrent transition
@@ -584,6 +895,10 @@ export class PostService {
 
   // ─────────────────────────────────────────────
   // PUBLIC — GET PUBLISHED POSTS
+  //
+  // FIX (item #7): responses are now mapped through
+  // toPublicPost() so userId (and other internal-only
+  // fields) never reach an anonymous caller.
   // ─────────────────────────────────────────────
 
   async findPublishedPosts(query: PublishedPostsQueryDto) {
@@ -608,7 +923,7 @@ export class PostService {
     ]);
 
     return {
-      items,
+      items: items.map((item) => this.toPublicPost(item)),
       total,
       page,
       limit,
@@ -618,6 +933,9 @@ export class PostService {
 
   // ─────────────────────────────────────────────
   // PUBLIC — GET ONE PUBLISHED POST
+  //
+  // FIX (item #7): same public-field stripping as
+  // findPublishedPosts().
   // ─────────────────────────────────────────────
 
   async findPublishedPost(postId: string) {
@@ -629,7 +947,7 @@ export class PostService {
       throw new NotFoundException('post_not_found');
     }
 
-    return post;
+    return this.toPublicPost(post);
   }
 
   // ─────────────────────────────────────────────
@@ -669,6 +987,103 @@ export class PostService {
   }
 
   // ─────────────────────────────────────────────
+  // ADMIN — STALE / UNREVIEWED-TOO-LONG POSTS
+  // GET /posts/stale
+  // (item #9)
+  //
+  // Flags PENDING posts older than the shared
+  // CONTENT_STALE_PENDING_HOURS default (falls back from an
+  // optional POST_STALE_PENDING_HOURS override) so admins can
+  // prioritize "forgotten" cases. Purely informational —
+  // nothing here changes status or ownership.
+  //
+  // NOTE: Reports and Missing Person requests are far more
+  // time-sensitive than a Post — if that turns out to matter in
+  // practice, just set e.g. MISSING_PERSON_STALE_PENDING_HOURS
+  // to a smaller number in that module without touching this one.
+  // ─────────────────────────────────────────────
+
+  async findStalePending() {
+    const staleHours = Number(
+      this.configService.get<string>('POST_STALE_PENDING_HOURS') ??
+        this.configService.get<string>('CONTENT_STALE_PENDING_HOURS') ??
+        48,
+    );
+    const cutoff = new Date(Date.now() - staleHours * 60 * 60 * 1000);
+
+    const posts = await this.prisma.post.findMany({
+      where: { status: PostStatus.PENDING, createdAt: { lt: cutoff } },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    return posts.map((post) => ({
+      ...post,
+      pendingHours: Math.floor((Date.now() - post.createdAt.getTime()) / (60 * 60 * 1000)),
+    }));
+  }
+
+  // ─────────────────────────────────────────────
+  // ADMIN — BULK APPROVE / REJECT
+  // PATCH /posts/bulk/approve, PATCH /posts/bulk/reject
+  // (item #8)
+  //
+  // Any post with involvesChild = true is deliberately
+  // excluded from bulk handling — it always requires
+  // individual review through the normal approve()/
+  // reject() endpoints and their dual-control gate (#10).
+  // Each id's outcome is reported independently so a
+  // failure on one post never blocks the rest.
+  // ─────────────────────────────────────────────
+
+  async bulkApprove(user: CurrentUserDto, ids: string[]) {
+    const results: Array<{ id: string; success: boolean; error?: string }> = [];
+
+    for (const id of ids) {
+      try {
+        const post = await this.findOne(id);
+        if (post.involvesChild) {
+          results.push({
+            id,
+            success: false,
+            error: 'requires_individual_child_safety_review',
+          });
+          continue;
+        }
+        await this.approve(user, id, {});
+        results.push({ id, success: true });
+      } catch (err) {
+        results.push({ id, success: false, error: (err as Error).message });
+      }
+    }
+
+    return results;
+  }
+
+  async bulkReject(user: CurrentUserDto, ids: string[], reason: string) {
+    const results: Array<{ id: string; success: boolean; error?: string }> = [];
+
+    for (const id of ids) {
+      try {
+        const post = await this.findOne(id);
+        if (post.involvesChild) {
+          results.push({
+            id,
+            success: false,
+            error: 'requires_individual_review',
+          });
+          continue;
+        }
+        await this.reject(user, id, { reason });
+        results.push({ id, success: true });
+      } catch (err) {
+        results.push({ id, success: false, error: (err as Error).message });
+      }
+    }
+
+    return results;
+  }
+
+  // ─────────────────────────────────────────────
   // ADMIN — GET ONE POST
   // ─────────────────────────────────────────────
 
@@ -683,13 +1098,39 @@ export class PostService {
   }
 
   // ─────────────────────────────────────────────
+  // ADMIN — PER-POST HISTORY / TIMELINE
+  // GET /posts/:id/history
+  // (item #13)
+  //
+  // ASSUMPTION: assumes an `auditLog` Prisma model
+  // populated by a listener subscribed to the same
+  // events emitAudit()/AuditEventPayload already fire
+  // throughout this service (entity/entityId/action/
+  // userId/actorType/diff/createdAt). MiscModule already
+  // owns "Audit Logs" + "Audit Event Listeners", so this
+  // is likely already in place — adjust the model and
+  // field names below if your schema differs.
+  // ─────────────────────────────────────────────
+
+  async getHistory(postId: string) {
+    await this.findOne(postId); // 404s if the post doesn't exist
+
+    return this.prisma.auditLog.findMany({
+      where: { entity: 'Post', entityId: postId },
+      orderBy: { createdAt: 'asc' },
+    });
+  }
+
+  // ─────────────────────────────────────────────
   // ADMIN — UPDATE STATUS
   //
   // Validates the transition via the shared map,
   // requires childSafetyConfirmed when moving an
-  // involvesChild post to APPROVED or PUBLISHED, and
-  // uses a conditional update to avoid racing another
-  // concurrent transition.
+  // involvesChild post to APPROVED or PUBLISHED
+  // (now via the two-distinct-admins dual-control
+  // gate, item #10), enforces the claim guard (#11),
+  // and uses a conditional update to avoid racing
+  // another concurrent transition.
   // ─────────────────────────────────────────────
 
   async updateStatus(
@@ -701,10 +1142,27 @@ export class PostService {
     const existing = await this.findOne(postId);
 
     assertTransitionAllowed(existing.status, status);
+    this.assertNotClaimedByOther(existing, user.id);
 
     const movesToLiveReview = status === PostStatus.APPROVED || status === PostStatus.PUBLISHED;
-    if (existing.involvesChild && movesToLiveReview && childSafetyConfirmed !== true) {
-      throw new BadRequestException('child_safety_confirmation_required');
+
+    if (existing.involvesChild && movesToLiveReview) {
+      const safety = await this.ensureChildSafetySatisfied(existing, user.id, childSafetyConfirmed);
+      if (safety === 'first_confirmation_recorded') {
+        const partial = await this.prisma.post.findUniqueOrThrow({ where: { id: postId } });
+        this.emitAudit({
+          userId: user.id,
+          actorType: resolveActorType(user.roles ?? []),
+          action: AuditEventEnum.POST_UPDATED,
+          entity: 'Post',
+          entityId: postId,
+          diff: {
+            childSafetyFirstConfirmationBy: user.id,
+            result: 'pending_second_admin_confirmation',
+          },
+        });
+        return { ...partial, pendingSecondConfirmation: true };
+      }
     }
 
     const result = await this.prisma.post.updateMany({
@@ -727,7 +1185,8 @@ export class PostService {
       diff: {
         previousStatus: existing.status,
         newStatus: status,
-        childSafetyConfirmed: existing.involvesChild && movesToLiveReview ? true : undefined,
+        childSafetyDualControlSatisfied:
+          existing.involvesChild && movesToLiveReview ? true : undefined,
         result: 'success',
       },
     });
@@ -737,20 +1196,40 @@ export class PostService {
 
   // ─────────────────────────────────────────────
   // ADMIN — APPROVE POST
+  //
+  // FIX (item #10): childSafetyConfirmed from a single
+  // admin now only records that admin's own confirmation
+  // the first time; the status only actually flips to
+  // APPROVED once a second, different admin also confirms.
+  // FIX (item #11): blocked if claimed by a different admin.
   // ─────────────────────────────────────────────
 
   async approve(user: CurrentUserDto, postId: string, data: ApprovePostDto) {
     const post = await this.findOne(postId);
 
     assertTransitionAllowed(post.status, PostStatus.APPROVED);
+    this.assertNotClaimedByOther(post, user.id);
 
-    if (post.involvesChild && data.childSafetyConfirmed !== true) {
-      throw new BadRequestException('child_safety_confirmation_required');
+    const safety = await this.ensureChildSafetySatisfied(post, user.id, data.childSafetyConfirmed);
+    if (safety === 'first_confirmation_recorded') {
+      const partial = await this.prisma.post.findUniqueOrThrow({ where: { id: postId } });
+      this.emitAudit({
+        userId: user.id,
+        actorType: resolveActorType(user.roles ?? []),
+        action: AuditEventEnum.POST_UPDATED,
+        entity: 'Post',
+        entityId: postId,
+        diff: {
+          childSafetyFirstConfirmationBy: user.id,
+          result: 'pending_second_admin_confirmation',
+        },
+      });
+      return { ...partial, pendingSecondConfirmation: true };
     }
 
     const result = await this.prisma.post.updateMany({
       where: { id: postId, status: post.status },
-      data: { status: PostStatus.APPROVED },
+      data: { status: PostStatus.APPROVED, claimedByUserId: null, claimedAt: null },
     });
 
     if (result.count === 0) {
@@ -769,7 +1248,7 @@ export class PostService {
         previousStatus: post.status,
         newStatus: PostStatus.APPROVED,
         involvesChild: post.involvesChild,
-        childSafetyConfirmed: post.involvesChild ? data.childSafetyConfirmed === true : undefined,
+        childSafetyDualControlSatisfied: post.involvesChild ? true : undefined,
         result: 'success',
       },
     });
@@ -791,20 +1270,27 @@ export class PostService {
   // notification payload, so GET /posts/me/:id shows
   // the owner why without relying on the notification.
   //
+  // FIX (item #11): blocked if claimed by a different
+  // admin; claim is released once changes are requested
+  // since the case is handed back to the owner.
+  //
   // NOTE: requires a `reviewNote String?` column on
-  // the Post model. See the migration note in schema.
+  // the Post model. See the schema file.
   // ─────────────────────────────────────────────
 
   async requestChanges(user: CurrentUserDto, postId: string, data: RequestPostChangesDto) {
     const post = await this.findOne(postId);
 
     assertTransitionAllowed(post.status, PostStatus.CHANGES_REQUESTED);
+    this.assertNotClaimedByOther(post, user.id);
 
     const result = await this.prisma.post.updateMany({
       where: { id: postId, status: post.status },
       data: {
         status: PostStatus.CHANGES_REQUESTED,
         reviewNote: data.message,
+        claimedByUserId: null,
+        claimedAt: null,
       },
     });
 
@@ -881,18 +1367,24 @@ export class PostService {
   // real-world workflow (take something down before
   // formally rejecting it). Reason is persisted on
   // the Post row (reviewNote).
+  //
+  // FIX (item #11): blocked if claimed by a different
+  // admin; claim is released once the post is rejected.
   // ─────────────────────────────────────────────
 
   async reject(user: CurrentUserDto, postId: string, data: RejectPostDto) {
     const post = await this.findOne(postId);
 
     assertTransitionAllowed(post.status, PostStatus.REJECTED);
+    this.assertNotClaimedByOther(post, user.id);
 
     const result = await this.prisma.post.updateMany({
       where: { id: postId, status: post.status },
       data: {
         status: PostStatus.REJECTED,
         reviewNote: data.reason,
+        claimedByUserId: null,
+        claimedAt: null,
       },
     });
 

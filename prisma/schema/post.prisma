@@ -15,12 +15,38 @@ model Post {
   updatedAt     DateTime   @updatedAt
   involvesChild Boolean    @default(false)
   reviewNote    String?
-  user          User       @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  // NEW — duplicate-submission protection (item #5)
+  idempotencyKey String?
+
+  // NEW — admin claim, so two admins don't review the same case (item #11)
+  claimedByUserId String?
+  claimedAt       DateTime?
+
+  // NEW — two-distinct-admin child-safety confirmation (item #10)
+  childSafetyFirstConfirmedByUserId String?
+  childSafetyFirstConfirmedAt       DateTime?
+
+  // NEW — timestamp set when the owning account is suspended,
+  // so admin tooling can filter/flag these (item #6)
+  ownerSuspendedAt DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Scoped to the user, not global: two different users retrying with the
+  // same client-generated key must not collide. Postgres treats NULLs as
+  // distinct, so rows with a null idempotencyKey don't conflict with
+  // each other.
+  @@unique([userId, idempotencyKey])
   @@index([userId])
   @@index([status])
   @@index([type])
   @@index([involvesChild])
+  @@index([claimedByUserId])
+  // Supports findStalePending() and the retention sweeps in
+  // post-retention.service.ts.
+  @@index([status, createdAt])
+  @@index([status, updatedAt])
   @@map("post")
 }
 

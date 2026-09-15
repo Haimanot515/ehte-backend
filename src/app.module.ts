@@ -18,6 +18,18 @@ import { EventEmitterModule } from '@nestjs/event-emitter';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 
 // ─────────────────────────────────────────────
+// SCHEDULING
+//
+// npm i @nestjs/schedule
+// Required for PostRetentionService's @Cron(...) (and any future
+// scheduled job) to actually run. Registered once, globally, here —
+// do NOT also call ScheduleModule.forRoot() inside PostModule or
+// anywhere else, one registration for the whole app is enough.
+// ─────────────────────────────────────────────
+
+import { ScheduleModule } from '@nestjs/schedule';
+
+// ─────────────────────────────────────────────
 // CONFIGURATION
 // ─────────────────────────────────────────────
 
@@ -310,8 +322,62 @@ import { PermissionsSeeder } from './common/seed/permissions.seeder';
         // like every other misconfigured var here. Now validated and
         // mapped through configuration.ts as minio.presignDurationSeconds.
         // Default raised from 120 to 600 (10 min) to match the value
-        // configuration.ts now falls back to.
+        // configuration.ts now falls back to. Keep this at a few minutes —
+        // long TTLs mean a leaked/logged link to victim or missing-person
+        // media stays live far longer than necessary.
         DURATION_OF_PRE_SIGNED_DOCUMENT: Joi.number().default(600),
+
+        // ─────────────────────────────────────
+        // MEDIA
+        //
+        // ADDED: read via ConfigService in PostService.validateMediaFilesExist()
+        // but never declared here — same allowUnknown:true blind spot as
+        // MINIO_REGION above. MEDIA_ALLOWED_MIME_TYPES must include
+        // application/pdf (and any document types you accept) or the
+        // CreatePostDto/UpdatePostDto pdf/document fields are unusable —
+        // every attach attempt will fail content-type validation.
+        // ─────────────────────────────────────
+
+        MEDIA_MAX_FILE_SIZE: Joi.number().default(52_428_800),
+
+        MEDIA_ALLOWED_MIME_TYPES: Joi.string().default(
+          'image/jpeg,image/png,image/webp,video/mp4,audio/mpeg,application/pdf',
+        ),
+
+        // ─────────────────────────────────────
+        // CONTENT SUBMISSION LIMITS / RETENTION
+        //
+        // ADDED: shared defaults used by every submission type (Reports,
+        // Posts, Missing Person requests, Victim Profiles) rather than
+        // Post-specific — same §33 "don't keep sensitive info longer than
+        // necessary" reasoning applies to all of them equally. Each module
+        // reads its own optional PREFIXED override first (POST_*, REPORT_*,
+        // MISSING_PERSON_*, PROFILE_*) and falls back to these.
+        //
+        // The PREFIXED overrides are declared here too (as .optional()) so
+        // a typo in one of them (e.g. POST_DRAFT_TTL_DAY, missing the S)
+        // fails at boot instead of silently being ignored.
+        // ─────────────────────────────────────
+
+        CONTENT_MAX_PENDING_PER_USER: Joi.number().default(5),
+
+        CONTENT_CREATE_RATE_LIMIT_WINDOW_SECONDS: Joi.number().default(60),
+
+        CONTENT_DRAFT_TTL_DAYS: Joi.number().default(30),
+
+        CONTENT_REJECTED_RETENTION_DAYS: Joi.number().default(90),
+
+        CONTENT_STALE_PENDING_HOURS: Joi.number().default(48),
+
+        POST_MAX_PENDING_PER_USER: Joi.number().optional(),
+
+        POST_CREATE_RATE_LIMIT_WINDOW_SECONDS: Joi.number().optional(),
+
+        POST_DRAFT_TTL_DAYS: Joi.number().optional(),
+
+        POST_REJECTED_RETENTION_DAYS: Joi.number().optional(),
+
+        POST_STALE_PENDING_HOURS: Joi.number().optional(),
 
         // ─────────────────────────────────────
         // EMAIL / SMTP
@@ -366,6 +432,17 @@ import { PermissionsSeeder } from './common/seed/permissions.seeder';
     // ─────────────────────────────────────────
 
     EventEmitterModule.forRoot(),
+
+    // ─────────────────────────────────────────
+    // SCHEDULING
+    //
+    // Enables @Cron(...) app-wide — required by
+    // PostRetentionService (draft TTL / rejected
+    // retention sweeps) and any future scheduled job.
+    // Registered once, globally, here.
+    // ─────────────────────────────────────────
+
+    ScheduleModule.forRoot(),
 
     // ─────────────────────────────────────────
     // RATE LIMITING
@@ -459,6 +536,12 @@ import { PermissionsSeeder } from './common/seed/permissions.seeder';
 
     // ─────────────────────────────────────────
     // CORE FEATURES
+    //
+    // Includes PostModule (User / Report / Post / Missing Person /
+    // Information Submission / Victim Profile / Support). Confirm
+    // PostRetentionService is listed in PostModule's own `providers`
+    // array — registering ScheduleModule here only makes @Cron work,
+    // it doesn't instantiate the service itself.
     // ─────────────────────────────────────────
 
     CoreModule,

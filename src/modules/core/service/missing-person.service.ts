@@ -30,8 +30,14 @@ import {
 
 // The six media-array fields shared by CreateMissingPersonDto/
 // UpdateMissingPersonDto and the MissingPerson model itself.
-// Mirrors PostService's MEDIA_FIELD_NAMES so every module stays in
-// sync if a new media kind is ever added.
+// Mirrors PostService's/ReportService's MEDIA_FIELD_NAMES so every
+// module stays in sync if a new media kind is ever added.
+//
+// FIX: media fields are now bare MinIO object keys end to end —
+// the DTO validates them as plain strings (see missing-person.dto.ts),
+// matching Report/Post/VictimProfile. No URL parsing/unwrapping is
+// needed anywhere in this file anymore; every method here just
+// treats these fields the same way ReportService does.
 const MEDIA_FIELD_NAMES = ['photo', 'video', 'audio', 'pdf', 'document', 'other'] as const;
 type MediaFieldName = (typeof MEDIA_FIELD_NAMES)[number];
 type MediaBearing = Record<MediaFieldName, string[]>;
@@ -119,11 +125,11 @@ export class MissingPersonService {
   // ─────────────────────────────────────────────
   // MEDIA HELPERS
   //
-  // Mirrors PostService's media helpers. MissingPerson stores media
-  // as plain filepath strings in typed arrays (photo/video/audio/
-  // pdf/document/other), same as Post, Report, and VictimProfile —
-  // kept in one place so every read/write of that shape stays
-  // consistent.
+  // Mirrors PostService's/ReportService's media helpers.
+  // MissingPerson stores media as plain filepath strings in typed
+  // arrays (photo/video/audio/pdf/document/other), same as Post,
+  // Report, and VictimProfile — kept in one place so every
+  // read/write of that shape stays consistent.
   // ─────────────────────────────────────────────
 
   private collectMediaFields(entity: MediaBearing): string[] {
@@ -162,11 +168,6 @@ export class MissingPersonService {
   // filepath copied from an unrelated response, etc.). Only called
   // on filepaths that are new to the entity — already-attached
   // filepaths were validated when they were first added.
-  //
-  // FIX: MinioService.objectExists() is now bucket-less — the
-  // service holds a single configured bucket internally, so callers
-  // just pass the key. getMediaBucket()/bucket param removed here
-  // to match the new signature.
   private async validateMediaFilesExist(filepaths: string[]): Promise<void> {
     if (!filepaths.length) return;
 
@@ -187,8 +188,6 @@ export class MissingPersonService {
   // (or MinIO briefly unreachable) must never block the DB write
   // that triggered the cleanup — failures are swallowed per-file
   // via allSettled rather than surfaced to the caller.
-  //
-  // FIX: same bucket-less signature change as validateMediaFilesExist().
   private async deleteMediaFiles(filepaths: string[]): Promise<void> {
     if (!filepaths.length) return;
     await Promise.allSettled(filepaths.map((fp) => this.minioService.deleteFile(fp)));
@@ -286,7 +285,7 @@ export class MissingPersonService {
   // CREATE
   //
   // Media filepaths are validated against MinIO before the case
-  // is created, same as PostService.create.
+  // is created, same as PostService.create/ReportService.create.
   // ─────────────────────────────────────────────
 
   async create(user: CurrentUserDto, data: CreateMissingPersonDto) {

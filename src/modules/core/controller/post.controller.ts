@@ -1,4 +1,15 @@
-import { Body, Controller, Delete, Get, Header, Param, Patch, Post, Query } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Header,
+  Headers,
+  Param,
+  Patch,
+  Post,
+  Query,
+} from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { PostType } from '@prisma/client';
 import { AllowAnonymous } from 'src/common/decorators/public.decorator';
@@ -24,6 +35,8 @@ import {
   AdminPostQueryDto,
   PublishedPostsQueryDto,
   UpdatePostStatusDto,
+  BulkPostIdsDto,
+  BulkRejectPostDto,
 } from '../dto/post.dto';
 import { PostService } from '../service/post.service';
 
@@ -37,6 +50,12 @@ export class PostController {
   // POST /posts
   // AUTHENTICATED USER
   // Requires password re-authentication.
+  //
+  // FIX (item #5): accepts an optional Idempotency-Key
+  // header so a client retrying after a dropped response
+  // (e.g. a double-tap on a flaky connection) doesn't end
+  // up creating two identical posts — PostService.create
+  // returns the original post on a repeat key instead.
   // ─────────────────────────────────────────────
   @Post()
   @RequireReauthentication()
@@ -44,8 +63,12 @@ export class PostController {
   @ApiOperation({
     summary: 'Create a new post',
   })
-  async create(@CurrentUser() user: CurrentUserDto, @Body() data: CreatePostDto) {
-    return this.postService.create(user.id, data);
+  async create(
+    @CurrentUser() user: CurrentUserDto,
+    @Body() data: CreatePostDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.postService.create(user.id, data, idempotencyKey);
   }
 
   // ─────────────────────────────────────────────
@@ -111,6 +134,10 @@ export class PostController {
   //
   // Moves DRAFT or CHANGES_REQUESTED → PENDING,
   // putting the post in front of admins (PRD §12).
+  // Rejects with too_many_pending_posts once the
+  // caller already has CONTENT_MAX_PENDING_PER_USER
+  // (or POST_MAX_PENDING_PER_USER, if set) posts
+  // sitting in PENDING (item #1).
   //
   // AUTHENTICATED USER
   // Requires password re-authentication.
@@ -165,6 +192,9 @@ export class PostController {
   // PUBLIC POSTS
   // GET /posts/published
   // ANONYMOUS
+  //
+  // FIX (item #7): responses no longer include the
+  // poster's userId — see PostService.toPublicPost.
   // ─────────────────────────────────────────────
   @Get('published')
   @AllowAnonymous()
@@ -204,6 +234,9 @@ export class PostController {
   // PUBLIC POST
   // GET /posts/published/:id
   // ANONYMOUS
+  //
+  // FIX (item #7): response no longer includes the
+  // poster's userId — see PostService.toPublicPost.
   // ─────────────────────────────────────────────
   @Get('published/:id')
   @AllowAnonymous()
@@ -264,6 +297,73 @@ export class PostController {
   }
 
   // ─────────────────────────────────────────────
+  // ADMIN — STALE / UNREVIEWED-TOO-LONG POSTS
+  // GET /posts/stale
+  // (item #9)
+  //
+  // Declared BEFORE ':id' so Nest doesn't treat
+  // "stale" as a post id — same reasoning as the
+  // published/:id/media route above.
+  //
+  // ADMIN / SUPER_ADMIN
+  // ─────────────────────────────────────────────
+  @Get('stale')
+  @ApiBearerAuth('access-token')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.POST_READ)
+  @ApiOperation({
+    summary: 'Admin: get pending posts that have been waiting too long',
+  })
+  async findStalePending() {
+    return this.postService.findStalePending();
+  }
+
+  // ─────────────────────────────────────────────
+  // ADMIN — BULK APPROVE
+  // PATCH /posts/bulk/approve
+  // (item #8)
+  //
+  // Declared BEFORE ':id/approve' so Nest doesn't
+  // match "bulk" as a post id here — route order
+  // matters, same as elsewhere in this controller.
+  // Any involvesChild post in the batch is skipped
+  // and reported back as requiring individual review.
+  //
+  // ADMIN / SUPER_ADMIN
+  // ─────────────────────────────────────────────
+  @Patch('bulk/approve')
+  @ApiBearerAuth('access-token')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.POST_APPROVE)
+  @ApiOperation({
+    summary: 'Admin: approve several low-risk posts at once',
+  })
+  async bulkApprove(@CurrentUser() user: CurrentUserDto, @Body() data: BulkPostIdsDto) {
+    return this.postService.bulkApprove(user, data.ids);
+  }
+
+  // ─────────────────────────────────────────────
+  // ADMIN — BULK REJECT
+  // PATCH /posts/bulk/reject
+  // (item #8)
+  //
+  // Declared BEFORE ':id/reject' — same route-order
+  // reasoning as bulk/approve above.
+  //
+  // ADMIN / SUPER_ADMIN
+  // ─────────────────────────────────────────────
+  @Patch('bulk/reject')
+  @ApiBearerAuth('access-token')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.POST_REJECT)
+  @ApiOperation({
+    summary: 'Admin: reject several low-risk posts at once',
+  })
+  async bulkReject(@CurrentUser() user: CurrentUserDto, @Body() data: BulkRejectPostDto) {
+    return this.postService.bulkReject(user, data.ids, data.reason);
+  }
+
+  // ─────────────────────────────────────────────
   // ADMIN — GET MEDIA DOWNLOAD URL
   // GET /posts/:id/media?key=...
   //
@@ -285,6 +385,24 @@ export class PostController {
   })
   async getMedia(@Param('id') postId: string, @Query() query: MediaKeyQueryDto) {
     return this.postService.getMediaDownloadUrl(postId, query.key);
+  }
+
+  // ─────────────────────────────────────────────
+  // ADMIN — PER-POST HISTORY / TIMELINE
+  // GET /posts/:id/history
+  // (item #13)
+  //
+  // ADMIN / SUPER_ADMIN
+  // ─────────────────────────────────────────────
+  @Get(':id/history')
+  @ApiBearerAuth('access-token')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.POST_READ)
+  @ApiOperation({
+    summary: 'Admin: get the audit timeline for one post',
+  })
+  async getHistory(@Param('id') postId: string) {
+    return this.postService.getHistory(postId);
   }
 
   // ─────────────────────────────────────────────
@@ -310,7 +428,9 @@ export class PostController {
   // Takes UpdatePostStatusDto so the status value is
   // DTO-validated (@IsEnum) like every other write
   // endpoint. Every transition is also validated
-  // against the shared status-transition map.
+  // against the shared status-transition map, the
+  // claim guard (#11), and the child-safety
+  // dual-control gate (#10).
   //
   // ADMIN / SUPER_ADMIN
   // ─────────────────────────────────────────────
@@ -334,8 +454,12 @@ export class PostController {
   // PATCH /posts/:id/approve
   //
   // Requires childSafetyConfirmed=true in the body
-  // when the post has involvesChild = true (PRD §32)
-  // — enforced in PostService.approve.
+  // when the post has involvesChild = true (PRD §32),
+  // and now requires two DIFFERENT admins to each send
+  // it before the post actually becomes APPROVED
+  // (item #10) — enforced in PostService.approve.
+  // Blocked if the post is claimed by a different
+  // admin (item #11).
   //
   // ADMIN / SUPER_ADMIN
   // ─────────────────────────────────────────────
@@ -352,6 +476,47 @@ export class PostController {
     @Body() data: ApprovePostDto,
   ) {
     return this.postService.approve(user, postId, data);
+  }
+
+  // ─────────────────────────────────────────────
+  // ADMIN — CLAIM
+  // PATCH /posts/:id/claim
+  // (item #11)
+  //
+  // Lets an admin mark a post as "being handled" so a
+  // second admin doesn't start reviewing it in parallel.
+  // Idempotent for the same admin; rejected if already
+  // claimed by someone else.
+  //
+  // ADMIN / SUPER_ADMIN
+  // ─────────────────────────────────────────────
+  @Patch(':id/claim')
+  @ApiBearerAuth('access-token')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.POST_REVIEW)
+  @ApiOperation({
+    summary: 'Admin: claim a post so others know it is being handled',
+  })
+  async claim(@CurrentUser() user: CurrentUserDto, @Param('id') postId: string) {
+    return this.postService.claimPost(user, postId);
+  }
+
+  // ─────────────────────────────────────────────
+  // ADMIN — UNCLAIM
+  // PATCH /posts/:id/unclaim
+  // (item #11)
+  //
+  // ADMIN / SUPER_ADMIN
+  // ─────────────────────────────────────────────
+  @Patch(':id/unclaim')
+  @ApiBearerAuth('access-token')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.POST_REVIEW)
+  @ApiOperation({
+    summary: 'Admin: release a claim on a post',
+  })
+  async unclaim(@CurrentUser() user: CurrentUserDto, @Param('id') postId: string) {
+    return this.postService.unclaimPost(user, postId);
   }
 
   // ─────────────────────────────────────────────
