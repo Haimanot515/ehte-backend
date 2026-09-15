@@ -71,6 +71,9 @@ export class CreatePostDto {
   @IsString({ each: true })
   audio?: string[];
 
+  // NOTE: MEDIA_ALLOWED_MIME_TYPES must include application/pdf for
+  // this field to be usable — PostService.validateMediaFilesExist()
+  // rejects any attached object whose content-type isn't on that list.
   @ApiPropertyOptional({
     type: [String],
     description: 'MinIO filepaths returned by POST /media/upload-url',
@@ -80,6 +83,8 @@ export class CreatePostDto {
   @IsString({ each: true })
   pdf?: string[];
 
+  // NOTE: same as pdf above — whatever document content-types you
+  // intend to accept must be listed in MEDIA_ALLOWED_MIME_TYPES.
   @ApiPropertyOptional({
     type: [String],
     description: 'MinIO filepaths returned by POST /media/upload-url',
@@ -218,11 +223,22 @@ export class RequestPostChangesDto {
 // Admin approve body. childSafetyConfirmed is
 // required (enforced in PostService.approve)
 // whenever the post has involvesChild = true.
+//
+// NOTE (dual-control fix, item #10): a single true
+// here is no longer sufficient on its own to approve
+// a child-involving post. The FIRST admin to send
+// childSafetyConfirmed=true only records their own
+// confirmation (childSafetyFirstConfirmedByUserId);
+// the post only actually moves to APPROVED once a
+// SECOND, different admin also sends
+// childSafetyConfirmed=true. See
+// PostService.ensureChildSafetySatisfied().
 // ─────────────────────────────────────────────
 
 export class ApprovePostDto {
   @ApiPropertyOptional({
-    description: 'Required (must be true) when the post has involvesChild = true (PRD §32).',
+    description:
+      'Required (must be true) when the post has involvesChild = true (PRD §32). Two DIFFERENT admins must each send true before the post actually becomes APPROVED.',
   })
   @IsOptional()
   @IsBoolean()
@@ -246,6 +262,14 @@ export class RejectPostDto {
 // AND publishImmediately is true (the straight-to-
 // APPROVED path), childSafetyConfirmed must be
 // explicitly true. Enforced in PostService.createOfficial.
+//
+// NOTE: the dual-control rule (#10) is NOT re-applied
+// here on purpose — createOfficial is already gated
+// behind PermissionsEnum.POST_CREATE_OFFICIAL, a
+// higher-trust action than the normal review queue.
+// If you want dual-control here too, route
+// publishImmediately+involvesChild posts through the
+// normal PENDING → approve() path instead.
 // ─────────────────────────────────────────────
 
 export class AdminCreatePostDto extends CreatePostDto {
@@ -362,12 +386,36 @@ export class UpdatePostStatusDto {
   // Required whenever the target status is APPROVED or
   // PUBLISHED and the post has involvesChild = true. Closes
   // the bypass where this generic endpoint could skip
-  // approve()'s child-safety gate entirely.
+  // approve()'s child-safety gate entirely. Same dual-control
+  // rule as ApprovePostDto applies (#10).
   @ApiPropertyOptional({
     description:
-      'Required (must be true) when moving an involvesChild post to APPROVED or PUBLISHED.',
+      'Required (must be true) when moving an involvesChild post to APPROVED or PUBLISHED. Two DIFFERENT admins must each send true.',
   })
   @IsOptional()
   @IsBoolean()
   childSafetyConfirmed?: boolean;
+}
+
+// ─────────────────────────────────────────────
+// Bulk admin actions (item #8).
+// Low-risk posts only: any id whose post has
+// involvesChild = true is skipped and reported back
+// as requiring individual review, never silently
+// bulk-approved.
+// ─────────────────────────────────────────────
+
+export class BulkPostIdsDto {
+  @ApiProperty({ type: [String], description: 'Post ids to act on in one request.' })
+  @IsArray()
+  @IsString({ each: true })
+  @MinLength(1, { each: true })
+  ids!: string[];
+}
+
+export class BulkRejectPostDto extends BulkPostIdsDto {
+  @ApiProperty({ minLength: 3, example: 'Content does not comply with platform guidelines.' })
+  @IsString()
+  @MinLength(3)
+  reason!: string;
 }

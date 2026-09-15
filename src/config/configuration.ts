@@ -81,11 +81,11 @@ export default () => ({
   },
 
   minio: {
-    // Production (Render -> Cloudflare R2): <ACCOUNT_ID>.r2.cloudflarestorage.com
-    // Local (Docker Compose -> MinIO): minio
+    // Production (Render -> Cloudflare R2 / Backblaze B2): the provider's
+    // S3-compatible endpoint. Local (Docker Compose -> MinIO): minio
     endpoint: process.env.MINIO_ENDPOINT || 'localhost',
 
-    // Production: 443 (R2, over HTTPS). Local: 9000 (MinIO's default).
+    // Production: 443 (HTTPS). Local: 9000 (MinIO's default).
     port: Number(process.env.MINIO_PORT || 9000),
 
     accessKey: process.env.MINIO_ACCESS_KEY,
@@ -93,21 +93,20 @@ export default () => ({
     secretKey: process.env.MINIO_SECRET_KEY,
 
     // FIX: default was 'ehte', but the actual bucket — both the local MinIO
-    // bucket and the one already created in Cloudflare R2 — is 'ehte-media'.
-    // This only matters when MINIO_BUCKET_NAME is unset, but it was wrong
-    // and would silently point at a bucket that doesn't exist.
+    // bucket and the one already created with the storage provider — is
+    // 'ehte-media'. This only matters when MINIO_BUCKET_NAME is unset, but
+    // it was wrong and would silently point at a bucket that doesn't exist.
     bucketName: process.env.MINIO_BUCKET_NAME || 'ehte-media',
 
-    // Production: true (R2 requires HTTPS). Local: false (plain MinIO).
+    // Production: true (HTTPS required). Local: false (plain MinIO).
     useSSL: process.env.MINIO_USE_SSL === 'true',
 
     // ADDED: was missing entirely, so MinioService's own fallback
     // ('us-east-1') was always used regardless of what MINIO_REGION was
-    // set to. R2 requires this to be 'auto' in production — 'us-east-1'
-    // and an empty value are Cloudflare-documented aliases for 'auto',
-    // but setting it explicitly avoids relying on that alias and matches
-    // every official R2 SDK example (boto3, aws-sdk, etc.), which always
-    // pass region explicitly rather than omitting it.
+    // set to. Some S3-compatible providers require this to be set
+    // explicitly (e.g. 'auto' for Cloudflare R2) rather than relying on
+    // an alias, matching every official SDK example (boto3, aws-sdk,
+    // etc.), which always pass region explicitly.
     region: process.env.MINIO_REGION || 'us-east-1',
 
     // FIX: previously read directly off process.env in MinioService,
@@ -117,7 +116,8 @@ export default () => ({
     // configService.get<number>('minio.presignDurationSeconds').
     // Default lowered from 120s to 600s (10 min) — long enough for a
     // real upload/download, short enough that a leaked presigned URL
-    // doesn't stay exploitable for long.
+    // (e.g. for victim or missing-person media) doesn't stay exploitable
+    // for long.
     presignDurationSeconds: parseInt(process.env.DURATION_OF_PRE_SIGNED_DOCUMENT ?? '600', 10),
   },
 
@@ -133,13 +133,34 @@ export default () => ({
     lockoutDurationMinutes: parseInt(process.env.LOCKOUT_DURATION_MINUTES ?? '15', 10),
   },
 
+  // FIX: both fallbacks below were out of sync with the values actually
+  // used elsewhere (app.module.ts's Joi defaults, and PostService's own
+  // MEDIA_MAX_FILE_SIZE / MEDIA_ALLOWED_MIME_TYPES reads). They only
+  // apply when the env vars are completely unset, but a stale fallback
+  // here is still a real bug: it silently disagreed with the size cap
+  // recommended in .env and left `application/pdf` off the allowed list,
+  // meaning a post with pdf/document media would fail validation even
+  // though CreatePostDto/UpdatePostDto both accept those fields.
   media: {
-    maxFileSize: parseInt(process.env.MEDIA_MAX_FILE_SIZE ?? '10485760', 10),
+    maxFileSize: parseInt(process.env.MEDIA_MAX_FILE_SIZE ?? '52428800', 10),
 
     allowedMimeTypes:
       process.env.MEDIA_ALLOWED_MIME_TYPES ||
-      'image/jpeg,image/png,image/webp,video/mp4,audio/mpeg,audio/wav',
+      'image/jpeg,image/png,image/webp,video/mp4,video/quicktime,audio/mpeg,audio/wav,audio/mp4,application/pdf',
   },
+
+  // NOTE: content.* is deliberately NOT namespaced here the way media/minio
+  // are. PostService reads CONTENT_MAX_PENDING_PER_USER,
+  // CONTENT_CREATE_RATE_LIMIT_WINDOW_SECONDS, CONTENT_DRAFT_TTL_DAYS,
+  // CONTENT_REJECTED_RETENTION_DAYS, CONTENT_STALE_PENDING_HOURS (and their
+  // optional POST_* overrides) directly via configService.get('RAW_ENV_NAME'),
+  // the same way it reads MEDIA_MAX_FILE_SIZE directly rather than through
+  // media.maxFileSize. @nestjs/config's ConfigService falls through to
+  // process.env for keys not present in the loaded config object, so this
+  // works without an entry here — but if Reports/MissingPerson/Profile
+  // services end up wanting a namespaced `content.*` lookup instead of the
+  // raw env-var pattern, add it here rather than duplicating parseInt logic
+  // across every module's service file.
 
   support: {
     currency: process.env.SUPPORT_CURRENCY || 'ETB',

@@ -158,6 +158,28 @@ export class MinioService implements OnModuleInit {
     }
   }
 
+  // NEW — exposes size/content-type for a stored object so callers
+  // (PostService.validateMediaFilesExist) can enforce MEDIA_MAX_FILE_SIZE /
+  // MEDIA_ALLOWED_MIME_TYPES limits on media that's already been confirmed
+  // to exist via objectExists(). Only called on filepaths already known to
+  // exist, so a NotFound here would indicate a race (deleted between the
+  // objectExists() check and this call) rather than a normal outcome —
+  // callers should let that error propagate rather than swallow it.
+  //
+  // Content-type comes back from MinIO under the 'content-type' metadata
+  // key (lowercase, per the S3-style API) — it's whatever was passed as
+  // 'Content-Type' at upload time via uploadFile()/putObject(), so the
+  // media-upload module must set it accurately for MIME-type validation
+  // here to mean anything.
+  async statObject(key: string): Promise<{ size: number; contentType: string }> {
+    this.assertClient();
+    const stat = await this.client.statObject(this.bucket, key);
+    return {
+      size: stat.size,
+      contentType: stat.metaData?.['content-type'] ?? 'application/octet-stream',
+    };
+  }
+
   async generatePresignedUploadUrl(fileInfo: {
     originalname: string;
     contentType?: string;
