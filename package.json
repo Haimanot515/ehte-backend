@@ -70,7 +70,7 @@
     "@nestjs/testing": "^11.0.1",
     "@types/compression": "^1.8.1",
     "@types/express": "^5.0.6",
-    "@types/helmet": "^0.0.48",
+    "@types/helmet": "^4.0.0",
     "@types/jest": "^30.0.0",
     "@types/joi": "^17.2.2",
     "@types/minio": "^7.1.0",
