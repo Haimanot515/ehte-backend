@@ -253,3 +253,4 @@ export class ReportController {
     return this.reportService.escalate(admin, reportId, data);
   }
 }
+ 
