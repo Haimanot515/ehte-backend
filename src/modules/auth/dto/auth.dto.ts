@@ -128,10 +128,12 @@ export class ForgotPasswordDto {
 // ─────────────────────────────────────────────
 // RESET PASSWORD
 //
-// Shared shape: also used by AdminAuthController's /admin/auth/reset-password
-// (imported there from this file — see admin-auth/dto/admin-auth.dto.ts). It's
-// channel-agnostic (verificationId + otp only, no phone/email), so one class
-// covers both call sites without needing an admin-specific variant.
+// Shared shape: also used by AdminAuthController's /admin/auth/reset-password and
+// /admin/auth/change-password/verify (imported there from this file — see
+// admin-auth/dto/admin-auth.dto.ts), AND by AuthController's own
+// /auth/change-password/verify below. It's channel-agnostic (verificationId + otp
+// only, no phone/email), so one class covers every OTP-verify call site without
+// needing a channel-specific variant.
 // ─────────────────────────────────────────────
 
 export class ResetPasswordDto {
@@ -167,9 +169,28 @@ export class ResetPasswordDto {
 }
 
 // ─────────────────────────────────────────────
-// CHANGE PASSWORD
+// CHANGE PASSWORD (STEP 1) — authenticated USER proves their current password;
+// an OTP is then sent by SMS to their own registered phone number. Step 2 reuses
+// ResetPasswordDto above (verificationId + otp + newPassword).
+//
+// Mirrors AdminChangePasswordInitiateDto in admin-auth.dto.ts, but that flow emails
+// its OTP instead of texting it — USER accounts are phone-first (no guaranteed
+// email), ADMIN accounts are email-first (no guaranteed phone), so each flow uses
+// whichever contact channel that account type is required to have.
 // ─────────────────────────────────────────────
 
+export class ChangePasswordInitiateDto {
+  @ApiProperty({
+    description: 'Current password of the authenticated user',
+  })
+  @IsString()
+  @IsNotEmpty()
+  currentPassword: string;
+}
+
+// Retained for any existing callers still on the single-step shape; no longer used
+// by AuthController, which now requires the OTP step below via ChangePasswordInitiateDto
+// + ResetPasswordDto instead of accepting currentPassword + newPassword in one call.
 export class ChangePasswordDto {
   @ApiProperty({
     description: 'Current password of the authenticated user',

@@ -1,4 +1,4 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 import {
   ArrayNotEmpty,
@@ -14,7 +14,9 @@ import {
 import { RolesEnum } from 'src/common/enums/roles.enum';
 
 // Reused as-is: channel-agnostic (verificationId + otp), so the admin
-// reset-password endpoint takes the same shape as the user one.
+// reset-password endpoint takes the same shape as the user one. Also reused
+// (unchanged) as the payload for step 2 of adminChangePassword — see
+// AdminChangePasswordInitiateDto below for step 1.
 export { ResetPasswordDto } from '../../auth/dto/auth.dto';
 
 // ─────────────────────────────────────────────
@@ -124,6 +126,12 @@ export class AdminCompleteRegistrationDto {
 
 // ─────────────────────────────────────────────
 // ADMIN — FORGOT PASSWORD  (email-only; no phone)
+//
+// Already email-OTP-based end to end: adminForgotPassword() issues the OTP via
+// OtpChannelEnum.email, and adminResetPassword() (POST /admin/auth/reset-password)
+// consumes it. This is already a separate endpoint pair from the USER
+// /auth/forgot-password + /auth/reset-password flow, which is phone/SMS-based.
+// No change needed here — noted for clarity alongside the new change-password flow.
 // ─────────────────────────────────────────────
 
 export class AdminForgotPasswordDto {
@@ -134,6 +142,26 @@ export class AdminForgotPasswordDto {
   @IsEmail()
   @IsNotEmpty()
   email: string;
+}
+
+// ─────────────────────────────────────────────
+// ADMIN — CHANGE PASSWORD (STEP 1): authenticated self-service password change.
+//
+// Deliberately a dedicated admin-only endpoint (POST /admin/auth/change-password/initiate)
+// rather than the shared USER /auth/change-password endpoint — AuthService.changePassword()
+// now rejects any account holding an admin role and points it here instead. Verification
+// is two-factor: this DTO's currentPassword proves the admin still knows their password,
+// then an OTP is emailed to their own address (step 2 uses the existing ResetPasswordDto
+// shape: verificationId + otp + newPassword) before the change is committed.
+// ─────────────────────────────────────────────
+
+export class AdminChangePasswordInitiateDto {
+  @ApiProperty({
+    description: "The authenticated admin's current password",
+  })
+  @IsString()
+  @IsNotEmpty()
+  currentPassword: string;
 }
 
 // ─────────────────────────────────────────────

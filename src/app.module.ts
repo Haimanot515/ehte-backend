@@ -273,16 +273,21 @@ import { PermissionsSeeder } from './common/seed/permissions.seeder';
         THROTTLE_LIMIT: Joi.number().default(20),
 
         // ─────────────────────────────────────
-        // SMS PROVIDER (Afromessage)
+        // SMS PROVIDER (SendET)
+        //
+        // Active provider — AfroMessage removed. Required (not optional)
+        // since SendET is now the only SMS path; a missing/blank value
+        // fails fast at boot instead of surfacing later as a runtime
+        // "SendET API URL is not configured" error deep in a signup flow.
         // ─────────────────────────────────────
 
-        AFROMESSAGE_URL: Joi.string().uri().required(),
+        SENDET_URL: Joi.string().uri().required(),
 
-        AFROMESSAGE_TOKEN: Joi.string().required(),
+        SENDET_TOKEN: Joi.string().required(),
 
-        AFROMESSAGE_IDENTIFIER_ID: Joi.string().required(),
+        SENDET_SENDER_NAME: Joi.string().optional(),
 
-        AFROMESSAGE_SENDER_NAME: Joi.string().optional(),
+        SENDET_TIMEOUT_MS: Joi.number().default(10000),
 
         // ─────────────────────────────────────
         // MINIO
@@ -758,7 +763,7 @@ import { PermissionsSeeder } from './common/seed/permissions.seeder';
     // JwtStrategy.validate() from the JWT payload that
     // AuthService.issueTokens() now bakes in alongside
     // roles (see AuthService.derivePermissions()).
-    // ─────────────────────────────────────────
+    // ─────────────────────────────────────
 
     {
       provide: APP_GUARD,

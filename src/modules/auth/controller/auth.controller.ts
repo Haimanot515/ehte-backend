@@ -12,7 +12,7 @@ import {
   LoginDto,
   ForgotPasswordDto,
   ResetPasswordDto,
-  ChangePasswordDto,
+  ChangePasswordInitiateDto,
   RefreshTokenDto,
 } from '../dto/auth.dto';
 
@@ -99,13 +99,14 @@ export class AuthController {
     return this.authService.forgotPassword(data);
   }
 
-  // RESET PASSWORD. Tight throttle: OTP brute-force surface.
+  // RESET PASSWORD — "forgot it entirely" flow: no bearer token, OTP is the only proof.
+  // Tight throttle: OTP brute-force surface.
 
   @AllowAnonymous()
   @Throttle({ default: { limit: 5, ttl: 60000 } })
   @Post('reset-password')
   @ApiOperation({
-    summary: 'Reset password using OTP',
+    summary: 'Reset password using OTP (USER accounts only, forgot-password flow)',
   })
   async resetPassword(@Body() data: ResetPasswordDto) {
     return this.authService.resetPassword(data);
@@ -125,21 +126,39 @@ export class AuthController {
     return this.authService.me(user);
   }
 
-  // CHANGE PASSWORD
+  // CHANGE PASSWORD (STEP 1) — "know it, want to change it" flow: authenticated USER
+  // verifies their current password; an OTP is then texted to their own registered
+  // phone number. USER accounts only — admin accounts use AdminAuthController's
+  // email-OTP equivalent (POST /admin/auth/change-password/initiate) instead.
 
-  @Post('change-password')
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @Post('change-password/initiate')
   @ApiBearerAuth('access-token')
   @ApiOperation({
-    summary: 'Change password for authenticated user',
+    summary:
+      "Step 1 of self-service password change: verify the user's current password and SMS them an OTP",
   })
-  async changePassword(
+  async changePasswordInitiate(
     @CurrentUser()
     user: CurrentUserDto,
 
     @Body()
-    data: ChangePasswordDto,
+    data: ChangePasswordInitiateDto,
   ) {
-    return this.authService.changePassword(user, data);
+    return this.authService.changePasswordInitiate(user, data);
+  }
+
+  // CHANGE PASSWORD (STEP 2) — possessing the texted OTP proves phone control; reuses
+  // the same verificationId + otp + newPassword shape as reset-password.
+
+  @AllowAnonymous()
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @Post('change-password/verify')
+  @ApiOperation({
+    summary: 'Step 2 of self-service password change: verify the texted OTP and set the new password',
+  })
+  async changePasswordVerify(@Body() data: ResetPasswordDto) {
+    return this.authService.changePasswordVerify(data);
   }
 
   // LOGOUT

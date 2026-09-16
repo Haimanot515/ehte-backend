@@ -10,6 +10,7 @@ import {
   MaxLength,
   Max,
   Min,
+  ValidateIf,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
@@ -120,6 +121,54 @@ export class CreateMissingPersonDto {
   @IsArray()
   @IsString({ each: true })
   other?: string[];
+
+  // ─────────────────────────────────────────
+  // REWARD PROPOSAL
+  //
+  // The submitter can PROPOSE a reward here — "I will pay this
+  // amount if the missing person is found." rewardOffered gates the
+  // other two: rewardAmount is REQUIRED the moment rewardOffered is
+  // true (enforced below via @ValidateIf — a bare "I'm offering a
+  // reward" with no number attached isn't a real commitment), while
+  // rewardDetails stays optional either way (conditions, how to
+  // claim, etc.).
+  //
+  // This is a proposal only: it does NOT make the reward visible on
+  // the public endpoints and does NOT need admin sign-off to be
+  // saved. rewardApproved is deliberately absent from this DTO and
+  // always defaults to false at creation — approving a proposed
+  // reward is an admin-only decision made after review, via
+  // PATCH /missing-persons/admin/:id/reward (UpdateMissingPersonRewardDto).
+  // See MissingPersonService.buildRewardProposalUpdate() for how
+  // rewardAmount/rewardDetails are gated behind rewardOffered.
+  // ─────────────────────────────────────────
+  @ApiPropertyOptional({
+    description:
+      'Whether the submitter is offering a reward for information — "I will pay this amount if the missing person is found."',
+  })
+  @IsOptional()
+  @IsBoolean()
+  rewardOffered?: boolean;
+
+  @ApiPropertyOptional({
+    description:
+      'Reward amount to pay if the missing person is found (platform base currency unit). Required when rewardOffered is true.',
+    example: 20000,
+  })
+  @ValidateIf((o: CreateMissingPersonDto) => o.rewardOffered === true)
+  @IsInt()
+  @Min(1)
+  rewardAmount?: number;
+
+  @ApiPropertyOptional({
+    description:
+      'Free-text reward details (e.g. conditions, how to claim). Only meaningful when rewardOffered is true; ignored otherwise.',
+    maxLength: 1000,
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  rewardDetails?: string;
 
   // ─────────────────────────────────────────
   // RE-AUTHENTICATION
@@ -236,6 +285,49 @@ export class UpdateMissingPersonDto {
   @IsString({ each: true })
   other?: string[];
 
+  // ─────────────────────────────────────────
+  // REWARD PROPOSAL (edit)
+  //
+  // Same rule as CreateMissingPersonDto: rewardAmount is required
+  // the instant this request sets rewardOffered to true (via
+  // @ValidateIf below) — so flipping the flag on always comes with
+  // a concrete number in the same request, even if the case already
+  // had reward fields from an earlier submission. rewardApproved is
+  // still absent here — see the NOTE in CreateMissingPersonDto. If
+  // the case's reward was already approved and the submitter
+  // changes any of these three fields, MissingPersonService.update()
+  // resets rewardApproved back to false so a since-edited proposal
+  // can't keep riding on a sign-off that was given for different
+  // terms.
+  // ─────────────────────────────────────────
+  @ApiPropertyOptional({
+    description:
+      'Whether the submitter is offering a reward for information — "I will pay this amount if the missing person is found."',
+  })
+  @IsOptional()
+  @IsBoolean()
+  rewardOffered?: boolean;
+
+  @ApiPropertyOptional({
+    description:
+      'Reward amount to pay if the missing person is found (platform base currency unit). Required when this request sets rewardOffered to true.',
+    example: 20000,
+  })
+  @ValidateIf((o: UpdateMissingPersonDto) => o.rewardOffered === true)
+  @IsInt()
+  @Min(1)
+  rewardAmount?: number;
+
+  @ApiPropertyOptional({
+    description:
+      'Free-text reward details (e.g. conditions, how to claim). Only meaningful when rewardOffered is true; ignored otherwise.',
+    maxLength: 1000,
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  rewardDetails?: string;
+
   // Mirrors CreateMissingPersonDto's credential field — update()
   // is also gated behind ReauthGuard per the controller's TODO.
   @ApiPropertyOptional({
@@ -280,6 +372,70 @@ export class UpdateMissingPersonStatusDto {
   @IsOptional()
   @IsBoolean()
   childSafetyConfirmed?: boolean;
+}
+
+// ─────────────────────────────────────────────
+// ADMIN — UPDATE REWARD DTO
+//
+// Separate from UpdateMissingPersonStatusDto on purpose: approving
+// a case (status = APPROVED) and approving its reward are two
+// distinct decisions that shouldn't be forced into the same
+// request — an admin may want to approve the case for public
+// listing before a reward has even been proposed, or may need to
+// revisit the reward later without touching status at all.
+//
+// rewardOffered is NOT here — only the submitter can propose that a
+// reward exists at all (via CreateMissingPersonDto/
+// UpdateMissingPersonDto). This DTO only lets an admin approve or
+// reject the submitter's existing proposal, and optionally adjust
+// the figure/details as part of that decision — it can't invent a
+// reward the submitter never offered. The service rejects
+// rewardApproved: true when the case's rewardOffered is false.
+//
+// rewardAmount/rewardDetails here are OPTIONAL overrides: if
+// omitted, the service keeps whatever the submitter last proposed.
+// If provided, they replace the stored value regardless of
+// rewardApproved (e.g. an admin can correct a submitter's typo
+// while rejecting, so the next review starts from a clean value).
+// A final rewardAmount is required (via override or existing value)
+// whenever rewardApproved is true.
+//
+// Approving does NOT clear rewardAmount/rewardDetails from the row
+// on later rejection — the public-facing read paths mask
+// rewardAmount/rewardDetails whenever rewardApproved is false, so
+// there's no separate need to null the underlying data.
+//
+// This DTO only reaches the service through an ADMIN/SUPER_ADMIN
+// -gated endpoint (PATCH /missing-persons/admin/:id/reward), never
+// through the submitter-facing create/update routes.
+// ─────────────────────────────────────────────
+
+export class UpdateMissingPersonRewardDto {
+  @ApiProperty({
+    description:
+      "Whether the case's proposed reward is approved for public display. Requires the case to have rewardOffered = true and a final reward amount (existing or provided here).",
+  })
+  @IsBoolean()
+  rewardApproved: boolean;
+
+  @ApiPropertyOptional({
+    description:
+      "Override the reward amount (platform base currency unit). Omit to keep the submitter's proposed amount.",
+    example: 50000,
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  rewardAmount?: number;
+
+  @ApiPropertyOptional({
+    description: "Override the reward details text. Omit to keep the submitter's proposed details.",
+    maxLength: 1000,
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  rewardDetails?: string;
 }
 
 // ─────────────────────────────────────────────

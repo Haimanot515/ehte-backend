@@ -23,7 +23,7 @@ import { OtpUtil } from 'src/common/utils/otp.util';
 import { LockoutUtil } from 'src/common/utils/lockout.util';
 import { TokenUtil } from 'src/common/utils/token.util';
 
-import { sendSms } from 'src/services/sms/afro-message.service';
+import { sendSms } from 'src/services/sms/sendet.service';
 import { renderOtpSms } from 'src/services/sms/templates/sms-otp.template';
 
 import { AuditEventEnum } from 'src/common/enums/shared/audit-events.enum';
@@ -36,7 +36,7 @@ import {
 } from 'src/modules/misc/events/notification.events';
 
 import {
-  ChangePasswordDto,
+  ChangePasswordInitiateDto,
   ForgotPasswordDto,
   LoginDto,
   RefreshTokenDto,
@@ -557,6 +557,8 @@ export class AuthService {
     const roles = user?.userRoles.map((userRole) => userRole.role.name) ?? [];
 
     // Masks "no account", "inactive", and "admin role" identically (shared password risk).
+    // Admins never go through this phone-based flow — they use
+    // AdminAuthController's /admin/auth/forgot-password (email-based) instead.
     if (!user || !user.isActive || this.hasAdminRole(roles)) {
       return { verificationId: '' };
     }
@@ -841,12 +843,17 @@ export class AuthService {
     return { ...userData, roles };
   }
 
-  // CHANGE PASSWORD
+  // CHANGE PASSWORD (STEP 1) — USER accounts only. Any account holding an admin role
+  // is rejected here and must use the dedicated admin flow instead: AdminAuthController's
+  // POST /admin/auth/change-password/initiate + /verify (current-password check + an
+  // OTP EMAILED to the admin). This USER flow is the phone-first counterpart: current
+  // password is checked here, then an OTP is TEXTED to the user's own registered phone
+  // number, and the actual change only happens once that OTP is verified in step 2.
 
-  async changePassword(
+  async changePasswordInitiate(
     user: CurrentUserDto,
-    data: ChangePasswordDto,
-  ): Promise<{ message: string }> {
+    data: ChangePasswordInitiateDto,
+  ): Promise<{ verificationId: string }> {
     const dbUser = await this.prisma.user.findUnique({
       where: { id: user.id },
       include: {
@@ -856,6 +863,12 @@ export class AuthService {
 
     if (!dbUser) {
       throw new NotFoundException('user_not_found');
+    }
+
+    const roles = dbUser.userRoles.map((userRole) => userRole.role.name);
+
+    if (this.hasAdminRole(roles)) {
+      throw new UnauthorizedException('use_admin_change_password');
     }
 
     if (!dbUser.passwordHash) {
@@ -868,34 +881,134 @@ export class AuthService {
       throw new BadRequestException('wrong_current_password');
     }
 
+    // Reuses the password_reset purpose/SMS channel — same proof-of-phone pattern as
+    // forgotPassword(), just reached only after the current-password check above
+    // (forgotPassword() has no such check, since it's for users who've lost their password).
+    const { verificationId } = await this.otpUtil.issueAndSendOtp(
+      dbUser.id,
+      this.requirePhone(dbUser.phone),
+      UserOtpPurposeEnum.password_reset,
+      OtpChannelEnum.sms,
+    );
+
+    return { verificationId };
+  }
+
+  // CHANGE PASSWORD (STEP 2) — possessing the texted OTP proves phone control.
+  // Mirrors resetPassword()'s OTP-claim pattern; kept as a separate method (rather than
+  // calling resetPassword() directly) so the two flows — "forgot it entirely" vs.
+  // "know it, want to change it" — stay independently auditable.
+
+  async changePasswordVerify(data: ResetPasswordDto): Promise<{ message: string }> {
+    const otpRecord = await this.prisma.userOtp.findUnique({
+      where: { id: data.verificationId },
+      include: {
+        user: {
+          select: {
+            id: true,
+            userRoles: { include: { role: true } },
+          },
+        },
+      },
+    });
+
+    if (
+      !otpRecord ||
+      otpRecord.purpose !== UserOtpPurposeEnum.password_reset ||
+      otpRecord.usedAt ||
+      otpRecord.expiresAt < new Date()
+    ) {
+      throw new BadRequestException('invalid_or_expired_otp');
+    }
+
+    const roles = otpRecord.user.userRoles.map((userRole) => userRole.role.name);
+
+    if (otpRecord.attempts >= 5) {
+      await this.lockoutUtil.lockAccountForOtpAbuse(otpRecord.user.id);
+
+      this.emitAudit({
+        userId: otpRecord.user.id,
+        actorType: resolveActorType(roles),
+        action: AuditEventEnum.SECURITY_ALERT,
+        entity: 'UserOtp',
+        entityId: otpRecord.id,
+        diff: {
+          reason: 'too_many_otp_attempts',
+          purpose: 'change_password',
+        },
+      });
+
+      throw new BadRequestException('too_many_otp_attempts');
+    }
+
+    const validOtp = await bcrypt.compare(data.otp, otpRecord.otpHash);
+
+    if (!validOtp) {
+      const updatedOtp = await this.prisma.userOtp.update({
+        where: { id: otpRecord.id },
+        data: { attempts: { increment: 1 } },
+        select: { attempts: true },
+      });
+
+      if (updatedOtp.attempts >= 5) {
+        await this.lockoutUtil.lockAccountForOtpAbuse(otpRecord.user.id);
+
+        this.emitAudit({
+          userId: otpRecord.user.id,
+          actorType: resolveActorType(roles),
+          action: AuditEventEnum.SECURITY_ALERT,
+          entity: 'UserOtp',
+          entityId: otpRecord.id,
+          diff: {
+            reason: 'too_many_otp_attempts',
+            purpose: 'change_password',
+          },
+        });
+      }
+
+      throw new BadRequestException('invalid_or_expired_otp');
+    }
+
     const hashedPassword = await bcrypt.hash(data.newPassword, 10);
 
-    await this.prisma.$transaction([
-      this.prisma.user.update({
-        where: { id: user.id },
+    await this.prisma.$transaction(async (tx) => {
+      const claimed = await tx.userOtp.updateMany({
+        where: {
+          id: data.verificationId,
+          usedAt: null,
+          attempts: { lt: 5 },
+          expiresAt: { gt: new Date() },
+        },
+        data: { usedAt: new Date() },
+      });
+
+      if (claimed.count === 0) {
+        throw new BadRequestException('invalid_or_expired_otp');
+      }
+
+      await tx.user.update({
+        where: { id: otpRecord.user.id },
         data: { passwordHash: hashedPassword },
-      }),
+      });
 
-      // Force re-login after password change
-      this.prisma.session.deleteMany({
-        where: { userId: user.id },
-      }),
-    ]);
-
-    const roles = dbUser.userRoles.map((userRole) => userRole.role.name);
+      // Invalidate every existing session, including the one used to call step 1.
+      await tx.session.deleteMany({
+        where: { userId: otpRecord.user.id },
+      });
+    });
 
     // Audit after successful transaction
     this.emitAudit({
-      userId: user.id,
+      userId: otpRecord.user.id,
       actorType: resolveActorType(roles),
       action: AuditEventEnum.PASSWORD_CHANGED,
       entity: 'User',
-      entityId: user.id,
-      diff: { result: 'success' },
+      entityId: otpRecord.user.id,
+      diff: { method: 'otp', result: 'success', context: 'change_password_completed' },
     });
 
     // Notify after successful transaction
-    const changedEvent: PasswordChangedEvent = { userId: user.id };
+    const changedEvent: PasswordChangedEvent = { userId: otpRecord.user.id };
     this.eventEmitter.emit(NotificationEventEnum.PASSWORD_CHANGED, changedEvent);
 
     return { message: 'password_changed' };

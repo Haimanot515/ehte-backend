@@ -16,6 +16,7 @@ import {
   AdminCancelRegistrationDto,
   AdminChangeEmailDto,
   AdminChangeEmailVerifyDto,
+  AdminChangePasswordInitiateDto,
   PromoteUserDto,
   PromoteUserResendDto,
   PromoteVerifyDto,
@@ -118,6 +119,39 @@ export class AdminAuthController {
     return this.adminAuthService.adminChangeEmailVerify(data);
   }
 
+  // ADMIN — CHANGE PASSWORD (STEP 1): authenticated admin verifies their current password;
+  // an OTP is then emailed to their own address. Dedicated admin-only endpoint — the
+  // shared /auth/change-password endpoint now rejects admin-role accounts and points
+  // them here instead (see AuthService.changePassword()).
+
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @Post('change-password/initiate')
+  @ApiBearerAuth('access-token')
+  @ApiOperation({
+    summary:
+      "Step 1 of admin self-service password change: verify the admin's current password and email them an OTP",
+  })
+  async changePasswordInitiate(
+    @CurrentUser() user: CurrentUserDto,
+    @Body() data: AdminChangePasswordInitiateDto,
+  ) {
+    return this.adminAuthService.adminChangePasswordInitiate(user, data);
+  }
+
+  // ADMIN — CHANGE PASSWORD (STEP 2): possessing the emailed OTP proves inbox control;
+  // reuses the same verificationId + otp + newPassword shape as reset-password.
+
+  @AllowAnonymous()
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @Post('change-password/verify')
+  @ApiOperation({
+    summary:
+      "Step 2 of admin self-service password change: verify the emailed OTP and set the new password",
+  })
+  async changePasswordVerify(@Body() data: ResetPasswordDto) {
+    return this.adminAuthService.adminChangePasswordVerify(data);
+  }
+
   // ADMIN — PROMOTE USER: attaches email + sends OTP; role granted only after verify.
 
   @Throttle({ default: { limit: 5, ttl: 60000 } })
@@ -169,25 +203,27 @@ export class AdminAuthController {
     return this.adminAuthService.adminLoginByEmail(data);
   }
 
-  // ADMIN — FORGOT PASSWORD: email-only OTP; account existence is masked.
+  // ADMIN — FORGOT PASSWORD: email-only OTP; account existence is masked. Already
+  // separate from, and email-based unlike, the USER /auth/forgot-password (phone/SMS).
 
   @AllowAnonymous()
   @Throttle({ default: { limit: 3, ttl: 60000 } })
   @Post('forgot-password')
   @ApiOperation({
-    summary: 'Request password reset OTP via admin email',
+    summary: 'Request password reset OTP via admin email (for an admin who forgot their password)',
   })
   async forgotPassword(@Body() data: AdminForgotPasswordDto) {
     return this.adminAuthService.adminForgotPassword(data);
   }
 
   // ADMIN — RESET PASSWORD: routes through adminResetPassword() to enforce admin-role check.
+  // This completes the forgot-password flow above (admin does not know their current password).
 
   @AllowAnonymous()
   @Throttle({ default: { limit: 5, ttl: 60000 } })
   @Post('reset-password')
   @ApiOperation({
-    summary: 'Reset admin password using the emailed OTP (admin-scoped)',
+    summary: 'Reset admin password using the emailed OTP (admin-scoped, forgot-password flow)',
   })
   async resetPassword(@Body() data: ResetPasswordDto) {
     return this.adminAuthService.adminResetPassword(data);
