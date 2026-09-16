@@ -1,4 +1,15 @@
-import { Body, Controller, Delete, Get, Header, Param, Patch, Post, Query } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Header,
+  Headers,
+  Param,
+  Patch,
+  Post,
+  Query,
+} from '@nestjs/common';
 
 import { ApiBearerAuth, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 
@@ -33,31 +44,28 @@ export class MissingPersonController {
   // POST /missing-persons
   // Authenticated USER
   //
-  // FIX: TODO resolved — gated behind ReauthGuard, same as
-  // ReportController.create(). Submitting a missing-person case
-  // discloses sensitive personal details about a third party
-  // (the missing person), so it gets the same re-authentication
-  // treatment as filing a report.
+  // FIX (item #5): accepts an optional Idempotency-Key header —
+  // same convention as ReportController.create()/PostController.create().
+  // A client retrying after a dropped response gets the original
+  // submission back instead of creating a duplicate.
   // ─────────────────────────────────────────────
 
   @Post()
   @ApiBearerAuth('access-token')
   @RequireReauthentication()
   @ApiOperation({ summary: 'Submit a missing person report' })
-  async create(@CurrentUser() user: CurrentUserDto, @Body() data: CreateMissingPersonDto) {
-    return this.missingPersonService.create(user, data);
+  async create(
+    @CurrentUser() user: CurrentUserDto,
+    @Body() data: CreateMissingPersonDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.missingPersonService.create(user, data, idempotencyKey);
   }
 
   // ─────────────────────────────────────────────
   // MY SUBMISSIONS (paginated)
   // GET /missing-persons/mine
   // Authenticated USER
-  //
-  // FIX: TODO resolved — gated behind ReauthGuard and marked
-  // no-store, mirroring ReportController.findMyReports(). This
-  // list can include cases still in MORE_INFORMATION_REQUESTED /
-  // UNDER_REVIEW, i.e. content not yet public, so it shouldn't be
-  // cached by an intermediary or left in browser history.
   // ─────────────────────────────────────────────
 
   @Get('mine')
@@ -77,13 +85,7 @@ export class MissingPersonController {
   //
   // Lets the submitter request a download URL for a key attached
   // to their own submission, in any status — mirrors
-  // ReportController's reporter-owned media route. findMine()
-  // returns raw filepaths with no way to turn them into an actual
-  // URL otherwise.
-  //
-  // Different path depth from 'mine' (1 segment) and from the
-  // public ':id' route below (1 segment), so declaration order
-  // relative to those doesn't matter — grouped here for readability.
+  // ReportController's reporter-owned media route.
   //
   // Authenticated USER
   // ─────────────────────────────────────────────
@@ -138,16 +140,32 @@ export class MissingPersonController {
   }
 
   // ─────────────────────────────────────────────
+  // ADMIN — STALE / UNREVIEWED-TOO-LONG CASES
+  // GET /missing-persons/admin/stale
+  // (item #15)
+  //
+  // Declared BEFORE 'admin/:id' so Nest doesn't treat "stale" as a
+  // missing-person id — same route-order reasoning as Report/Post's
+  // equivalent routes.
+  //
+  // ADMIN / SUPER_ADMIN
+  // ─────────────────────────────────────────────
+
+  @Get('admin/stale')
+  @ApiBearerAuth('access-token')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.MISSING_PERSON_READ)
+  @ApiOperation({ summary: 'Admin: get unreviewed missing person cases that have waited too long' })
+  async findStalePending() {
+    return this.missingPersonService.findStalePending();
+  }
+
+  // ─────────────────────────────────────────────
   // ADMIN — GET ONE (full detail, incl. information submissions)
   // GET /missing-persons/admin/:id
   // ADMIN / SUPER_ADMIN
   //
   // Registered before the public ':id' route below.
-  //
-  // Requires both MISSING_PERSON_READ and
-  // MISSING_PERSON_INFO_READ because the payload includes
-  // the related information submissions, not just the
-  // missing-person record itself.
   // ─────────────────────────────────────────────
 
   @Get('admin/:id')
@@ -167,6 +185,8 @@ export class MissingPersonController {
   // Admins can request a download URL for any media key actually
   // attached to the submission, regardless of status — same
   // admin-only, no-visibility-filtering access as findOneForAdmin().
+  // Now passes the admin through for audit logging, matching
+  // ReportController's admin media route.
   // ─────────────────────────────────────────────
 
   @Get('admin/:id/media')
@@ -174,8 +194,62 @@ export class MissingPersonController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.MISSING_PERSON_READ)
   @ApiOperation({ summary: "Admin: get a short-lived download URL for a submission's media" })
-  async getMedia(@Param('id') id: string, @Query() query: MediaKeyQueryDto) {
-    return this.missingPersonService.getMediaDownloadUrl(id, query.key);
+  async getMedia(
+    @CurrentUser() admin: CurrentUserDto,
+    @Param('id') id: string,
+    @Query() query: MediaKeyQueryDto,
+  ) {
+    return this.missingPersonService.getMediaDownloadUrl(admin, id, query.key);
+  }
+
+  // ─────────────────────────────────────────────
+  // ADMIN — PER-CASE HISTORY / TIMELINE
+  // GET /missing-persons/admin/:id/history
+  // (item #18)
+  //
+  // Mirrors ReportController.getHistory / PostController.getHistory.
+  //
+  // ADMIN / SUPER_ADMIN
+  // ─────────────────────────────────────────────
+
+  @Get('admin/:id/history')
+  @ApiBearerAuth('access-token')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.MISSING_PERSON_READ)
+  @ApiOperation({ summary: 'Admin: get the audit timeline for one missing person case' })
+  async getHistory(@Param('id') id: string) {
+    return this.missingPersonService.getHistory(id);
+  }
+
+  // ─────────────────────────────────────────────
+  // ADMIN — CLAIM / UNCLAIM
+  // PATCH /missing-persons/admin/:id/claim
+  // PATCH /missing-persons/admin/:id/unclaim
+  // (item #17)
+  //
+  // Self-serve claim, mirroring PostController.claimPost/unclaimPost
+  // — any ADMIN/SUPER_ADMIN may claim an unclaimed case; only the
+  // claimant (or an explicit unclaim) may release it.
+  //
+  // ADMIN / SUPER_ADMIN
+  // ─────────────────────────────────────────────
+
+  @Patch('admin/:id/claim')
+  @ApiBearerAuth('access-token')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.MISSING_PERSON_REVIEW)
+  @ApiOperation({ summary: 'Admin: claim a missing person case' })
+  async claim(@CurrentUser() admin: CurrentUserDto, @Param('id') id: string) {
+    return this.missingPersonService.claimMissingPerson(admin, id);
+  }
+
+  @Patch('admin/:id/unclaim')
+  @ApiBearerAuth('access-token')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.MISSING_PERSON_REVIEW)
+  @ApiOperation({ summary: 'Admin: release a claimed missing person case' })
+  async unclaim(@CurrentUser() admin: CurrentUserDto, @Param('id') id: string) {
+    return this.missingPersonService.unclaimMissingPerson(admin, id);
   }
 
   // ─────────────────────────────────────────────
@@ -215,10 +289,6 @@ export class MissingPersonController {
   // PATCH /missing-persons/:id
   // Authenticated USER — only while PENDING or
   // MORE_INFORMATION_REQUESTED (enforced in service)
-  //
-  // FIX: TODO resolved — gated behind ReauthGuard, same reasoning
-  // as create(): editing still touches sensitive third-party
-  // details.
   // ─────────────────────────────────────────────
 
   @Patch(':id')
@@ -237,11 +307,6 @@ export class MissingPersonController {
   // DELETE MY SUBMISSION
   // DELETE /missing-persons/:id
   // Authenticated USER — only while PENDING (enforced in service)
-  //
-  // FIX: TODO resolved — gated behind ReauthGuard. Deleting a
-  // submission also purges its media from storage, so it's
-  // treated as a sensitive, irreversible action requiring
-  // re-authentication, same as create()/update() above.
   // ─────────────────────────────────────────────
 
   @Delete(':id')
@@ -256,7 +321,9 @@ export class MissingPersonController {
   // ADMIN — UPDATE STATUS
   // PATCH /missing-persons/admin/:id/status
   // ADMIN / SUPER_ADMIN — transitions enforced in service;
-  // reviewNote required for REJECTED / MORE_INFORMATION_REQUESTED
+  // reviewNote required for REJECTED / MORE_INFORMATION_REQUESTED;
+  // childSafetyConfirmed required (and dual-control gated) when
+  // approving a personType=CHILD case (item #16).
   // ─────────────────────────────────────────────
 
   @Patch('admin/:id/status')
@@ -269,6 +336,12 @@ export class MissingPersonController {
     @Param('id') id: string,
     @Body() data: UpdateMissingPersonStatusDto,
   ) {
-    return this.missingPersonService.updateStatus(admin, id, data.status, data.reviewNote);
+    return this.missingPersonService.updateStatus(
+      admin,
+      id,
+      data.status,
+      data.reviewNote,
+      data.childSafetyConfirmed,
+    );
   }
 }

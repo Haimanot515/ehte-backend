@@ -1,30 +1,58 @@
 model Report {
-  id                  String                     @id @default(uuid())
-  userId              String
-  caseReference       String                     @unique
-  description         String
-  location            String?
-  incidentAt          DateTime?
-  photo               String[]
-  video               String[]
-  audio               String[]
-  pdf                 String[]
-  document            String[]
-  other               String[]
-  status              ReportStatus               @default(PENDING)
-  createdAt           DateTime                   @default(now())
-  updatedAt           DateTime                   @updatedAt
-  assignedToId        String?
-  category            ReportCategory
+  id            String   @id @default(uuid())
+  userId        String
+  caseReference String   @unique
+  description   String
+  location      String?
+  incidentAt    DateTime?
+  photo         String[]
+  video         String[]
+  audio         String[]
+  pdf           String[]
+  document      String[]
+  other         String[]
+  status        ReportStatus @default(PENDING)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  assignedToId  String?
+  category      ReportCategory
+
+  // NEW — duplicate-submission protection (item #5), mirrors Post.
+  // Scoped to the user, not global: two different users retrying
+  // with the same client-generated key must not collide. Postgres
+  // treats NULLs as distinct, so rows with a null idempotencyKey
+  // don't conflict with each other.
+  idempotencyKey String?
+
+  // NEW — running total of attached-media bytes (item #13), mirrors
+  // Post.mediaTotalBytes. Lets update() recompute the total from a
+  // delta (added/removed bytes) instead of re-statting every
+  // already-attached file on every write.
+  mediaTotalBytes Int @default(0)
+
+  // NEW — timestamp set when the owning account is suspended (item
+  // #6), so admin tooling can filter/flag these. Deliberately does
+  // NOT change `status` or pull the report out of the review queue —
+  // unlike Post (which has a safe DRAFT state to fall back to),
+  // a Report has no non-terminal "hidden" state, and safety-related
+  // reports should be preserved/visible to admins even if the
+  // reporter's account is later suspended.
+  ownerSuspendedAt DateTime?
+
   assignedTo          User?                      @relation("ReportAssignee", fields: [assignedToId], references: [id])
   user                User                       @relation("ReportReporter", fields: [userId], references: [id], onDelete: Cascade)
   informationRequests ReportInformationRequest[]
 
+  @@unique([userId, idempotencyKey])
   @@index([userId])
   @@index([status])
   @@index([assignedToId])
   @@index([caseReference])
   @@index([category])
+  // NEW — supports findStalePending()'s cutoff query (item #15) and
+  // any future retention sweep (item #19), same pattern as Post's
+  // [status, createdAt] index.
+  @@index([status, createdAt])
   @@map("report")
 }
 

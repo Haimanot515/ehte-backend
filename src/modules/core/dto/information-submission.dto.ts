@@ -5,7 +5,6 @@ import {
   IsInt,
   IsOptional,
   IsString,
-  IsUrl,
   Max,
   MaxLength,
   Min,
@@ -32,49 +31,53 @@ export class CreateInformationSubmissionDto {
   @MaxLength(500)
   location?: string;
 
+  // FIX: these are MinIO filepaths returned by POST /media/upload-url
+  // (same convention as CreatePostDto), not public URLs — @IsUrl was
+  // rejecting every legitimate filepath. Switched to @IsString, same
+  // as Post/Report/VictimProfile.
   @IsOptional()
   @IsArray()
   @ArrayMaxSize(MAX_MEDIA_ITEMS)
-  @IsUrl({}, { each: true })
+  @IsString({ each: true })
   photo?: string[];
 
   @IsOptional()
   @IsArray()
   @ArrayMaxSize(MAX_MEDIA_ITEMS)
-  @IsUrl({}, { each: true })
+  @IsString({ each: true })
   video?: string[];
 
   @IsOptional()
   @IsArray()
   @ArrayMaxSize(MAX_MEDIA_ITEMS)
-  @IsUrl({}, { each: true })
+  @IsString({ each: true })
   audio?: string[];
 
+  // NOTE: same as PostDto — MEDIA_ALLOWED_MIME_TYPES must include
+  // application/pdf for this field to be usable.
   @IsOptional()
   @IsArray()
   @ArrayMaxSize(MAX_MEDIA_ITEMS)
-  @IsUrl({}, { each: true })
+  @IsString({ each: true })
   pdf?: string[];
 
   @IsOptional()
   @IsArray()
   @ArrayMaxSize(MAX_MEDIA_ITEMS)
-  @IsUrl({}, { each: true })
+  @IsString({ each: true })
   document?: string[];
 
   @IsOptional()
   @IsArray()
   @ArrayMaxSize(MAX_MEDIA_ITEMS)
-  @IsUrl({}, { each: true })
+  @IsString({ each: true })
   other?: string[];
 }
 
 // ─────────────────────────────────────────────
 // UPDATE
 // Same field set as CREATE, all optional. Only usable while
-// PENDING (enforced in the service) — once an admin has moved a
-// submission to UNDER_REVIEW, the submitter can no longer edit it
-// underneath them.
+// PENDING (enforced in the service).
 // ─────────────────────────────────────────────
 
 export class UpdateInformationSubmissionDto {
@@ -92,37 +95,37 @@ export class UpdateInformationSubmissionDto {
   @IsOptional()
   @IsArray()
   @ArrayMaxSize(MAX_MEDIA_ITEMS)
-  @IsUrl({}, { each: true })
+  @IsString({ each: true })
   photo?: string[];
 
   @IsOptional()
   @IsArray()
   @ArrayMaxSize(MAX_MEDIA_ITEMS)
-  @IsUrl({}, { each: true })
+  @IsString({ each: true })
   video?: string[];
 
   @IsOptional()
   @IsArray()
   @ArrayMaxSize(MAX_MEDIA_ITEMS)
-  @IsUrl({}, { each: true })
+  @IsString({ each: true })
   audio?: string[];
 
   @IsOptional()
   @IsArray()
   @ArrayMaxSize(MAX_MEDIA_ITEMS)
-  @IsUrl({}, { each: true })
+  @IsString({ each: true })
   pdf?: string[];
 
   @IsOptional()
   @IsArray()
   @ArrayMaxSize(MAX_MEDIA_ITEMS)
-  @IsUrl({}, { each: true })
+  @IsString({ each: true })
   document?: string[];
 
   @IsOptional()
   @IsArray()
   @ArrayMaxSize(MAX_MEDIA_ITEMS)
-  @IsUrl({}, { each: true })
+  @IsString({ each: true })
   other?: string[];
 }
 
@@ -130,10 +133,7 @@ export class UpdateInformationSubmissionDto {
 // ADMIN — MOVE TO UNDER_REVIEW (admin/:id/status)
 // The only status this endpoint may set is UNDER_REVIEW — the
 // terminal REVIEWED/REJECTED decision goes through review()
-// instead, which requires a reviewNote on REJECTED. Kept as
-// IsEnum(InformationStatus) rather than a literal so a clear
-// validation error is returned for anything else, instead of
-// silently rejecting at the service layer with no field context.
+// instead, which requires a reviewNote on REJECTED.
 // ─────────────────────────────────────────────
 
 export class UpdateInformationSubmissionStatusDto {

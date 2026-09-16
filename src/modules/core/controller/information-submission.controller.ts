@@ -1,4 +1,14 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Headers,
+  Param,
+  Patch,
+  Post,
+  Query,
+} from '@nestjs/common';
 
 import { ApiBearerAuth, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 
@@ -46,6 +56,12 @@ export class InformationSubmissionController {
   // ─────────────────────────────────────────────
   // CREATE
   // POST /information-submissions/missing-person/:missingPersonId
+  //
+  // FIX (item #5): accepts an optional Idempotency-Key header so a
+  // client retrying after a dropped response (double-tap on a
+  // flaky connection) doesn't end up creating two identical
+  // submissions — InformationSubmissionService.create returns the
+  // original submission on a repeat key instead.
   // ─────────────────────────────────────────────
 
   @Post('missing-person/:missingPersonId')
@@ -54,8 +70,14 @@ export class InformationSubmissionController {
     @Param('missingPersonId') missingPersonId: string,
     @CurrentUser() user: CurrentUserDto,
     @Body() data: CreateInformationSubmissionDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
   ) {
-    return this.informationSubmissionService.create(user.id, missingPersonId, data);
+    return this.informationSubmissionService.create(
+      user.id,
+      missingPersonId,
+      data,
+      idempotencyKey,
+    );
   }
 
   // ─────────────────────────────────────────────
@@ -208,6 +230,26 @@ export class InformationSubmissionController {
   }
 
   // ─────────────────────────────────────────────
+  // ADMIN — STALE / UNREVIEWED-TOO-LONG SUBMISSIONS
+  // GET /information-submissions/admin/stale
+  // (item #15)
+  //
+  // Declared BEFORE 'admin/:id' so Nest doesn't treat "stale" as a
+  // submission id — same route-order reasoning as elsewhere in
+  // this controller and PostController.
+  // ─────────────────────────────────────────────
+
+  @Get('admin/stale')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.MISSING_PERSON_INFO_READ)
+  @ApiOperation({
+    summary: 'Admin: get information submissions that have been waiting too long',
+  })
+  async findStalePending() {
+    return this.informationSubmissionService.findStalePending();
+  }
+
+  // ─────────────────────────────────────────────
   // ADMIN — ONE (full detail)
   // GET /information-submissions/admin/:id
   //
@@ -239,6 +281,20 @@ export class InformationSubmissionController {
   @ApiOperation({ summary: "Admin: get a short-lived download URL for a submission's media" })
   async getMediaForAdmin(@Param('id') id: string, @Query() query: MediaKeyQueryDto) {
     return this.informationSubmissionService.getMediaDownloadUrlForAdmin(id, query.key);
+  }
+
+  // ─────────────────────────────────────────────
+  // ADMIN — PER-SUBMISSION HISTORY / TIMELINE
+  // GET /information-submissions/admin/:id/history
+  // (item #18)
+  // ─────────────────────────────────────────────
+
+  @Get('admin/:id/history')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.MISSING_PERSON_INFO_READ)
+  @ApiOperation({ summary: 'Admin: get the audit timeline for one information submission' })
+  async getHistory(@Param('id') id: string) {
+    return this.informationSubmissionService.getHistory(id);
   }
 
   // ─────────────────────────────────────────────

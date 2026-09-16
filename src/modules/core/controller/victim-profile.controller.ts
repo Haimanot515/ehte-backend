@@ -1,6 +1,17 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Headers,
+  Param,
+  Patch,
+  Post,
+  Query,
+} from '@nestjs/common';
 
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 
 import { AllowAnonymous } from 'src/common/decorators/public.decorator';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
@@ -8,12 +19,10 @@ import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
 
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { RolesEnum } from 'src/common/enums/roles.enum';
-// NOTE: adjust these two import paths to match your actual file locations —
-// same convention as Roles / RolesEnum above.
 import { RequirePermissions } from 'src/common/decorators/require-permissions.decorator';
 import { PermissionsEnum } from 'src/common/enums/permissions.enum';
+import { RequireReauthentication } from 'src/common/decorators/reauth.decorator';
 
-// NOTE: adjust this path to wherever MediaModule actually lives.
 import { MediaKeyQueryDto } from 'src/modules/media/dto/media-key-query.dto';
 
 import { VictimProfileService } from '../service/victim-profile.service';
@@ -29,21 +38,6 @@ import {
   UpdateVictimProfileDto,
 } from '../dto/victim-profile.dto';
 
-// ─────────────────────────────────────────────
-// PRD §19: "Authorized administrators can create or manage a
-// Victim/Survivor Profile." Every mutating and single-record read
-// route below is admin-only. The public-facing routes are
-// GET /victim-profiles/public, GET /victim-profiles/public/:id, and
-// GET /victim-profiles/public/:id/media.
-//
-// Media download URLs are deliberately NOT served by a generic
-// media module — see MediaService's header comment. Authorization
-// for "can this caller download this specific object" has to go
-// through the same visibility rules findOne()/findOnePublic() and
-// serializePublicProfile() already enforce (child-profile photo
-// suppression, publish/review-state gating), so it lives here.
-// ─────────────────────────────────────────────
-
 @ApiTags('Victim Profiles')
 @Controller('victim-profiles')
 export class VictimProfileController {
@@ -52,11 +46,25 @@ export class VictimProfileController {
   // ─────────────────────────────────────────────
   // CREATE
   // POST /victim-profiles
+  //
+  // FIX (item #5): accepts an optional Idempotency-Key header, same
+  // convention as ReportController.create, so a client retrying
+  // after a dropped response doesn't create a duplicate profile.
+  //
+  // FIX (item #12): route-specific burst limit — creation is
+  // admin-only so spam risk is lower than a public-facing endpoint,
+  // but a compromised or careless admin session shouldn't be able to
+  // flood the review queue either.
+  //
+  // FIX (item #23): sensitive/high-stakes creation now requires
+  // re-authentication, matching ReportController.create's posture.
   // ─────────────────────────────────────────────
 
   @Post()
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.PROFILE_CREATE)
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @RequireReauthentication()
   @ApiBearerAuth('access-token')
   @ApiOperation({
     summary: 'Admin: create a victim/survivor support profile',
@@ -67,8 +75,11 @@ export class VictimProfileController {
 
     @Body()
     data: CreateVictimProfileDto,
+
+    @Headers('idempotency-key')
+    idempotencyKey?: string,
   ) {
-    return this.victimProfileService.create(user, data);
+    return this.victimProfileService.create(user, data, idempotencyKey);
   }
 
   // ─────────────────────────────────────────────
@@ -108,11 +119,6 @@ export class VictimProfileController {
   // ─────────────────────────────────────────────
   // PUBLIC PROFILES — MEDIA DOWNLOAD URL
   // GET /victim-profiles/public/:id/media?key=...
-  //
-  // Returns only a key that getPubliclyVisibleMediaKeys() would
-  // actually expose — i.e. never a child profile's photos, never an
-  // unpublished profile's media at all (findFirst's WHERE 404s
-  // first). Same visibility contract as findOnePublic().
   // ─────────────────────────────────────────────
 
   @Get('public/:id/media')
@@ -149,15 +155,6 @@ export class VictimProfileController {
     return this.victimProfileService.findOne(id);
   }
 
-  // ─────────────────────────────────────────────
-  // GET ONE — SUPPORT/DONATION SUMMARY
-  // GET /victim-profiles/:id/supports
-  //
-  // findOne() already includes confirmed supports, but as support
-  // volume grows a dashboard shouldn't have to pull the whole
-  // profile payload just to show totals.
-  // ─────────────────────────────────────────────
-
   @Get(':id/supports')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.SUPPORT_READ)
@@ -175,10 +172,6 @@ export class VictimProfileController {
   // ─────────────────────────────────────────────
   // GET MEDIA DOWNLOAD URL (admin)
   // GET /victim-profiles/:id/media?key=...
-  //
-  // Admins can request a download URL for any media key actually
-  // attached to the profile, regardless of publish/review state —
-  // same admin-only, no-visibility-filtering access as findOne().
   // ─────────────────────────────────────────────
 
   @Get(':id/media')
@@ -189,13 +182,58 @@ export class VictimProfileController {
     summary: "Admin: get a short-lived download URL for a profile's media",
   })
   async getMedia(
+    @CurrentUser()
+    admin: CurrentUserDto,
+
     @Param('id')
     id: string,
 
     @Query()
     query: MediaKeyQueryDto,
   ) {
-    return this.victimProfileService.getMediaDownloadUrl(id, query.key);
+    return this.victimProfileService.getMediaDownloadUrl(admin, id, query.key);
+  }
+
+  // ─────────────────────────────────────────────
+  // CLAIM / UNCLAIM (item #17)
+  // PATCH /victim-profiles/:id/claim
+  // PATCH /victim-profiles/:id/unclaim
+  //
+  // Self-serve claim, open to any ADMIN/SUPER_ADMIN — the write-side
+  // gate lives in VictimProfileService.assertAdminCanAccessProfile,
+  // which every mutating method below now calls. Unclaim is left
+  // open to ADMIN too (the service itself restricts a plain ADMIN to
+  // releasing only their own claim; SUPER_ADMIN can release any).
+  // ─────────────────────────────────────────────
+
+  @Patch(':id/claim')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.PROFILE_UPDATE)
+  @ApiBearerAuth('access-token')
+  @ApiOperation({ summary: 'Admin: claim a victim profile for review' })
+  async claim(
+    @CurrentUser()
+    admin: CurrentUserDto,
+
+    @Param('id')
+    id: string,
+  ) {
+    return this.victimProfileService.claim(admin, id);
+  }
+
+  @Patch(':id/unclaim')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.PROFILE_UPDATE)
+  @ApiBearerAuth('access-token')
+  @ApiOperation({ summary: 'Admin: release a claimed victim profile' })
+  async unclaim(
+    @CurrentUser()
+    admin: CurrentUserDto,
+
+    @Param('id')
+    id: string,
+  ) {
+    return this.victimProfileService.unclaim(admin, id);
   }
 
   // ─────────────────────────────────────────────
@@ -267,9 +305,6 @@ export class VictimProfileController {
   // ─────────────────────────────────────────────
   // ADMIN — DASHBOARD STATISTICS
   // GET /victim-profiles/admin/stats
-  //
-  // Avoids the dashboard having to page through every profile
-  // just to compute per-status counts.
   // ─────────────────────────────────────────────
 
   @Get('admin/stats')
@@ -281,6 +316,22 @@ export class VictimProfileController {
   })
   async getStats() {
     return this.victimProfileService.getStats();
+  }
+
+  // ─────────────────────────────────────────────
+  // ADMIN — STALE / UNCLAIMED-TOO-LONG PROFILES (item #15)
+  // GET /victim-profiles/admin/stale
+  // ─────────────────────────────────────────────
+
+  @Get('admin/stale')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.PROFILE_READ)
+  @ApiBearerAuth('access-token')
+  @ApiOperation({
+    summary: 'Admin: get unclaimed victim profiles that have been waiting too long',
+  })
+  async findStalePending() {
+    return this.victimProfileService.findStalePending();
   }
 
   // ─────────────────────────────────────────────
@@ -305,9 +356,6 @@ export class VictimProfileController {
   // ─────────────────────────────────────────────
   // ADMIN — GET APPROVAL/GATE STATUS
   // GET /victim-profiles/admin/:id/gates
-  //
-  // Lets the admin dashboard render checklist state without
-  // inspecting the whole profile payload.
   // ─────────────────────────────────────────────
 
   @Get('admin/:id/gates')
@@ -346,12 +394,20 @@ export class VictimProfileController {
     @Body()
     data: UpdateVictimGateDto,
   ) {
-    return this.victimProfileService.updateGates(id, data, user.id);
+    return this.victimProfileService.updateGates(user, id, data);
   }
 
   // ─────────────────────────────────────────────
-  // ADMIN — CHILD SAFETY REVIEW (§32)
+  // ADMIN — CHILD SAFETY REVIEW (§32 / item #16)
   // PATCH /victim-profiles/admin/:id/child-safety-review
+  //
+  // Requires two DIFFERENT admins to confirm before
+  // isChildSafetyReviewed flips true — see the service method's
+  // header comment. The response for a first confirmation looks the
+  // same shape as a full profile but isChildSafetyReviewed will
+  // still read false; the client should surface that distinction
+  // (e.g. "waiting on a second reviewer") rather than treating any
+  // 200 as "review complete."
   // ─────────────────────────────────────────────
 
   @Patch('admin/:id/child-safety-review')
@@ -359,7 +415,7 @@ export class VictimProfileController {
   @RequirePermissions(PermissionsEnum.PROFILE_REVIEW)
   @ApiBearerAuth('access-token')
   @ApiOperation({
-    summary: 'Admin: record child-safety review outcome for a victim profile',
+    summary: 'Admin: record child-safety review outcome for a victim profile (requires two admins)',
   })
   async updateChildSafetyReview(
     @Param('id')
@@ -371,7 +427,7 @@ export class VictimProfileController {
     @Body()
     data: UpdateChildSafetyReviewDto,
   ) {
-    return this.victimProfileService.updateChildSafetyReview(id, data, user.id);
+    return this.victimProfileService.updateChildSafetyReview(user, id, data);
   }
 
   // ─────────────────────────────────────────────
@@ -382,6 +438,7 @@ export class VictimProfileController {
   @Patch('admin/:id/consent/revoke')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.PROFILE_UPDATE)
+  @RequireReauthentication()
   @ApiBearerAuth('access-token')
   @ApiOperation({
     summary: 'Admin: revoke previously recorded consent for a victim profile',
@@ -396,23 +453,23 @@ export class VictimProfileController {
     @Body()
     data: RevokeConsentDto,
   ) {
-    return this.victimProfileService.revokeConsent(id, data, user.id);
+    return this.victimProfileService.revokeConsent(user, id, data);
   }
 
   // ─────────────────────────────────────────────
   // ADMIN — UPDATE BANK DETAILS
   // PATCH /victim-profiles/admin/:id/bank-details
   //
-  // Sensitive financial operation. NOTE: SUPPORT_PAYMENT_MANAGE is
-  // currently not in adminPermissions, so an ordinary ADMIN will be
-  // denied here even with this decorator in place — only
-  // SUPER_ADMIN gets it, by design (least privilege). If an ADMIN
-  // reports being blocked on this route, that is expected, not a bug.
+  // FIX (item #23): re-authentication added — this is the most
+  // financially sensitive write in this controller (it's the
+  // off-platform transfer destination), and SUPPORT_PAYMENT_MANAGE
+  // alone isn't a second factor.
   // ─────────────────────────────────────────────
 
   @Patch('admin/:id/bank-details')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.SUPPORT_PAYMENT_MANAGE)
+  @RequireReauthentication()
   @ApiBearerAuth('access-token')
   @ApiOperation({
     summary: 'Admin: update the off-platform transfer destination on a victim profile',
@@ -427,7 +484,7 @@ export class VictimProfileController {
     @Body()
     data: UpdateBankDetailsDto,
   ) {
-    return this.victimProfileService.updateBankDetails(id, data, user.id);
+    return this.victimProfileService.updateBankDetails(user, id, data);
   }
 
   // ─────────────────────────────────────────────
@@ -449,7 +506,7 @@ export class VictimProfileController {
     @Param('id')
     id: string,
   ) {
-    return this.victimProfileService.publish(id, user.id);
+    return this.victimProfileService.publish(user, id);
   }
 
   // ─────────────────────────────────────────────
@@ -471,7 +528,7 @@ export class VictimProfileController {
     @Param('id')
     id: string,
   ) {
-    return this.victimProfileService.unpublish(id, user.id);
+    return this.victimProfileService.unpublish(user, id);
   }
 
   // ─────────────────────────────────────────────
@@ -493,7 +550,7 @@ export class VictimProfileController {
     @Param('id')
     id: string,
   ) {
-    return this.victimProfileService.reject(id, user.id);
+    return this.victimProfileService.reject(user, id);
   }
 
   // ─────────────────────────────────────────────
@@ -515,6 +572,6 @@ export class VictimProfileController {
     @Param('id')
     id: string,
   ) {
-    return this.victimProfileService.resubmit(id, user.id);
+    return this.victimProfileService.resubmit(user, id);
   }
 }

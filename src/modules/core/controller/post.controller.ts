@@ -11,6 +11,7 @@ import {
   Query,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { PostType } from '@prisma/client';
 import { AllowAnonymous } from 'src/common/decorators/public.decorator';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
@@ -56,8 +57,14 @@ export class PostController {
   // (e.g. a double-tap on a flaky connection) doesn't end
   // up creating two identical posts — PostService.create
   // returns the original post on a repeat key instead.
+  //
+  // FIX (item #12): a route-specific burst limit tighter
+  // than the app-wide default (THROTTLE_TTL_SECONDS /
+  // THROTTLE_LIMIT, 20/60s) — 5 creates/min is generous for
+  // a genuine user but meaningfully slows a scripted flood.
   // ─────────────────────────────────────────────
   @Post()
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @RequireReauthentication()
   @ApiBearerAuth('access-token')
   @ApiOperation({
@@ -139,10 +146,16 @@ export class PostController {
   // (or POST_MAX_PENDING_PER_USER, if set) posts
   // sitting in PENDING (item #1).
   //
+  // FIX (item #12): route-specific burst limit — this
+  // is the step that actually enters the admin review
+  // queue, so it deserves its own tighter cap alongside
+  // create()'s.
+  //
   // AUTHENTICATED USER
   // Requires password re-authentication.
   // ─────────────────────────────────────────────
   @Patch('me/:id/submit')
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @RequireReauthentication()
   @ApiBearerAuth('access-token')
   @ApiOperation({
@@ -299,7 +312,7 @@ export class PostController {
   // ─────────────────────────────────────────────
   // ADMIN — STALE / UNREVIEWED-TOO-LONG POSTS
   // GET /posts/stale
-  // (item #9)
+  // (item #15)
   //
   // Declared BEFORE ':id' so Nest doesn't treat
   // "stale" as a post id — same reasoning as the
@@ -321,7 +334,7 @@ export class PostController {
   // ─────────────────────────────────────────────
   // ADMIN — BULK APPROVE
   // PATCH /posts/bulk/approve
-  // (item #8)
+  // (item #20)
   //
   // Declared BEFORE ':id/approve' so Nest doesn't
   // match "bulk" as a post id here — route order
@@ -345,7 +358,7 @@ export class PostController {
   // ─────────────────────────────────────────────
   // ADMIN — BULK REJECT
   // PATCH /posts/bulk/reject
-  // (item #8)
+  // (item #20)
   //
   // Declared BEFORE ':id/reject' — same route-order
   // reasoning as bulk/approve above.
@@ -390,7 +403,7 @@ export class PostController {
   // ─────────────────────────────────────────────
   // ADMIN — PER-POST HISTORY / TIMELINE
   // GET /posts/:id/history
-  // (item #13)
+  // (item #18)
   //
   // ADMIN / SUPER_ADMIN
   // ─────────────────────────────────────────────
@@ -429,8 +442,8 @@ export class PostController {
   // DTO-validated (@IsEnum) like every other write
   // endpoint. Every transition is also validated
   // against the shared status-transition map, the
-  // claim guard (#11), and the child-safety
-  // dual-control gate (#10).
+  // claim guard (#17), and the child-safety
+  // dual-control gate (#16).
   //
   // ADMIN / SUPER_ADMIN
   // ─────────────────────────────────────────────
@@ -457,9 +470,9 @@ export class PostController {
   // when the post has involvesChild = true (PRD §32),
   // and now requires two DIFFERENT admins to each send
   // it before the post actually becomes APPROVED
-  // (item #10) — enforced in PostService.approve.
+  // (item #16) — enforced in PostService.approve.
   // Blocked if the post is claimed by a different
-  // admin (item #11).
+  // admin (item #17).
   //
   // ADMIN / SUPER_ADMIN
   // ─────────────────────────────────────────────
@@ -481,7 +494,7 @@ export class PostController {
   // ─────────────────────────────────────────────
   // ADMIN — CLAIM
   // PATCH /posts/:id/claim
-  // (item #11)
+  // (item #17)
   //
   // Lets an admin mark a post as "being handled" so a
   // second admin doesn't start reviewing it in parallel.
@@ -504,7 +517,7 @@ export class PostController {
   // ─────────────────────────────────────────────
   // ADMIN — UNCLAIM
   // PATCH /posts/:id/unclaim
-  // (item #11)
+  // (item #17)
   //
   // ADMIN / SUPER_ADMIN
   // ─────────────────────────────────────────────

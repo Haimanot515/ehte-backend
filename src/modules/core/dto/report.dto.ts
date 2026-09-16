@@ -123,6 +123,14 @@ export class CreateReportDto {
   @IsOptional()
   @IsString()
   credential?: string;
+
+  // NOTE (item #5, idempotency): deliberately NOT a DTO field. Same
+  // convention as CreatePostDto — the client sends an
+  // Idempotency-Key header instead, read by ReportController.create
+  // via @Headers('idempotency-key') and passed through to
+  // ReportService.create(). Keeping it out of the body means it
+  // can never accidentally get persisted or echoed back on the
+  // report itself.
 }
 
 export class UpdateReportDto {

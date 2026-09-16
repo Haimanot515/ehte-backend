@@ -1,6 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsArray,
+  IsBoolean,
   IsDateString,
   IsEnum,
   IsInt,
@@ -137,6 +138,15 @@ export class CreateMissingPersonDto {
   @IsOptional()
   @IsString()
   credential?: string;
+
+  // NOTE (item #5, idempotency): deliberately NOT a DTO field. Same
+  // convention as CreateReportDto/CreatePostDto — the client sends
+  // an Idempotency-Key header instead, read by
+  // MissingPersonController.create() via
+  // @Headers('idempotency-key') and passed through to
+  // MissingPersonService.create(). Keeping it out of the body means
+  // it can never accidentally get persisted or echoed back on the
+  // record itself.
 }
 
 // ─────────────────────────────────────────────
@@ -256,6 +266,20 @@ export class UpdateMissingPersonStatusDto {
   @IsString()
   @MaxLength(2000)
   reviewNote?: string;
+
+  // NEW (item #16, child-safety dual control): must be explicitly
+  // true when moving a personType=CHILD case to APPROVED. The
+  // service records the first admin's confirmation and requires a
+  // second, distinct admin to confirm again before the transition
+  // actually goes through — mirrors ApprovePostDto.childSafetyConfirmed.
+  // Ignored for non-CHILD cases.
+  @ApiPropertyOptional({
+    description:
+      'Required (true) when approving a case where personType is CHILD. Ignored otherwise.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  childSafetyConfirmed?: boolean;
 }
 
 // ─────────────────────────────────────────────

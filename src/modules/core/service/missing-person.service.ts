@@ -5,9 +5,9 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 
-import { MissingPersonStatus } from '@prisma/client';
+import { MissingPersonStatus, MissingPersonType, Prisma } from '@prisma/client';
 
-import { EventEmitter2 } from '@nestjs/event-emitter';
+import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { ConfigService } from '@nestjs/config';
 
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -32,16 +32,18 @@ import {
 // UpdateMissingPersonDto and the MissingPerson model itself.
 // Mirrors PostService's/ReportService's MEDIA_FIELD_NAMES so every
 // module stays in sync if a new media kind is ever added.
-//
-// FIX: media fields are now bare MinIO object keys end to end —
-// the DTO validates them as plain strings (see missing-person.dto.ts),
-// matching Report/Post/VictimProfile. No URL parsing/unwrapping is
-// needed anywhere in this file anymore; every method here just
-// treats these fields the same way ReportService does.
 const MEDIA_FIELD_NAMES = ['photo', 'video', 'audio', 'pdf', 'document', 'other'] as const;
 type MediaFieldName = (typeof MEDIA_FIELD_NAMES)[number];
 type MediaBearing = Record<MediaFieldName, string[]>;
 type MediaBearingDto = Partial<Record<MediaFieldName, string[] | undefined>>;
+
+// A case here is done, one way or another. Used by findStalePending()
+// (a terminal case can't be "stale") and maybeFlagUserForRejections()
+// (only REJECTED counts against the user, not FOUND).
+const TERMINAL_STATUSES: MissingPersonStatus[] = [
+  MissingPersonStatus.REJECTED,
+  MissingPersonStatus.FOUND,
+];
 
 @Injectable()
 export class MissingPersonService {
@@ -92,9 +94,9 @@ export class MissingPersonService {
 
   // ─────────────────────────────────────────────
   // Explicit public projection — nothing added to the Prisma
-  // model (userId, reviewNote, reward review fields, etc.) can
-  // leak through the public endpoints without a deliberate change
-  // here.
+  // model (userId, reviewNote, reward review fields, claim
+  // fields, etc.) can leak through the public endpoints without
+  // a deliberate change here.
   // ─────────────────────────────────────────────
 
   private readonly publicSelect = {
@@ -162,25 +164,109 @@ export class MissingPersonService {
     return { added, removed };
   }
 
-  // Confirms every filepath the client is attaching actually exists
-  // in the media bucket, so a case can't reference an object that
-  // was never uploaded (typo'd path, upload abandoned mid-flow,
-  // filepath copied from an unrelated response, etc.). Only called
-  // on filepaths that are new to the entity — already-attached
-  // filepaths were validated when they were first added.
-  private async validateMediaFilesExist(filepaths: string[]): Promise<void> {
-    if (!filepaths.length) return;
+  // FIX (item #3): confirms every filepath the client is attaching
+  // actually exists in the media bucket, AND now also enforces
+  // size/MIME-type limits — previously this only checked existence,
+  // unlike Report/PostService.validateMediaFilesExist which already
+  // did all three. Brought to parity so a missing-person submission
+  // can't reference an object that's oversized or of a disallowed
+  // type any more than a report or post can.
+  //
+  // FIX (item #13, partial): returns each validated file's size so
+  // callers can maintain a running mediaTotalBytes without
+  // re-statting already-attached files.
+  //
+  // NOTE (item #3, virus scanning) / NOTE (item #4, EXIF/GPS
+  // stripping): deliberately out of scope here — belongs in the
+  // media-upload module at upload time, same as every other module.
+  private async validateMediaFilesExist(
+    filepaths: string[],
+  ): Promise<Array<{ filepath: string; size: number }>> {
+    if (!filepaths.length) return [];
 
-    const checks = await Promise.all(
-      filepaths.map(async (filepath) => ({
-        filepath,
-        exists: await this.minioService.objectExists(filepath),
-      })),
+    const maxFileSizeBytes = Number(
+      this.configService.get<string>('MEDIA_MAX_FILE_SIZE') ?? 52_428_800,
+    );
+    const allowedMimeTypes = new Set(
+      (this.configService.get<string>('MEDIA_ALLOWED_MIME_TYPES') ?? '')
+        .split(',')
+        .map((t) => t.trim())
+        .filter(Boolean),
     );
 
-    const missing = checks.filter((c) => !c.exists).map((c) => c.filepath);
-    if (missing.length) {
-      throw new BadRequestException(`media_files_not_found:${missing.join(',')}`);
+    const checks = await Promise.all(
+      filepaths.map(async (filepath) => {
+        const exists = await this.minioService.objectExists(filepath);
+        if (!exists) {
+          return { filepath, ok: false as const, reason: 'not_found', size: 0 };
+        }
+
+        const stat = await this.minioService.statObject(filepath);
+
+        if (stat.size > maxFileSizeBytes) {
+          return { filepath, ok: false as const, reason: 'too_large', size: stat.size };
+        }
+        if (allowedMimeTypes.size > 0 && !allowedMimeTypes.has(stat.contentType)) {
+          return { filepath, ok: false as const, reason: 'disallowed_type', size: stat.size };
+        }
+        return { filepath, ok: true as const, size: stat.size };
+      }),
+    );
+
+    const bad = checks.filter((c) => !c.ok);
+    if (bad.length) {
+      throw new BadRequestException(
+        `media_validation_failed:${bad.map((b) => `${b.filepath}:${b.reason}`).join(',')}`,
+      );
+    }
+
+    return checks.map((c) => ({ filepath: c.filepath, size: c.size }));
+  }
+
+  // FIX (item #13): per-field attachment counts, mirroring
+  // Report/PostService.assertAttachmentCounts exactly, but reading
+  // MISSING_PERSON_*-prefixed overrides first. Checked BEFORE any
+  // MinIO calls so an over-attached request fails fast.
+  private assertAttachmentCounts(media: MediaBearing): void {
+    const maxPhotos = Number(
+      this.configService.get<string>('MISSING_PERSON_MAX_PHOTOS') ??
+        this.configService.get<string>('CONTENT_MAX_PHOTOS') ??
+        5,
+    );
+    const maxVideos = Number(
+      this.configService.get<string>('MISSING_PERSON_MAX_VIDEOS') ??
+        this.configService.get<string>('CONTENT_MAX_VIDEOS') ??
+        1,
+    );
+    const maxOther = Number(
+      this.configService.get<string>('MISSING_PERSON_MAX_OTHER_FILES') ??
+        this.configService.get<string>('CONTENT_MAX_OTHER_FILES') ??
+        2,
+    );
+
+    if (media.photo.length > maxPhotos) {
+      throw new BadRequestException(`too_many_photos:max_${maxPhotos}`);
+    }
+    if (media.video.length > maxVideos) {
+      throw new BadRequestException(`too_many_videos:max_${maxVideos}`);
+    }
+    const otherCount =
+      media.audio.length + media.pdf.length + media.document.length + media.other.length;
+    if (otherCount > maxOther) {
+      throw new BadRequestException(`too_many_other_files:max_${maxOther}`);
+    }
+  }
+
+  // FIX (item #13): total attached-media size cap per case,
+  // mirroring Report/PostService.assertTotalBytes.
+  private assertTotalBytes(totalBytes: number): void {
+    const maxTotalBytes = Number(
+      this.configService.get<string>('MISSING_PERSON_MAX_TOTAL_UPLOAD_BYTES') ??
+        this.configService.get<string>('CONTENT_MAX_TOTAL_UPLOAD_BYTES') ??
+        52_428_800,
+    );
+    if (totalBytes > maxTotalBytes) {
+      throw new BadRequestException(`upload_total_size_exceeded:max_${maxTotalBytes}`);
     }
   }
 
@@ -191,6 +277,204 @@ export class MissingPersonService {
   private async deleteMediaFiles(filepaths: string[]): Promise<void> {
     if (!filepaths.length) return;
     await Promise.allSettled(filepaths.map((fp) => this.minioService.deleteFile(fp)));
+  }
+
+  // ─────────────────────────────────────────────
+  // CLAIM HELPERS (item #17)
+  //
+  // Missing Person had no assignment/claim concept at all before
+  // this. Follows Post's self-serve claimPost()/unclaimPost() model
+  // (rather than Report's SUPER_ADMIN-mediated assign()/unassign())
+  // since there is no dedicated "assignee" relation on this model to
+  // add — any ADMIN/SUPER_ADMIN may claim an unclaimed case, and
+  // only the claimant (or an explicit unclaim) can release it.
+  // Enforced on the review-decision write (updateStatus), not on
+  // reads.
+  // ─────────────────────────────────────────────
+
+  private assertNotClaimedByOther(
+    missingPerson: { claimedByUserId: string | null },
+    actorUserId: string,
+  ): void {
+    if (missingPerson.claimedByUserId && missingPerson.claimedByUserId !== actorUserId) {
+      throw new ForbiddenException('missing_person_claimed_by_another_admin');
+    }
+  }
+
+  async claimMissingPerson(admin: CurrentUserDto, id: string) {
+    const existing = await this.prisma.missingPerson.findUnique({ where: { id } });
+    if (!existing) {
+      throw new NotFoundException('missing_person_not_found');
+    }
+    this.assertNotClaimedByOther(existing, admin.id);
+
+    const updated = await this.prisma.missingPerson.update({
+      where: { id },
+      data: { claimedByUserId: admin.id, claimedAt: new Date() },
+    });
+
+    this.emitAudit({
+      userId: admin.id,
+      actorType: resolveActorType(admin.roles ?? []),
+      action: AuditEventEnum.MISSING_PERSON_UPDATED,
+      entity: 'MissingPerson',
+      entityId: id,
+      diff: { claimedBy: admin.id, result: 'success' },
+    });
+
+    return updated;
+  }
+
+  async unclaimMissingPerson(admin: CurrentUserDto, id: string) {
+    const existing = await this.prisma.missingPerson.findUnique({ where: { id } });
+    if (!existing) {
+      throw new NotFoundException('missing_person_not_found');
+    }
+    this.assertNotClaimedByOther(existing, admin.id);
+
+    const updated = await this.prisma.missingPerson.update({
+      where: { id },
+      data: { claimedByUserId: null, claimedAt: null },
+    });
+
+    this.emitAudit({
+      userId: admin.id,
+      actorType: resolveActorType(admin.roles ?? []),
+      action: AuditEventEnum.MISSING_PERSON_UPDATED,
+      entity: 'MissingPerson',
+      entityId: id,
+      diff: { unclaimedBy: admin.id, result: 'success' },
+    });
+
+    return updated;
+  }
+
+  // ─────────────────────────────────────────────
+  // CHILD-SAFETY DUAL CONTROL (item #16)
+  //
+  // Only relevant when personType = CHILD. A single admin's status
+  // call is no longer enough to move a CHILD case to APPROVED — the
+  // first admin's confirmation is only recorded; a second, DIFFERENT
+  // admin must confirm again before the transition actually goes
+  // through. Mirrors PostService.ensureChildSafetySatisfied exactly,
+  // adapted to MissingPerson's field names.
+  // ─────────────────────────────────────────────
+
+  private async ensureChildSafetySatisfied(
+    missingPerson: {
+      id: string;
+      personType: MissingPersonType;
+      childSafetyFirstConfirmedByUserId: string | null;
+    },
+    actorUserId: string,
+    confirmed: boolean | undefined,
+  ): Promise<'not_required' | 'first_confirmation_recorded' | 'satisfied'> {
+    if (missingPerson.personType !== MissingPersonType.CHILD) return 'not_required';
+
+    if (confirmed !== true) {
+      throw new BadRequestException('child_safety_confirmation_required');
+    }
+
+    if (!missingPerson.childSafetyFirstConfirmedByUserId) {
+      await this.prisma.missingPerson.update({
+        where: { id: missingPerson.id },
+        data: {
+          childSafetyFirstConfirmedByUserId: actorUserId,
+          childSafetyFirstConfirmedAt: new Date(),
+        },
+      });
+      return 'first_confirmation_recorded';
+    }
+
+    if (missingPerson.childSafetyFirstConfirmedByUserId === actorUserId) {
+      throw new BadRequestException('child_safety_requires_second_distinct_admin');
+    }
+
+    return 'satisfied';
+  }
+
+  // ─────────────────────────────────────────────
+  // BANNED / SUSPENDED OWNER HANDLING (item #6)
+  //
+  // ASSUMPTION: same event contract as Report/PostService — the
+  // user module emits 'user.suspended' with a { userId } payload.
+  //
+  // Same reasoning as ReportService: a missing-person case has no
+  // safe intermediate "hidden" state, and is if anything MORE
+  // safety-critical than a report — so this only stamps
+  // ownerSuspendedAt for admin filtering and deliberately does NOT
+  // change status or pull anything out of the review queue.
+  // ─────────────────────────────────────────────
+
+  @OnEvent('user.suspended')
+  async handleUserSuspended(payload: { userId: string }): Promise<void> {
+    const now = new Date();
+
+    await this.prisma.missingPerson.updateMany({
+      where: {
+        userId: payload.userId,
+        status: { notIn: TERMINAL_STATUSES },
+        ownerSuspendedAt: null,
+      },
+      data: { ownerSuspendedAt: now },
+    });
+
+    this.emitAudit({
+      userId: payload.userId,
+      // ASSUMPTION: resolveActorType only knows about role-bearing
+      // actors; cast until AuditEventPayload's actorType union is
+      // extended with a SYSTEM variant. Same cast Report/PostService use.
+      actorType: 'SYSTEM' as unknown as ReturnType<typeof resolveActorType>,
+      action: AuditEventEnum.MISSING_PERSON_UPDATED,
+      entity: 'MissingPerson',
+      entityId: `user:${payload.userId}`,
+      diff: { reason: 'owner_account_suspended', result: 'success' },
+    });
+  }
+
+  // ─────────────────────────────────────────────
+  // AUTOMATIC FLAGS (item #21)
+  //
+  // Flag ≠ reject. Writes an audit-log entry an admin can see
+  // against the user; never blocks or auto-rejects anything, and
+  // never changes any MissingPerson's status. Mirrors
+  // Report/PostService.maybeFlagUserForRejections, reading
+  // MISSING_PERSON_* overrides first. Only called from
+  // updateStatus() on a transition TO REJECTED.
+  // ─────────────────────────────────────────────
+
+  private async maybeFlagUserForRejections(userId: string): Promise<void> {
+    const threshold = Number(
+      this.configService.get<string>('MISSING_PERSON_AUTO_FLAG_REJECTION_COUNT') ??
+        this.configService.get<string>('CONTENT_AUTO_FLAG_REJECTION_COUNT') ??
+        3,
+    );
+    const windowDays = Number(
+      this.configService.get<string>('MISSING_PERSON_AUTO_FLAG_WINDOW_DAYS') ??
+        this.configService.get<string>('CONTENT_AUTO_FLAG_WINDOW_DAYS') ??
+        7,
+    );
+    const since = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000);
+
+    const recentRejections = await this.prisma.missingPerson.count({
+      where: { userId, status: MissingPersonStatus.REJECTED, updatedAt: { gte: since } },
+    });
+
+    if (recentRejections >= threshold) {
+      this.emitAudit({
+        userId,
+        actorType: 'SYSTEM' as unknown as ReturnType<typeof resolveActorType>,
+        action: AuditEventEnum.USER_AUTO_FLAGGED,
+        entity: 'User',
+        entityId: userId,
+        diff: {
+          reason: 'repeated_missing_person_rejections',
+          rejectionCount: recentRejections,
+          windowDays,
+          result: 'flagged_for_review',
+        },
+      });
+    }
   }
 
   // ─────────────────────────────────────────────
@@ -233,9 +517,15 @@ export class MissingPersonService {
   // Admins can request a download URL for any media key actually
   // attached to the submission, regardless of status — matches
   // findOneForAdmin()'s admin-only, no-visibility-filtering access.
+  // Now also audit-logged, matching
+  // ReportService.getMediaDownloadUrlForAdmin.
   // ─────────────────────────────────────────────
 
-  async getMediaDownloadUrl(id: string, key: string): Promise<{ url: string }> {
+  async getMediaDownloadUrl(
+    admin: CurrentUserDto,
+    id: string,
+    key: string,
+  ): Promise<{ url: string }> {
     const missingPerson = await this.prisma.missingPerson.findUnique({ where: { id } });
 
     if (!missingPerson) {
@@ -248,6 +538,16 @@ export class MissingPersonService {
     }
 
     const url = await this.minioService.generatePresignedDownloadUrl(key);
+
+    this.emitAudit({
+      userId: admin.id,
+      actorType: resolveActorType(admin.roles ?? []),
+      action: AuditEventEnum.MISSING_PERSON_MEDIA_DOWNLOADED,
+      entity: 'MissingPerson',
+      entityId: id,
+      diff: { result: 'success', key },
+    });
+
     return { url };
   }
 
@@ -257,8 +557,8 @@ export class MissingPersonService {
   //
   // Same visibility gate as findOne(): the record must be
   // APPROVED. Unlike VictimProfile/Post there's no child-safety
-  // suppression concept on MissingPerson, so every media field
-  // attached to an approved case is fair game here — matches
+  // suppression concept on MissingPerson's media, so every media
+  // field attached to an approved case is fair game here — matches
   // publicSelect already exposing all six media arrays as-is.
   // ─────────────────────────────────────────────
 
@@ -284,36 +584,93 @@ export class MissingPersonService {
   // ─────────────────────────────────────────────
   // CREATE
   //
-  // Media filepaths are validated against MinIO before the case
-  // is created, same as PostService.create/ReportService.create.
+  // FIX (item #1): a per-user cooldown
+  // (MISSING_PERSON_CREATE_RATE_LIMIT_WINDOW_SECONDS, falling back
+  // to the shared CONTENT_* default) blocks rapid-fire spam, and a
+  // max-pending-per-user cap
+  // (MISSING_PERSON_MAX_PENDING_PER_USER / CONTENT_MAX_PENDING_PER_USER)
+  // is enforced here — a missing-person case is PENDING the moment
+  // it's created, same as Report.
+  //
+  // FIX (item #5): optional Idempotency-Key (sent as a header by the
+  // controller) lets a client safely retry after a dropped response.
+  // A repeat with the same key returns the original record.
+  //
+  // FIX (item #13): attachment counts/total size are checked before
+  // any MinIO round trips, and the validated sizes are persisted as
+  // mediaTotalBytes.
   // ─────────────────────────────────────────────
 
-  async create(user: CurrentUserDto, data: CreateMissingPersonDto) {
-    await this.validateMediaFilesExist(this.collectMediaFieldsFromDto(data));
+  private async enforceCreateRateLimit(userId: string): Promise<void> {
+    const cooldownSeconds = Number(
+      this.configService.get<string>('MISSING_PERSON_CREATE_RATE_LIMIT_WINDOW_SECONDS') ??
+        this.configService.get<string>('CONTENT_CREATE_RATE_LIMIT_WINDOW_SECONDS') ??
+        60,
+    );
 
-    const missingPerson = await this.prisma.missingPerson.create({
-      data: {
-        userId: user.id,
-
-        personType: data.personType,
-
-        name: data.name,
-        description: data.description,
-
-        dateLastSeen: new Date(data.dateLastSeen),
-
-        lastKnownArea: data.lastKnownArea,
-
-        photo: data.photo ?? [],
-        video: data.video ?? [],
-        audio: data.audio ?? [],
-        pdf: data.pdf ?? [],
-        document: data.document ?? [],
-        other: data.other ?? [],
-
-        status: MissingPersonStatus.PENDING,
-      },
+    const last = await this.prisma.missingPerson.findFirst({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+      select: { createdAt: true },
     });
+
+    if (last && Date.now() - last.createdAt.getTime() < cooldownSeconds * 1000) {
+      throw new BadRequestException('missing_person_creation_rate_limited');
+    }
+  }
+
+  private async enforceMaxPending(userId: string): Promise<void> {
+    const maxPending = Number(
+      this.configService.get<string>('MISSING_PERSON_MAX_PENDING_PER_USER') ??
+        this.configService.get<string>('CONTENT_MAX_PENDING_PER_USER') ??
+        5,
+    );
+
+    const pendingCount = await this.prisma.missingPerson.count({
+      where: { userId, status: MissingPersonStatus.PENDING },
+    });
+
+    if (pendingCount >= maxPending) {
+      throw new BadRequestException('too_many_pending_missing_person_submissions');
+    }
+  }
+
+  async create(user: CurrentUserDto, data: CreateMissingPersonDto, idempotencyKey?: string) {
+    if (idempotencyKey) {
+      const existing = await this.prisma.missingPerson.findFirst({
+        where: { userId: user.id, idempotencyKey },
+      });
+      if (existing) {
+        // Safe replay of a duplicate submission — return the
+        // original instead of creating a second record.
+        return existing;
+      }
+    }
+
+    await this.enforceCreateRateLimit(user.id);
+    await this.enforceMaxPending(user.id);
+
+    const merged: MediaBearing = {
+      photo: data.photo ?? [],
+      video: data.video ?? [],
+      audio: data.audio ?? [],
+      pdf: data.pdf ?? [],
+      document: data.document ?? [],
+      other: data.other ?? [],
+    };
+    this.assertAttachmentCounts(merged);
+
+    const validated = await this.validateMediaFilesExist(this.collectMediaFields(merged));
+    const totalBytes = validated.reduce((sum, v) => sum + v.size, 0);
+    this.assertTotalBytes(totalBytes);
+
+    const missingPerson = await this.createWithIdempotencyRaceHandling(
+      user,
+      data,
+      merged,
+      totalBytes,
+      idempotencyKey,
+    );
 
     this.emitAudit({
       userId: user.id,
@@ -334,6 +691,63 @@ export class MissingPersonService {
     });
 
     return missingPerson;
+  }
+
+  // FIX (item #5/#26): handles a race on the (userId, idempotencyKey)
+  // unique constraint — the fast-path findFirst in create() is
+  // inherently racy under concurrent identical retries: two
+  // near-simultaneous retries with the same key can both pass the
+  // findFirst and race to insert. Mirrors ReportService's equivalent
+  // helper, minus the caseReference retry loop (MissingPerson has no
+  // analogous unique-generated field to retry).
+  private async createWithIdempotencyRaceHandling(
+    user: CurrentUserDto,
+    data: CreateMissingPersonDto,
+    merged: MediaBearing,
+    totalBytes: number,
+    idempotencyKey?: string,
+  ) {
+    try {
+      return await this.prisma.missingPerson.create({
+        data: {
+          userId: user.id,
+          personType: data.personType,
+          name: data.name,
+          description: data.description,
+          dateLastSeen: new Date(data.dateLastSeen),
+          lastKnownArea: data.lastKnownArea,
+          photo: merged.photo,
+          video: merged.video,
+          audio: merged.audio,
+          pdf: merged.pdf,
+          document: merged.document,
+          other: merged.other,
+          mediaTotalBytes: totalBytes,
+          status: MissingPersonStatus.PENDING,
+          idempotencyKey: idempotencyKey ?? null,
+        },
+      });
+    } catch (err) {
+      if (
+        idempotencyKey &&
+        err instanceof Prisma.PrismaClientKnownRequestError &&
+        err.code === 'P2002'
+      ) {
+        const target = err.meta?.target as string[] | undefined;
+        if (target?.some((t) => t.includes('idempotencyKey'))) {
+          // Lost a race against a concurrent identical retry — the
+          // other request's insert won; return that row instead of
+          // creating (or failing to create) a duplicate.
+          const winner = await this.prisma.missingPerson.findFirst({
+            where: { userId: user.id, idempotencyKey },
+          });
+          if (winner) {
+            return winner;
+          }
+        }
+      }
+      throw err;
+    }
   }
 
   // ─────────────────────────────────────────────
@@ -410,6 +824,42 @@ export class MissingPersonService {
   }
 
   // ─────────────────────────────────────────────
+  // ADMIN — STALE / UNREVIEWED-TOO-LONG CASES
+  // GET /missing-persons/admin/stale
+  // (item #15)
+  //
+  // Flags non-terminal cases older than the configured threshold so
+  // admins can prioritize "forgotten" cases. No assignment/claim
+  // gate the way ReportService.findStalePending has (assignedToId),
+  // since a claim here doesn't remove urgency the way an active
+  // assignment does elsewhere — a claimed-but-still-old case is
+  // arguably still worth surfacing. Purely informational — nothing
+  // here changes status, ownership, or claim.
+  // ─────────────────────────────────────────────
+
+  async findStalePending() {
+    const staleHours = Number(
+      this.configService.get<string>('MISSING_PERSON_STALE_PENDING_HOURS') ??
+        this.configService.get<string>('CONTENT_STALE_PENDING_HOURS') ??
+        48,
+    );
+    const cutoff = new Date(Date.now() - staleHours * 60 * 60 * 1000);
+
+    const items = await this.prisma.missingPerson.findMany({
+      where: {
+        status: { notIn: TERMINAL_STATUSES },
+        createdAt: { lt: cutoff },
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    return items.map((item) => ({
+      ...item,
+      pendingHours: Math.floor((Date.now() - item.createdAt.getTime()) / (60 * 60 * 1000)),
+    }));
+  }
+
+  // ─────────────────────────────────────────────
   // UPDATE
   // Only PENDING or MORE_INFORMATION_REQUESTED submissions may be
   // edited by their owner. Editing a MORE_INFORMATION_REQUESTED
@@ -421,6 +871,12 @@ export class MissingPersonService {
   // validated against MinIO before the write; filepaths dropped
   // from the new array are deleted from MinIO after the write
   // commits — same ordering discipline as PostService.updateMyPost.
+  //
+  // FIX (item #13): attachment counts are checked against the
+  // fully-merged post-update media shape before any MinIO calls,
+  // and mediaTotalBytes is recomputed from the previous total
+  // plus/minus the added/removed files' sizes — same approach as
+  // Report/PostService.
   // ─────────────────────────────────────────────
 
   async update(user: CurrentUserDto, id: string, data: UpdateMissingPersonDto) {
@@ -445,7 +901,35 @@ export class MissingPersonService {
     }
 
     const { added, removed } = this.diffMediaFields(existing, data);
-    await this.validateMediaFilesExist(added);
+
+    const merged: MediaBearing = {
+      photo: data.photo ?? existing.photo,
+      video: data.video ?? existing.video,
+      audio: data.audio ?? existing.audio,
+      pdf: data.pdf ?? existing.pdf,
+      document: data.document ?? existing.document,
+      other: data.other ?? existing.other,
+    };
+    this.assertAttachmentCounts(merged);
+
+    const validatedAdded = await this.validateMediaFilesExist(added);
+    const addedBytes = validatedAdded.reduce((sum, v) => sum + v.size, 0);
+
+    // Stat removed files before they're deleted, purely to back out
+    // their bytes from the running total — a stat failure here
+    // (already gone, MinIO hiccup) just means we can't credit that
+    // byte count back, so treat it as 0 rather than blocking the
+    // update.
+    const removedStats = await Promise.allSettled(
+      removed.map((fp) => this.minioService.statObject(fp)),
+    );
+    const removedBytes = removedStats.reduce(
+      (sum, r) => sum + (r.status === 'fulfilled' ? r.value.size : 0),
+      0,
+    );
+
+    const newTotalBytes = Math.max(0, existing.mediaTotalBytes + addedBytes - removedBytes);
+    this.assertTotalBytes(newTotalBytes);
 
     const shouldReturnToPending =
       existing.status === MissingPersonStatus.MORE_INFORMATION_REQUESTED;
@@ -465,6 +949,7 @@ export class MissingPersonService {
         ...(data.document !== undefined ? { document: data.document } : {}),
         ...(data.other !== undefined ? { other: data.other } : {}),
         ...(shouldReturnToPending ? { status: MissingPersonStatus.PENDING } : {}),
+        mediaTotalBytes: newTotalBytes,
       },
     });
 
@@ -580,9 +1065,49 @@ export class MissingPersonService {
   }
 
   // ─────────────────────────────────────────────
+  // ADMIN — PER-CASE HISTORY / TIMELINE
+  // GET /missing-persons/admin/:id/history
+  // (item #18)
+  //
+  // ASSUMPTION: same as Report/PostService.getHistory — an
+  // `auditLog` Prisma model populated by a listener subscribed to
+  // the events emitAudit() already fires throughout this service.
+  // ─────────────────────────────────────────────
+
+  async getHistory(id: string) {
+    const existing = await this.prisma.missingPerson.findUnique({ where: { id } });
+    if (!existing) {
+      throw new NotFoundException('missing_person_not_found');
+    }
+
+    return this.prisma.auditLog.findMany({
+      where: { entity: 'MissingPerson', entityId: id },
+      orderBy: { createdAt: 'asc' },
+    });
+  }
+
+  // ─────────────────────────────────────────────
   // ADMIN — UPDATE STATUS
   // Enforces ALLOWED_TRANSITIONS and requires a reviewNote when
   // rejecting or requesting more information.
+  //
+  // FIX (item #16): a personType=CHILD case moving to APPROVED now
+  // requires two distinct admins via ensureChildSafetySatisfied,
+  // same dual-control gate as Post's approve()/updateStatus().
+  //
+  // FIX (item #17): blocked if claimed by a different admin; claim
+  // is released once the transition actually goes through.
+  //
+  // FIX (item #22/#26): the read-then-write is now a conditional
+  // update guarded on the status read a moment earlier, same
+  // pattern as Report/PostService, so two admins racing to
+  // transition the same case can't silently clobber each other —
+  // the loser gets missing_person_transition_conflict instead of an
+  // unvalidated write going through.
+  //
+  // FIX (item #21): on a transition TO REJECTED, checks whether the
+  // submitter has crossed the auto-flag threshold for repeated
+  // rejections.
   // ─────────────────────────────────────────────
 
   async updateStatus(
@@ -590,6 +1115,7 @@ export class MissingPersonService {
     id: string,
     status: MissingPersonStatus,
     reviewNote?: string,
+    childSafetyConfirmed?: boolean,
   ) {
     const existing = await this.prisma.missingPerson.findUnique({ where: { id } });
 
@@ -600,6 +1126,8 @@ export class MissingPersonService {
     if (existing.status === status) {
       return existing;
     }
+
+    this.assertNotClaimedByOther(existing, admin.id);
 
     const allowedNext = this.ALLOWED_TRANSITIONS[existing.status] ?? [];
 
@@ -615,13 +1143,40 @@ export class MissingPersonService {
       throw new BadRequestException('review_note_required_for_this_status');
     }
 
-    const updated = await this.prisma.missingPerson.update({
-      where: { id },
+    if (status === MissingPersonStatus.APPROVED && existing.personType === MissingPersonType.CHILD) {
+      const safety = await this.ensureChildSafetySatisfied(existing, admin.id, childSafetyConfirmed);
+      if (safety === 'first_confirmation_recorded') {
+        const partial = await this.prisma.missingPerson.findUniqueOrThrow({ where: { id } });
+        this.emitAudit({
+          userId: admin.id,
+          actorType: resolveActorType(admin.roles ?? []),
+          action: AuditEventEnum.MISSING_PERSON_UPDATED,
+          entity: 'MissingPerson',
+          entityId: id,
+          diff: {
+            childSafetyFirstConfirmationBy: admin.id,
+            result: 'pending_second_admin_confirmation',
+          },
+        });
+        return { ...partial, pendingSecondConfirmation: true };
+      }
+    }
+
+    const result = await this.prisma.missingPerson.updateMany({
+      where: { id, status: existing.status },
       data: {
         status,
         ...(reviewNote !== undefined ? { reviewNote } : {}),
+        claimedByUserId: null,
+        claimedAt: null,
       },
     });
+
+    if (result.count === 0) {
+      throw new BadRequestException('missing_person_transition_conflict');
+    }
+
+    const updated = await this.prisma.missingPerson.findUniqueOrThrow({ where: { id } });
 
     let auditEvent: AuditEventEnum;
 
@@ -656,6 +1211,10 @@ export class MissingPersonService {
       diff: {
         previousStatus: existing.status,
         newStatus: updated.status,
+        childSafetyDualControlSatisfied:
+          status === MissingPersonStatus.APPROVED && existing.personType === MissingPersonType.CHILD
+            ? true
+            : undefined,
         result: 'success',
       },
     });
@@ -691,6 +1250,10 @@ export class MissingPersonService {
       status: updated.status,
       reviewNote,
     });
+
+    if (status === MissingPersonStatus.REJECTED) {
+      await this.maybeFlagUserForRejections(existing.userId);
+    }
 
     return updated;
   }
