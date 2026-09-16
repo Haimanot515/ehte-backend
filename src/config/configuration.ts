@@ -37,6 +37,21 @@ export default () => ({
       senderName: process.env.AFROMESSAGE_SENDER_NAME || 'Ehte',
       identifierId: process.env.AFROMESSAGE_IDENTIFIER_ID,
     },
+
+    // ADDED: SendET provider config, read by SendetService via
+    // configService.get('sms.sendet.apiUrl') / .token / .senderName /
+    // .timeoutMs. Kept alongside afroMessage (not replacing it) until
+    // the cutover is explicit — both blocks currently coexist in .env.
+    // SendetService.sendSms() itself still throws unconditionally until
+    // the real SendET API contract (endpoint path, method, auth header
+    // format, request/response fields) is confirmed — see the TODO block
+    // at the top of sendet.service.ts.
+    sendet: {
+      apiUrl: process.env.SENDET_URL,
+      token: process.env.SENDET_TOKEN,
+      senderName: process.env.SENDET_SENDER_NAME || 'PITRON TECH',
+      timeoutMs: parseInt(process.env.SENDET_TIMEOUT_MS ?? '10000', 10),
+    },
   },
 
   database: {

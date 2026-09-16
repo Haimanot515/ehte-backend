@@ -13,7 +13,6 @@ import {
 
 import { ApiBearerAuth, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 
-import { AllowAnonymous } from 'src/common/decorators/public.decorator';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
 import { Roles } from 'src/common/decorators/roles.decorator';
@@ -29,6 +28,7 @@ import {
   ListMissingPersonsAdminQueryDto,
   ListMissingPersonsQueryDto,
   UpdateMissingPersonDto,
+  UpdateMissingPersonRewardDto,
   UpdateMissingPersonStatusDto,
 } from '../dto/missing-person.dto';
 
@@ -102,14 +102,22 @@ export class MissingPersonController {
   }
 
   // ─────────────────────────────────────────────
-  // PUBLIC LIST
+  // APPROVED LIST
   // GET /missing-persons
-  // Anonymous
+  // Authenticated USER (CHANGED — was Anonymous)
+  //
+  // CHANGED: approved missing-person records are sensitive enough
+  // that browsing the list should require being logged in, not be
+  // open to anonymous visitors. @AllowAnonymous() removed; the
+  // global auth guard now applies same as any other authenticated
+  // route on this controller. Any authenticated role can read this
+  // — no @Roles()/@RequirePermissions() beyond "logged in", since
+  // this isn't an admin-only view.
   // ─────────────────────────────────────────────
 
   @Get()
-  @AllowAnonymous()
-  @ApiOperation({ summary: 'Get approved missing persons' })
+  @ApiBearerAuth('access-token')
+  @ApiOperation({ summary: 'Get approved missing persons (requires login)' })
   @ApiQuery({ name: 'type', required: false })
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
@@ -253,20 +261,59 @@ export class MissingPersonController {
   }
 
   // ─────────────────────────────────────────────
-  // PUBLIC ONE
+  // ADMIN — UPDATE REWARD
+  // PATCH /missing-persons/admin/:id/reward
+  // (NEW)
+  //
+  // Separate from status: approving/revising a reward is its own
+  // decision, independent of where the case sits in the review
+  // workflow (PENDING/UNDER_REVIEW/APPROVED/etc. — deliberately NOT
+  // gated by ALLOWED_TRANSITIONS in the service). Same
+  // ADMIN/SUPER_ADMIN + MISSING_PERSON_REVIEW gate as claim/unclaim
+  // and status, since granting a reward is a review-level decision,
+  // not a read-only one.
+  //
+  // ADMIN / SUPER_ADMIN
+  // ─────────────────────────────────────────────
+
+  @Patch('admin/:id/reward')
+  @ApiBearerAuth('access-token')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.MISSING_PERSON_REVIEW)
+  @ApiOperation({ summary: 'Admin: approve or revise the reward for a missing person case' })
+  async updateReward(
+    @CurrentUser() admin: CurrentUserDto,
+    @Param('id') id: string,
+    @Body() data: UpdateMissingPersonRewardDto,
+  ) {
+    return this.missingPersonService.updateReward(
+      admin,
+      id,
+      data.rewardApproved,
+      data.rewardAmount,
+      data.rewardDetails,
+    );
+  }
+
+  // ─────────────────────────────────────────────
+  // APPROVED — GET ONE
   // GET /missing-persons/:id
-  // Anonymous — only ever returns APPROVED records
+  // Authenticated USER (CHANGED — was Anonymous) — only ever
+  // returns APPROVED records
+  //
+  // CHANGED: same reasoning as findAll() above — @AllowAnonymous()
+  // removed, now requires login.
   // ─────────────────────────────────────────────
 
   @Get(':id')
-  @AllowAnonymous()
-  @ApiOperation({ summary: 'Get one approved missing person' })
+  @ApiBearerAuth('access-token')
+  @ApiOperation({ summary: 'Get one approved missing person (requires login)' })
   async findOne(@Param('id') id: string) {
     return this.missingPersonService.findOne(id);
   }
 
   // ─────────────────────────────────────────────
-  // PUBLIC — GET MEDIA DOWNLOAD URL
+  // APPROVED — GET MEDIA DOWNLOAD URL
   // GET /missing-persons/:id/media?key=...
   //
   // Same visibility gate as findOne(): the record must be
@@ -274,12 +321,15 @@ export class MissingPersonController {
   // route above, so order relative to it doesn't matter — grouped
   // here for readability.
   //
-  // Anonymous
+  // Authenticated USER (CHANGED — was Anonymous), same reasoning
+  // as findAll()/findOne() above.
   // ─────────────────────────────────────────────
 
   @Get(':id/media')
-  @AllowAnonymous()
-  @ApiOperation({ summary: "Get a short-lived download URL for an approved submission's media" })
+  @ApiBearerAuth('access-token')
+  @ApiOperation({
+    summary: "Get a short-lived download URL for an approved submission's media (requires login)",
+  })
   async getPublicMedia(@Param('id') id: string, @Query() query: MediaKeyQueryDto) {
     return this.missingPersonService.getPublicMediaDownloadUrl(id, query.key);
   }

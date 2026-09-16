@@ -53,6 +53,7 @@ import {
   AdminCancelRegistrationDto,
   AdminChangeEmailDto,
   AdminChangeEmailVerifyDto,
+  AdminChangePasswordInitiateDto,
   PromoteUserDto,
   PromoteUserResendDto,
   PromoteVerifyDto,
@@ -701,6 +702,7 @@ export class AdminAuthService {
   }
 
   // ADMIN — FORGOT PASSWORD: email-only; masks "no account"/"not admin"/"inactive" identically.
+  // Already the email-OTP path (see OtpChannelEnum.email below) — kept unchanged.
 
   async adminForgotPassword(data: AdminForgotPasswordDto): Promise<{ verificationId: string }> {
     const email = this.normalizeEmailOrThrow(data.email);
@@ -852,9 +854,12 @@ export class AdminAuthService {
     );
   }
 
-  // ADMIN — RESET PASSWORD: verifies the OTP owner is actually an admin, then runs the
-  // same OTP-claim + password-update flow AuthService.resetPassword() uses (duplicated
-  // here since admin-auth/ doesn't import from auth/).
+  // ADMIN — RESET PASSWORD (FORGOT-PASSWORD FLOW): verifies the OTP owner is actually an
+  // admin, then runs the same OTP-claim + password-update flow AuthService.resetPassword()
+  // uses (duplicated here since admin-auth/ doesn't import from auth/). Reached only via
+  // adminForgotPassword() — i.e. the admin does NOT already know their current password.
+  // Contrast with adminChangePasswordInitiate/Verify below, which is for an admin who DOES
+  // know their current password and wants to change it while logged in.
 
   async adminResetPassword(data: ResetPasswordDto): Promise<{ message: string }> {
     const otpRecord = await this.prisma.userOtp.findUnique({
@@ -973,6 +978,180 @@ export class AdminAuthService {
     // notification — omitted here rather than guessed at.
 
     return { message: 'password_reset_successful' };
+  }
+
+  // ADMIN — CHANGE PASSWORD (STEP 1): authenticated admin proves they still know their
+  // current password, then an OTP is emailed to their own address before a new password
+  // is accepted. This is the dedicated admin-only self-service flow — the shared USER
+  // /auth/change-password endpoint (AuthService.changePassword()) now rejects any
+  // account holding an admin role and points it here instead.
+
+  async adminChangePasswordInitiate(
+    actor: CurrentUserDto,
+    data: AdminChangePasswordInitiateDto,
+  ): Promise<{ verificationId: string }> {
+    const actorRoles = actor.roles ?? [];
+
+    if (!this.hasAdminRole(actorRoles)) {
+      throw new UnauthorizedException('insufficient_permissions');
+    }
+
+    const admin = await this.prisma.user.findUnique({
+      where: { id: actor.id },
+    });
+
+    if (!admin) {
+      throw new NotFoundException('user_not_found');
+    }
+
+    if (!admin.passwordHash) {
+      throw new BadRequestException('password_not_set');
+    }
+
+    const validPassword = await bcrypt.compare(data.currentPassword, admin.passwordHash);
+
+    if (!validPassword) {
+      throw new BadRequestException('wrong_current_password');
+    }
+
+    if (!admin.email) {
+      // Shouldn't happen for an admin account, but guard anyway — there's nowhere to send the OTP.
+      throw new BadRequestException('admin_email_missing');
+    }
+
+    // Reuses the password_reset purpose + email channel — same proof-of-inbox pattern as
+    // adminForgotPassword(), just reached only after the current-password check above
+    // (adminForgotPassword() has no such check, since it's for admins who've lost their password).
+    const { verificationId } = await this.otpUtil.issueAndSendOtp(
+      admin.id,
+      admin.email,
+      UserOtpPurposeEnum.password_reset,
+      OtpChannelEnum.email,
+    );
+
+    return { verificationId };
+  }
+
+  // ADMIN — CHANGE PASSWORD (STEP 2): possessing the emailed OTP proves inbox control.
+  // Mirrors adminResetPassword()'s OTP-claim pattern; kept as a separate method (rather
+  // than calling adminResetPassword() directly) so the two flows stay independently
+  // auditable, matching this file's existing register/promote/reset duplication pattern.
+
+  async adminChangePasswordVerify(data: ResetPasswordDto): Promise<{ message: string }> {
+    const otpRecord = await this.prisma.userOtp.findUnique({
+      where: { id: data.verificationId },
+      include: {
+        user: {
+          select: {
+            id: true,
+            userRoles: { include: { role: true } },
+          },
+        },
+      },
+    });
+
+    if (
+      !otpRecord ||
+      otpRecord.purpose !== UserOtpPurposeEnum.password_reset ||
+      otpRecord.usedAt ||
+      otpRecord.expiresAt < new Date()
+    ) {
+      throw new BadRequestException('invalid_or_expired_otp');
+    }
+
+    const roles = otpRecord.user.userRoles.map((userRole) => userRole.role.name);
+
+    if (!this.hasAdminRole(roles)) {
+      throw new BadRequestException('invalid_or_expired_otp');
+    }
+
+    if (otpRecord.attempts >= 5) {
+      await this.lockoutUtil.lockAccountForOtpAbuse(otpRecord.user.id);
+
+      this.emitAudit({
+        userId: otpRecord.user.id,
+        actorType: resolveActorType(roles),
+        action: AuditEventEnum.SECURITY_ALERT,
+        entity: 'UserOtp',
+        entityId: otpRecord.id,
+        diff: {
+          reason: 'too_many_otp_attempts',
+          purpose: 'admin_change_password',
+        },
+      });
+
+      throw new BadRequestException('too_many_otp_attempts');
+    }
+
+    const validOtp = await bcrypt.compare(data.otp, otpRecord.otpHash);
+
+    if (!validOtp) {
+      const updatedOtp = await this.prisma.userOtp.update({
+        where: { id: otpRecord.id },
+        data: { attempts: { increment: 1 } },
+        select: { attempts: true },
+      });
+
+      if (updatedOtp.attempts >= 5) {
+        await this.lockoutUtil.lockAccountForOtpAbuse(otpRecord.user.id);
+
+        this.emitAudit({
+          userId: otpRecord.user.id,
+          actorType: resolveActorType(roles),
+          action: AuditEventEnum.SECURITY_ALERT,
+          entity: 'UserOtp',
+          entityId: otpRecord.id,
+          diff: {
+            reason: 'too_many_otp_attempts',
+            purpose: 'admin_change_password',
+          },
+        });
+      }
+
+      throw new BadRequestException('invalid_or_expired_otp');
+    }
+
+    const hashedPassword = await bcrypt.hash(data.newPassword, 10);
+
+    await this.prisma.$transaction(async (tx) => {
+      const claimed = await tx.userOtp.updateMany({
+        where: {
+          id: data.verificationId,
+          usedAt: null,
+          attempts: { lt: 5 },
+          expiresAt: { gt: new Date() },
+        },
+        data: { usedAt: new Date() },
+      });
+
+      if (claimed.count === 0) {
+        throw new BadRequestException('invalid_or_expired_otp');
+      }
+
+      await tx.user.update({
+        where: { id: otpRecord.user.id },
+        data: { passwordHash: hashedPassword },
+      });
+
+      // Invalidate every existing session, including the one used to call step 1.
+      await tx.session.deleteMany({
+        where: { userId: otpRecord.user.id },
+      });
+    });
+
+    this.emitAudit({
+      userId: otpRecord.user.id,
+      actorType: resolveActorType(roles),
+      action: AuditEventEnum.PASSWORD_CHANGED,
+      entity: 'User',
+      entityId: otpRecord.user.id,
+      diff: { method: 'otp', result: 'success', context: 'admin_change_password_completed' },
+    });
+
+    // NOTE: same as adminResetPassword() — wire a NotificationEventEnum.PASSWORD_CHANGED
+    // event here if admins should get a user-facing notification on top of the audit log.
+
+    return { message: 'password_changed' };
   }
 
   // Self-service admin email change (STEP 1): gated by re-authentication at the controller.

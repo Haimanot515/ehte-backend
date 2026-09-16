@@ -115,6 +115,17 @@ export class MissingPersonService {
     status: true,
     createdAt: true,
     updatedAt: true,
+    // NEW (reward): rewardOffered/rewardApproved are safe to expose
+    // as-is — they're just booleans indicating whether a reward
+    // exists and whether it's been reviewed. rewardAmount/
+    // rewardDetails are selected here too, but findOne()/findAll()
+    // run every row through maskUnapprovedReward() before
+    // returning, so an unapproved amount/details never actually
+    // reaches a public caller even though it's in this select.
+    rewardOffered: true,
+    rewardApproved: true,
+    rewardAmount: true,
+    rewardDetails: true,
   } as const;
 
   // AUDIT EMIT (typed helper): routes every audit emit through AuditEventPayload so a
@@ -277,6 +288,55 @@ export class MissingPersonService {
   private async deleteMediaFiles(filepaths: string[]): Promise<void> {
     if (!filepaths.length) return;
     await Promise.allSettled(filepaths.map((fp) => this.minioService.deleteFile(fp)));
+  }
+
+  // ─────────────────────────────────────────────
+  // REWARD HELPERS
+  //
+  // buildRewardProposalUpdate: the submitter-facing half. Applies
+  // to create() and update(). rewardAmount/rewardDetails are only
+  // ever persisted when rewardOffered is (or becomes) true — if
+  // rewardOffered is false, both are forced to null regardless of
+  // what the client sent, so a stale amount can't linger from a
+  // reward the submitter has since retracted. In update(), returns
+  // null when the DTO touches none of the three fields, so the
+  // caller knows to leave the existing row alone entirely.
+  //
+  // maskUnapprovedReward: the public-read half. rewardAmount/
+  // rewardDetails are stripped from any row returned to a public
+  // caller unless rewardApproved is true — an unreviewed reward
+  // proposal should never be visible on the public listing/detail
+  // endpoints, only after an admin has approved it via
+  // updateReward().
+  // ─────────────────────────────────────────────
+
+  private buildRewardProposalUpdate(
+    incoming: { rewardOffered?: boolean; rewardAmount?: number; rewardDetails?: string },
+    existing?: { rewardOffered: boolean; rewardAmount: number | null; rewardDetails: string | null },
+  ): { rewardOffered: boolean; rewardAmount: number | null; rewardDetails: string | null } | null {
+    const touched =
+      incoming.rewardOffered !== undefined ||
+      incoming.rewardAmount !== undefined ||
+      incoming.rewardDetails !== undefined;
+
+    // On create() there's no `existing` row yet and every call is
+    // "touched" by definition (there's nothing to leave alone).
+    if (!touched && existing) return null;
+
+    const base = existing ?? { rewardOffered: false, rewardAmount: null, rewardDetails: null };
+
+    const rewardOffered = incoming.rewardOffered ?? base.rewardOffered;
+    const rewardAmount = rewardOffered ? incoming.rewardAmount ?? base.rewardAmount ?? null : null;
+    const rewardDetails = rewardOffered ? incoming.rewardDetails ?? base.rewardDetails ?? null : null;
+
+    return { rewardOffered, rewardAmount, rewardDetails };
+  }
+
+  private maskUnapprovedReward<
+    T extends { rewardApproved: boolean; rewardAmount: number | null; rewardDetails: string | null },
+  >(record: T): T {
+    if (record.rewardApproved) return record;
+    return { ...record, rewardAmount: null, rewardDetails: null };
   }
 
   // ─────────────────────────────────────────────
@@ -664,11 +724,18 @@ export class MissingPersonService {
     const totalBytes = validated.reduce((sum, v) => sum + v.size, 0);
     this.assertTotalBytes(totalBytes);
 
+    // NEW (reward): rewardApproved is never set here — it always
+    // starts false (the Prisma default) regardless of what's
+    // proposed, since CreateMissingPersonDto has no rewardApproved
+    // field for a submitter to even send.
+    const rewardProposal = this.buildRewardProposalUpdate(data)!;
+
     const missingPerson = await this.createWithIdempotencyRaceHandling(
       user,
       data,
       merged,
       totalBytes,
+      rewardProposal,
       idempotencyKey,
     );
 
@@ -705,6 +772,7 @@ export class MissingPersonService {
     data: CreateMissingPersonDto,
     merged: MediaBearing,
     totalBytes: number,
+    rewardProposal: { rewardOffered: boolean; rewardAmount: number | null; rewardDetails: string | null },
     idempotencyKey?: string,
   ) {
     try {
@@ -724,6 +792,9 @@ export class MissingPersonService {
           other: merged.other,
           mediaTotalBytes: totalBytes,
           status: MissingPersonStatus.PENDING,
+          rewardOffered: rewardProposal.rewardOffered,
+          rewardAmount: rewardProposal.rewardAmount,
+          rewardDetails: rewardProposal.rewardDetails,
           idempotencyKey: idempotencyKey ?? null,
         },
       });
@@ -764,7 +835,7 @@ export class MissingPersonService {
       throw new NotFoundException('missing_person_not_found');
     }
 
-    return missingPerson;
+    return this.maskUnapprovedReward(missingPerson);
   }
 
   // ─────────────────────────────────────────────
@@ -792,7 +863,7 @@ export class MissingPersonService {
     ]);
 
     return {
-      data,
+      data: data.map((item) => this.maskUnapprovedReward(item)),
       meta: { page, limit, total, totalPages: Math.ceil(total / limit) },
     };
   }
@@ -877,6 +948,14 @@ export class MissingPersonService {
   // and mediaTotalBytes is recomputed from the previous total
   // plus/minus the added/removed files' sizes — same approach as
   // Report/PostService.
+  //
+  // NOTE (reward): the submitter may also revise their reward
+  // proposal here (rewardOffered/rewardAmount/rewardDetails) via
+  // buildRewardProposalUpdate(). rewardApproved itself is never
+  // touched by this method except to auto-reset it to false when
+  // the submitter changes an already-approved reward's terms — see
+  // shouldResetRewardApproval below. Approving a proposal can only
+  // happen via updateReward().
   // ─────────────────────────────────────────────
 
   async update(user: CurrentUserDto, id: string, data: UpdateMissingPersonDto) {
@@ -934,6 +1013,23 @@ export class MissingPersonService {
     const shouldReturnToPending =
       existing.status === MissingPersonStatus.MORE_INFORMATION_REQUESTED;
 
+    // NEW (reward): null when the DTO doesn't touch any of the
+    // three reward fields — leave the existing row's reward
+    // proposal untouched in that case.
+    const rewardUpdate = this.buildRewardProposalUpdate(data, existing);
+
+    // If the submitter changes the actual terms of an
+    // already-approved reward, the approval no longer covers what's
+    // being displayed — un-approve so it goes back through review
+    // rather than silently keeping a stale sign-off on new terms.
+    // A no-op resend of identical values does NOT reset approval.
+    const rewardTermsChanged =
+      rewardUpdate !== null &&
+      (rewardUpdate.rewardOffered !== existing.rewardOffered ||
+        rewardUpdate.rewardAmount !== existing.rewardAmount ||
+        rewardUpdate.rewardDetails !== existing.rewardDetails);
+    const shouldResetRewardApproval = rewardTermsChanged && existing.rewardApproved;
+
     const updated = await this.prisma.missingPerson.update({
       where: { id },
       data: {
@@ -948,6 +1044,14 @@ export class MissingPersonService {
         ...(data.pdf !== undefined ? { pdf: data.pdf } : {}),
         ...(data.document !== undefined ? { document: data.document } : {}),
         ...(data.other !== undefined ? { other: data.other } : {}),
+        ...(rewardUpdate !== null
+          ? {
+              rewardOffered: rewardUpdate.rewardOffered,
+              rewardAmount: rewardUpdate.rewardAmount,
+              rewardDetails: rewardUpdate.rewardDetails,
+            }
+          : {}),
+        ...(shouldResetRewardApproval ? { rewardApproved: false } : {}),
         ...(shouldReturnToPending ? { status: MissingPersonStatus.PENDING } : {}),
         mediaTotalBytes: newTotalBytes,
       },
@@ -1254,6 +1358,98 @@ export class MissingPersonService {
     if (status === MissingPersonStatus.REJECTED) {
       await this.maybeFlagUserForRejections(existing.userId);
     }
+
+    return updated;
+  }
+
+  // ─────────────────────────────────────────────
+  // ADMIN — UPDATE REWARD
+  // PATCH /missing-persons/admin/:id/reward
+  //
+  // Deliberately separate from updateStatus(): reward approval is
+  // its own decision, independent of where the case sits in the
+  // review workflow. No ALLOWED_TRANSITIONS gate and no claim check
+  // — an unclaimed or already-claimed-by-someone-else case can
+  // still have its reward set, since reward decisions don't carry
+  // the same "only one admin actively reviewing" concern that
+  // status transitions do. Reconsider this if that assumption turns
+  // out to be wrong for your workflow.
+  //
+  // Approval requires the case to actually have a reward proposal:
+  // rewardApproved: true is rejected outright if the submitter's
+  // rewardOffered is false — an admin approves what was offered,
+  // never invents an offer. rewardAmount/rewardDetails passed here
+  // are OPTIONAL overrides on top of whatever the submitter last
+  // proposed; omitting them keeps the existing value. A final
+  // amount (existing or overridden) is required whenever
+  // rewardApproved is true.
+  //
+  // Unlike the first draft of this method, rewardApproved: false
+  // no longer nulls rewardAmount/rewardDetails in the DB — the
+  // submitter's proposal is preserved so a later re-review doesn't
+  // start from scratch. Public-facing reads mask
+  // rewardAmount/rewardDetails via maskUnapprovedReward() whenever
+  // rewardApproved is false, which is what actually keeps an
+  // unreviewed or rejected figure off the public endpoints.
+  // ─────────────────────────────────────────────
+
+  async updateReward(
+    admin: CurrentUserDto,
+    id: string,
+    rewardApproved: boolean,
+    rewardAmount?: number,
+    rewardDetails?: string,
+  ) {
+    const existing = await this.prisma.missingPerson.findUnique({ where: { id } });
+
+    if (!existing) {
+      throw new NotFoundException('missing_person_not_found');
+    }
+
+    if (rewardApproved && !existing.rewardOffered) {
+      throw new BadRequestException('cannot_approve_reward_that_was_not_offered');
+    }
+
+    const finalAmount = rewardAmount !== undefined ? rewardAmount : existing.rewardAmount;
+    const finalDetails = rewardDetails !== undefined ? rewardDetails : existing.rewardDetails;
+
+    if (rewardApproved && (finalAmount === undefined || finalAmount === null)) {
+      throw new BadRequestException('reward_amount_required_when_approved');
+    }
+
+    const updated = await this.prisma.missingPerson.update({
+      where: { id },
+      data: {
+        rewardApproved,
+        rewardAmount: finalAmount,
+        rewardDetails: finalDetails,
+      },
+    });
+
+    this.emitAudit({
+      userId: admin.id,
+      actorType: resolveActorType(admin.roles ?? []),
+      action: AuditEventEnum.MISSING_PERSON_UPDATED,
+      entity: 'MissingPerson',
+      entityId: id,
+      diff: {
+        previousRewardApproved: existing.rewardApproved,
+        previousRewardAmount: existing.rewardAmount,
+        previousRewardDetails: existing.rewardDetails,
+        rewardApproved: updated.rewardApproved,
+        rewardAmount: updated.rewardAmount,
+        rewardDetails: updated.rewardDetails,
+        result: 'success',
+      },
+    });
+
+    this.eventEmitter.emit(NotificationEventEnum.MISSING_PERSON_UPDATED, {
+      userId: existing.userId,
+      missingPersonId: updated.id,
+      status: updated.status,
+      rewardApproved: updated.rewardApproved,
+      rewardAmount: updated.rewardAmount,
+    });
 
     return updated;
   }

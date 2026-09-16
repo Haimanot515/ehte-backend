@@ -1,11 +1,11 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 
-import { AfroMessageService } from './afro-message.service';
+import { SendetService } from './sendet.service';
 
 @Module({
   imports: [ConfigModule],
-  providers: [AfroMessageService],
-  exports: [AfroMessageService],
+  providers: [SendetService],
+  exports: [SendetService],
 })
 export class SmsModule {}

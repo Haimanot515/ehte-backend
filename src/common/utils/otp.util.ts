@@ -6,7 +6,7 @@ import { randomInt } from 'crypto';
 
 import { PrismaService } from 'src/prisma/prisma.service';
 
-import { sendSms } from 'src/services/sms/afro-message.service';
+import { sendSms } from 'src/services/sms/sendet.service';
 import { renderOtpSms } from 'src/services/sms/templates/sms-otp.template';
 
 import { sendEmail } from 'src/services/email/email.service';
