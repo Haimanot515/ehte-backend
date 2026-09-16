@@ -161,6 +161,12 @@ export default () => ({
   // services end up wanting a namespaced `content.*` lookup instead of the
   // raw env-var pattern, add it here rather than duplicating parseInt logic
   // across every module's service file.
+  //
+  // Reports/MissingPerson/Profile follow this exact same raw-env-var
+  // pattern (REPORT_*, MISSING_PERSON_*, PROFILE_* falling back to the
+  // shared CONTENT_* defaults above) — see app.module.ts's Joi schema for
+  // where those keys are declared and validated. Nothing to add here
+  // unless one of those modules later wants a namespaced lookup instead.
 
   support: {
     currency: process.env.SUPPORT_CURRENCY || 'ETB',

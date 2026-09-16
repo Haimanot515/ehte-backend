@@ -105,29 +105,104 @@ export class InformationSubmissionService {
     return { added, removed };
   }
 
-  // Confirms every filepath the client is attaching actually exists
-  // in the media bucket, so a submission can't reference an object
-  // that was never uploaded (typo'd path, upload abandoned
-  // mid-flow, filepath copied from an unrelated response, etc.).
-  // Only called on filepaths that are new to the entity —
-  // already-attached filepaths were validated when first added.
+  // FIX (item #3): previously only checked objectExists(). Now mirrors
+  // PostService.validateMediaFilesExist() — also rejects files that are
+  // too large or of a disallowed content-type, and returns each file's
+  // size so callers can maintain mediaTotalBytes without re-statting
+  // already-attached files.
   //
-  // MinioService.objectExists() is bucket-less — the service holds
-  // a single configured bucket internally, so callers just pass the
-  // key.
-  private async validateMediaFilesExist(filepaths: string[]): Promise<void> {
-    if (!filepaths.length) return;
+  // Shares the MEDIA_MAX_FILE_SIZE / MEDIA_ALLOWED_MIME_TYPES config
+  // keys with Post — one bucket-wide policy, not a per-module one,
+  // since the underlying risk (fake/dangerous files) is identical.
+  private async validateMediaFilesExist(
+    filepaths: string[],
+  ): Promise<Array<{ filepath: string; size: number }>> {
+    if (!filepaths.length) return [];
 
-    const checks = await Promise.all(
-      filepaths.map(async (filepath) => ({
-        filepath,
-        exists: await this.minioService.objectExists(filepath),
-      })),
+    const maxFileSizeBytes = Number(
+      this.configService.get<string>('MEDIA_MAX_FILE_SIZE') ?? 52_428_800,
+    );
+    const allowedMimeTypes = new Set(
+      (this.configService.get<string>('MEDIA_ALLOWED_MIME_TYPES') ?? '')
+        .split(',')
+        .map((t) => t.trim())
+        .filter(Boolean),
     );
 
-    const missing = checks.filter((c) => !c.exists).map((c) => c.filepath);
-    if (missing.length) {
-      throw new BadRequestException(`media_files_not_found:${missing.join(',')}`);
+    const checks = await Promise.all(
+      filepaths.map(async (filepath) => {
+        const exists = await this.minioService.objectExists(filepath);
+        if (!exists) {
+          return { filepath, ok: false as const, reason: 'not_found', size: 0 };
+        }
+
+        const stat = await this.minioService.statObject(filepath);
+
+        if (stat.size > maxFileSizeBytes) {
+          return { filepath, ok: false as const, reason: 'too_large', size: stat.size };
+        }
+        if (allowedMimeTypes.size > 0 && !allowedMimeTypes.has(stat.contentType)) {
+          return { filepath, ok: false as const, reason: 'disallowed_type', size: stat.size };
+        }
+        return { filepath, ok: true as const, size: stat.size };
+      }),
+    );
+
+    const bad = checks.filter((c) => !c.ok);
+    if (bad.length) {
+      throw new BadRequestException(
+        `media_validation_failed:${bad.map((b) => `${b.filepath}:${b.reason}`).join(',')}`,
+      );
+    }
+
+    return checks.map((c) => ({ filepath: c.filepath, size: c.size }));
+  }
+
+  // FIX (item #13): per-field attachment counts, checked before any
+  // MinIO round trips. Shares the CONTENT_* shared defaults with Post/
+  // Report/etc.; an optional INFORMATION_SUBMISSION_* override lets
+  // this module diverge later without touching any other module's copy.
+  private assertAttachmentCounts(media: MediaBearing): void {
+    const maxPhotos = Number(
+      this.configService.get<string>('INFORMATION_SUBMISSION_MAX_PHOTOS') ??
+        this.configService.get<string>('CONTENT_MAX_PHOTOS') ??
+        5,
+    );
+    const maxVideos = Number(
+      this.configService.get<string>('INFORMATION_SUBMISSION_MAX_VIDEOS') ??
+        this.configService.get<string>('CONTENT_MAX_VIDEOS') ??
+        1,
+    );
+    const maxOther = Number(
+      this.configService.get<string>('INFORMATION_SUBMISSION_MAX_OTHER_FILES') ??
+        this.configService.get<string>('CONTENT_MAX_OTHER_FILES') ??
+        2,
+    );
+
+    if (media.photo.length > maxPhotos) {
+      throw new BadRequestException(`too_many_photos:max_${maxPhotos}`);
+    }
+    if (media.video.length > maxVideos) {
+      throw new BadRequestException(`too_many_videos:max_${maxVideos}`);
+    }
+    const otherCount =
+      media.audio.length + media.pdf.length + media.document.length + media.other.length;
+    if (otherCount > maxOther) {
+      throw new BadRequestException(`too_many_other_files:max_${maxOther}`);
+    }
+  }
+
+  // FIX (item #13): total attached-media size cap, checked against the
+  // running mediaTotalBytes column rather than re-summing every
+  // attached file on every write.
+  private assertTotalBytes(totalBytes: number): void {
+    const maxTotalBytes = Number(
+      this.configService.get<string>('INFORMATION_SUBMISSION_MAX_TOTAL_UPLOAD_BYTES') ??
+        this.configService.get<string>('CONTENT_MAX_TOTAL_UPLOAD_BYTES') ??
+        52_428_800,
+    );
+    if (totalBytes > maxTotalBytes) {
+      throw new BadRequestException(`upload_total_size_exceeded:max_${maxTotalBytes}`);
     }
   }
 
@@ -135,8 +210,6 @@ export class InformationSubmissionService {
   // (or MinIO briefly unreachable) must never block the DB write
   // that triggered the cleanup — failures are swallowed per-file
   // via allSettled rather than surfaced to the caller.
-  //
-  // Same bucket-less signature as validateMediaFilesExist().
   private async deleteMediaFiles(filepaths: string[]): Promise<void> {
     if (!filepaths.length) return;
     await Promise.allSettled(filepaths.map((fp) => this.minioService.deleteFile(fp)));
@@ -145,12 +218,6 @@ export class InformationSubmissionService {
   // ─────────────────────────────────────────────
   // MEDIA — DOWNLOAD URL (owner)
   // GET /information-submissions/:id/media?key=...
-  //
-  // Mirrors VictimProfileService.getMediaDownloadUrl: confirms the
-  // key actually belongs to this submission (rather than trusting
-  // any key the caller supplies) before generating a presigned URL.
-  // Restricted to the submission's own owner — this is not the
-  // admin-wide variant.
   // ─────────────────────────────────────────────
 
   async getMediaDownloadUrl(id: string, userId: string, key: string): Promise<{ url: string }> {
@@ -178,10 +245,6 @@ export class InformationSubmissionService {
   // ─────────────────────────────────────────────
   // ADMIN — MEDIA DOWNLOAD URL
   // GET /information-submissions/admin/:id/media?key=...
-  //
-  // Admins can request a download URL for any media key actually
-  // attached to the submission, regardless of status — matches
-  // findOneForAdmin()'s admin-only, no-visibility-filtering access.
   // ─────────────────────────────────────────────
 
   async getMediaDownloadUrlForAdmin(id: string, key: string): Promise<{ url: string }> {
@@ -206,10 +269,9 @@ export class InformationSubmissionService {
   // PUBLIC — MEDIA DOWNLOAD URL
   // GET /information-submissions/public/:id/media?key=...
   //
-  // Same visibility gate as findForMissingPerson(): media on a
-  // submission is only reachable once it has been REVIEWED. A
-  // submission that exists but isn't reviewed yet should 404 here,
-  // not leak its existence via a different error shape.
+  // Media on a submission is only reachable once it has been
+  // REVIEWED. A submission that exists but isn't reviewed yet
+  // 404s here, not a different error shape.
   // ─────────────────────────────────────────────
 
   async getPublicMediaDownloadUrl(id: string, key: string): Promise<{ url: string }> {
@@ -246,11 +308,78 @@ export class InformationSubmissionService {
   // Only allowed against APPROVED (publicly visible) cases, and
   // not by the person who filed the missing-person report itself.
   //
-  // Media filepaths are validated against MinIO before the
-  // submission is created, same as PostService.create.
+  // FIX (item #1): per-user cooldown between submissions, plus a
+  // cap on how many of a user's submissions can sit in
+  // PENDING/UNDER_REVIEW at once — collapsed into one step here
+  // since Information Submission has no separate draft→submit
+  // flow the way Post does.
+  //
+  // FIX (item #5): optional Idempotency-Key lets a client safely
+  // retry a create call after a dropped response — a repeat with
+  // the same key returns the original submission instead of
+  // creating a duplicate.
+  //
+  // FIX (item #13): attachment counts checked before any MinIO
+  // round trips; total size persisted as mediaTotalBytes.
   // ─────────────────────────────────────────────
 
-  async create(userId: string, missingPersonId: string, data: CreateInformationSubmissionDto) {
+  private async enforceCreateRateLimit(userId: string): Promise<void> {
+    const cooldownSeconds = Number(
+      this.configService.get<string>(
+        'INFORMATION_SUBMISSION_CREATE_RATE_LIMIT_WINDOW_SECONDS',
+      ) ??
+        this.configService.get<string>('CONTENT_CREATE_RATE_LIMIT_WINDOW_SECONDS') ??
+        60,
+    );
+
+    const last = await this.prisma.informationSubmission.findFirst({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+      select: { createdAt: true },
+    });
+
+    if (last && Date.now() - last.createdAt.getTime() < cooldownSeconds * 1000) {
+      throw new BadRequestException('information_submission_rate_limited');
+    }
+  }
+
+  private async enforceMaxPending(userId: string): Promise<void> {
+    const maxPending = Number(
+      this.configService.get<string>('INFORMATION_SUBMISSION_MAX_PENDING_PER_USER') ??
+        this.configService.get<string>('CONTENT_MAX_PENDING_PER_USER') ??
+        5,
+    );
+
+    const pendingCount = await this.prisma.informationSubmission.count({
+      where: {
+        userId,
+        status: { in: [InformationStatus.PENDING, InformationStatus.UNDER_REVIEW] },
+      },
+    });
+
+    if (pendingCount >= maxPending) {
+      throw new BadRequestException('too_many_pending_information_submissions');
+    }
+  }
+
+  async create(
+    userId: string,
+    missingPersonId: string,
+    data: CreateInformationSubmissionDto,
+    idempotencyKey?: string,
+  ) {
+    if (idempotencyKey) {
+      const existing = await this.prisma.informationSubmission.findFirst({
+        where: { userId, idempotencyKey },
+      });
+      if (existing) {
+        // Safe replay of a duplicate submission (double-tap, retried
+        // request after a flaky connection) — return the original
+        // instead of creating a second one.
+        return existing;
+      }
+    }
+
     const missingPerson = await this.prisma.missingPerson.findUnique({
       where: { id: missingPersonId },
     });
@@ -267,7 +396,22 @@ export class InformationSubmissionService {
       throw new ForbiddenException('cannot_submit_information_on_own_report');
     }
 
-    await this.validateMediaFilesExist(this.collectMediaFieldsFromDto(data));
+    await this.enforceCreateRateLimit(userId);
+    await this.enforceMaxPending(userId);
+
+    const merged: MediaBearing = {
+      photo: data.photo ?? [],
+      video: data.video ?? [],
+      audio: data.audio ?? [],
+      pdf: data.pdf ?? [],
+      document: data.document ?? [],
+      other: data.other ?? [],
+    };
+    this.assertAttachmentCounts(merged);
+
+    const validated = await this.validateMediaFilesExist(this.collectMediaFields(merged));
+    const totalBytes = validated.reduce((sum, v) => sum + v.size, 0);
+    this.assertTotalBytes(totalBytes);
 
     const submission = await this.prisma.informationSubmission.create({
       data: {
@@ -277,14 +421,16 @@ export class InformationSubmissionService {
         information: data.information,
         location: data.location,
 
-        photo: data.photo ?? [],
-        video: data.video ?? [],
-        audio: data.audio ?? [],
-        pdf: data.pdf ?? [],
-        document: data.document ?? [],
-        other: data.other ?? [],
+        photo: merged.photo,
+        video: merged.video,
+        audio: merged.audio,
+        pdf: merged.pdf,
+        document: merged.document,
+        other: merged.other,
+        mediaTotalBytes: totalBytes,
 
         status: InformationStatus.PENDING,
+        idempotencyKey: idempotencyKey ?? null,
       },
     });
 
@@ -427,6 +573,10 @@ export class InformationSubmissionService {
   // validated against MinIO before the write; filepaths dropped
   // from the new array are deleted from MinIO after the write
   // commits — same ordering discipline as PostService.updateMyPost.
+  //
+  // FIX (item #13): attachment counts checked against the merged
+  // post-update media shape; mediaTotalBytes recomputed from the
+  // previous total plus/minus added/removed files' sizes.
   // ─────────────────────────────────────────────
 
   async update(id: string, userId: string, data: UpdateInformationSubmissionDto) {
@@ -451,7 +601,35 @@ export class InformationSubmissionService {
     }
 
     const { added, removed } = this.diffMediaFields(existing, data);
-    await this.validateMediaFilesExist(added);
+
+    const merged: MediaBearing = {
+      photo: data.photo ?? existing.photo,
+      video: data.video ?? existing.video,
+      audio: data.audio ?? existing.audio,
+      pdf: data.pdf ?? existing.pdf,
+      document: data.document ?? existing.document,
+      other: data.other ?? existing.other,
+    };
+    this.assertAttachmentCounts(merged);
+
+    const validatedAdded = await this.validateMediaFilesExist(added);
+    const addedBytes = validatedAdded.reduce((sum, v) => sum + v.size, 0);
+
+    // Stat removed files before they're deleted, purely to back out
+    // their bytes from the running total — a stat failure here
+    // (already gone, MinIO hiccup) just means we can't credit that
+    // byte count back, so treat it as 0 rather than blocking the
+    // update.
+    const removedStats = await Promise.allSettled(
+      removed.map((fp) => this.minioService.statObject(fp)),
+    );
+    const removedBytes = removedStats.reduce(
+      (sum, r) => sum + (r.status === 'fulfilled' ? r.value.size : 0),
+      0,
+    );
+
+    const newTotalBytes = Math.max(0, existing.mediaTotalBytes + addedBytes - removedBytes);
+    this.assertTotalBytes(newTotalBytes);
 
     const updated = await this.prisma.informationSubmission.update({
       where: { id },
@@ -464,6 +642,7 @@ export class InformationSubmissionService {
         ...(data.pdf !== undefined ? { pdf: data.pdf } : {}),
         ...(data.document !== undefined ? { document: data.document } : {}),
         ...(data.other !== undefined ? { other: data.other } : {}),
+        mediaTotalBytes: newTotalBytes,
       },
     });
 
@@ -560,6 +739,58 @@ export class InformationSubmissionService {
     }
 
     return submission;
+  }
+
+  // ─────────────────────────────────────────────
+  // ADMIN — STALE / UNREVIEWED-TOO-LONG SUBMISSIONS
+  // GET /information-submissions/admin/stale
+  // (item #15)
+  //
+  // Flags PENDING or UNDER_REVIEW submissions older than the shared
+  // CONTENT_STALE_PENDING_HOURS default, mirroring
+  // PostService.findStalePending. Purely informational — nothing
+  // here changes status or ownership.
+  // ─────────────────────────────────────────────
+
+  async findStalePending() {
+    const staleHours = Number(
+      this.configService.get<string>('INFORMATION_SUBMISSION_STALE_PENDING_HOURS') ??
+        this.configService.get<string>('CONTENT_STALE_PENDING_HOURS') ??
+        48,
+    );
+    const cutoff = new Date(Date.now() - staleHours * 60 * 60 * 1000);
+
+    const submissions = await this.prisma.informationSubmission.findMany({
+      where: {
+        status: { in: [InformationStatus.PENDING, InformationStatus.UNDER_REVIEW] },
+        createdAt: { lt: cutoff },
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    return submissions.map((s) => ({
+      ...s,
+      pendingHours: Math.floor((Date.now() - s.createdAt.getTime()) / (60 * 60 * 1000)),
+    }));
+  }
+
+  // ─────────────────────────────────────────────
+  // ADMIN — HISTORY
+  // GET /information-submissions/admin/:id/history
+  // (item #18)
+  //
+  // ASSUMPTION: same auditLog model assumption as
+  // PostService.getHistory / VictimProfile's admin history endpoint
+  // — adjust the model/field names if your schema differs.
+  // ─────────────────────────────────────────────
+
+  async getHistory(id: string) {
+    await this.findOneForAdmin(id); // 404s if the submission doesn't exist
+
+    return this.prisma.auditLog.findMany({
+      where: { entity: 'InformationSubmission', entityId: id },
+      orderBy: { createdAt: 'asc' },
+    });
   }
 
   // ─────────────────────────────────────────────

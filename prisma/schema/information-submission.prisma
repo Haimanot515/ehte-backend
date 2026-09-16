@@ -2,24 +2,43 @@ model InformationSubmission {
   id              String            @id @default(uuid())
   userId          String
   missingPersonId String
+
   information     String
   location        String?
+
   photo           String[]
   video           String[]
   audio           String[]
   pdf             String[]
   document        String[]
   other           String[]
+
+  // NEW (item #13) — running total of attached media bytes, computed
+  // from validateMediaFilesExist()'s statObject() results so updates
+  // don't need to re-stat already-attached files just to know the total.
+  mediaTotalBytes Int               @default(0)
+
   status          InformationStatus @default(PENDING)
   createdAt       DateTime          @default(now())
   updatedAt       DateTime          @updatedAt
   reviewNote      String?
+
+  // NEW (item #5) — duplicate-submission protection. Scoped to the
+  // user, not global, same reasoning as Post: two different users
+  // retrying with the same client-generated key must not collide,
+  // and Postgres treats NULLs as distinct so rows with no key never
+  // conflict with each other.
+  idempotencyKey  String?
+
   missingPerson   MissingPerson     @relation(fields: [missingPersonId], references: [id], onDelete: Cascade)
   user            User              @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@unique([userId, idempotencyKey])
   @@index([userId])
   @@index([missingPersonId])
   @@index([status])
+  // Supports findStalePending() (item #15).
+  @@index([status, createdAt])
   @@map("information_submission")
 }
 

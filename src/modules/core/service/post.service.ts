@@ -150,27 +150,12 @@ export class PostService {
   // on filepaths that are new to the entity — already-attached
   // filepaths were validated when they were first added.
   //
-  // FIX (item #3, partial): now also rejects files that are too
-  // large or of a disallowed content-type.
+  // FIX (item #3, partial): also rejects files that are too large or
+  // of a disallowed content-type.
   //
-  // FIX (config-name mismatch): reads MEDIA_MAX_FILE_SIZE and
-  // MEDIA_ALLOWED_MIME_TYPES — the names that already exist in
-  // .env — rather than the MEDIA_MAX_FILE_SIZE_BYTES name an
-  // earlier draft of this file invented. Keep the media-upload
-  // module reading these same two keys so upload-time and
-  // attach-time validation can never disagree.
-  //
-  // NOTE: MEDIA_ALLOWED_MIME_TYPES must include application/pdf
-  // (and whatever document types you accept), otherwise the pdf
-  // and document DTO fields are unusable in practice.
-  //
-  // ASSUMPTION: this calls `minioService.statObject(filepath)`,
-  // which does not exist on MinioService yet in the code you
-  // shared (only objectExists/generatePresignedDownloadUrl/
-  // deleteFile were shown). Add a method there that stats the
-  // object and returns `{ size: number; contentType: string }`
-  // (e.g. via the underlying S3/MinIO client's statObject/headObject
-  // call) for this to work as written.
+  // FIX (item #13): now returns each validated file's size, so
+  // callers can maintain a running mediaTotalBytes without
+  // re-statting objects that were just statted a moment ago.
   //
   // NOTE (item #3, virus scanning): out of scope here — scanning
   // needs to happen once, at upload time, in the media-upload
@@ -178,12 +163,15 @@ export class PostService {
   // MinioService ever stores it). Re-scanning on every post
   // create/update would be redundant and slow.
   //
-  // NOTE (item #4, EXIF/GPS stripping): also belongs in the
-  // media-upload module, applied to image bytes before they're
-  // written to MinIO — Post only ever sees filepaths of objects
-  // that already exist, so it has no image bytes left to strip.
-  private async validateMediaFilesExist(filepaths: string[]): Promise<void> {
-    if (!filepaths.length) return;
+  // NOTE (item #4, EXIF/GPS stripping): deliberately out of scope
+  // per product decision — also belongs in the media-upload module
+  // if it's ever added, applied to image bytes before they're
+  // written to MinIO. Post only ever sees filepaths of objects that
+  // already exist, so it has no image bytes left to strip.
+  private async validateMediaFilesExist(
+    filepaths: string[],
+  ): Promise<Array<{ filepath: string; size: number }>> {
+    if (!filepaths.length) return [];
 
     const maxFileSizeBytes = Number(
       this.configService.get<string>('MEDIA_MAX_FILE_SIZE') ?? 52_428_800,
@@ -199,19 +187,18 @@ export class PostService {
       filepaths.map(async (filepath) => {
         const exists = await this.minioService.objectExists(filepath);
         if (!exists) {
-          return { filepath, ok: false as const, reason: 'not_found' };
+          return { filepath, ok: false as const, reason: 'not_found', size: 0 };
         }
 
-        // ASSUMPTION: see note above — add statObject() to MinioService.
         const stat = await this.minioService.statObject(filepath);
 
         if (stat.size > maxFileSizeBytes) {
-          return { filepath, ok: false as const, reason: 'too_large' };
+          return { filepath, ok: false as const, reason: 'too_large', size: stat.size };
         }
         if (allowedMimeTypes.size > 0 && !allowedMimeTypes.has(stat.contentType)) {
-          return { filepath, ok: false as const, reason: 'disallowed_type' };
+          return { filepath, ok: false as const, reason: 'disallowed_type', size: stat.size };
         }
-        return { filepath, ok: true as const };
+        return { filepath, ok: true as const, size: stat.size };
       }),
     );
 
@@ -220,6 +207,65 @@ export class PostService {
       throw new BadRequestException(
         `media_validation_failed:${bad.map((b) => `${b.filepath}:${b.reason}`).join(',')}`,
       );
+    }
+
+    return checks.map((c) => ({ filepath: c.filepath, size: c.size }));
+  }
+
+  // FIX (item #13): per-field attachment counts. photo/video get
+  // their own configurable caps; audio+pdf+document+other share one
+  // combined cap since none of them individually needs its own
+  // limit yet. Checked BEFORE any MinIO calls so a request with too
+  // many attachments fails fast without wasting stat() round trips.
+  //
+  // Reads the shared CONTENT_* default (same pattern as
+  // enforceCreateRateLimit/findStalePending above) since these
+  // limits apply the same way to Reports, Missing Person requests,
+  // Victim Profiles, etc. — not just Posts. An optional POST_*
+  // override lets Posts diverge later without touching this file
+  // or any other module's copy of the same logic.
+  private assertAttachmentCounts(media: MediaBearing): void {
+    const maxPhotos = Number(
+      this.configService.get<string>('POST_MAX_PHOTOS') ??
+        this.configService.get<string>('CONTENT_MAX_PHOTOS') ??
+        5,
+    );
+    const maxVideos = Number(
+      this.configService.get<string>('POST_MAX_VIDEOS') ??
+        this.configService.get<string>('CONTENT_MAX_VIDEOS') ??
+        1,
+    );
+    const maxOther = Number(
+      this.configService.get<string>('POST_MAX_OTHER_FILES') ??
+        this.configService.get<string>('CONTENT_MAX_OTHER_FILES') ??
+        2,
+    );
+
+    if (media.photo.length > maxPhotos) {
+      throw new BadRequestException(`too_many_photos:max_${maxPhotos}`);
+    }
+    if (media.video.length > maxVideos) {
+      throw new BadRequestException(`too_many_videos:max_${maxVideos}`);
+    }
+    const otherCount =
+      media.audio.length + media.pdf.length + media.document.length + media.other.length;
+    if (otherCount > maxOther) {
+      throw new BadRequestException(`too_many_other_files:max_${maxOther}`);
+    }
+  }
+
+  // FIX (item #13): total attached-media size cap per post, checked
+  // against the running mediaTotalBytes column rather than re-summing
+  // every attached file on every write. Shared CONTENT_* default,
+  // same reasoning as assertAttachmentCounts above.
+  private assertTotalBytes(totalBytes: number): void {
+    const maxTotalBytes = Number(
+      this.configService.get<string>('POST_MAX_TOTAL_UPLOAD_BYTES') ??
+        this.configService.get<string>('CONTENT_MAX_TOTAL_UPLOAD_BYTES') ??
+        52_428_800,
+    );
+    if (totalBytes > maxTotalBytes) {
+      throw new BadRequestException(`upload_total_size_exceeded:max_${maxTotalBytes}`);
     }
   }
 
@@ -258,7 +304,7 @@ export class PostService {
   }
 
   // ─────────────────────────────────────────────
-  // CLAIM HELPERS (item #11)
+  // CLAIM HELPERS (item #17)
   //
   // Lets one admin "claim" a case so a second admin
   // doesn't start reviewing it in parallel. Enforced
@@ -319,7 +365,7 @@ export class PostService {
   }
 
   // ─────────────────────────────────────────────
-  // CHILD-SAFETY DUAL CONTROL (item #10)
+  // CHILD-SAFETY DUAL CONTROL (item #16)
   //
   // A single admin ticking childSafetyConfirmed is no
   // longer enough to move an involvesChild post to
@@ -414,6 +460,52 @@ export class PostService {
   }
 
   // ─────────────────────────────────────────────
+  // AUTOMATIC FLAGS (item #21)
+  //
+  // Flag ≠ reject. This only writes an audit-log entry an admin
+  // can see against the user; it never blocks or auto-rejects
+  // anything, and it never changes any Post's status.
+  //
+  // ASSUMPTION: AuditEventEnum needs a new USER_AUTO_FLAGGED
+  // member — add it alongside POST_CREATED/POST_UPDATED/etc. in
+  // src/common/enums/shared/audit-events.enum.ts.
+  // ─────────────────────────────────────────────
+
+  private async maybeFlagUserForRejections(userId: string): Promise<void> {
+    const threshold = Number(
+      this.configService.get<string>('POST_AUTO_FLAG_REJECTION_COUNT') ??
+        this.configService.get<string>('CONTENT_AUTO_FLAG_REJECTION_COUNT') ??
+        3,
+    );
+    const windowDays = Number(
+      this.configService.get<string>('POST_AUTO_FLAG_WINDOW_DAYS') ??
+        this.configService.get<string>('CONTENT_AUTO_FLAG_WINDOW_DAYS') ??
+        7,
+    );
+    const since = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000);
+
+    const recentRejections = await this.prisma.post.count({
+      where: { userId, status: PostStatus.REJECTED, updatedAt: { gte: since } },
+    });
+
+    if (recentRejections >= threshold) {
+      this.emitAudit({
+        userId,
+        actorType: 'SYSTEM' as unknown as ReturnType<typeof resolveActorType>,
+        action: AuditEventEnum.USER_AUTO_FLAGGED,
+        entity: 'User',
+        entityId: userId,
+        diff: {
+          reason: 'repeated_post_rejections',
+          rejectionCount: recentRejections,
+          windowDays,
+          result: 'flagged_for_review',
+        },
+      });
+    }
+  }
+
+  // ─────────────────────────────────────────────
   // ADMIN — GET MEDIA DOWNLOAD URL
   // GET /posts/:id/media?key=...
   //
@@ -496,6 +588,12 @@ export class PostService {
   // by the controller) lets a client safely retry a create call
   // after a dropped response — a repeat with the same key returns
   // the original post instead of creating a duplicate.
+  //
+  // FIX (item #13): attachment counts are checked BEFORE any
+  // MinIO round trips; the total attached size is computed from
+  // validateMediaFilesExist()'s returned sizes and persisted as
+  // mediaTotalBytes so future updates don't need to re-stat
+  // already-attached files just to know the running total.
   // ─────────────────────────────────────────────
 
   private async enforceCreateRateLimit(userId: string): Promise<void> {
@@ -532,7 +630,20 @@ export class PostService {
     }
 
     await this.enforceCreateRateLimit(userId);
-    await this.validateMediaFilesExist(this.collectMediaFieldsFromDto(data));
+
+    const merged: MediaBearing = {
+      photo: data.photo ?? [],
+      video: data.video ?? [],
+      audio: data.audio ?? [],
+      pdf: data.pdf ?? [],
+      document: data.document ?? [],
+      other: data.other ?? [],
+    };
+    this.assertAttachmentCounts(merged);
+
+    const validated = await this.validateMediaFilesExist(this.collectMediaFields(merged));
+    const totalBytes = validated.reduce((sum, v) => sum + v.size, 0);
+    this.assertTotalBytes(totalBytes);
 
     const postType: PostType = data.type;
 
@@ -544,12 +655,13 @@ export class PostService {
         type: postType,
         involvesChild: data.involvesChild ?? false,
         status: PostStatus.DRAFT,
-        photo: data.photo ?? [],
-        video: data.video ?? [],
-        audio: data.audio ?? [],
-        pdf: data.pdf ?? [],
-        document: data.document ?? [],
-        other: data.other ?? [],
+        photo: merged.photo,
+        video: merged.video,
+        audio: merged.audio,
+        pdf: merged.pdf,
+        document: merged.document,
+        other: merged.other,
+        mediaTotalBytes: totalBytes,
         idempotencyKey: idempotencyKey ?? null,
       },
     });
@@ -579,8 +691,12 @@ export class PostService {
   // doesn't require it here, since that path still goes
   // through approve()'s own gate later.
   //
-  // NOTE: the dual-control rule (#10) intentionally does
+  // NOTE: the dual-control rule (#16) intentionally does
   // NOT apply here — see the comment on AdminCreatePostDto.
+  //
+  // FIX (item #13): same attachment-count/total-size guard
+  // as create(), for consistency — official posts shouldn't
+  // be exempt just because they're admin-authored.
   // ─────────────────────────────────────────────
 
   async createOfficial(actor: CurrentUserDto, data: AdminCreatePostDto) {
@@ -591,7 +707,19 @@ export class PostService {
       throw new BadRequestException('child_safety_confirmation_required');
     }
 
-    await this.validateMediaFilesExist(this.collectMediaFieldsFromDto(data));
+    const merged: MediaBearing = {
+      photo: data.photo ?? [],
+      video: data.video ?? [],
+      audio: data.audio ?? [],
+      pdf: data.pdf ?? [],
+      document: data.document ?? [],
+      other: data.other ?? [],
+    };
+    this.assertAttachmentCounts(merged);
+
+    const validated = await this.validateMediaFilesExist(this.collectMediaFields(merged));
+    const totalBytes = validated.reduce((sum, v) => sum + v.size, 0);
+    this.assertTotalBytes(totalBytes);
 
     const status = publishImmediately ? PostStatus.APPROVED : PostStatus.PENDING;
 
@@ -605,12 +733,13 @@ export class PostService {
         type: postType,
         involvesChild,
         status,
-        photo: data.photo ?? [],
-        video: data.video ?? [],
-        audio: data.audio ?? [],
-        pdf: data.pdf ?? [],
-        document: data.document ?? [],
-        other: data.other ?? [],
+        photo: merged.photo,
+        video: merged.video,
+        audio: merged.audio,
+        pdf: merged.pdf,
+        document: merged.document,
+        other: merged.other,
+        mediaTotalBytes: totalBytes,
       },
     });
 
@@ -676,6 +805,12 @@ export class PostService {
   // Newly-added filepaths are validated against MinIO
   // before the write; filepaths dropped from the new
   // array are deleted from MinIO after the write commits.
+  //
+  // FIX (item #13): attachment counts are checked against the
+  // fully-merged post-update media shape (existing fields not
+  // present in the request are carried over unchanged) before
+  // any MinIO calls, and mediaTotalBytes is recomputed from the
+  // previous total plus/minus the added/removed files' sizes.
   // ─────────────────────────────────────────────
 
   async updateMyPost(userId: string, postId: string, data: UpdatePostDto) {
@@ -696,7 +831,35 @@ export class PostService {
     );
 
     const { added, removed } = this.diffMediaFields(existing, data);
-    await this.validateMediaFilesExist(added);
+
+    const merged: MediaBearing = {
+      photo: data.photo ?? existing.photo,
+      video: data.video ?? existing.video,
+      audio: data.audio ?? existing.audio,
+      pdf: data.pdf ?? existing.pdf,
+      document: data.document ?? existing.document,
+      other: data.other ?? existing.other,
+    };
+    this.assertAttachmentCounts(merged);
+
+    const validatedAdded = await this.validateMediaFilesExist(added);
+    const addedBytes = validatedAdded.reduce((sum, v) => sum + v.size, 0);
+
+    // Stat removed files before they're deleted, purely to back out
+    // their bytes from the running total — a stat failure here
+    // (already gone, MinIO hiccup) just means we can't credit that
+    // byte count back, so treat it as 0 rather than blocking the
+    // update.
+    const removedStats = await Promise.allSettled(
+      removed.map((fp) => this.minioService.statObject(fp)),
+    );
+    const removedBytes = removedStats.reduce(
+      (sum, r) => sum + (r.status === 'fulfilled' ? r.value.size : 0),
+      0,
+    );
+
+    const newTotalBytes = Math.max(0, existing.mediaTotalBytes + addedBytes - removedBytes);
+    this.assertTotalBytes(newTotalBytes);
 
     const post = await this.prisma.post.update({
       where: { id: postId },
@@ -711,6 +874,7 @@ export class PostService {
         ...(data.pdf !== undefined ? { pdf: data.pdf } : {}),
         ...(data.document !== undefined ? { document: data.document } : {}),
         ...(data.other !== undefined ? { other: data.other } : {}),
+        mediaTotalBytes: newTotalBytes,
       },
     });
 
@@ -989,7 +1153,7 @@ export class PostService {
   // ─────────────────────────────────────────────
   // ADMIN — STALE / UNREVIEWED-TOO-LONG POSTS
   // GET /posts/stale
-  // (item #9)
+  // (item #15)
   //
   // Flags PENDING posts older than the shared
   // CONTENT_STALE_PENDING_HOURS default (falls back from an
@@ -1025,12 +1189,12 @@ export class PostService {
   // ─────────────────────────────────────────────
   // ADMIN — BULK APPROVE / REJECT
   // PATCH /posts/bulk/approve, PATCH /posts/bulk/reject
-  // (item #8)
+  // (item #20)
   //
   // Any post with involvesChild = true is deliberately
   // excluded from bulk handling — it always requires
   // individual review through the normal approve()/
-  // reject() endpoints and their dual-control gate (#10).
+  // reject() endpoints and their dual-control gate (#16).
   // Each id's outcome is reported independently so a
   // failure on one post never blocks the rest.
   // ─────────────────────────────────────────────
@@ -1100,7 +1264,7 @@ export class PostService {
   // ─────────────────────────────────────────────
   // ADMIN — PER-POST HISTORY / TIMELINE
   // GET /posts/:id/history
-  // (item #13)
+  // (item #18)
   //
   // ASSUMPTION: assumes an `auditLog` Prisma model
   // populated by a listener subscribed to the same
@@ -1128,7 +1292,7 @@ export class PostService {
   // requires childSafetyConfirmed when moving an
   // involvesChild post to APPROVED or PUBLISHED
   // (now via the two-distinct-admins dual-control
-  // gate, item #10), enforces the claim guard (#11),
+  // gate, item #16), enforces the claim guard (#17),
   // and uses a conditional update to avoid racing
   // another concurrent transition.
   // ─────────────────────────────────────────────
@@ -1197,11 +1361,11 @@ export class PostService {
   // ─────────────────────────────────────────────
   // ADMIN — APPROVE POST
   //
-  // FIX (item #10): childSafetyConfirmed from a single
+  // FIX (item #16): childSafetyConfirmed from a single
   // admin now only records that admin's own confirmation
   // the first time; the status only actually flips to
   // APPROVED once a second, different admin also confirms.
-  // FIX (item #11): blocked if claimed by a different admin.
+  // FIX (item #17): blocked if claimed by a different admin.
   // ─────────────────────────────────────────────
 
   async approve(user: CurrentUserDto, postId: string, data: ApprovePostDto) {
@@ -1270,7 +1434,7 @@ export class PostService {
   // notification payload, so GET /posts/me/:id shows
   // the owner why without relying on the notification.
   //
-  // FIX (item #11): blocked if claimed by a different
+  // FIX (item #17): blocked if claimed by a different
   // admin; claim is released once changes are requested
   // since the case is handed back to the owner.
   //
@@ -1368,8 +1532,13 @@ export class PostService {
   // formally rejecting it). Reason is persisted on
   // the Post row (reviewNote).
   //
-  // FIX (item #11): blocked if claimed by a different
+  // FIX (item #17): blocked if claimed by a different
   // admin; claim is released once the post is rejected.
+  //
+  // FIX (item #21): after a successful rejection, checks
+  // whether the owner has crossed the auto-flag threshold
+  // for repeated rejections and, if so, writes a
+  // USER_AUTO_FLAGGED audit entry for admin review.
   // ─────────────────────────────────────────────
 
   async reject(user: CurrentUserDto, postId: string, data: RejectPostDto) {
@@ -1407,6 +1576,8 @@ export class PostService {
         result: 'success',
       },
     });
+
+    await this.maybeFlagUserForRejections(post.userId);
 
     const postRejectedEvent: PostRejectedEvent = {
       postId,

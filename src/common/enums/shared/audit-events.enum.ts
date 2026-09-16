@@ -15,6 +15,16 @@ export enum AuditEventEnum {
   // Conflating the two in the audit trail would misrepresent which
   // account state actually changed.
   USER_UNLOCKED = 'USER_UNLOCKED',
+  // Added (item #21, automatic flags) — used by
+  // PostService.maybeFlagUserForRejections() /
+  // ReportService.maybeFlagUserForRejections() /
+  // MissingPersonService.maybeFlagUserForRejections() (and, going
+  // forward, the equivalent VictimProfile service) after a
+  // rejection pushes a user's recent-rejection count past the
+  // configured threshold. Flag only — this event never blocks or
+  // auto-rejects anything; it just surfaces the account for admin
+  // review.
+  USER_AUTO_FLAGGED = 'USER_AUTO_FLAGGED',
   // AUTH
   LOGIN_SUCCESS = 'LOGIN_SUCCESS',
   LOGIN_FAILED = 'LOGIN_FAILED',
@@ -88,6 +98,12 @@ export enum AuditEventEnum {
   // exist; deletion now gets its own first-class audit event like
   // create/update/approve/reject/found.
   MISSING_PERSON_DELETED = 'MISSING_PERSON_DELETED',
+  // Added — used by MissingPersonService.getMediaDownloadUrl()
+  // (the admin media-download route), mirroring
+  // REPORT_MEDIA_DOWNLOADED above. Was referenced by the hardening
+  // pass on MissingPersonService but never declared here, which is
+  // what TS2339 was flagging.
+  MISSING_PERSON_MEDIA_DOWNLOADED = 'MISSING_PERSON_MEDIA_DOWNLOADED',
   // INFORMATION SUBMISSION
   INFORMATION_SUBMITTED = 'INFORMATION_SUBMITTED',
   // Added — used by InformationSubmissionService.updateStatus()

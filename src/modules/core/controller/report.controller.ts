@@ -1,6 +1,17 @@
-import { Body, Controller, Get, Header, Param, Patch, Post, Query } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Header,
+  Headers,
+  Param,
+  Patch,
+  Post,
+  Query,
+} from '@nestjs/common';
 
 import { ApiBearerAuth, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 
 import { ReportService } from '../service/report.service';
 
@@ -36,11 +47,32 @@ import { MediaKeyQueryDto } from 'src/modules/media/dto/media-key-query.dto';
 export class ReportController {
   constructor(private readonly reportService: ReportService) {}
 
+  // ─────────────────────────────────────────────
+  // CREATE REPORT
+  // POST /reports
+  //
+  // FIX (item #5): accepts an optional Idempotency-Key header —
+  // same convention as PostController.create — so a client
+  // retrying after a dropped response doesn't create a duplicate
+  // report. ReportService.create returns the original report on a
+  // repeat key instead.
+  //
+  // FIX (item #12): route-specific burst limit, same values as
+  // PostController.create — 5 creates/min is generous for a real
+  // reporter but meaningfully slows a scripted flood. Reports go
+  // straight to PENDING on create (no separate submit step like
+  // Post has), so this is the only creation-side throttle point.
+  // ─────────────────────────────────────────────
   @Post()
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @RequireReauthentication()
   @ApiOperation({ summary: 'Submit a new report' })
-  async create(@CurrentUser() user: CurrentUserDto, @Body() data: CreateReportDto) {
-    return this.reportService.create(user, data);
+  async create(
+    @CurrentUser() user: CurrentUserDto,
+    @Body() data: CreateReportDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.reportService.create(user, data, idempotencyKey);
   }
 
   @Get('me')
@@ -76,6 +108,33 @@ export class ReportController {
     return this.reportService.findAssignedToMe(admin, { page, limit });
   }
 
+  // ─────────────────────────────────────────────
+  // ADMIN — STALE / UNREVIEWED-TOO-LONG REPORTS
+  // GET /reports/stale
+  // (item #15)
+  //
+  // Declared BEFORE ':id' so Nest doesn't treat "stale" as a
+  // report id — same route-order reasoning as "assigned-to-me"
+  // above and PostController's equivalent route.
+  //
+  // Flags reports that are both unassigned AND not yet in a
+  // terminal status (CLOSED/REJECTED) and older than the
+  // configured threshold — a report that's already ASSIGNED to
+  // someone actively working it is not "forgotten" the same way
+  // an untouched PENDING one is, so this checks assignment too,
+  // not just status, unlike PostService.findStalePending (Post
+  // has no assignment concept).
+  //
+  // ADMIN / SUPER_ADMIN
+  // ─────────────────────────────────────────────
+  @Get('stale')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.REPORT_READ)
+  @ApiOperation({ summary: 'Admin: get unassigned reports that have been waiting too long' })
+  async findStalePending() {
+    return this.reportService.findStalePending();
+  }
+
   @Get()
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.REPORT_READ)
@@ -90,7 +149,19 @@ export class ReportController {
     return this.reportService.findAllForAdmin(query);
   }
 
+  // ─────────────────────────────────────────────
+  // GET ONE OF MY REPORTS
+  // GET /reports/:id
+  //
+  // FIX (item #23): added re-authentication + no-store, matching
+  // PostController.findMyPost's treatment of a single owned
+  // record. A report is at least as sensitive as a post, so it
+  // shouldn't have a weaker re-auth posture than Post's equivalent
+  // single-record read.
+  // ─────────────────────────────────────────────
   @Get(':id')
+  @RequireReauthentication()
+  @Header('Cache-Control', 'no-store')
   @ApiOperation({ summary: 'Get one of my reports' })
   async findOne(@CurrentUser() user: CurrentUserDto, @Param('id') reportId: string) {
     return this.reportService.findOne(user, reportId);
@@ -158,6 +229,26 @@ export class ReportController {
     @Query() query: MediaKeyQueryDto,
   ) {
     return this.reportService.getMediaDownloadUrlForAdmin(admin, reportId, query.key);
+  }
+
+  // ─────────────────────────────────────────────
+  // ADMIN — PER-REPORT HISTORY / TIMELINE
+  // GET /reports/:id/history
+  // (item #18)
+  //
+  // Mirrors PostController.getHistory. Same ASSUMPTION as Post:
+  // relies on an `auditLog` model populated by a listener
+  // subscribed to the events emitAudit() already fires throughout
+  // ReportService.
+  //
+  // ADMIN / SUPER_ADMIN
+  // ─────────────────────────────────────────────
+  @Get(':id/history')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.REPORT_READ)
+  @ApiOperation({ summary: 'Admin: get the audit timeline for one report' })
+  async getHistory(@Param('id') reportId: string) {
+    return this.reportService.getHistory(reportId);
   }
 
   @Patch(':id/status')
@@ -253,4 +344,3 @@ export class ReportController {
     return this.reportService.escalate(admin, reportId, data);
   }
 }
- 

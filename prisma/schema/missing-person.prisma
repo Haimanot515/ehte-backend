@@ -1,35 +1,90 @@
-model MissingPerson {
-  id                     String                  @id @default(uuid())
-  userId                 String
-  personType             MissingPersonType
-  name                   String?
-  description            String
-  dateLastSeen           DateTime
-  lastKnownArea          String
-  photo                  String[]
-  video                  String[]
-  audio                  String[]
-  pdf                    String[]
-  document               String[]
-  other                  String[]
-  status                 MissingPersonStatus     @default(PENDING)
-  createdAt              DateTime                @default(now())
-  updatedAt              DateTime                @updatedAt
-  childSafetyConfirmed   Boolean                 @default(false)
-  reviewNote             String?
-  rewardAmount           Int?
-  rewardApproved         Boolean                 @default(false)
-  rewardDetails          String?
-  rewardOffered          Boolean                 @default(false)
-  informationSubmissions InformationSubmission[]
-  user                   User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+// ─────────────────────────────────────────────
+// MissingPerson model — updated for the hardening checklist
+// (mirrors the same additions already applied to Report/Post).
+//
+// Paste this in place of the existing `model MissingPerson { ... }`
+// block in your schema.prisma, then run:
+//   npx prisma migrate dev --name harden_missing_person
+// ─────────────────────────────────────────────
 
+model MissingPerson {
+  id            String            @id @default(uuid())
+  userId        String
+  personType    MissingPersonType
+  name          String?
+  description   String
+  dateLastSeen  DateTime
+  lastKnownArea String
+  photo         String[]
+  video         String[]
+  audio         String[]
+  pdf           String[]
+  document      String[]
+  other         String[]
+  status        MissingPersonStatus @default(PENDING)
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+
+  childSafetyConfirmed Boolean @default(false)
+  reviewNote           String?
+  rewardAmount         Int?
+  rewardApproved       Boolean @default(false)
+  rewardDetails        String?
+  rewardOffered        Boolean @default(false)
+
+  // NEW — duplicate-submission protection (item #5), mirrors
+  // Report.idempotencyKey. Scoped to the user, not global: two
+  // different users retrying with the same client-generated key
+  // must not collide. Postgres treats NULLs as distinct, so rows
+  // with a null idempotencyKey don't conflict with each other.
+  idempotencyKey String?
+
+  // NEW — running total of attached-media bytes (item #13), mirrors
+  // Report.mediaTotalBytes / Post.mediaTotalBytes. Lets update()
+  // recompute the total from a delta (added/removed bytes) instead
+  // of re-statting every already-attached file on every write.
+  mediaTotalBytes Int @default(0)
+
+  // NEW — timestamp set when the owning account is suspended (item
+  // #6), so admin tooling can filter/flag these. Deliberately does
+  // NOT change `status` or pull the case out of the review queue —
+  // same reasoning as Report.ownerSuspendedAt: a missing-person case
+  // has no safe "hidden" intermediate state, and is if anything MORE
+  // safety-critical than a report.
+  ownerSuspendedAt DateTime?
+
+  // NEW — self-serve admin claim (item #17), mirrors Post's
+  // claimedByUserId/claimedAt. MissingPerson has no dedicated
+  // "assignee" relation (unlike Report's SUPER_ADMIN-mediated
+  // assign/unassign), so this follows Post's lighter self-serve
+  // model instead.
+  claimedByUserId String?
+  claimedAt       DateTime?
+
+  // NEW — child-safety dual control (item #16). Only meaningful
+  // when personType = CHILD. Mirrors Post's
+  // childSafetyFirstConfirmedByUserId/At exactly: the first admin's
+  // approval-with-confirmation is recorded here, and a second,
+  // distinct admin must confirm again before the case can actually
+  // move to APPROVED.
+  childSafetyFirstConfirmedByUserId String?
+  childSafetyFirstConfirmedAt       DateTime?
+
+  informationSubmissions InformationSubmission[]
+  user                   User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, idempotencyKey])
   @@index([userId])
   @@index([status])
   @@index([personType])
+  // NEW — supports findStalePending()'s cutoff query (item #15),
+  // same pattern as Report/Post's [status, createdAt] index.
+  @@index([status, createdAt])
   @@map("missing_person")
 }
 
+// MissingPersonType / MissingPersonStatus enums are unchanged —
+// no new enum values were needed for this pass.
 enum MissingPersonType {
   WOMAN
   CHILD

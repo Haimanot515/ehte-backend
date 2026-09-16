@@ -26,6 +26,7 @@ model Post {
   // NEW — two-distinct-admin child-safety confirmation (item #10)
   childSafetyFirstConfirmedByUserId String?
   childSafetyFirstConfirmedAt       DateTime?
+  mediaTotalBytes Int @default(0)
 
   // NEW — timestamp set when the owning account is suspended,
   // so admin tooling can filter/flag these (item #6)

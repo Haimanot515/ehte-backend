@@ -7,7 +7,7 @@ import {
 
 import { InformationRequestStatus, Prisma, ReportStatus } from '@prisma/client';
 
-import { EventEmitter2 } from '@nestjs/event-emitter';
+import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { ConfigService } from '@nestjs/config';
 
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -65,6 +65,12 @@ const ALLOWED_STATUS_TRANSITIONS: Record<ReportStatus, ReportStatus[]> = {
   [ReportStatus.REJECTED]: [],
 };
 
+// Terminal statuses — a report here is done, one way or another.
+// Used by findStalePending() (a terminal report can't be "stale")
+// and maybeFlagUserForRejections() (only REJECTED counts against
+// the user, not every terminal state).
+const TERMINAL_STATUSES: ReportStatus[] = [ReportStatus.CLOSED, ReportStatus.REJECTED];
+
 const ADMIN_ROLE_NAMES = [RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN];
 
 // How many times to retry case-reference generation on a unique
@@ -100,12 +106,12 @@ export class ReportService {
   // document/other), same as Post — kept in one place so every
   // read/write of that shape stays consistent.
   //
-  // FIX: MinioService.objectExists()/deleteFile() are now
+  // NOTE: MinioService.objectExists()/statObject()/deleteFile() are
   // bucket-less — the service holds a single configured bucket
-  // internally, so callers just pass the key. getMediaBucket()
-  // is no longer used by validateMediaFilesExist()/deleteMediaFiles()
-  // to match the new signatures; left in place in case other code
-  // in this file still needs the bucket name for something else.
+  // internally, so callers just pass the key. getMediaBucket() is
+  // unused by the methods below for that reason; left in place in
+  // case other code in this file still needs the bucket name for
+  // something else.
   // ─────────────────────────────────────────────
 
   private getMediaBucket(): string {
@@ -142,25 +148,109 @@ export class ReportService {
     return { added, removed };
   }
 
-  // Confirms every filepath the client is attaching actually exists
-  // in the media bucket, so a report can't reference an object that
-  // was never uploaded (typo'd path, upload abandoned mid-flow,
-  // filepath copied from an unrelated response, etc.). Only called
-  // on filepaths that are new to the entity — already-attached
-  // filepaths were validated when they were first added.
-  private async validateMediaFilesExist(filepaths: string[]): Promise<void> {
-    if (!filepaths.length) return;
+  // FIX (item #3): confirms every filepath the client is attaching
+  // actually exists in the media bucket, AND now also enforces
+  // size/MIME-type limits — previously this only checked existence,
+  // unlike PostService.validateMediaFilesExist which already did
+  // all three. Brought to parity so a report can't reference an
+  // object that's oversized or of a disallowed type any more than
+  // a post can.
+  //
+  // FIX (item #13, partial): returns each validated file's size so
+  // callers can maintain a running mediaTotalBytes without
+  // re-statting already-attached files.
+  //
+  // NOTE (item #3, virus scanning) / NOTE (item #4, EXIF/GPS
+  // stripping): same as PostService — deliberately out of scope
+  // here, belongs in the media-upload module at upload time.
+  private async validateMediaFilesExist(
+    filepaths: string[],
+  ): Promise<Array<{ filepath: string; size: number }>> {
+    if (!filepaths.length) return [];
 
-    const checks = await Promise.all(
-      filepaths.map(async (filepath) => ({
-        filepath,
-        exists: await this.minioService.objectExists(filepath),
-      })),
+    const maxFileSizeBytes = Number(
+      this.configService.get<string>('MEDIA_MAX_FILE_SIZE') ?? 52_428_800,
+    );
+    const allowedMimeTypes = new Set(
+      (this.configService.get<string>('MEDIA_ALLOWED_MIME_TYPES') ?? '')
+        .split(',')
+        .map((t) => t.trim())
+        .filter(Boolean),
     );
 
-    const missing = checks.filter((c) => !c.exists).map((c) => c.filepath);
-    if (missing.length) {
-      throw new BadRequestException(`media_files_not_found:${missing.join(',')}`);
+    const checks = await Promise.all(
+      filepaths.map(async (filepath) => {
+        const exists = await this.minioService.objectExists(filepath);
+        if (!exists) {
+          return { filepath, ok: false as const, reason: 'not_found', size: 0 };
+        }
+
+        const stat = await this.minioService.statObject(filepath);
+
+        if (stat.size > maxFileSizeBytes) {
+          return { filepath, ok: false as const, reason: 'too_large', size: stat.size };
+        }
+        if (allowedMimeTypes.size > 0 && !allowedMimeTypes.has(stat.contentType)) {
+          return { filepath, ok: false as const, reason: 'disallowed_type', size: stat.size };
+        }
+        return { filepath, ok: true as const, size: stat.size };
+      }),
+    );
+
+    const bad = checks.filter((c) => !c.ok);
+    if (bad.length) {
+      throw new BadRequestException(
+        `media_validation_failed:${bad.map((b) => `${b.filepath}:${b.reason}`).join(',')}`,
+      );
+    }
+
+    return checks.map((c) => ({ filepath: c.filepath, size: c.size }));
+  }
+
+  // FIX (item #13): per-field attachment counts, mirroring
+  // PostService.assertAttachmentCounts exactly, but reading
+  // REPORT_*-prefixed overrides first. Checked BEFORE any MinIO
+  // calls so an over-attached request fails fast.
+  private assertAttachmentCounts(media: MediaBearing): void {
+    const maxPhotos = Number(
+      this.configService.get<string>('REPORT_MAX_PHOTOS') ??
+        this.configService.get<string>('CONTENT_MAX_PHOTOS') ??
+        5,
+    );
+    const maxVideos = Number(
+      this.configService.get<string>('REPORT_MAX_VIDEOS') ??
+        this.configService.get<string>('CONTENT_MAX_VIDEOS') ??
+        1,
+    );
+    const maxOther = Number(
+      this.configService.get<string>('REPORT_MAX_OTHER_FILES') ??
+        this.configService.get<string>('CONTENT_MAX_OTHER_FILES') ??
+        2,
+    );
+
+    if (media.photo.length > maxPhotos) {
+      throw new BadRequestException(`too_many_photos:max_${maxPhotos}`);
+    }
+    if (media.video.length > maxVideos) {
+      throw new BadRequestException(`too_many_videos:max_${maxVideos}`);
+    }
+    const otherCount =
+      media.audio.length + media.pdf.length + media.document.length + media.other.length;
+    if (otherCount > maxOther) {
+      throw new BadRequestException(`too_many_other_files:max_${maxOther}`);
+    }
+  }
+
+  // FIX (item #13): total attached-media size cap per report,
+  // mirroring PostService.assertTotalBytes.
+  private assertTotalBytes(totalBytes: number): void {
+    const maxTotalBytes = Number(
+      this.configService.get<string>('REPORT_MAX_TOTAL_UPLOAD_BYTES') ??
+        this.configService.get<string>('CONTENT_MAX_TOTAL_UPLOAD_BYTES') ??
+        52_428_800,
+    );
+    if (totalBytes > maxTotalBytes) {
+      throw new BadRequestException(`upload_total_size_exceeded:max_${maxTotalBytes}`);
     }
   }
 
@@ -217,14 +307,6 @@ export class ReportService {
   // (updateStatus, requestMoreInformation, escalate), not reading
   // it. Same key-ownership check as the reporter-facing method
   // above.
-  //
-  // ASSUMPTION: emits an audit event the same way findOneForAdmin()
-  // does for REPORTER_INFORMATION_OPENED — downloading media is
-  // itself a way to access sensitive reporter-submitted content,
-  // so it shouldn't go unaudited just because it bypasses the
-  // detail-view endpoint. AuditEventEnum.REPORT_MEDIA_DOWNLOADED
-  // is assumed to be a new enum member; add it alongside the other
-  // REPORT_* entries if it doesn't already exist.
   // ─────────────────────────────────────────────
 
   async getMediaDownloadUrlForAdmin(
@@ -268,6 +350,16 @@ export class ReportService {
   // assigned specifically to them. Previously only
   // findOneForAdmin() enforced this; updateStatus(),
   // requestMoreInformation(), and escalate() did not.
+  //
+  // NOTE (item #17): this — combined with assign()/unassign()
+  // being SUPER_ADMIN-gated — already serves the same
+  // "prevent two admins working the same case" purpose Post's
+  // self-serve claim()/unclaim() does, just mediated by
+  // SUPER_ADMIN rather than self-service. Whether a plain ADMIN
+  // should be able to self-claim an *unassigned* report (the way
+  // Post allows) is a product decision, not implemented here —
+  // it would change who's currently allowed to act on unassigned
+  // reports.
   // ─────────────────────────────────────────────
 
   private assertAdminCanAccessReport(
@@ -283,16 +375,182 @@ export class ReportService {
   }
 
   // ─────────────────────────────────────────────
-  // CREATE REPORT
+  // BANNED / SUSPENDED OWNER HANDLING (item #6)
   //
-  // Media filepaths are validated against MinIO before the
-  // report is created, same as PostService.create.
+  // ASSUMPTION: same event contract as PostService.handleUserSuspended
+  // — the user module emits 'user.suspended' with a { userId } payload.
+  //
+  // Unlike Post, a Report has no safe intermediate "hidden" state to
+  // fall back to (no DRAFT), and the checklist is explicit that
+  // safety-related reports should be preserved/kept visible rather
+  // than hidden or auto-rejected just because the reporter's account
+  // was later suspended. So this handler ONLY stamps ownerSuspendedAt
+  // for admin filtering — it deliberately does NOT change status or
+  // pull anything out of the review queue.
   // ─────────────────────────────────────────────
 
-  async create(user: CurrentUserDto, data: CreateReportDto) {
-    await this.validateMediaFilesExist(this.collectMediaFieldsFromDto(data));
+  @OnEvent('user.suspended')
+  async handleUserSuspended(payload: { userId: string }): Promise<void> {
+    const now = new Date();
 
-    const report = await this.createReportWithUniqueCaseReference(user, data);
+    await this.prisma.report.updateMany({
+      where: {
+        userId: payload.userId,
+        status: { notIn: TERMINAL_STATUSES },
+        ownerSuspendedAt: null,
+      },
+      data: { ownerSuspendedAt: now },
+    });
+
+    this.emitAudit({
+      userId: payload.userId,
+      // ASSUMPTION: resolveActorType only knows about role-bearing
+      // actors; cast until AuditEventPayload's actorType union is
+      // extended with a SYSTEM variant. Same cast PostService uses.
+      actorType: 'SYSTEM' as unknown as ReturnType<typeof resolveActorType>,
+      action: AuditEventEnum.REPORT_UPDATED,
+      entity: 'Report',
+      entityId: `user:${payload.userId}`,
+      diff: { reason: 'owner_account_suspended', result: 'success' },
+    });
+  }
+
+  // ─────────────────────────────────────────────
+  // AUTOMATIC FLAGS (item #21)
+  //
+  // Flag ≠ reject. Writes an audit-log entry an admin can see
+  // against the user; never blocks or auto-rejects anything, and
+  // never changes any Report's status. Mirrors
+  // PostService.maybeFlagUserForRejections, reading REPORT_*
+  // overrides first. Only called from updateStatus() on a
+  // transition TO REJECTED — not from withdraw(), since a reporter
+  // withdrawing their own report is not the same signal as an
+  // admin actually rejecting it.
+  // ─────────────────────────────────────────────
+
+  private async maybeFlagUserForRejections(userId: string): Promise<void> {
+    const threshold = Number(
+      this.configService.get<string>('REPORT_AUTO_FLAG_REJECTION_COUNT') ??
+        this.configService.get<string>('CONTENT_AUTO_FLAG_REJECTION_COUNT') ??
+        3,
+    );
+    const windowDays = Number(
+      this.configService.get<string>('REPORT_AUTO_FLAG_WINDOW_DAYS') ??
+        this.configService.get<string>('CONTENT_AUTO_FLAG_WINDOW_DAYS') ??
+        7,
+    );
+    const since = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000);
+
+    const recentRejections = await this.prisma.report.count({
+      where: { userId, status: ReportStatus.REJECTED, updatedAt: { gte: since } },
+    });
+
+    if (recentRejections >= threshold) {
+      this.emitAudit({
+        userId,
+        actorType: 'SYSTEM' as unknown as ReturnType<typeof resolveActorType>,
+        action: AuditEventEnum.USER_AUTO_FLAGGED,
+        entity: 'User',
+        entityId: userId,
+        diff: {
+          reason: 'repeated_report_rejections',
+          rejectionCount: recentRejections,
+          windowDays,
+          result: 'flagged_for_review',
+        },
+      });
+    }
+  }
+
+  // ─────────────────────────────────────────────
+  // CREATE REPORT
+  //
+  // FIX (item #1): a per-user cooldown (REPORT_CREATE_RATE_LIMIT_WINDOW_SECONDS,
+  // falling back to the shared CONTENT_* default) blocks rapid-fire
+  // spam, and a max-pending-per-user cap (REPORT_MAX_PENDING_PER_USER
+  // / CONTENT_MAX_PENDING_PER_USER) is enforced here rather than at a
+  // separate "submit" step — Reports have no draft/submit split like
+  // Post does; a report is PENDING the moment it's created.
+  //
+  // FIX (item #5): optional Idempotency-Key (sent as a header by the
+  // controller) lets a client safely retry after a dropped response.
+  // A repeat with the same key returns the original report.
+  //
+  // FIX (item #13): attachment counts/total size are checked before
+  // any MinIO round trips, and the validated sizes are persisted as
+  // mediaTotalBytes.
+  // ─────────────────────────────────────────────
+
+  private async enforceCreateRateLimit(userId: string): Promise<void> {
+    const cooldownSeconds = Number(
+      this.configService.get<string>('REPORT_CREATE_RATE_LIMIT_WINDOW_SECONDS') ??
+        this.configService.get<string>('CONTENT_CREATE_RATE_LIMIT_WINDOW_SECONDS') ??
+        60,
+    );
+
+    const lastReport = await this.prisma.report.findFirst({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+      select: { createdAt: true },
+    });
+
+    if (lastReport && Date.now() - lastReport.createdAt.getTime() < cooldownSeconds * 1000) {
+      throw new BadRequestException('report_creation_rate_limited');
+    }
+  }
+
+  private async enforceMaxPendingReports(userId: string): Promise<void> {
+    const maxPending = Number(
+      this.configService.get<string>('REPORT_MAX_PENDING_PER_USER') ??
+        this.configService.get<string>('CONTENT_MAX_PENDING_PER_USER') ??
+        5,
+    );
+
+    const pendingCount = await this.prisma.report.count({
+      where: { userId, status: ReportStatus.PENDING },
+    });
+
+    if (pendingCount >= maxPending) {
+      throw new BadRequestException('too_many_pending_reports');
+    }
+  }
+
+  async create(user: CurrentUserDto, data: CreateReportDto, idempotencyKey?: string) {
+    if (idempotencyKey) {
+      const existing = await this.prisma.report.findFirst({
+        where: { userId: user.id, idempotencyKey },
+      });
+      if (existing) {
+        // Safe replay of a duplicate submission — return the
+        // original instead of creating a second report.
+        return existing;
+      }
+    }
+
+    await this.enforceCreateRateLimit(user.id);
+    await this.enforceMaxPendingReports(user.id);
+
+    const merged: MediaBearing = {
+      photo: data.photo ?? [],
+      video: data.video ?? [],
+      audio: data.audio ?? [],
+      pdf: data.pdf ?? [],
+      document: data.document ?? [],
+      other: data.other ?? [],
+    };
+    this.assertAttachmentCounts(merged);
+
+    const validated = await this.validateMediaFilesExist(this.collectMediaFields(merged));
+    const totalBytes = validated.reduce((sum, v) => sum + v.size, 0);
+    this.assertTotalBytes(totalBytes);
+
+    const report = await this.createReportWithUniqueCaseReference(
+      user,
+      data,
+      merged,
+      totalBytes,
+      idempotencyKey,
+    );
 
     this.emitAudit({
       userId: user.id,
@@ -351,6 +609,12 @@ export class ReportService {
   // filepaths dropped from the new array are deleted from
   // MinIO after the write commits — same ordering discipline
   // as PostService.updateMyPost.
+  //
+  // FIX (item #13): attachment counts are checked against the
+  // fully-merged post-update media shape before any MinIO calls,
+  // and mediaTotalBytes is recomputed from the previous total
+  // plus/minus the added/removed files' sizes — same approach as
+  // PostService.updateMyPost.
   // ─────────────────────────────────────────────
 
   async update(user: CurrentUserDto, reportId: string, data: UpdateReportDto) {
@@ -367,7 +631,35 @@ export class ReportService {
     }
 
     const { added, removed } = this.diffMediaFields(existing, data);
-    await this.validateMediaFilesExist(added);
+
+    const merged: MediaBearing = {
+      photo: data.photo ?? existing.photo,
+      video: data.video ?? existing.video,
+      audio: data.audio ?? existing.audio,
+      pdf: data.pdf ?? existing.pdf,
+      document: data.document ?? existing.document,
+      other: data.other ?? existing.other,
+    };
+    this.assertAttachmentCounts(merged);
+
+    const validatedAdded = await this.validateMediaFilesExist(added);
+    const addedBytes = validatedAdded.reduce((sum, v) => sum + v.size, 0);
+
+    // Stat removed files before they're deleted, purely to back out
+    // their bytes from the running total — a stat failure here
+    // (already gone, MinIO hiccup) just means we can't credit that
+    // byte count back, so treat it as 0 rather than blocking the
+    // update.
+    const removedStats = await Promise.allSettled(
+      removed.map((fp) => this.minioService.statObject(fp)),
+    );
+    const removedBytes = removedStats.reduce(
+      (sum, r) => sum + (r.status === 'fulfilled' ? r.value.size : 0),
+      0,
+    );
+
+    const newTotalBytes = Math.max(0, existing.mediaTotalBytes + addedBytes - removedBytes);
+    this.assertTotalBytes(newTotalBytes);
 
     const report = await this.prisma.report.update({
       where: { id: reportId },
@@ -382,6 +674,7 @@ export class ReportService {
         ...(data.pdf !== undefined ? { pdf: data.pdf } : {}),
         ...(data.document !== undefined ? { document: data.document } : {}),
         ...(data.other !== undefined ? { other: data.other } : {}),
+        mediaTotalBytes: newTotalBytes,
       },
     });
 
@@ -423,6 +716,11 @@ export class ReportService {
   // the distinction isn't lost even though status collapses the
   // two together.
   //
+  // Deliberately does NOT call maybeFlagUserForRejections — see
+  // that method's comment. A user withdrawing their own report is
+  // not the same signal as an admin rejecting it, and shouldn't
+  // count toward the auto-flag threshold.
+  //
   // NOTE: the row (and its media) are kept, not deleted — unlike
   // PostService.deleteMyPost, which only purges media on an actual
   // row deletion. If withdrawn-report media should also be purged
@@ -443,10 +741,18 @@ export class ReportService {
       throw new BadRequestException('only_pending_reports_can_be_withdrawn');
     }
 
-    const report = await this.prisma.report.update({
-      where: { id: reportId },
+    // Conditional update guards against a concurrent admin
+    // transition landing between findFirst and update.
+    const result = await this.prisma.report.updateMany({
+      where: { id: reportId, status: ReportStatus.PENDING },
       data: { status: ReportStatus.REJECTED },
     });
+
+    if (result.count === 0) {
+      throw new BadRequestException('only_pending_reports_can_be_withdrawn');
+    }
+
+    const report = await this.prisma.report.findUniqueOrThrow({ where: { id: reportId } });
 
     this.emitAudit({
       userId: user.id,
@@ -546,6 +852,43 @@ export class ReportService {
   }
 
   // ─────────────────────────────────────────────
+  // ADMIN — STALE / UNASSIGNED-TOO-LONG REPORTS
+  // GET /reports/stale
+  // (item #15)
+  //
+  // Unlike PostService.findStalePending (which only checks status,
+  // since Post has no assignment concept), a Report is only truly
+  // "forgotten" if it's BOTH unassigned AND still non-terminal — an
+  // ASSIGNED or IN_PROGRESS report already has someone actively on
+  // it, so it's excluded even if it's been open a while. Purely
+  // informational, same as Post's version — nothing here changes
+  // status or ownership.
+  // ─────────────────────────────────────────────
+
+  async findStalePending() {
+    const staleHours = Number(
+      this.configService.get<string>('REPORT_STALE_PENDING_HOURS') ??
+        this.configService.get<string>('CONTENT_STALE_PENDING_HOURS') ??
+        48,
+    );
+    const cutoff = new Date(Date.now() - staleHours * 60 * 60 * 1000);
+
+    const reports = await this.prisma.report.findMany({
+      where: {
+        status: { notIn: TERMINAL_STATUSES },
+        assignedToId: null,
+        createdAt: { lt: cutoff },
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    return reports.map((report) => ({
+      ...report,
+      pendingHours: Math.floor((Date.now() - report.createdAt.getTime()) / (60 * 60 * 1000)),
+    }));
+  }
+
+  // ─────────────────────────────────────────────
   // GET ONE REPORT — FULL DETAIL (ADMIN)
   //
   // Open to any ADMIN or SUPER_ADMIN — viewing is not gated by
@@ -597,8 +940,42 @@ export class ReportService {
   }
 
   // ─────────────────────────────────────────────
+  // ADMIN — PER-REPORT HISTORY / TIMELINE
+  // GET /reports/:id/history
+  // (item #18)
+  //
+  // ASSUMPTION: same as PostService.getHistory — an `auditLog`
+  // Prisma model populated by a listener subscribed to the events
+  // emitAudit() already fires throughout this service.
+  // ─────────────────────────────────────────────
+
+  async getHistory(reportId: string) {
+    const existing = await this.prisma.report.findUnique({ where: { id: reportId } });
+    if (!existing) {
+      throw new NotFoundException('report_not_found');
+    }
+
+    return this.prisma.auditLog.findMany({
+      where: { entity: 'Report', entityId: reportId },
+      orderBy: { createdAt: 'asc' },
+    });
+  }
+
+  // ─────────────────────────────────────────────
   // UPDATE STATUS (ADMIN)
+  //
   // Transitions validated against ALLOWED_STATUS_TRANSITIONS.
+  //
+  // FIX (item #22/#26): converted the read-then-write into a
+  // conditional update (updateMany guarded on the status read a
+  // moment earlier), same pattern PostService uses throughout, so
+  // two admins racing to transition the same report can't silently
+  // clobber each other — the loser gets report_transition_conflict
+  // instead of an unvalidated write going through.
+  //
+  // FIX (item #21): on a transition TO REJECTED specifically, checks
+  // whether the reporter has crossed the auto-flag threshold for
+  // repeated rejections.
   // ─────────────────────────────────────────────
 
   async updateStatus(admin: CurrentUserDto, reportId: string, data: UpdateReportStatusDto) {
@@ -620,10 +997,16 @@ export class ReportService {
       );
     }
 
-    const report = await this.prisma.report.update({
-      where: { id: reportId },
+    const result = await this.prisma.report.updateMany({
+      where: { id: reportId, status: existing.status },
       data: { status: data.status },
     });
+
+    if (result.count === 0) {
+      throw new BadRequestException('report_transition_conflict');
+    }
+
+    const report = await this.prisma.report.findUniqueOrThrow({ where: { id: reportId } });
 
     this.emitAudit({
       userId: admin.id,
@@ -643,6 +1026,10 @@ export class ReportService {
       reportId: report.id,
       userId: report.userId,
     });
+
+    if (data.status === ReportStatus.REJECTED) {
+      await this.maybeFlagUserForRejections(report.userId);
+    }
 
     return report;
   }
@@ -856,6 +1243,13 @@ export class ReportService {
   //   ⚠️ ASSUMPTION: userRoles -> role.name shape.
   //   Adjust to your real UserRole/Role schema.
   //
+  // FIX (item #22/#26): the status-changing branch now uses a
+  // conditional update guarded on the status read a moment
+  // earlier, same reasoning as updateStatus() — prevents a race
+  // where the report's status changed between the read and the
+  // write. The assignedToId-only branch (no status change) has no
+  // such race to guard against, so it stays a plain update.
+  //
   // NOTE: if the current status does not allow a direct
   // transition to ASSIGNED (e.g. reassigning a report
   // that is already IN_PROGRESS), assignedToId is still
@@ -899,13 +1293,19 @@ export class ReportService {
     const shouldAutoSetAssigned =
       existing.status !== ReportStatus.ASSIGNED && allowedNext.includes(ReportStatus.ASSIGNED);
 
-    const report = await this.prisma.report.update({
-      where: { id: reportId },
+    const result = await this.prisma.report.updateMany({
+      where: shouldAutoSetAssigned ? { id: reportId, status: existing.status } : { id: reportId },
       data: {
         assignedToId: data.assignedToUserId,
         ...(shouldAutoSetAssigned ? { status: ReportStatus.ASSIGNED } : {}),
       },
     });
+
+    if (result.count === 0) {
+      throw new BadRequestException('report_transition_conflict');
+    }
+
+    const report = await this.prisma.report.findUniqueOrThrow({ where: { id: reportId } });
 
     this.emitAudit({
       userId: admin.id,
@@ -938,7 +1338,9 @@ export class ReportService {
   // current role restriction. Status is left unchanged — same
   // silent-no-status-change approach assign() already takes;
   // revisit if you'd rather step status back to UNDER_REVIEW
-  // when a report becomes unassigned.
+  // when a report becomes unassigned. No status change here, so
+  // no concurrency guard is needed beyond confirming the report
+  // still exists.
   // ─────────────────────────────────────────────
 
   async unassign(admin: CurrentUserDto, reportId: string) {
@@ -978,6 +1380,9 @@ export class ReportService {
   // updateStatus() enforce the same single rulebook. Also
   // enforces the same admin-access rule as the other admin
   // operations.
+  //
+  // FIX (item #22/#26): conditional update guarded on the status
+  // read a moment earlier, same as updateStatus()/assign().
   // ─────────────────────────────────────────────
 
   async escalate(admin: CurrentUserDto, reportId: string, data: EscalateReportDto) {
@@ -999,10 +1404,16 @@ export class ReportService {
       );
     }
 
-    const report = await this.prisma.report.update({
-      where: { id: reportId },
+    const result = await this.prisma.report.updateMany({
+      where: { id: reportId, status: existing.status },
       data: { status: ReportStatus.ESCALATED },
     });
+
+    if (result.count === 0) {
+      throw new BadRequestException('report_transition_conflict');
+    }
+
+    const report = await this.prisma.report.findUniqueOrThrow({ where: { id: reportId } });
 
     this.emitAudit({
       userId: admin.id,
@@ -1034,11 +1445,27 @@ export class ReportService {
     return `EHT-${year}-${random}`;
   }
 
-  // Random 6-char case references aren't guaranteed unique, and
-  // caseReference is @unique in the schema, so a collision throws
-  // a Prisma P2002 error. Retry a few times with a fresh reference
-  // before giving up, rather than letting that error surface raw.
-  private async createReportWithUniqueCaseReference(user: CurrentUserDto, data: CreateReportDto) {
+  // FIX (item #5/#26): now also handles a race on the NEW
+  // (userId, idempotencyKey) unique constraint, not just the
+  // pre-existing caseReference collision. A fast-path findFirst
+  // already runs in create() before this is called, but that
+  // check-then-create is inherently racy under concurrent
+  // requests — two near-simultaneous retries with the same key can
+  // both pass the findFirst and race to insert. This catches that
+  // P2002 specifically (distinguished from a caseReference
+  // collision via err.meta.target) and returns the row that won
+  // the race instead of letting the raw Prisma error surface.
+  //
+  // Random 6-char case references aren't guaranteed unique either,
+  // and caseReference is @unique in the schema, so a collision on
+  // *that* constraint retries with a fresh reference instead.
+  private async createReportWithUniqueCaseReference(
+    user: CurrentUserDto,
+    data: CreateReportDto,
+    merged: MediaBearing,
+    totalBytes: number,
+    idempotencyKey?: string,
+  ) {
     for (let attempt = 1; attempt <= CASE_REFERENCE_MAX_ATTEMPTS; attempt++) {
       try {
         return await this.prisma.report.create({
@@ -1049,25 +1476,43 @@ export class ReportService {
             description: data.description,
             location: data.location ?? null,
             incidentAt: data.incidentAt ? new Date(data.incidentAt) : null,
-            photo: data.photo ?? [],
-            video: data.video ?? [],
-            audio: data.audio ?? [],
-            pdf: data.pdf ?? [],
-            document: data.document ?? [],
-            other: data.other ?? [],
+            photo: merged.photo,
+            video: merged.video,
+            audio: merged.audio,
+            pdf: merged.pdf,
+            document: merged.document,
+            other: merged.other,
+            mediaTotalBytes: totalBytes,
             status: ReportStatus.PENDING,
+            idempotencyKey: idempotencyKey ?? null,
           },
         });
       } catch (err) {
-        const isCaseReferenceCollision =
-          err instanceof Prisma.PrismaClientKnownRequestError &&
-          err.code === 'P2002' &&
-          (err.meta?.target as string[] | undefined)?.includes('caseReference');
+        if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+          const target = err.meta?.target as string[] | undefined;
 
-        if (!isCaseReferenceCollision || attempt === CASE_REFERENCE_MAX_ATTEMPTS) {
-          throw err;
+          if (target?.includes('caseReference')) {
+            if (attempt === CASE_REFERENCE_MAX_ATTEMPTS) {
+              throw err;
+            }
+            // loop and try again with a new random reference
+            continue;
+          }
+
+          if (idempotencyKey && target?.some((t) => t.includes('idempotencyKey'))) {
+            // Lost a race against a concurrent identical retry — the
+            // other request's insert won; return that row instead of
+            // creating (or failing to create) a duplicate.
+            const winner = await this.prisma.report.findFirst({
+              where: { userId: user.id, idempotencyKey },
+            });
+            if (winner) {
+              return winner;
+            }
+          }
         }
-        // otherwise loop and try again with a new random reference
+
+        throw err;
       }
     }
     // Unreachable: the loop always returns or throws.

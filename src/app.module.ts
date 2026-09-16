@@ -369,6 +369,28 @@ import { PermissionsSeeder } from './common/seed/permissions.seeder';
 
         CONTENT_STALE_PENDING_HOURS: Joi.number().default(48),
 
+        // ADDED (item #13): shared attachment-count/total-size caps —
+        // same cross-module reasoning as the rest of this block. Each
+        // module reads its own optional PREFIXED override first.
+        CONTENT_MAX_PHOTOS: Joi.number().default(5),
+
+        CONTENT_MAX_VIDEOS: Joi.number().default(1),
+
+        // Shared cap across audio + pdf + document + other combined —
+        // none of those four individually needs its own limit yet.
+        CONTENT_MAX_OTHER_FILES: Joi.number().default(2),
+
+        // Total bytes across every attached file on one record.
+        CONTENT_MAX_TOTAL_UPLOAD_BYTES: Joi.number().default(52_428_800), // 50MB
+
+        // ADDED (item #21): shared automatic-flag thresholds. Flag only —
+        // never auto-rejects or blocks anything on its own.
+        CONTENT_AUTO_FLAG_REJECTION_COUNT: Joi.number().default(3),
+
+        CONTENT_AUTO_FLAG_WINDOW_DAYS: Joi.number().default(7),
+
+        // ── Post-specific overrides for the shared CONTENT_* keys ──
+
         POST_MAX_PENDING_PER_USER: Joi.number().optional(),
 
         POST_CREATE_RATE_LIMIT_WINDOW_SECONDS: Joi.number().optional(),
@@ -378,6 +400,102 @@ import { PermissionsSeeder } from './common/seed/permissions.seeder';
         POST_REJECTED_RETENTION_DAYS: Joi.number().optional(),
 
         POST_STALE_PENDING_HOURS: Joi.number().optional(),
+
+        // ADDED — Post-specific overrides for the new shared keys above.
+        POST_MAX_PHOTOS: Joi.number().optional(),
+
+        POST_MAX_VIDEOS: Joi.number().optional(),
+
+        POST_MAX_OTHER_FILES: Joi.number().optional(),
+
+        POST_MAX_TOTAL_UPLOAD_BYTES: Joi.number().optional(),
+
+        POST_AUTO_FLAG_REJECTION_COUNT: Joi.number().optional(),
+
+        POST_AUTO_FLAG_WINDOW_DAYS: Joi.number().optional(),
+
+        // ── Report-specific overrides for the shared CONTENT_* keys ──
+        //
+        // ADDED: mirrors the POST_* block above exactly — same
+        // allowUnknown:true blind-spot reasoning. Reports DO support a
+        // draft-like pre-submission state, so REPORT_DRAFT_TTL_DAYS is
+        // included; drop it if that turns out not to be true of your
+        // actual Report status model.
+
+        REPORT_MAX_PENDING_PER_USER: Joi.number().optional(),
+
+        REPORT_CREATE_RATE_LIMIT_WINDOW_SECONDS: Joi.number().optional(),
+
+        REPORT_DRAFT_TTL_DAYS: Joi.number().optional(),
+
+        REPORT_REJECTED_RETENTION_DAYS: Joi.number().optional(),
+
+        REPORT_STALE_PENDING_HOURS: Joi.number().optional(),
+
+        REPORT_MAX_PHOTOS: Joi.number().optional(),
+
+        REPORT_MAX_VIDEOS: Joi.number().optional(),
+
+        REPORT_MAX_OTHER_FILES: Joi.number().optional(),
+
+        REPORT_MAX_TOTAL_UPLOAD_BYTES: Joi.number().optional(),
+
+        REPORT_AUTO_FLAG_REJECTION_COUNT: Joi.number().optional(),
+
+        REPORT_AUTO_FLAG_WINDOW_DAYS: Joi.number().optional(),
+
+        // ── Missing Person-specific overrides for the shared CONTENT_* keys ──
+        //
+        // ADDED: no MISSING_PERSON_DRAFT_TTL_DAYS entry — Missing Person
+        // requests have no draft concept in the PRD as currently
+        // understood, so a draft-TTL override would be a dead config key.
+        // Add it back in if that assumption turns out to be wrong.
+
+        MISSING_PERSON_MAX_PENDING_PER_USER: Joi.number().optional(),
+
+        MISSING_PERSON_CREATE_RATE_LIMIT_WINDOW_SECONDS: Joi.number().optional(),
+
+        MISSING_PERSON_REJECTED_RETENTION_DAYS: Joi.number().optional(),
+
+        MISSING_PERSON_STALE_PENDING_HOURS: Joi.number().optional(),
+
+        MISSING_PERSON_MAX_PHOTOS: Joi.number().optional(),
+
+        MISSING_PERSON_MAX_VIDEOS: Joi.number().optional(),
+
+        MISSING_PERSON_MAX_OTHER_FILES: Joi.number().optional(),
+
+        MISSING_PERSON_MAX_TOTAL_UPLOAD_BYTES: Joi.number().optional(),
+
+        MISSING_PERSON_AUTO_FLAG_REJECTION_COUNT: Joi.number().optional(),
+
+        MISSING_PERSON_AUTO_FLAG_WINDOW_DAYS: Joi.number().optional(),
+
+        // ── Victim Profile-specific overrides for the shared CONTENT_* keys ──
+        //
+        // ADDED: same reasoning as Missing Person above — no
+        // PROFILE_DRAFT_TTL_DAYS unless Victim Profiles turn out to have
+        // a real draft status distinct from PENDING.
+
+        PROFILE_MAX_PENDING_PER_USER: Joi.number().optional(),
+
+        PROFILE_CREATE_RATE_LIMIT_WINDOW_SECONDS: Joi.number().optional(),
+
+        PROFILE_REJECTED_RETENTION_DAYS: Joi.number().optional(),
+
+        PROFILE_STALE_PENDING_HOURS: Joi.number().optional(),
+
+        PROFILE_MAX_PHOTOS: Joi.number().optional(),
+
+        PROFILE_MAX_VIDEOS: Joi.number().optional(),
+
+        PROFILE_MAX_OTHER_FILES: Joi.number().optional(),
+
+        PROFILE_MAX_TOTAL_UPLOAD_BYTES: Joi.number().optional(),
+
+        PROFILE_AUTO_FLAG_REJECTION_COUNT: Joi.number().optional(),
+
+        PROFILE_AUTO_FLAG_WINDOW_DAYS: Joi.number().optional(),
 
         // ─────────────────────────────────────
         // EMAIL / SMTP
@@ -492,7 +610,7 @@ import { PermissionsSeeder } from './common/seed/permissions.seeder';
     // apply. Access-token TTL is controlled solely by
     // jwt.expiresIn (JWT_EXPIRES_IN, now defaulting to 15m) as read
     // in AuthService.
-    // ─────────────────────────────────────────
+    // ─────────────────────────────────────
 
     JwtModule.registerAsync({
       imports: [ConfigModule],
