@@ -32,4 +32,17 @@ enum NotificationType {
   SECURITY_ALERT
   PASSWORD_CHANGED
   PASSWORD_RESET
+
+  // NEW — added to fix NotificationListener compile errors (these
+  // values were referenced by the listener but never existed in the
+  // enum). Run `npx prisma migrate dev` (or `db push` + `generate`
+  // for a shared/prod DB) after adding these.
+  REPORT_ASSIGNED
+  INFORMATION_REQUEST_RESPONDED
+  POST_CHANGES_REQUESTED
+  POST_UNPUBLISHED
+  MISSING_PERSON_APPROVED
+  MISSING_PERSON_REJECTED
+  MISSING_PERSON_FOUND
+  MISSING_PERSON_MORE_INFORMATION_REQUESTED
 }
