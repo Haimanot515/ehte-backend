@@ -1366,6 +1366,12 @@ export class PostService {
   // the first time; the status only actually flips to
   // APPROVED once a second, different admin also confirms.
   // FIX (item #17): blocked if claimed by a different admin.
+  //
+  // FIX (notifications): POST_APPROVED now includes title,
+  // matching PostRejectedEvent's shape below — previously
+  // omitted here, so an approved post's notification always
+  // fell back to the generic "Your post has been approved."
+  // even when the post had a title, unlike reject().
   // ─────────────────────────────────────────────
 
   async approve(user: CurrentUserDto, postId: string, data: ApprovePostDto) {
@@ -1420,6 +1426,7 @@ export class PostService {
     const postApprovedEvent: PostApprovedEvent = {
       postId,
       userId: post.userId,
+      title: post.title ?? undefined,
     };
     this.eventEmitter.emit(NotificationEventEnum.POST_APPROVED, postApprovedEvent);
 

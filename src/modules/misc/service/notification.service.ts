@@ -26,6 +26,62 @@ export class NotificationService {
     });
   }
 
+  // ─────────────────────────────────────────────
+  // NEW — CREATE FOR ADMINS
+  //
+  // Used by every "needs review" listener handler (NEW_REPORT,
+  // HIGH_PRIORITY_REPORT, NEW_POST, NEW_MISSING_PERSON_REQUEST):
+  // these are admin-queue notices, not broadcasts. A broadcast row
+  // (userId: null) would put the notice in front of every regular
+  // user too, via getMyNotifications' `OR: [{ userId: user.id },
+  // { userId: null }]` — wrong audience for "a case needs review."
+  //
+  // Instead this looks up every User with an ADMIN or SUPER_ADMIN
+  // role via the UserRole -> Role relation, and writes one personal
+  // notification row per admin. Deliberately per-admin rather than
+  // a single shared row, so isRead is independent per admin — one
+  // admin dismissing "new report" shouldn't clear it for the rest
+  // of the team, the same problem the NotificationService class
+  // comment already flags for broadcast rows.
+  //
+  // ASSUMPTION: role names are the literal strings 'ADMIN' and
+  // 'SUPER_ADMIN' on Role.name, matching @Roles() usage elsewhere in
+  // this codebase (e.g. MissingPersonController's admin routes).
+  // Adjust ADMIN_ROLE_NAMES below if your role names differ.
+  // ─────────────────────────────────────────────
+
+  private static readonly ADMIN_ROLE_NAMES = ['ADMIN', 'SUPER_ADMIN'];
+
+  async createForAdmins(dto: Omit<CreateNotificationDto, 'userId'>) {
+    const admins = await this.prisma.user.findMany({
+      where: {
+        userRoles: {
+          some: {
+            role: {
+              name: { in: NotificationService.ADMIN_ROLE_NAMES },
+            },
+          },
+        },
+      },
+      select: { id: true },
+    });
+
+    if (admins.length === 0) {
+      return { count: 0 };
+    }
+
+    const result = await this.prisma.notification.createMany({
+      data: admins.map((admin) => ({
+        userId: admin.id,
+        type: dto.type,
+        title: dto.title,
+        body: dto.body,
+      })),
+    });
+
+    return result;
+  }
+
   /**
    * Get personal notifications + broadcasts, with
    * optional filtering and pagination.
@@ -216,6 +272,17 @@ export class NotificationService {
   // A real fix requires adding a recipient/role field
   // to the schema (see Option B, which you declined
   // for now).
+  //
+  // NOTE (createForAdmins, above): the new admin-queue
+  // notices (NEW_REPORT, NEW_POST, NEW_MISSING_PERSON_REQUEST,
+  // HIGH_PRIORITY_REPORT) deliberately do NOT use this
+  // broadcast mechanism — they write personal (userId-scoped)
+  // rows per admin instead, specifically to avoid the shared-
+  // read-state and regular-user-visibility problems documented
+  // here. These admin-facing methods below still only cover the
+  // OLD broadcast-based admin notifications (userId: null); the
+  // new per-admin rows created by createForAdmins show up via the
+  // normal getMyNotifications() for that admin instead.
   // ─────────────────────────────────────────────
 
   async getAdminNotifications(query: NotificationQueryDto = {}) {

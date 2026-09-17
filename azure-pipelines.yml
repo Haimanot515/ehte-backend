@@ -4,12 +4,14 @@ trigger:
   branches:
     include:
       - dev
+      - main
       - master
 
 pr:
   branches:
     include:
       - dev
+      - main
       - master
 
 variables:
@@ -17,275 +19,214 @@ variables:
     value: ehte_backend
 
 stages:
+  # =========================
+  # PR → DEV : CI ONLY
+  # =========================
+  - stage: CI_DEV
+    displayName: "CI (PR → dev)"
+    condition: and(eq(variables['Build.Reason'], 'PullRequest'), eq(variables['System.PullRequest.TargetBranchName'], 'dev'))
 
-# ─────────────────────────────────────────────
-# PR → DEV : CI ONLY
-# ─────────────────────────────────────────────
-- stage: CI_DEV
-  displayName: "CI (PR → dev)"
-  condition: and(eq(variables['Build.Reason'], 'PullRequest'), eq(variables['System.PullRequest.TargetBranchName'], 'dev'))
-  jobs:
-    - job: build
-      pool:
-        name: pitron-dev
-      steps:
-        - checkout: self
-          clean: 'true'
-        - task: UseNode@1
-          inputs:
-            version: "22.x"
-        - script: |
-            set -e
-            npm ci
-            export DATABASE_URL="postgresql://user:pass@localhost:5432/dummy"
-            export JWT_SECRET="ci-temp-secret"
-            npx prisma generate --schema=./prisma/schema
-            npx prisma format --schema=./prisma/schema || true
-            npm run format
-            npm run type-check
-            npm run lint
-            npm run test --if-present || true
-            npm run build
-          displayName: "Install, Format, Type-check, Lint, Test & Build"
+    jobs:
+      - job: build
+        pool:
+          name: pitron-dev
 
-# ─────────────────────────────────────────────
-# MERGE → DEV : CD DEV
-# ─────────────────────────────────────────────
-- stage: CD_DEV
-  displayName: "CD (dev) - Build, Push, Deploy"
-  condition: and(ne(variables['Build.Reason'], 'PullRequest'), eq(variables['Build.SourceBranch'], 'refs/heads/dev'))
-  variables:
-    - group: ehte_backend-registry-dev
-  jobs:
-    # BUILD + PUSH IMAGE
-    - job: build_push
-      displayName: "Build & Push Docker Image"
-      pool:
-        name: pitron-dev
-      steps:
-        - checkout: self
-          clean: 'true'
+        steps:
+          - checkout: self
+            clean: true
 
-        - script: |
-            set -e
-            echo "Checking registry variables..."
-            if [ -z "$REGISTRY_HOST" ]; then
-              echo "REGISTRY_HOST is EMPTY"
-              exit 1
-            fi
-            if [ -z "$REGISTRY_USER" ]; then
-              echo "REGISTRY_USER is EMPTY"
-              exit 1
-            fi
-            if [ -z "$REGISTRY_PASSWORD" ]; then
-              echo "REGISTRY_PASSWORD is EMPTY"
-              exit 1
-            fi
-            echo "Registry variables validated successfully."
-          displayName: "Validate Registry Variables"
-          env:
-            REGISTRY_HOST: $(REGISTRY_HOST)
-            REGISTRY_USER: $(REGISTRY_USER)
-            REGISTRY_PASSWORD: $(REGISTRY_PASSWORD)
+          - task: NodeTool@0
+            inputs:
+              versionSpec: "22.x"
+            displayName: "Use Node 22"
 
-        - script: |
-            set -e
-            echo "$REGISTRY_PASSWORD" | docker login "$REGISTRY_HOST" \
-              -u "$REGISTRY_USER" \
-              --password-stdin
-          displayName: "Docker Login"
-          env:
-            REGISTRY_HOST: $(REGISTRY_HOST)
-            REGISTRY_USER: $(REGISTRY_USER)
-            REGISTRY_PASSWORD: $(REGISTRY_PASSWORD)
+          - script: |
+              set -e
+              npm ci
+              export DATABASE_URL="postgresql://placeholder:placeholder@localhost:5432/placeholder"
+              npx prisma generate --schema=./prisma/schema
+              npm run type-check
+              npm run build
+            displayName: "Install, Prisma generate & Build"
 
-        - script: |
-            set -e
-            docker build \
-              --pull \
-              --no-cache \
-              -t $REGISTRY_HOST/$IMAGE_NAME:dev-latest \
-              .
-          displayName: "Build Docker Image"
-          env:
-            REGISTRY_HOST: $(REGISTRY_HOST)
+  # =========================
+  # MERGE → DEV : CD DEV
+  # =========================
+  - stage: CD_DEV
+    displayName: "CD (dev)"
+    condition: and(ne(variables['Build.Reason'], 'PullRequest'), eq(variables['Build.SourceBranch'], 'refs/heads/dev'))
 
-        - script: |
-            set -e
-            docker push $REGISTRY_HOST/$IMAGE_NAME:dev-latest
-          displayName: "Push Docker Image"
-          env:
-            REGISTRY_HOST: $(REGISTRY_HOST)
+    variables:
+      - group: Ehte-registry-dev
 
-    # DEPLOY DEV
-    - job: deploy_dev
-      displayName: "Deploy Development"
-      dependsOn: build_push
-      pool:
-        name: pitron-dev
-      steps:
-        - checkout: self
-          clean: 'true'
+    jobs:
+      - job: build_push
+        displayName: "Build & Push"
 
-        - task: DownloadSecureFile@1
-          name: envFile
-          displayName: "Download env file from Secure Files"
-          inputs:
-            secureFile: "ehte_dev.env"
+        pool:
+          name: pitron-dev
 
-        - script: |
-            cp $(envFile.secureFilePath) $(Build.SourcesDirectory)/.env
-          displayName: "Place env file in workspace"
+        steps:
+          - checkout: self
+            clean: true
 
-        - script: |
-            set -e
-            echo "$REGISTRY_PASSWORD" | docker login "$REGISTRY_HOST" \
-              -u "$REGISTRY_USER" \
-              --password-stdin
-            docker pull $REGISTRY_HOST/$IMAGE_NAME:dev-latest
-            docker compose up -d --pull always --force-recreate
-            docker compose ps
-          displayName: "Deploy DEV"
-          workingDirectory: $(Build.SourcesDirectory)
-          env:
-            REGISTRY_HOST: $(REGISTRY_HOST)
-            REGISTRY_USER: $(REGISTRY_USER)
-            REGISTRY_PASSWORD: $(REGISTRY_PASSWORD)
-            IMAGE_NAME: $(IMAGE_NAME)
-            IMAGE_TAG: dev-latest
+          - script: |
+              set -e
 
-# ─────────────────────────────────────────────
-# PR → MASTER : CI ONLY
-# ─────────────────────────────────────────────
-- stage: CI_PROD
-  displayName: "CI (PR → master)"
-  condition: and(eq(variables['Build.Reason'], 'PullRequest'), eq(variables['System.PullRequest.TargetBranchName'], 'master'))
-  jobs:
-    - job: build
-      pool:
-        name: pitron-dev
-      steps:
-        - checkout: self
-          clean: 'true'
-        - task: UseNode@1
-          inputs:
-            version: "22.x"
-        - script: |
-            set -e
-            npm ci
-            export DATABASE_URL="postgresql://user:pass@localhost:5432/dummy"
-            export JWT_SECRET="ci-temp-secret"
-            npx prisma generate --schema=./prisma/schema
-            npx prisma format --schema=./prisma/schema || true
-            npm run format
-            npm run type-check
-            npm run lint
-            npm run test --if-present || true
-            npm run build
-          displayName: "Install, Format, Type-check, Lint, Test & Build"
+              echo "$REGISTRY_PASSWORD" | docker login "$REGISTRY_HOST" \
+              -u "$REGISTRY_USER" --password-stdin
 
-# ============================================================
-# MERGE → MASTER : CD PROD
-# ─────────────────────────────────────────────
-- stage: CD_PROD
-  displayName: "CD (prod) - Build, Push, Deploy"
-  condition: and(ne(variables['Build.Reason'], 'PullRequest'), eq(variables['Build.SourceBranch'], 'refs/heads/master'))
-  variables:
-    - group: ehte_backend-registry-prod
-  jobs:
-    # BUILD + PUSH IMAGE
-    - job: build_push
-      displayName: "Build & Push Docker Image"
-      pool:
-        name: pitron-dev
-      steps:
-        - checkout: self
-          clean: 'true'
+              docker build --pull --no-cache \
+              -t "$REGISTRY_HOST/$IMAGE_NAME:dev-latest" .
 
-        - script: |
-            set -e
-            echo "Checking registry variables..."
-            if [ -z "$REGISTRY_HOST" ]; then
-              echo "REGISTRY_HOST is EMPTY"
-              exit 1
-            fi
-            if [ -z "$REGISTRY_USER" ]; then
-              echo "REGISTRY_USER is EMPTY"
-              exit 1
-            fi
-            if [ -z "$REGISTRY_PASSWORD" ]; then
-              echo "REGISTRY_PASSWORD is EMPTY"
-              exit 1
-            fi
-            echo "Registry variables validated successfully."
-          displayName: "Validate Registry Variables"
-          env:
-            REGISTRY_HOST: $(REGISTRY_HOST)
-            REGISTRY_USER: $(REGISTRY_USER)
-            REGISTRY_PASSWORD: $(REGISTRY_PASSWORD)
+              docker push "$REGISTRY_HOST/$IMAGE_NAME:dev-latest"
 
-        - script: |
-            set -e
-            echo "$REGISTRY_PASSWORD" | docker login "$REGISTRY_HOST" \
-              -u "$REGISTRY_USER" \
-              --password-stdin
-          displayName: "Docker Login"
-          env:
-            REGISTRY_HOST: $(REGISTRY_HOST)
-            REGISTRY_USER: $(REGISTRY_USER)
-            REGISTRY_PASSWORD: $(REGISTRY_PASSWORD)
+            displayName: "Build & Push (dev)"
 
-        - script: |
-            set -e
-            docker build \
-              --pull \
-              --no-cache \
-              -t $REGISTRY_HOST/$IMAGE_NAME:prod-latest \
-              .
-          displayName: "Build Docker Image"
-          env:
-            REGISTRY_HOST: $(REGISTRY_HOST)
+            env:
+              REGISTRY_HOST: $(REGISTRY_HOST)
+              REGISTRY_USER: $(REGISTRY_USER)
+              REGISTRY_PASSWORD: $(REGISTRY_PASSWORD)
+              IMAGE_NAME: $(IMAGE_NAME)
 
-        - script: |
-            set -e
-            docker push $REGISTRY_HOST/$IMAGE_NAME:prod-latest
-          displayName: "Push Docker Image"
-          env:
-            REGISTRY_HOST: $(REGISTRY_HOST)
+      - job: deploy_dev
+        displayName: "Deploy"
+        dependsOn: build_push
 
-    # DEPLOY PROD
-    - job: deploy_prod
-      displayName: "Deploy Production"
-      dependsOn: build_push
-      pool:
-        name: pitron-dev
-      steps:
-        - checkout: self
-          clean: 'true'
+        pool:
+          name: pitron-dev
 
-        - task: DownloadSecureFile@1
-          name: envFile
-          displayName: "Download env file from Secure Files"
-          inputs:
-            secureFile: "ehte_prod.env"
+        steps:
+          - checkout: self
+            clean: true
 
-        - script: |
-            cp $(envFile.secureFilePath) $(Build.SourcesDirectory)/.env
-          displayName: "Place env file in workspace"
+          - task: DownloadSecureFile@1
+            name: envFile
+            displayName: "Download ehte-dev.env"
+            inputs:
+              secureFile: "ehte-dev.env"
 
-        - script: |
-            set -e
-            echo "$REGISTRY_PASSWORD" | docker login "$REGISTRY_HOST" \
-              -u "$REGISTRY_USER" \
-              --password-stdin
-            docker pull $REGISTRY_HOST/$IMAGE_NAME:prod-latest
-            docker compose up -d --pull always --force-recreate
-            docker compose ps
-          displayName: "Deploy PROD"
-          workingDirectory: $(Build.SourcesDirectory)
-          env:
-            REGISTRY_HOST: $(REGISTRY_HOST)
-            REGISTRY_USER: $(REGISTRY_USER)
-            REGISTRY_PASSWORD: $(REGISTRY_PASSWORD)
-            IMAGE_NAME: $(IMAGE_NAME)
-            IMAGE_TAG: prod-latest
+          - script: |
+              set -e
+
+              cp "$(envFile.secureFilePath)" "$(Build.SourcesDirectory)/.env"
+              chmod 600 "$(Build.SourcesDirectory)/.env"
+
+              # Strip invalid dotenv lines (keys with spaces) if present.
+              sed -i '/^IMAP Port=/d;/^POP3 Port=/d;/^SMTP Port=/d' "$(Build.SourcesDirectory)/.env"
+
+              echo "$REGISTRY_PASSWORD" | docker login "$REGISTRY_HOST" \
+              -u "$REGISTRY_USER" --password-stdin
+
+              SHARED_MINIO_NETWORK="$(
+                docker inspect shared-minio -f '{{range $k, $v := .NetworkSettings.Networks}}{{println $k}}{{end}}' \
+                | sed '/^$/d' | grep -v '^bridge$' | head -1
+              )"
+              if [ -z "$SHARED_MINIO_NETWORK" ]; then
+                SHARED_MINIO_NETWORK="$(
+                  docker inspect shared-minio -f '{{range $k, $v := .NetworkSettings.Networks}}{{println $k}}{{end}}' \
+                  | sed '/^$/d' | head -1
+                )"
+              fi
+              if [ -z "$SHARED_MINIO_NETWORK" ]; then
+                echo "Could not find docker network for shared-minio — aborting (will not create a new MinIO)."
+                exit 1
+              fi
+              echo "Using shared-minio network: $SHARED_MINIO_NETWORK"
+              export SHARED_MINIO_NETWORK
+
+              if [ "$SHARED_MINIO_NETWORK" = "bridge" ]; then
+                export MINIO_ENDPOINT=host.docker.internal
+                export MINIO_PORT=9100
+              else
+                export MINIO_ENDPOINT=shared-minio
+                export MINIO_PORT=9000
+              fi
+
+              docker rm -f ehte_backend-dev 2>/dev/null || true
+
+              docker compose -f docker-compose.yml pull
+              docker compose -f docker-compose.yml up -d
+
+              docker ps | grep ehte_backend-dev
+
+            displayName: "Deploy (dev)"
+
+            env:
+              REGISTRY_HOST: $(REGISTRY_HOST)
+              REGISTRY_USER: $(REGISTRY_USER)
+              REGISTRY_PASSWORD: $(REGISTRY_PASSWORD)
+              IMAGE_NAME: $(IMAGE_NAME)
+
+  # =========================
+  # PR → MAIN/MASTER : CI ONLY
+  # =========================
+  - stage: CI_PROD
+    displayName: "CI (PR → main)"
+    condition: and(eq(variables['Build.Reason'], 'PullRequest'), or(eq(variables['System.PullRequest.TargetBranchName'], 'main'), eq(variables['System.PullRequest.TargetBranchName'], 'master')))
+
+    jobs:
+      - job: build
+        pool:
+          name: pitron-dev
+
+        steps:
+          - checkout: self
+            clean: true
+
+          - task: NodeTool@0
+            inputs:
+              versionSpec: "22.x"
+            displayName: "Use Node 22"
+
+          - script: |
+              set -e
+              npm ci
+              export DATABASE_URL="postgresql://placeholder:placeholder@localhost:5432/placeholder"
+              npx prisma generate --schema=./prisma/schema
+              npm run type-check
+              npm run build
+            displayName: "Install, Prisma generate & Build"
+
+  # =====================
+  # MERGE → MAIN : CD PROD
+  # (build & push only — prod deploy is not split onto another host yet)
+  # =====================
+  - stage: CD_PROD
+    displayName: "CD (prod)"
+    condition: and(ne(variables['Build.Reason'], 'PullRequest'), or(eq(variables['Build.SourceBranch'], 'refs/heads/main'), eq(variables['Build.SourceBranch'], 'refs/heads/master')))
+
+    variables:
+      - group: Ehte-registry-dev
+
+    jobs:
+      - job: build_push
+        displayName: "Build & Push"
+
+        pool:
+          name: pitron-dev
+
+        steps:
+          - checkout: self
+            clean: true
+
+          - script: |
+              set -e
+
+              echo "$REGISTRY_PASSWORD" | docker login "$REGISTRY_HOST" \
+              -u "$REGISTRY_USER" --password-stdin
+
+              docker build --pull --no-cache \
+                -t "$REGISTRY_HOST/$IMAGE_NAME:prod-latest" \
+                -t "$REGISTRY_HOST/$IMAGE_NAME:prod-$(Build.BuildId)" .
+
+              docker push "$REGISTRY_HOST/$IMAGE_NAME:prod-latest"
+              docker push "$REGISTRY_HOST/$IMAGE_NAME:prod-$(Build.BuildId)"
+
+            displayName: "Build & Push (prod)"
+
+            env:
+              REGISTRY_HOST: $(REGISTRY_HOST)
+              REGISTRY_USER: $(REGISTRY_USER)
+              REGISTRY_PASSWORD: $(REGISTRY_PASSWORD)
+              IMAGE_NAME: $(IMAGE_NAME)
