@@ -1,0 +1,20 @@
+* [33mfa92fe8[m[33m ([m[1;36mHEAD -> [m[1;32mdev[m[33m, [m[1;31morigin/dev[m[33m, [m[1;31mazure/dev[m[33m)[m feat(auth): add OTP-gated admin/user change-password flows, split reset vs change, wire password notifications
+* [33me79b219[m feat: integrate SendET SMS provider and update OTP flows
+* [33mfeb1c09[m feat(core): harden content and information submission flows
+* [33m18fdd87[m fix(core): update report and missing person handling
+* [33m2ffee23[m feat(post): add review workflow (idempotency, admin claims, dual-control child safety)
+* [33m74f73f2[m refactore(app):github workflow setup
+* [33mc71bcef[m chore(repo): add GitHub workflows and project gitignore
+* [33m70051e2[m refactor(docs):documentation add in Ehte project
+* [33m7d89c10[m chore: configure development tools and git hooks
+* [33m4b37590[m docs: add project documentation structure
+* [33m11fea5b[m refactor(media): move media folder enum to common enums
+* [33m961f54d[m fix(deploy): align docker-compose and pipeline for Azure deploy
+* [33m909b2e1[m docs: update environment variables and deployment configuration
+* [33m29d4868[m fix(auth): register AdminAuthController/Service and correct DTO import path
+* [33m4a33135[m refactor(auth): split admin auth into dedicated controller/service/dto
+* [33m599bbfc[m feat(media): allow authenticated users to request presigned upload URLs
+* [33m52d1816[m fix(reports): remove duplicated controller content causing build failure
+* [33m87fbc45[m feat(reports,posts): accept credential in request body for reauth-gated endpoints
+* [33m855335c[m feat(app-module): register MediaModule
+* [33m35593ba[m feat(media): add presigned download URL endpoints across media-bearing modules

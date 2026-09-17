@@ -659,6 +659,16 @@ export class MissingPersonService {
   // FIX (item #13): attachment counts/total size are checked before
   // any MinIO round trips, and the validated sizes are persisted as
   // mediaTotalBytes.
+  //
+  // FIX (notification routing): NEW_MISSING_PERSON_REQUEST is an
+  // admin-queue event — the same family as NEW_REPORT/NEW_POST, both
+  // of which fan out to admins via createForAdmins in the listener —
+  // not a personal notification to the submitter. Previously this
+  // emitted with `userId: user.id`, which reads as "notify the
+  // submitter," which doesn't make sense for a "new case needs
+  // review" event and doesn't match the NEW_REPORT/NEW_POST pattern.
+  // The submitter-facing `userId` field is dropped from the payload
+  // accordingly; the listener's admin fan-out only needs the case id.
   // ─────────────────────────────────────────────
 
   private async enforceCreateRateLimit(userId: string): Promise<void> {
@@ -752,8 +762,13 @@ export class MissingPersonService {
       },
     });
 
+    // FIXED — was `{ userId: user.id, missingPersonId }`, which
+    // reads as a personal notification to the submitter. This is an
+    // admin-queue event (mirrors NEW_REPORT/NEW_POST), so it carries
+    // no `userId` — the listener fans it out to every ADMIN/
+    // SUPER_ADMIN via createForAdmins instead of notifying the
+    // person who just submitted the case.
     this.eventEmitter.emit(NotificationEventEnum.NEW_MISSING_PERSON_REQUEST, {
-      userId: user.id,
       missingPersonId: missingPerson.id,
     });
 

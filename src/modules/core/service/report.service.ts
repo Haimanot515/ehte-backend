@@ -479,6 +479,11 @@ export class ReportService {
   // FIX (item #13): attachment counts/total size are checked before
   // any MinIO round trips, and the validated sizes are persisted as
   // mediaTotalBytes.
+  //
+  // FIX (notifications): REPORT_RECEIVED and NEW_REPORT now include
+  // caseReference — previously omitted, which meant the listener's
+  // "Your report {caseReference} has been received" message rendered
+  // as "Your report undefined has been received."
   // ─────────────────────────────────────────────
 
   private async enforceCreateRateLimit(userId: string): Promise<void> {
@@ -564,10 +569,12 @@ export class ReportService {
     this.eventEmitter.emit(NotificationEventEnum.REPORT_RECEIVED, {
       reportId: report.id,
       userId: user.id,
+      caseReference: report.caseReference,
     });
 
     this.eventEmitter.emit(NotificationEventEnum.NEW_REPORT, {
       reportId: report.id,
+      caseReference: report.caseReference,
     });
 
     return report;
@@ -615,6 +622,10 @@ export class ReportService {
   // and mediaTotalBytes is recomputed from the previous total
   // plus/minus the added/removed files' sizes — same approach as
   // PostService.updateMyPost.
+  //
+  // FIX (notifications): REPORT_UPDATED now includes caseReference
+  // and status — previously omitted, so the listener's "Status: X"
+  // message rendered as "Status: undefined."
   // ─────────────────────────────────────────────
 
   async update(user: CurrentUserDto, reportId: string, data: UpdateReportDto) {
@@ -698,6 +709,8 @@ export class ReportService {
     this.eventEmitter.emit(NotificationEventEnum.REPORT_UPDATED, {
       reportId: report.id,
       userId: user.id,
+      caseReference: report.caseReference,
+      status: report.status,
     });
 
     return report;
@@ -726,6 +739,9 @@ export class ReportService {
   // row deletion. If withdrawn-report media should also be purged
   // from MinIO, that's a deliberate policy decision to make
   // explicitly, not something to infer from this pattern.
+  //
+  // FIX (notifications): REPORT_UPDATED now includes caseReference
+  // and status, same as update()/updateStatus().
   // ─────────────────────────────────────────────
 
   async withdraw(user: CurrentUserDto, reportId: string) {
@@ -770,6 +786,8 @@ export class ReportService {
     this.eventEmitter.emit(NotificationEventEnum.REPORT_UPDATED, {
       reportId: report.id,
       userId: user.id,
+      caseReference: report.caseReference,
+      status: report.status,
     });
 
     return report;
@@ -976,6 +994,9 @@ export class ReportService {
   // FIX (item #21): on a transition TO REJECTED specifically, checks
   // whether the reporter has crossed the auto-flag threshold for
   // repeated rejections.
+  //
+  // FIX (notifications): REPORT_UPDATED now includes caseReference
+  // and status, same as update()/withdraw().
   // ─────────────────────────────────────────────
 
   async updateStatus(admin: CurrentUserDto, reportId: string, data: UpdateReportStatusDto) {
@@ -1025,6 +1046,8 @@ export class ReportService {
     this.eventEmitter.emit(NotificationEventEnum.REPORT_UPDATED, {
       reportId: report.id,
       userId: report.userId,
+      caseReference: report.caseReference,
+      status: report.status,
     });
 
     if (data.status === ReportStatus.REJECTED) {
@@ -1043,6 +1066,9 @@ export class ReportService {
   // and refuses to open a second request while one is
   // still PENDING — otherwise requests could stack up
   // with no way for the user to tell which is current.
+  //
+  // FIX (notifications): MORE_INFORMATION_REQUESTED now includes
+  // caseReference — previously omitted.
   // ─────────────────────────────────────────────
 
   async requestMoreInformation(
@@ -1088,6 +1114,7 @@ export class ReportService {
 
     this.eventEmitter.emit(NotificationEventEnum.MORE_INFORMATION_REQUESTED, {
       reportId,
+      caseReference: existing.caseReference,
       informationRequestId: infoRequest.id,
       userId: existing.userId,
       message: data.message,
@@ -1175,6 +1202,11 @@ export class ReportService {
   // Only the reporter who owns the report may respond, and only to
   // a request still PENDING. responseFiles is validated against
   // MinIO before being persisted, same as any other media field.
+  //
+  // FIX (notifications): INFORMATION_REQUEST_RESPONDED now includes
+  // caseReference, and now actually has a listener (previously the
+  // event was emitted but silently dropped — no @OnEvent handler
+  // existed for it).
   // ─────────────────────────────────────────────
 
   async respondToInformationRequest(
@@ -1226,6 +1258,7 @@ export class ReportService {
 
     this.eventEmitter.emit(NotificationEventEnum.INFORMATION_REQUEST_RESPONDED, {
       reportId,
+      caseReference: report.caseReference,
       informationRequestId: requestId,
       requestedById: infoRequest.requestedById,
     });
@@ -1256,6 +1289,10 @@ export class ReportService {
   // updated but status is left unchanged. Confirm this
   // silent-no-status-change behavior is what you want for
   // reassignment — otherwise consider throwing instead.
+  //
+  // FIX (notifications): REPORT_ASSIGNED now includes
+  // caseReference, and now actually has a listener (previously the
+  // event was emitted but silently dropped).
   // ─────────────────────────────────────────────
 
   async assign(admin: CurrentUserDto, reportId: string, data: AssignReportDto) {
@@ -1324,6 +1361,7 @@ export class ReportService {
 
     this.eventEmitter.emit(NotificationEventEnum.REPORT_ASSIGNED, {
       reportId,
+      caseReference: report.caseReference,
       assignedToUserId: data.assignedToUserId,
     });
 
@@ -1383,6 +1421,10 @@ export class ReportService {
   //
   // FIX (item #22/#26): conditional update guarded on the status
   // read a moment earlier, same as updateStatus()/assign().
+  //
+  // FIX (notifications): HIGH_PRIORITY_REPORT now includes
+  // caseReference and reason, and now actually has a listener
+  // (previously the event was emitted but silently dropped).
   // ─────────────────────────────────────────────
 
   async escalate(admin: CurrentUserDto, reportId: string, data: EscalateReportDto) {
@@ -1430,6 +1472,8 @@ export class ReportService {
 
     this.eventEmitter.emit(NotificationEventEnum.HIGH_PRIORITY_REPORT, {
       reportId: report.id,
+      caseReference: report.caseReference,
+      reason: data.reason,
     });
 
     return report;
