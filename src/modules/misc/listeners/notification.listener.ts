@@ -14,6 +14,8 @@ import {
   PostRejectedEvent,
   MissingPersonRequestUpdatedEvent,
   SupportPaymentConfirmedEvent,
+  PasswordChangedEvent,
+  PasswordResetEvent,
 } from '../events/notification.events';
 
 @Injectable()
@@ -94,6 +96,33 @@ export class NotificationListener {
         event.amount !== undefined
           ? `Your support payment of ${event.amount} ETB has been confirmed.`
           : 'Your support payment has been confirmed.',
+    });
+  }
+
+  // Fired by AuthService.changePasswordVerify() and
+  // AdminAuthService.adminChangePasswordVerify() — the "I know my password, I'm
+  // changing it" flows, for both USER and ADMIN accounts. Previously emitted with no
+  // listener, so it was silently dropped by EventEmitter2.
+  @OnEvent(NotificationEventEnum.PASSWORD_CHANGED)
+  async handlePasswordChanged(event: PasswordChangedEvent) {
+    await this.notificationService.create({
+      userId: event.userId,
+      type: NotificationType.PASSWORD_CHANGED,
+      title: 'Password Changed',
+      body: "Your password was changed successfully. If this wasn't you, contact support immediately.",
+    });
+  }
+
+  // Fired by AuthService.resetPassword() and AdminAuthService.adminResetPassword() —
+  // the "I forgot my password entirely" flows, for both USER and ADMIN accounts.
+  // Previously emitted with no listener, so it was silently dropped by EventEmitter2.
+  @OnEvent(NotificationEventEnum.PASSWORD_RESET)
+  async handlePasswordReset(event: PasswordResetEvent) {
+    await this.notificationService.create({
+      userId: event.userId,
+      type: NotificationType.PASSWORD_RESET,
+      title: 'Password Reset',
+      body: "Your password was reset successfully. If this wasn't you, contact support immediately.",
     });
   }
 }

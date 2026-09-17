@@ -881,13 +881,14 @@ export class AuthService {
       throw new BadRequestException('wrong_current_password');
     }
 
-    // Reuses the password_reset purpose/SMS channel — same proof-of-phone pattern as
-    // forgotPassword(), just reached only after the current-password check above
-    // (forgotPassword() has no such check, since it's for users who've lost their password).
+    // Dedicated password_change purpose (distinct from password_reset, which stays
+    // scoped to forgotPassword()/resetPassword()) — same SMS channel and proof-of-phone
+    // pattern, just reached only after the current-password check above, and no longer
+    // redeemable via the forgot-password /verify endpoint or vice versa.
     const { verificationId } = await this.otpUtil.issueAndSendOtp(
       dbUser.id,
       this.requirePhone(dbUser.phone),
-      UserOtpPurposeEnum.password_reset,
+      UserOtpPurposeEnum.password_change,
       OtpChannelEnum.sms,
     );
 
@@ -914,7 +915,7 @@ export class AuthService {
 
     if (
       !otpRecord ||
-      otpRecord.purpose !== UserOtpPurposeEnum.password_reset ||
+      otpRecord.purpose !== UserOtpPurposeEnum.password_change ||
       otpRecord.usedAt ||
       otpRecord.expiresAt < new Date()
     ) {

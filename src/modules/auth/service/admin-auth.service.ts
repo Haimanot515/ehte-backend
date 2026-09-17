@@ -26,9 +26,9 @@ import { TokenUtil } from 'src/common/utils/token.util';
 
 import { sendEmail } from 'src/services/email/email.service';
 import {
-  renderOtpEmailSubject,
-  renderOtpEmailHtml,
-} from 'src/services/email/templates/otp-email.template';
+  renderEmailChangeVerificationSubject,
+  renderEmailChangeVerificationHtml,
+} from 'src/services/email/templates/email-change-verification.template';
 
 import {
   renderAdminRegistrationEmailSubject,
@@ -42,6 +42,12 @@ import {
 
 import { AuditEventEnum } from 'src/common/enums/shared/audit-events.enum';
 import { AuditEventPayload } from 'src/modules/misc/events/audit.events';
+
+import { NotificationEventEnum } from 'src/common/enums/shared/notification-events.enum';
+import {
+  PasswordChangedEvent,
+  PasswordResetEvent,
+} from 'src/modules/misc/events/notification.events';
 
 import {
   ResetPasswordDto,
@@ -972,10 +978,9 @@ export class AdminAuthService {
       diff: { method: 'otp', result: 'success', context: 'admin_reset_password' },
     });
 
-    // NOTE: AuthService.resetPassword() also emits a NotificationEventEnum.PASSWORD_RESET
-    // event here to trigger a user-facing notification. Wire the equivalent up on this
-    // side (event-emitter + PasswordResetEvent import) if admins should get the same
-    // notification — omitted here rather than guessed at.
+    // Notify after successful transaction — same as AuthService.resetPassword().
+    const resetEvent: PasswordResetEvent = { userId: otpRecord.user.id };
+    this.eventEmitter.emit(NotificationEventEnum.PASSWORD_RESET, resetEvent);
 
     return { message: 'password_reset_successful' };
   }
@@ -1019,13 +1024,14 @@ export class AdminAuthService {
       throw new BadRequestException('admin_email_missing');
     }
 
-    // Reuses the password_reset purpose + email channel — same proof-of-inbox pattern as
-    // adminForgotPassword(), just reached only after the current-password check above
-    // (adminForgotPassword() has no such check, since it's for admins who've lost their password).
+    // Dedicated password_change purpose (distinct from password_reset, which stays
+    // scoped to adminForgotPassword()/adminResetPassword()) — same email channel and
+    // proof-of-inbox pattern, just reached only after the current-password check above,
+    // and no longer redeemable via the forgot-password /verify endpoint or vice versa.
     const { verificationId } = await this.otpUtil.issueAndSendOtp(
       admin.id,
       admin.email,
-      UserOtpPurposeEnum.password_reset,
+      UserOtpPurposeEnum.password_change,
       OtpChannelEnum.email,
     );
 
@@ -1052,7 +1058,7 @@ export class AdminAuthService {
 
     if (
       !otpRecord ||
-      otpRecord.purpose !== UserOtpPurposeEnum.password_reset ||
+      otpRecord.purpose !== UserOtpPurposeEnum.password_change ||
       otpRecord.usedAt ||
       otpRecord.expiresAt < new Date()
     ) {
@@ -1076,7 +1082,7 @@ export class AdminAuthService {
         entityId: otpRecord.id,
         diff: {
           reason: 'too_many_otp_attempts',
-          purpose: 'admin_change_password',
+          purpose: 'password_change',
         },
       });
 
@@ -1103,7 +1109,7 @@ export class AdminAuthService {
           entityId: otpRecord.id,
           diff: {
             reason: 'too_many_otp_attempts',
-            purpose: 'admin_change_password',
+            purpose: 'password_change',
           },
         });
       }
@@ -1148,8 +1154,9 @@ export class AdminAuthService {
       diff: { method: 'otp', result: 'success', context: 'admin_change_password_completed' },
     });
 
-    // NOTE: same as adminResetPassword() — wire a NotificationEventEnum.PASSWORD_CHANGED
-    // event here if admins should get a user-facing notification on top of the audit log.
+    // Notify after successful transaction — same as AuthService.changePasswordVerify().
+    const changedEvent: PasswordChangedEvent = { userId: otpRecord.user.id };
+    this.eventEmitter.emit(NotificationEventEnum.PASSWORD_CHANGED, changedEvent);
 
     return { message: 'password_changed' };
   }
@@ -1228,14 +1235,15 @@ export class AdminAuthService {
     const changeEmailLink = `${appUrl}/admin/change-email/verify?token=${rawToken}`;
     const expiresInHours = Math.round(EMAIL_CHANGE_TOKEN_EXPIRES_MINUTES / 60) || 1;
 
-    // Reuses the OTP email template as a stand-in; swap for a dedicated template later.
+    // Dedicated link-based template — previously this borrowed the OTP-code template
+    // as a stand-in, which read wrong ("Your OTP is: https://...") for a clickable link.
     try {
       await sendEmail(
         newEmail,
-        renderOtpEmailSubject(),
-        renderOtpEmailHtml({
-          otp: changeEmailLink,
-          expiresInMinutes: EMAIL_CHANGE_TOKEN_EXPIRES_MINUTES,
+        renderEmailChangeVerificationSubject(),
+        renderEmailChangeVerificationHtml({
+          changeEmailLink,
+          expiresInHours,
         }),
       );
     } catch (error) {
