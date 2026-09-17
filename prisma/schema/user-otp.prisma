@@ -20,6 +20,7 @@ enum UserOtpPurposeEnum {
   email_verification
   phone_verification
   password_reset
+  password_change
   login_2fa
   admin_verification
   admin_invite_activation
