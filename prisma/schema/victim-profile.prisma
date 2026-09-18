@@ -29,34 +29,43 @@ model VictimProfile {
   isChildSafetyReviewed Boolean             @default(false)
   supports              Support[]
 
-  // NEW — which admin created this profile (item #5/#26 scoping,
-  // and generally useful for audit — nothing previously recorded
-  // who authored a profile).
+  // Which admin created this profile (item #5/#26 scoping, and
+  // generally useful for audit — nothing previously recorded who
+  // authored a profile).
   createdByUserId String?
 
-  // NEW — duplicate-submission protection (item #5), mirrors
+  // Duplicate-submission protection (item #5), mirrors
   // Report/Post/MissingPerson.idempotencyKey, but scoped to the
   // creating admin rather than a "submitter" (this model has none).
   idempotencyKey String?
 
-  // NEW — running total of attached-media bytes (item #13).
+  // Running total of attached-media bytes (item #13).
   mediaTotalBytes Int @default(0)
 
-  // NEW — self-serve admin claim (item #17), mirrors Post's
+  // Self-serve admin claim (item #17), mirrors Post's
   // claimedByUserId/claimedAt.
   claimedByUserId String?
   claimedAt       DateTime?
 
-  // NEW — child-safety dual control (item #16). Only meaningful
-  // when involvesChild = true. Mirrors Post's
+  // Child-safety dual control (item #16). Only meaningful when
+  // involvesChild = true. Mirrors Post's
   // childSafetyFirstConfirmedByUserId/At.
   childSafetyFirstConfirmedByUserId String?
   childSafetyFirstConfirmedAt       DateTime?
 
+  // Cached running total of confirmed money collected for this
+  // profile. Kept in sync incrementally by SupportService.updateStatus
+  // (only Support rows with status === CONFIRMED count — see that
+  // file's header comment), never client-writable (absent from
+  // Create/UpdateVictimProfileDto), and periodically checked against
+  // a live SUM() over Support by VictimProfileService.reconcileProfileTotal /
+  // reconcileAllTotals.
+  totalRaised Decimal @default(0) @db.Decimal(12, 2)
+
   @@unique([createdByUserId, idempotencyKey])
   @@index([status])
   @@index([involvesChild])
-  // NEW — supports findStalePending()'s cutoff query (item #15).
+  // Supports findStalePending()'s cutoff query (item #15).
   @@index([status, createdAt])
   @@map("victim_profile")
 }
