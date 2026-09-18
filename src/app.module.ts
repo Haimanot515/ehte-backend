@@ -111,6 +111,7 @@ import { ReauthService } from './services/reauthentication/reauth.service';
 // ─────────────────────────────────────────────
 
 import { AdminSeeder } from './common/seed/admin.seeder';
+import { UserSeeder } from './common/seed/user.seeder';
 import { RolesSeeder } from './common/seed/roles.seeder';
 import { PermissionsSeeder } from './common/seed/permissions.seeder';
 
@@ -779,6 +780,8 @@ import { PermissionsSeeder } from './common/seed/permissions.seeder';
     PermissionsSeeder,
 
     AdminSeeder,
+
+    UserSeeder,
   ],
 })
 export class AppModule {}
