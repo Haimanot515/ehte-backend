@@ -31,6 +31,13 @@ export class SupportService {
 
   // ─────────────────────────────────────────────
   // CREATE SUPPORT
+  //
+  // FIX (money-collected addition, notification correction): this
+  // previously emitted a "payment confirmed"-shaped notification at
+  // creation time, even though a brand-new support is PENDING and
+  // hasn't been verified by anyone. Now emits SUPPORT_PLEDGE_CREATED
+  // instead — SUPPORT_PAYMENT_CONFIRMED is reserved solely for the
+  // CONFIRMED transition in updateStatus() below.
   // ─────────────────────────────────────────────
 
   async create(user: CurrentUserDto, data: CreateSupportDto) {
@@ -104,11 +111,16 @@ export class SupportService {
 
     this.eventEmitter.emit(AuditEventEnum.SUPPORT_CREATED, createdPayload);
 
-    // Note: this notifies as if payment were confirmed at creation
-    // time, which is misleading — a PENDING support hasn't been
-    // confirmed by anyone yet. Consider firing a
-    // SUPPORT_PLEDGE_CREATED-style event here instead and reserving
-    // SUPPORT_PAYMENT_CONFIRMED for the confirm() transition below.
+    // FIX: was firing as if payment were confirmed at creation time,
+    // which is misleading — a PENDING support hasn't been confirmed
+    // by anyone yet. This now signals "pledge recorded, pending
+    // verification" instead; SUPPORT_PAYMENT_CONFIRMED fires only
+    // from the CONFIRMED transition in updateStatus() below.
+    this.eventEmitter.emit(NotificationEventEnum.SUPPORT_PLEDGE_CREATED, {
+      supportId: support.id,
+      userId: support.userId,
+      victimProfileId: support.victimProfileId,
+    });
 
     return support;
   }
@@ -162,6 +174,18 @@ export class SupportService {
 
   // ─────────────────────────────────────────────
   // UPDATE STATUS (internal — callers below enforce who's allowed)
+  //
+  // FIX (money-collected addition): a status transition that crosses
+  // into or out of SupportStatus.CONFIRMED now keeps
+  // VictimProfile.totalRaised in sync, atomically, in the same
+  // transaction as the status write.
+  //
+  // Counting rule (deliberately simple, not abstracted): a support
+  // counts toward totalRaised strictly while status === CONFIRMED.
+  // Moving to COMPLETED, CANCELLED, or FAILED all remove it from the
+  // total the same way — see the module-level note in
+  // VictimProfileService for why this isn't pulled into a shared
+  // helper yet.
   // ─────────────────────────────────────────────
 
   private async updateStatus(id: string, status: SupportStatus) {
@@ -179,10 +203,33 @@ export class SupportService {
       throw new BadRequestException('support_already_has_status');
     }
 
-    const updatedSupport = await this.prisma.support.update({
-      where: { id },
-      data: { status },
-    });
+    const wasCounted = previousStatus === SupportStatus.CONFIRMED;
+    const isCounted = status === SupportStatus.CONFIRMED;
+    const amount = Number(support.recipientAmount ?? support.amount ?? 0);
+
+    // Only non-zero when the support is entering or leaving CONFIRMED.
+    // E.g. PENDING -> CONFIRMED: +amount.
+    //      CONFIRMED -> COMPLETED: -amount (per the strict rule above).
+    //      CONFIRMED -> CANCELLED: -amount.
+    //      COMPLETED -> CANCELLED: 0 (wasn't counted, still isn't).
+    let totalRaisedDelta = 0;
+    if (!wasCounted && isCounted) totalRaisedDelta = amount;
+    if (wasCounted && !isCounted) totalRaisedDelta = -amount;
+
+    const [updatedSupport] = await this.prisma.$transaction([
+      this.prisma.support.update({
+        where: { id },
+        data: { status },
+      }),
+      ...(totalRaisedDelta !== 0
+        ? [
+            this.prisma.victimProfile.update({
+              where: { id: support.victimProfileId },
+              data: { totalRaised: { increment: totalRaisedDelta } },
+            }),
+          ]
+        : []),
+    ]);
 
     let auditEvent:
       | AuditEventEnum.SUPPORT_CONFIRMED
@@ -218,6 +265,7 @@ export class SupportService {
           previousStatus,
           currentStatus: updatedSupport.status,
           result: 'success',
+          totalRaisedDelta,
         },
       };
 

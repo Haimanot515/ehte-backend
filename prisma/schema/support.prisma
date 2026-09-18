@@ -19,6 +19,10 @@ model Support {
   @@index([victimProfileId])
   @@index([userId])
   @@index([status])
+  // Supports the reconciliation queries in VictimProfileService
+  // (findMany where victimProfileId + status === CONFIRMED) without
+  // a full table scan as Support grows.
+  @@index([victimProfileId, status])
   @@map("support")
 }
 
