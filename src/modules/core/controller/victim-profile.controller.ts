@@ -46,18 +46,6 @@ export class VictimProfileController {
   // ─────────────────────────────────────────────
   // CREATE
   // POST /victim-profiles
-  //
-  // FIX (item #5): accepts an optional Idempotency-Key header, same
-  // convention as ReportController.create, so a client retrying
-  // after a dropped response doesn't create a duplicate profile.
-  //
-  // FIX (item #12): route-specific burst limit — creation is
-  // admin-only so spam risk is lower than a public-facing endpoint,
-  // but a compromised or careless admin session shouldn't be able to
-  // flood the review queue either.
-  //
-  // FIX (item #23): sensitive/high-stakes creation now requires
-  // re-authentication, matching ReportController.create's posture.
   // ─────────────────────────────────────────────
 
   @Post()
@@ -97,6 +85,24 @@ export class VictimProfileController {
     query: FindPublicVictimProfilesQueryDto,
   ) {
     return this.victimProfileService.findPublic(query);
+  }
+
+  // ─────────────────────────────────────────────
+  // PUBLIC — PLATFORM-WIDE TOTAL RAISED
+  // GET /victim-profiles/public/stats
+  //
+  // NEW. Placed before 'public/:id' so Nest's route matching
+  // doesn't treat "stats" as an :id param — same reasoning as why
+  // 'public' and 'public/:id' are already ordered this way below.
+  // ─────────────────────────────────────────────
+
+  @Get('public/stats')
+  @AllowAnonymous()
+  @ApiOperation({
+    summary: 'Get platform-wide total raised across published victim profiles',
+  })
+  async getPublicStats() {
+    return this.victimProfileService.getPublicStats();
   }
 
   // ─────────────────────────────────────────────
@@ -195,15 +201,9 @@ export class VictimProfileController {
   }
 
   // ─────────────────────────────────────────────
-  // CLAIM / UNCLAIM (item #17)
+  // CLAIM / UNCLAIM
   // PATCH /victim-profiles/:id/claim
   // PATCH /victim-profiles/:id/unclaim
-  //
-  // Self-serve claim, open to any ADMIN/SUPER_ADMIN — the write-side
-  // gate lives in VictimProfileService.assertAdminCanAccessProfile,
-  // which every mutating method below now calls. Unclaim is left
-  // open to ADMIN too (the service itself restricts a plain ADMIN to
-  // releasing only their own claim; SUPER_ADMIN can release any).
   // ─────────────────────────────────────────────
 
   @Patch(':id/claim')
@@ -312,14 +312,14 @@ export class VictimProfileController {
   @RequirePermissions(PermissionsEnum.DASHBOARD_READ)
   @ApiBearerAuth('access-token')
   @ApiOperation({
-    summary: 'Admin: get victim profile counts by status',
+    summary: 'Admin: get victim profile counts by status, including total raised',
   })
   async getStats() {
     return this.victimProfileService.getStats();
   }
 
   // ─────────────────────────────────────────────
-  // ADMIN — STALE / UNCLAIMED-TOO-LONG PROFILES (item #15)
+  // ADMIN — STALE / UNCLAIMED-TOO-LONG PROFILES
   // GET /victim-profiles/admin/stale
   // ─────────────────────────────────────────────
 
@@ -332,6 +332,70 @@ export class VictimProfileController {
   })
   async findStalePending() {
     return this.victimProfileService.findStalePending();
+  }
+
+  // ─────────────────────────────────────────────
+  // ADMIN — RECONCILE totalRaised (financial-integrity check)
+  // GET  /victim-profiles/admin/reconcile-totals       — dry run, all profiles
+  // POST /victim-profiles/admin/reconcile-totals       — auto-correct, all profiles
+  // GET  /victim-profiles/admin/:id/reconcile-total    — dry run, one profile
+  //
+  // NEW. Read-only diffing uses SUPPORT_PAYMENT_READ (same tier as
+  // viewing bank details); the auto-correcting write uses
+  // SUPPORT_PAYMENT_MANAGE (same tier as editing bank details) plus
+  // re-authentication, since it rewrites a financial total on
+  // possibly many profiles at once.
+  //
+  // Placed above ':id' routes is unnecessary here since these all
+  // use the literal 'admin' prefix already used by the routes below,
+  // but kept in this position for readability/grouping with the
+  // other admin/* routes.
+  // ─────────────────────────────────────────────
+
+  @Get('admin/reconcile-totals')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.SUPPORT_PAYMENT_READ)
+  @ApiBearerAuth('access-token')
+  @ApiOperation({
+    summary: 'Admin: diff cached vs. live totalRaised across all profiles (dry run, no writes)',
+  })
+  async reconcileAllTotalsDryRun(
+    @CurrentUser()
+    user: CurrentUserDto,
+  ) {
+    return this.victimProfileService.reconcileAllTotals(user, false);
+  }
+
+  @Post('admin/reconcile-totals')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.SUPPORT_PAYMENT_MANAGE)
+  @RequireReauthentication()
+  @ApiBearerAuth('access-token')
+  @ApiOperation({
+    summary: 'Admin: reconcile and auto-correct totalRaised across all profiles',
+  })
+  async reconcileAllTotalsFix(
+    @CurrentUser()
+    user: CurrentUserDto,
+  ) {
+    return this.victimProfileService.reconcileAllTotals(user, true);
+  }
+
+  @Get('admin/:id/reconcile-total')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.SUPPORT_PAYMENT_READ)
+  @ApiBearerAuth('access-token')
+  @ApiOperation({
+    summary: 'Admin: diff cached vs. live totalRaised for one profile (dry run, no writes)',
+  })
+  async reconcileOneDryRun(
+    @CurrentUser()
+    user: CurrentUserDto,
+
+    @Param('id')
+    id: string,
+  ) {
+    return this.victimProfileService.reconcileProfileTotal(user, id, false);
   }
 
   // ─────────────────────────────────────────────
@@ -398,16 +462,8 @@ export class VictimProfileController {
   }
 
   // ─────────────────────────────────────────────
-  // ADMIN — CHILD SAFETY REVIEW (§32 / item #16)
+  // ADMIN — CHILD SAFETY REVIEW
   // PATCH /victim-profiles/admin/:id/child-safety-review
-  //
-  // Requires two DIFFERENT admins to confirm before
-  // isChildSafetyReviewed flips true — see the service method's
-  // header comment. The response for a first confirmation looks the
-  // same shape as a full profile but isChildSafetyReviewed will
-  // still read false; the client should surface that distinction
-  // (e.g. "waiting on a second reviewer") rather than treating any
-  // 200 as "review complete."
   // ─────────────────────────────────────────────
 
   @Patch('admin/:id/child-safety-review')
@@ -459,11 +515,6 @@ export class VictimProfileController {
   // ─────────────────────────────────────────────
   // ADMIN — UPDATE BANK DETAILS
   // PATCH /victim-profiles/admin/:id/bank-details
-  //
-  // FIX (item #23): re-authentication added — this is the most
-  // financially sensitive write in this controller (it's the
-  // off-platform transfer destination), and SUPPORT_PAYMENT_MANAGE
-  // alone isn't a second factor.
   // ─────────────────────────────────────────────
 
   @Patch('admin/:id/bank-details')
