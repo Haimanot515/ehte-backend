@@ -8,6 +8,11 @@ import { Prisma, VictimProfile, VictimProfileStatus } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
 import { RolesEnum } from 'src/common/enums/roles.enum';
+import { resolveActorType } from 'src/common/utils/actor-type.util';
+
+import { AuditEventEnum } from 'src/common/enums/shared/audit-events.enum';
+import { AuditEventPayload } from 'src/modules/misc/events/audit.events';
+import { NotificationEventEnum } from 'src/common/enums/shared/notification-events.enum';
 
 import { MinioService } from 'src/services/minio/minio.service';
 
@@ -48,6 +53,28 @@ export class VictimProfileService {
     private readonly minioService: MinioService,
     private readonly configService: ConfigService,
   ) {}
+
+  // ─────────────────────────────────────────────
+  // AUDIT HELPER
+  //
+  // FIX (🔴 #1): this service previously emitted raw string literals
+  // ('victim_profile.created', 'notification.victim_profile.created',
+  // etc.) instead of going through the shared AuditEventEnum /
+  // NotificationEventEnum values every other service uses.
+  // EventEmitter2 matches on exact string equality, so none of those
+  // 18 emit sites ever reached AuditLogListener or NotificationListener
+  // — zero audit rows, zero notifications, for every victim-profile
+  // action including child-safety review and consent revocation.
+  //
+  // This mirrors the emitAudit() shape used in report.service.ts /
+  // post.service.ts / missing-person.service.ts / etc. (see 🔵 #4 —
+  // worth extracting to one shared injectable so a future service
+  // doesn't reintroduce this same class of bug).
+  // ─────────────────────────────────────────────
+
+  private emitAudit(payload: AuditEventPayload): void {
+    this.eventEmitter.emit(payload.action, payload);
+  }
 
   // ─────────────────────────────────────────────
   // MEDIA HELPERS
@@ -267,6 +294,10 @@ export class VictimProfileService {
   // calls assertAdminCanAccessProfile(), so claiming is what
   // actually prevents two admins from silently working the same
   // profile.
+  //
+  // Audit only — claim/unclaim never had a paired notification emit
+  // in the original code, so none is added here (see the enum's own
+  // comment on this).
   // ─────────────────────────────────────────────
 
   async claim(admin: CurrentUserDto, id: string) {
@@ -295,11 +326,15 @@ export class VictimProfileService {
 
     const profile = await this.prisma.victimProfile.findUniqueOrThrow({ where: { id } });
 
-    this.eventEmitter.emit('victim_profile.claimed', {
-      actorId: admin.id,
-      victimProfileId: id,
-      action: 'CLAIM',
+    this.emitAudit({
+      userId: admin.id,
+      actorType: resolveActorType(this.getRoles(admin)),
+      action: AuditEventEnum.VICTIM_PROFILE_CLAIMED,
       entity: 'VictimProfile',
+      entityId: id,
+      diff: {
+        result: 'success',
+      },
     });
 
     return profile;
@@ -333,12 +368,16 @@ export class VictimProfileService {
 
     const profile = await this.prisma.victimProfile.findUniqueOrThrow({ where: { id } });
 
-    this.eventEmitter.emit('victim_profile.unclaimed', {
-      actorId: admin.id,
-      victimProfileId: id,
-      action: 'UNCLAIM',
+    this.emitAudit({
+      userId: admin.id,
+      actorType: resolveActorType(roles),
+      action: AuditEventEnum.VICTIM_PROFILE_UNCLAIMED,
       entity: 'VictimProfile',
-      previousClaimedByUserId: existing.claimedByUserId,
+      entityId: id,
+      diff: {
+        previousClaimedByUserId: existing.claimedByUserId,
+        result: 'success',
+      },
     });
 
     return profile;
@@ -350,7 +389,8 @@ export class VictimProfileService {
   // FIX (item #14/#25): now emits an audit event on access, matching
   // ReportService.getMediaDownloadUrlForAdmin — previously this
   // route left no trace that a specific admin pulled a specific
-  // victim's media.
+  // victim's media. Audit only — no notification counterpart existed
+  // in the original code for this internal/admin-only action.
   // ─────────────────────────────────────────────
 
   async getMediaDownloadUrl(admin: CurrentUserDto, id: string, key: string): Promise<{ url: string }> {
@@ -369,12 +409,16 @@ export class VictimProfileService {
 
     const url = await this.minioService.generatePresignedDownloadUrl(key);
 
-    this.eventEmitter.emit('victim_profile.media_downloaded', {
-      actorId: admin.id,
-      victimProfileId: id,
-      action: 'MEDIA_DOWNLOADED',
+    this.emitAudit({
+      userId: admin.id,
+      actorType: resolveActorType(this.getRoles(admin)),
+      action: AuditEventEnum.VICTIM_PROFILE_MEDIA_DOWNLOADED,
       entity: 'VictimProfile',
-      key,
+      entityId: id,
+      diff: {
+        key,
+        result: 'success',
+      },
     });
 
     return { url };
@@ -523,15 +567,23 @@ export class VictimProfileService {
       throw err;
     }
 
-    this.eventEmitter.emit('victim_profile.created', {
-      actorId: currentUser.id,
-      victimProfileId: profile.id,
-      action: 'CREATE',
+    this.emitAudit({
+      userId: currentUser.id,
+      actorType: resolveActorType(this.getRoles(currentUser)),
+      action: AuditEventEnum.VICTIM_PROFILE_CREATED,
       entity: 'VictimProfile',
+      entityId: profile.id,
+      diff: {
+        result: 'success',
+      },
     });
 
-    this.eventEmitter.emit('notification.victim_profile.created', {
-      actorId: currentUser.id,
+    // NOTE (open design question from the audit): createdByUserId is
+    // the recipient here, since VictimProfile has no separate
+    // submitter/owner relation. NotificationListener already skips
+    // sending when this is null.
+    this.eventEmitter.emit(NotificationEventEnum.VICTIM_PROFILE_CREATED, {
+      userId: profile.createdByUserId,
       victimProfileId: profile.id,
     });
 
@@ -851,18 +903,20 @@ export class VictimProfileService {
     // Only after the DB write commits.
     await this.deleteMediaFiles(removed);
 
-    this.eventEmitter.emit('victim_profile.updated', {
-      actorId: admin.id,
-      victimProfileId: id,
-      action: 'UPDATE',
+    this.emitAudit({
+      userId: admin.id,
+      actorType: resolveActorType(this.getRoles(admin)),
+      action: AuditEventEnum.VICTIM_PROFILE_UPDATED,
       entity: 'VictimProfile',
-
-      previousStatus: profile.status,
-      newStatus: VictimProfileStatus.PENDING,
+      entityId: id,
+      diff: {
+        previousStatus: profile.status,
+        newStatus: VictimProfileStatus.PENDING,
+      },
     });
 
-    this.eventEmitter.emit('notification.victim_profile.updated', {
-      actorId: admin.id,
+    this.eventEmitter.emit(NotificationEventEnum.VICTIM_PROFILE_UPDATED, {
+      userId: profile.createdByUserId,
       victimProfileId: id,
     });
 
@@ -895,17 +949,19 @@ export class VictimProfileService {
 
     await this.deleteMediaFiles(this.collectMediaFields(profile));
 
-    this.eventEmitter.emit('victim_profile.deleted', {
-      actorId: admin.id,
-      victimProfileId: id,
-      action: 'DELETE',
+    this.emitAudit({
+      userId: admin.id,
+      actorType: resolveActorType(this.getRoles(admin)),
+      action: AuditEventEnum.VICTIM_PROFILE_DELETED,
       entity: 'VictimProfile',
-
-      previousStatus: profile.status,
+      entityId: id,
+      diff: {
+        previousStatus: profile.status,
+      },
     });
 
-    this.eventEmitter.emit('notification.victim_profile.deleted', {
-      actorId: admin.id,
+    this.eventEmitter.emit(NotificationEventEnum.VICTIM_PROFILE_DELETED, {
+      userId: profile.createdByUserId,
       victimProfileId: id,
     });
 
@@ -1203,34 +1259,36 @@ export class VictimProfileService {
         : {}),
     });
 
-    this.eventEmitter.emit('victim_profile.gates_updated', {
-      actorId: admin.id,
-      victimProfileId: id,
-      action: 'UPDATE_APPROVAL_GATES',
+    this.emitAudit({
+      userId: admin.id,
+      actorType: resolveActorType(this.getRoles(admin)),
+      action: AuditEventEnum.VICTIM_PROFILE_GATES_UPDATED,
       entity: 'VictimProfile',
+      entityId: id,
+      diff: {
+        previousStatus: profile.status,
+        newStatus: status,
 
-      previousStatus: profile.status,
-      newStatus: status,
+        previousGates: {
+          isVerified: profile.isVerified,
+          isSafetyReviewed: profile.isSafetyReviewed,
+          hasConsent: profile.hasConsent,
+          isPrivacyReviewed: profile.isPrivacyReviewed,
+          isAdminApproved: profile.isAdminApproved,
+        },
 
-      previousGates: {
-        isVerified: profile.isVerified,
-        isSafetyReviewed: profile.isSafetyReviewed,
-        hasConsent: profile.hasConsent,
-        isPrivacyReviewed: profile.isPrivacyReviewed,
-        isAdminApproved: profile.isAdminApproved,
-      },
-
-      newGates: {
-        isVerified,
-        isSafetyReviewed,
-        hasConsent,
-        isPrivacyReviewed,
-        isAdminApproved,
+        newGates: {
+          isVerified,
+          isSafetyReviewed,
+          hasConsent,
+          isPrivacyReviewed,
+          isAdminApproved,
+        },
       },
     });
 
-    this.eventEmitter.emit('notification.victim_profile.gates_updated', {
-      actorId: admin.id,
+    this.eventEmitter.emit(NotificationEventEnum.VICTIM_PROFILE_GATES_UPDATED, {
+      userId: profile.createdByUserId,
       victimProfileId: id,
       status,
     });
@@ -1281,12 +1339,18 @@ export class VictimProfileService {
           childSafetyFirstConfirmedAt: new Date(),
         });
 
-        this.eventEmitter.emit('victim_profile.child_safety_first_confirmed', {
-          actorId: admin.id,
-          victimProfileId: id,
-          action: 'CHILD_SAFETY_FIRST_CONFIRM',
+        // Audit only — the first confirmation is an interim state
+        // (isChildSafetyReviewed hasn't actually flipped yet), so no
+        // notification fires until the second confirmation below.
+        this.emitAudit({
+          userId: admin.id,
+          actorType: resolveActorType(this.getRoles(admin)),
+          action: AuditEventEnum.VICTIM_PROFILE_CHILD_SAFETY_FIRST_CONFIRMED,
           entity: 'VictimProfile',
-          reviewNotes: data.reviewNotes,
+          entityId: id,
+          diff: {
+            reviewNotes: data.reviewNotes,
+          },
         });
 
         return updated;
@@ -1311,22 +1375,24 @@ export class VictimProfileService {
         status,
       });
 
-      this.eventEmitter.emit('victim_profile.child_safety_reviewed', {
-        actorId: admin.id,
-        victimProfileId: id,
-        action: 'UPDATE_CHILD_SAFETY_REVIEW',
+      this.emitAudit({
+        userId: admin.id,
+        actorType: resolveActorType(this.getRoles(admin)),
+        action: AuditEventEnum.VICTIM_PROFILE_CHILD_SAFETY_REVIEWED,
         entity: 'VictimProfile',
+        entityId: id,
+        diff: {
+          previousStatus: profile.status,
+          newStatus: status,
 
-        previousStatus: profile.status,
-        newStatus: status,
-
-        firstConfirmedBy: profile.childSafetyFirstConfirmedByUserId,
-        secondConfirmedBy: admin.id,
-        reviewNotes: data.reviewNotes,
+          firstConfirmedBy: profile.childSafetyFirstConfirmedByUserId,
+          secondConfirmedBy: admin.id,
+          reviewNotes: data.reviewNotes,
+        },
       });
 
-      this.eventEmitter.emit('notification.victim_profile.child_safety_reviewed', {
-        actorId: admin.id,
+      this.eventEmitter.emit(NotificationEventEnum.VICTIM_PROFILE_CHILD_SAFETY_REVIEWED, {
+        userId: profile.createdByUserId,
         victimProfileId: id,
         status,
       });
@@ -1354,19 +1420,24 @@ export class VictimProfileService {
       status,
     });
 
-    this.eventEmitter.emit('victim_profile.child_safety_review_reversed', {
-      actorId: admin.id,
-      victimProfileId: id,
-      action: 'UPDATE_CHILD_SAFETY_REVIEW',
+    this.emitAudit({
+      userId: admin.id,
+      actorType: resolveActorType(this.getRoles(admin)),
+      action: AuditEventEnum.VICTIM_PROFILE_CHILD_SAFETY_REVIEW_REVERSED,
       entity: 'VictimProfile',
-
-      previousStatus: profile.status,
-      newStatus: status,
-      reviewNotes: data.reviewNotes,
+      entityId: id,
+      diff: {
+        previousStatus: profile.status,
+        newStatus: status,
+        reviewNotes: data.reviewNotes,
+      },
     });
 
-    this.eventEmitter.emit('notification.victim_profile.child_safety_reviewed', {
-      actorId: admin.id,
+    // Reuses the same child-safety-reviewed notification event as the
+    // second-confirmation branch above — from the submitter's point
+    // of view, both are "the child-safety review status changed."
+    this.eventEmitter.emit(NotificationEventEnum.VICTIM_PROFILE_CHILD_SAFETY_REVIEWED, {
+      userId: profile.createdByUserId,
       victimProfileId: id,
       status,
     });
@@ -1413,23 +1484,25 @@ export class VictimProfileService {
       status,
     });
 
-    this.eventEmitter.emit('victim_profile.consent_revoked', {
-      actorId: admin.id,
-      victimProfileId: id,
-      action: 'REVOKE_CONSENT',
+    this.emitAudit({
+      userId: admin.id,
+      actorType: resolveActorType(this.getRoles(admin)),
+      action: AuditEventEnum.VICTIM_PROFILE_CONSENT_REVOKED,
       entity: 'VictimProfile',
+      entityId: id,
+      diff: {
+        previousStatus: profile.status,
+        newStatus: status,
 
-      previousStatus: profile.status,
-      newStatus: status,
+        previousConsentAt: profile.consentAt,
+        previousConsentRecordedBy: profile.consentRecordedBy,
 
-      previousConsentAt: profile.consentAt,
-      previousConsentRecordedBy: profile.consentRecordedBy,
-
-      reason: data.reason,
+        reason: data.reason,
+      },
     });
 
-    this.eventEmitter.emit('notification.victim_profile.consent_revoked', {
-      actorId: admin.id,
+    this.eventEmitter.emit(NotificationEventEnum.VICTIM_PROFILE_CONSENT_REVOKED, {
+      userId: profile.createdByUserId,
       victimProfileId: id,
     });
 
@@ -1474,20 +1547,22 @@ export class VictimProfileService {
       status,
     });
 
-    this.eventEmitter.emit('victim_profile.bank_details_updated', {
-      actorId: admin.id,
-      victimProfileId: id,
-      action: 'UPDATE_BANK_DETAILS',
+    this.emitAudit({
+      userId: admin.id,
+      actorType: resolveActorType(this.getRoles(admin)),
+      action: AuditEventEnum.VICTIM_PROFILE_BANK_DETAILS_UPDATED,
       entity: 'VictimProfile',
+      entityId: id,
+      diff: {
+        previousStatus: profile.status,
+        newStatus: status,
 
-      previousStatus: profile.status,
-      newStatus: status,
-
-      reapprovalRequired: wasApproved,
+        reapprovalRequired: wasApproved,
+      },
     });
 
-    this.eventEmitter.emit('notification.victim_profile.bank_details_updated', {
-      actorId: admin.id,
+    this.eventEmitter.emit(NotificationEventEnum.VICTIM_PROFILE_BANK_DETAILS_UPDATED, {
+      userId: profile.createdByUserId,
       victimProfileId: id,
       reapprovalRequired: wasApproved,
     });
@@ -1532,18 +1607,20 @@ export class VictimProfileService {
       isPublished: true,
     });
 
-    this.eventEmitter.emit('victim_profile.published', {
-      actorId: admin.id,
-      victimProfileId: id,
-      action: 'PUBLISH',
+    this.emitAudit({
+      userId: admin.id,
+      actorType: resolveActorType(this.getRoles(admin)),
+      action: AuditEventEnum.VICTIM_PROFILE_PUBLISHED,
       entity: 'VictimProfile',
-
-      previousStatus: profile.status,
-      newStatus: VictimProfileStatus.PUBLISHED,
+      entityId: id,
+      diff: {
+        previousStatus: profile.status,
+        newStatus: VictimProfileStatus.PUBLISHED,
+      },
     });
 
-    this.eventEmitter.emit('notification.victim_profile.published', {
-      actorId: admin.id,
+    this.eventEmitter.emit(NotificationEventEnum.VICTIM_PROFILE_PUBLISHED, {
+      userId: profile.createdByUserId,
       victimProfileId: id,
     });
 
@@ -1575,18 +1652,20 @@ export class VictimProfileService {
       isPublished: false,
     });
 
-    this.eventEmitter.emit('victim_profile.unpublished', {
-      actorId: admin.id,
-      victimProfileId: id,
-      action: 'UNPUBLISH',
+    this.emitAudit({
+      userId: admin.id,
+      actorType: resolveActorType(this.getRoles(admin)),
+      action: AuditEventEnum.VICTIM_PROFILE_UNPUBLISHED,
       entity: 'VictimProfile',
-
-      previousStatus: profile.status,
-      newStatus: VictimProfileStatus.UNPUBLISHED,
+      entityId: id,
+      diff: {
+        previousStatus: profile.status,
+        newStatus: VictimProfileStatus.UNPUBLISHED,
+      },
     });
 
-    this.eventEmitter.emit('notification.victim_profile.unpublished', {
-      actorId: admin.id,
+    this.eventEmitter.emit(NotificationEventEnum.VICTIM_PROFILE_UNPUBLISHED, {
+      userId: profile.createdByUserId,
       victimProfileId: id,
     });
 
@@ -1618,18 +1697,20 @@ export class VictimProfileService {
       isPublished: false,
     });
 
-    this.eventEmitter.emit('victim_profile.rejected', {
-      actorId: admin.id,
-      victimProfileId: id,
-      action: 'REJECT',
+    this.emitAudit({
+      userId: admin.id,
+      actorType: resolveActorType(this.getRoles(admin)),
+      action: AuditEventEnum.VICTIM_PROFILE_REJECTED,
       entity: 'VictimProfile',
-
-      previousStatus: profile.status,
-      newStatus: VictimProfileStatus.REJECTED,
+      entityId: id,
+      diff: {
+        previousStatus: profile.status,
+        newStatus: VictimProfileStatus.REJECTED,
+      },
     });
 
-    this.eventEmitter.emit('notification.victim_profile.rejected', {
-      actorId: admin.id,
+    this.eventEmitter.emit(NotificationEventEnum.VICTIM_PROFILE_REJECTED, {
+      userId: profile.createdByUserId,
       victimProfileId: id,
     });
 
@@ -1671,18 +1752,20 @@ export class VictimProfileService {
       isPublished: false,
     });
 
-    this.eventEmitter.emit('victim_profile.resubmitted', {
-      actorId: admin.id,
-      victimProfileId: id,
-      action: 'RESUBMIT',
+    this.emitAudit({
+      userId: admin.id,
+      actorType: resolveActorType(this.getRoles(admin)),
+      action: AuditEventEnum.VICTIM_PROFILE_RESUBMITTED,
       entity: 'VictimProfile',
-
-      previousStatus: profile.status,
-      newStatus: status,
+      entityId: id,
+      diff: {
+        previousStatus: profile.status,
+        newStatus: status,
+      },
     });
 
-    this.eventEmitter.emit('notification.victim_profile.resubmitted', {
-      actorId: admin.id,
+    this.eventEmitter.emit(NotificationEventEnum.VICTIM_PROFILE_RESUBMITTED, {
+      userId: profile.createdByUserId,
       victimProfileId: id,
       status,
     });
