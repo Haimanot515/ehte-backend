@@ -11,44 +11,37 @@ export type SendSmsResponse = {
 
 /*
  * ─────────────────────────────────────────────
- * SendET API CONTRACT — SOURCED FROM A "PREVIEW" PAGE, NOT CONFIRMED FINAL
+ * SendET API CONTRACT — CONFIRMED AGAINST A KNOWN-WORKING REFERENCE
+ * IMPLEMENTATION (see below), NOT JUST THE PREVIEW DOCS
  * ─────────────────────────────────────────────
- * Implemented against https://send.et/api-docs, which is explicitly
- * labeled by send.et themselves as a documentation PREVIEW:
+ * Originally implemented against https://send.et/api-docs (a page
+ * explicitly labeled by send.et as a documentation PREVIEW). Two
+ * details from that preview turned out to be wrong once compared
+ * against a working reference SMS service hitting the same API:
  *
- *   "This page previews structure and payloads. Final paths, headers,
- *    and enums will ship with the public release notes for send.et."
+ *   1. Endpoint path — preview implied POST https://api.send.et/v1/messages,
+ *      and this file appended just "/v1/messages" to SENDET_URL. The
+ *      working reference instead hits "/api/v1/messages" against
+ *      SENDET_URL (https://api01.send.et), i.e. the full path is:
  *
- * What that preview shows for sending a single SMS:
+ *        POST https://api01.send.et/api/v1/messages
  *
- *   POST https://api.send.et/v1/messages
- *   Authorization: Bearer <api_key>
- *   Content-Type: application/json
- *   {
- *     "to": "+251911xxxxxx",
- *     "sender": "ApprovedSenderName",
- *     "body": "message text"
- *   }
+ *      The missing "/api" segment meant every request 404'd.
  *
- *   Error shape (used for non-2xx, including 429 rate limiting):
- *   {
- *     "error": {
- *       "code": "invalid_parameter",
- *       "message": "...",
- *       "request_id": "req_...",
- *       "retry_after_seconds": 2   // only present on 429
- *     }
- *   }
+ *   2. Request body field — preview showed "sender" as the field
+ *      name for the approved sender name. The working reference
+ *      uses "from" instead:
  *
- * What it does NOT show, and is still genuinely unconfirmed:
- *   - the success-response shape (no example given) — messageId
- *     extraction below is a best guess across a few common field
- *     names, not a confirmed field
- *   - whether the base env value SENDET_URL (https://api01.send.et)
- *     matches the preview's api.send.et host at all — this
- *     implementation trusts configuration's SENDET_URL + appends
- *     /v1/messages, but if your issued production URL already
- *     includes a path or a different host, this will 404
+ *        { "from": "ApprovedSenderName", "to": "+251911xxxxxx", "body": "..." }
+ *
+ * Both fixes below are applied per the working reference. Auth header
+ * (Authorization: Bearer <api_key>, Content-Type: application/json)
+ * was already correct and unchanged.
+ *
+ * Still genuinely unconfirmed (unchanged from before):
+ *   - the success-response shape (no example given in the preview) —
+ *     messageId extraction below is still a best guess across a few
+ *     plausible field names, not a confirmed field
  *   - required phone-number format beyond the example
  *     (+251911xxxxxx suggests E.164, so normalizePhoneNumber()'s
  *     output is assumed to already produce that — verify it does)
@@ -56,9 +49,9 @@ export type SendSmsResponse = {
  *     before SendET will accept it (their KYB/sender-name-approval
  *     flow suggests yes)
  *
- * DO NOT treat this as production-verified. Confirm against your
- * real API key + a real send once issued, and update this comment
- * block (and the implementation, if anything differs) at that point.
+ * Confirm against your real API key + a real send, and update this
+ * comment block (and the implementation, if anything differs) at
+ * that point.
  */
 @Injectable()
 export class SendetService implements OnModuleInit {
@@ -93,12 +86,10 @@ export class SendetService implements OnModuleInit {
       this.logger.debug(`[DEBUG] SMS message: ${message}`);
     }
 
-    // Preview docs show the send endpoint at https://api.send.et/v1/messages.
-    // SENDET_URL in your .env is currently https://api01.send.et, a
-    // different host — this appends /v1/messages to whatever SENDET_URL
-    // is configured as, but the host mismatch itself is unconfirmed and
-    // worth checking against your issued production URL.
-    const endpoint = `${baseUrl.replace(/\/+$/, '')}/v1/messages`;
+    // FIXED: confirmed working path is /api/v1/messages, not /v1/messages.
+    // SENDET_URL is the bare host (e.g. https://api01.send.et) — this
+    // appends /api/v1/messages to it.
+    const endpoint = `${baseUrl.replace(/\/+$/, '')}/api/v1/messages`;
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -111,8 +102,9 @@ export class SendetService implements OnModuleInit {
           Authorization: `Bearer ${apiToken}`,
         },
         body: JSON.stringify({
+          // FIXED: confirmed field name is "from", not "sender".
+          from: senderName,
           to: normalizedPhone,
-          sender: senderName,
           body: message,
         }),
         signal: controller.signal,
