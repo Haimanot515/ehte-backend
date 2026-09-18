@@ -35,6 +35,41 @@ import {
   MissingPersonRejectedEvent,
   MissingPersonFoundEvent,
   MissingPersonMoreInformationRequestedEvent,
+  // NEW — payload types for the VictimProfile events. Previously
+  // VictimProfileService emitted 'notification.victim_profile.X'
+  // string literals with no matching enum member, event interface,
+  // or listener, so EventEmitter2 silently dropped every one of
+  // them. See notification.events.ts for the recipient-resolution
+  // note (userId here is VictimProfile.createdByUserId).
+  VictimProfileCreatedEvent,
+  VictimProfileUpdatedEvent,
+  VictimProfileDeletedEvent,
+  VictimProfileGatesUpdatedEvent,
+  VictimProfileChildSafetyReviewedEvent,
+  VictimProfileConsentRevokedEvent,
+  VictimProfileBankDetailsUpdatedEvent,
+  VictimProfilePublishedEvent,
+  VictimProfileUnpublishedEvent,
+  VictimProfileRejectedEvent,
+  VictimProfileResubmittedEvent,
+  // NEW — payload types for the two InformationSubmission review
+  // events. InformationSubmissionService.review() already emitted
+  // these correctly via the shared NotificationEventEnum (a dynamic
+  // enum reference, not a raw string), but no listener handler and
+  // no NotificationType member existed for either, so both silently
+  // dropped — same failure mode as VictimProfile, just one call site.
+  // Shape matches the payload InformationSubmissionService.review()
+  // actually sends: { userId, informationSubmissionId,
+  // missingPersonId, status, reviewNote }.
+  InformationSubmissionReviewedEvent,
+  InformationSubmissionRejectedEvent,
+  // TODO: confirm emit site — see notification.events.ts for the
+  // full caveat. These two have no confirmed emit call anywhere in
+  // the reviewed services; handlers below exist so the listener
+  // fails loudly (via the TODO log) rather than silently if one
+  // turns up in an unreviewed module.
+  NewMissingPersonInformationEvent,
+  SecurityAlertEvent,
 } from '../events/notification.events';
 
 @Injectable()
@@ -290,6 +325,241 @@ export class NotificationListener {
         event.amount !== undefined
           ? `Your support payment of ${event.amount} ETB has been confirmed.`
           : 'Your support payment has been confirmed.',
+    });
+  }
+
+  // ─────────────────────────────────────────────
+  // INFORMATION SUBMISSION
+  //
+  // NEW — InformationSubmissionService.review() already emitted
+  // these two events correctly (via a dynamic reference to the
+  // shared NotificationEventEnum, not a raw string), but neither had
+  // a matching @OnEvent() handler here, so EventEmitter2 silently
+  // dropped both — a submitter was never told their tip was reviewed
+  // or rejected. Same failure mode as the VictimProfile gap, just
+  // one call site instead of eighteen.
+  //
+  // Recipient: event.userId is InformationSubmission.userId (the
+  // submitter), sent directly by review() — no null-check needed
+  // here since userId is required on that model, unlike
+  // VictimProfile.createdByUserId.
+  // ─────────────────────────────────────────────
+
+  @OnEvent(NotificationEventEnum.INFORMATION_SUBMISSION_REVIEWED)
+  async handleInformationSubmissionReviewed(event: InformationSubmissionReviewedEvent) {
+    await this.notificationService.create({
+      userId: event.userId,
+      type: NotificationType.INFORMATION_SUBMISSION_REVIEWED,
+      title: 'Information Submission Reviewed',
+      body: 'Your submitted information has been reviewed and accepted.',
+    });
+  }
+
+  @OnEvent(NotificationEventEnum.INFORMATION_SUBMISSION_REJECTED)
+  async handleInformationSubmissionRejected(event: InformationSubmissionRejectedEvent) {
+    await this.notificationService.create({
+      userId: event.userId,
+      type: NotificationType.INFORMATION_SUBMISSION_REJECTED,
+      title: 'Information Submission Rejected',
+      body: event.reviewNote
+        ? `Your submitted information was rejected: ${event.reviewNote}`
+        : 'Your submitted information was rejected.',
+    });
+  }
+
+  // ─────────────────────────────────────────────
+  // VICTIM PROFILE
+  //
+  // NEW — VictimProfileService previously emitted
+  // 'notification.victim_profile.X' string literals with no matching
+  // enum member, event interface, or listener at all, so
+  // EventEmitter2 silently dropped every one of them. These 11 cover
+  // every VictimProfile action that had a paired notification emit
+  // call in the original code.
+  //
+  // Recipient: event.userId is VictimProfile.createdByUserId,
+  // resolved by the service before emitting. Every handler below
+  // skips sending a notification when it's missing, since
+  // VictimProfile has no required submitter/owner relation the way
+  // Report/Post/MissingPerson do. Revisit this recipient choice if
+  // the intended audience is actually "all admins" for some of these
+  // (e.g. gates-updated, child-safety-reviewed) rather than the
+  // creating admin.
+  //
+  // NOTE: NotificationType (prisma enum) needs a VICTIM_PROFILE_*
+  // member added for each of these 11 — run
+  // `npx prisma migrate dev` (or `db push` + `generate` for a
+  // shared/prod DB) after adding them, same as the original
+  // NotificationType hardening comment for the Report/Post values.
+  // ─────────────────────────────────────────────
+
+  @OnEvent(NotificationEventEnum.VICTIM_PROFILE_CREATED)
+  async handleVictimProfileCreated(event: VictimProfileCreatedEvent) {
+    if (!event.userId) return;
+    await this.notificationService.create({
+      userId: event.userId,
+      type: NotificationType.VICTIM_PROFILE_CREATED,
+      title: 'Victim Profile Created',
+      body: 'A victim profile you created is now pending review.',
+    });
+  }
+
+  @OnEvent(NotificationEventEnum.VICTIM_PROFILE_UPDATED)
+  async handleVictimProfileUpdated(event: VictimProfileUpdatedEvent) {
+    if (!event.userId) return;
+    await this.notificationService.create({
+      userId: event.userId,
+      type: NotificationType.VICTIM_PROFILE_UPDATED,
+      title: 'Victim Profile Updated',
+      body: 'A victim profile you created was updated and is now pending re-review.',
+    });
+  }
+
+  @OnEvent(NotificationEventEnum.VICTIM_PROFILE_DELETED)
+  async handleVictimProfileDeleted(event: VictimProfileDeletedEvent) {
+    if (!event.userId) return;
+    await this.notificationService.create({
+      userId: event.userId,
+      type: NotificationType.VICTIM_PROFILE_DELETED,
+      title: 'Victim Profile Deleted',
+      body: 'A victim profile you created has been deleted.',
+    });
+  }
+
+  @OnEvent(NotificationEventEnum.VICTIM_PROFILE_GATES_UPDATED)
+  async handleVictimProfileGatesUpdated(event: VictimProfileGatesUpdatedEvent) {
+    if (!event.userId) return;
+    await this.notificationService.create({
+      userId: event.userId,
+      type: NotificationType.VICTIM_PROFILE_GATES_UPDATED,
+      title: 'Victim Profile Review Updated',
+      body: `The review status of a victim profile you created has changed. Status: ${event.status}.`,
+    });
+  }
+
+  @OnEvent(NotificationEventEnum.VICTIM_PROFILE_CHILD_SAFETY_REVIEWED)
+  async handleVictimProfileChildSafetyReviewed(event: VictimProfileChildSafetyReviewedEvent) {
+    if (!event.userId) return;
+    await this.notificationService.create({
+      userId: event.userId,
+      type: NotificationType.VICTIM_PROFILE_CHILD_SAFETY_REVIEWED,
+      title: 'Victim Profile Child-Safety Review Updated',
+      body: `The child-safety review status of a victim profile you created has changed. Status: ${event.status}.`,
+    });
+  }
+
+  @OnEvent(NotificationEventEnum.VICTIM_PROFILE_CONSENT_REVOKED)
+  async handleVictimProfileConsentRevoked(event: VictimProfileConsentRevokedEvent) {
+    if (!event.userId) return;
+    await this.notificationService.create({
+      userId: event.userId,
+      type: NotificationType.VICTIM_PROFILE_CONSENT_REVOKED,
+      title: 'Victim Profile Consent Revoked',
+      body: 'Consent on a victim profile you created has been revoked.',
+    });
+  }
+
+  @OnEvent(NotificationEventEnum.VICTIM_PROFILE_BANK_DETAILS_UPDATED)
+  async handleVictimProfileBankDetailsUpdated(event: VictimProfileBankDetailsUpdatedEvent) {
+    if (!event.userId) return;
+    await this.notificationService.create({
+      userId: event.userId,
+      type: NotificationType.VICTIM_PROFILE_BANK_DETAILS_UPDATED,
+      title: 'Victim Profile Bank Details Updated',
+      body: event.reapprovalRequired
+        ? 'Bank details were updated on a victim profile you created — it now requires re-approval.'
+        : 'Bank details were updated on a victim profile you created.',
+    });
+  }
+
+  @OnEvent(NotificationEventEnum.VICTIM_PROFILE_PUBLISHED)
+  async handleVictimProfilePublished(event: VictimProfilePublishedEvent) {
+    if (!event.userId) return;
+    await this.notificationService.create({
+      userId: event.userId,
+      type: NotificationType.VICTIM_PROFILE_PUBLISHED,
+      title: 'Victim Profile Published',
+      body: 'A victim profile you created has been published and is now publicly visible.',
+    });
+  }
+
+  @OnEvent(NotificationEventEnum.VICTIM_PROFILE_UNPUBLISHED)
+  async handleVictimProfileUnpublished(event: VictimProfileUnpublishedEvent) {
+    if (!event.userId) return;
+    await this.notificationService.create({
+      userId: event.userId,
+      type: NotificationType.VICTIM_PROFILE_UNPUBLISHED,
+      title: 'Victim Profile Unpublished',
+      body: 'A victim profile you created has been unpublished and is no longer visible to the public.',
+    });
+  }
+
+  @OnEvent(NotificationEventEnum.VICTIM_PROFILE_REJECTED)
+  async handleVictimProfileRejected(event: VictimProfileRejectedEvent) {
+    if (!event.userId) return;
+    await this.notificationService.create({
+      userId: event.userId,
+      type: NotificationType.VICTIM_PROFILE_REJECTED,
+      title: 'Victim Profile Rejected',
+      body: 'A victim profile you created has been rejected.',
+    });
+  }
+
+  @OnEvent(NotificationEventEnum.VICTIM_PROFILE_RESUBMITTED)
+  async handleVictimProfileResubmitted(event: VictimProfileResubmittedEvent) {
+    if (!event.userId) return;
+    await this.notificationService.create({
+      userId: event.userId,
+      type: NotificationType.VICTIM_PROFILE_RESUBMITTED,
+      title: 'Victim Profile Resubmitted',
+      body: `A victim profile you created has been resubmitted for review. Status: ${event.status}.`,
+    });
+  }
+
+  // ─────────────────────────────────────────────
+  // UNCONFIRMED — NO KNOWN EMIT SITE
+  //
+  // TODO: confirm emit site. NEW_MISSING_PERSON_INFORMATION and
+  // SECURITY_ALERT both exist in NotificationEventEnum and
+  // NotificationType, but no emit call for either was found across
+  // report/post/missing-person/information-submission/victim-profile/
+  // user/auth/admin-auth/permission/role/support services. These
+  // handlers exist purely so the enum values aren't orphaned at the
+  // listener level and so a real emit call — if one exists in an
+  // unreviewed module — has somewhere to land instead of silently
+  // dropping. The payload shape and recipient logic below are
+  // best-guess (see notification.events.ts) and MUST be revisited
+  // once the actual emit site is located; do not treat this as a
+  // confirmed, production-ready implementation.
+  // ─────────────────────────────────────────────
+
+  @OnEvent(NotificationEventEnum.NEW_MISSING_PERSON_INFORMATION)
+  async handleNewMissingPersonInformation(event: NewMissingPersonInformationEvent) {
+    // Best guess: mirrors handleNewReport/handleNewPost/
+    // handleNewMissingPersonRequest — admin-facing "needs review"
+    // broadcast, not a personal notification. Revisit if the real
+    // emit site targets a specific user instead.
+    await this.notificationService.createForAdmins({
+      type: NotificationType.NEW_MISSING_PERSON_INFORMATION,
+      title: 'New Information Submitted',
+      body: 'New information has been submitted on a missing person case and needs review.',
+    });
+  }
+
+  @OnEvent(NotificationEventEnum.SECURITY_ALERT)
+  async handleSecurityAlert(event: SecurityAlertEvent) {
+    // Best guess: per-user alert when userId is present, otherwise
+    // silently no-ops rather than guessing at an admin broadcast —
+    // revisit once the real emit site clarifies who should receive
+    // this.
+    if (!event.userId) return;
+    await this.notificationService.create({
+      userId: event.userId,
+      type: NotificationType.SECURITY_ALERT,
+      title: 'Security Alert',
+      body: event.reason
+        ? `A security event was detected on your account: ${event.reason}`
+        : 'A security event was detected on your account.',
     });
   }
 
