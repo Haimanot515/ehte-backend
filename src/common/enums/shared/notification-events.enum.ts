@@ -8,31 +8,26 @@ export enum NotificationEventEnum {
   POST_APPROVED = 'POST_APPROVED',
   POST_REJECTED = 'POST_REJECTED',
   POST_CHANGES_REQUESTED = 'POST_CHANGES_REQUESTED',
-  // Added — used by PostService.unpublish() to notify the post
-  // owner when their published post is taken down. Previously
-  // there was no notification at all on this path, unlike
-  // approve/reject/request-changes.
   POST_UNPUBLISHED = 'POST_UNPUBLISHED',
 
   MISSING_PERSON_UPDATED = 'MISSING_PERSON_UPDATED',
-  // Added — used by MissingPersonService.updateStatus() so each
-  // outcome gets its own event/copy instead of all four statuses
-  // (approved, rejected, more-info, found) sharing the generic
-  // MISSING_PERSON_UPDATED message. MISSING_PERSON_UPDATED itself
-  // is kept for the plain edit-confirmation path (update()).
   MISSING_PERSON_APPROVED = 'MISSING_PERSON_APPROVED',
   MISSING_PERSON_REJECTED = 'MISSING_PERSON_REJECTED',
   MISSING_PERSON_MORE_INFORMATION_REQUESTED = 'MISSING_PERSON_MORE_INFORMATION_REQUESTED',
   MISSING_PERSON_FOUND = 'MISSING_PERSON_FOUND',
 
   NEW_MISSING_PERSON_INFORMATION = 'NEW_MISSING_PERSON_INFORMATION',
-  // Added — used by InformationSubmissionService.review() to tell
-  // the submitter their tip was accepted or rejected (reviewNote
-  // included in the payload for REJECTED). Previously review()
-  // emitted no notification at all.
   INFORMATION_SUBMISSION_REVIEWED = 'INFORMATION_SUBMISSION_REVIEWED',
   INFORMATION_SUBMISSION_REJECTED = 'INFORMATION_SUBMISSION_REJECTED',
 
+  // NEW — used by SupportService.create() at creation time (status
+  // PENDING). Previously create() fired SUPPORT_PAYMENT_CONFIRMED-
+  // shaped payloads immediately, which misleadingly told the
+  // supporter their payment was confirmed before any admin had
+  // verified the off-platform transfer. SUPPORT_PAYMENT_CONFIRMED
+  // below is now reserved solely for the CONFIRMED transition in
+  // SupportService.updateStatus().
+  SUPPORT_PLEDGE_CREATED = 'SUPPORT_PLEDGE_CREATED',
   SUPPORT_PAYMENT_CONFIRMED = 'SUPPORT_PAYMENT_CONFIRMED',
 
   NEW_REPORT = 'NEW_REPORT',
@@ -42,10 +37,20 @@ export enum NotificationEventEnum {
 
   SECURITY_ALERT = 'SECURITY_ALERT',
 
-  // AUTH — distinct string values (deliberately NOT matching
-  // AuditEventEnum's PASSWORD_CHANGED / PASSWORD_RESET), so
-  // AuthService emits these explicitly and separately from the
-  // audit event, with no dependency on event-name collision.
+  // VICTIM PROFILE
+  VICTIM_PROFILE_CREATED = 'VICTIM_PROFILE_CREATED',
+  VICTIM_PROFILE_UPDATED = 'VICTIM_PROFILE_UPDATED',
+  VICTIM_PROFILE_DELETED = 'VICTIM_PROFILE_DELETED',
+  VICTIM_PROFILE_GATES_UPDATED = 'VICTIM_PROFILE_GATES_UPDATED',
+  VICTIM_PROFILE_CHILD_SAFETY_REVIEWED = 'VICTIM_PROFILE_CHILD_SAFETY_REVIEWED',
+  VICTIM_PROFILE_CONSENT_REVOKED = 'VICTIM_PROFILE_CONSENT_REVOKED',
+  VICTIM_PROFILE_BANK_DETAILS_UPDATED = 'VICTIM_PROFILE_BANK_DETAILS_UPDATED',
+  VICTIM_PROFILE_PUBLISHED = 'VICTIM_PROFILE_PUBLISHED',
+  VICTIM_PROFILE_UNPUBLISHED = 'VICTIM_PROFILE_UNPUBLISHED',
+  VICTIM_PROFILE_REJECTED = 'VICTIM_PROFILE_REJECTED',
+  VICTIM_PROFILE_RESUBMITTED = 'VICTIM_PROFILE_RESUBMITTED',
+
+  // AUTH
   PASSWORD_CHANGED = 'notification.password_changed',
   PASSWORD_RESET = 'notification.password_reset',
 }

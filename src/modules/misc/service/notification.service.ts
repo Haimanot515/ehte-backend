@@ -250,46 +250,33 @@ export class NotificationService {
   // ─────────────────────────────────────────────
   // ADMIN-FACING
   //
-  // NOTE: the current schema has no recipient/role
-  // concept — there's only userId (personal) and
-  // userId = null (broadcast to everyone). So there
-  // is no way, at the data level, to distinguish an
-  // "admin" notification from a broadcast any regular
-  // user would also see via getMyNotifications.
+  // FIXED (previously): these methods only queried
+  // `userId: null` (old-style broadcasts), so the new
+  // per-admin queue rows written by createForAdmins()
+  // (userId = admin.id) never showed up here — they only
+  // appeared via that admin's own getMyNotifications().
+  // That meant an admin dashboard built on
+  // GET /notifications/admin/list would silently miss
+  // every NEW_REPORT / NEW_POST / etc. notice.
   //
-  // These methods return ALL broadcast notifications,
-  // filterable by type/isRead like the user endpoint.
-  // Access is restricted to admins at the route level
-  // via @Roles(), but the underlying rows are not
-  // isolated from regular users — a regular user
-  // hitting GET /notifications would see the exact
-  // same rows mixed into their own feed.
-  //
-  // Marking one as read here also affects the shared
-  // row, same as any other broadcast (one admin's
-  // "read" affects what every other viewer sees).
-  //
-  // A real fix requires adding a recipient/role field
-  // to the schema (see Option B, which you declined
-  // for now).
-  //
-  // NOTE (createForAdmins, above): the new admin-queue
-  // notices (NEW_REPORT, NEW_POST, NEW_MISSING_PERSON_REQUEST,
-  // HIGH_PRIORITY_REPORT) deliberately do NOT use this
-  // broadcast mechanism — they write personal (userId-scoped)
-  // rows per admin instead, specifically to avoid the shared-
-  // read-state and regular-user-visibility problems documented
-  // here. These admin-facing methods below still only cover the
-  // OLD broadcast-based admin notifications (userId: null); the
-  // new per-admin rows created by createForAdmins show up via the
-  // normal getMyNotifications() for that admin instead.
+  // Fix: every admin method below now takes the calling
+  // admin's CurrentUserDto and matches
+  // `OR: [{ userId: null }, { userId: user.id }]` — the
+  // same pattern getMyNotifications() already uses for
+  // regular users. This surfaces both the old shared
+  // broadcast rows AND this admin's own per-admin queue
+  // rows in one place, with per-admin isRead state
+  // preserved for the queue rows (only the broadcast rows
+  // still share isRead across admins, same as before —
+  // that part is a schema limitation, not something this
+  // change touches).
   // ─────────────────────────────────────────────
 
-  async getAdminNotifications(query: NotificationQueryDto = {}) {
+  async getAdminNotifications(user: CurrentUserDto, query: NotificationQueryDto = {}) {
     const { type, isRead, page = 1, limit = 20 } = query;
 
     const where = {
-      userId: null,
+      OR: [{ userId: null }, { userId: user.id }],
       ...(type && { type }),
       ...(isRead !== undefined && { isRead }),
     };
@@ -307,19 +294,23 @@ export class NotificationService {
     return { data, meta: { total, page, limit } };
   }
 
-  async getAdminUnreadCount() {
+  async getAdminUnreadCount(user: CurrentUserDto) {
     const count = await this.prisma.notification.count({
-      where: { userId: null, isRead: false },
+      where: {
+        OR: [{ userId: null }, { userId: user.id }],
+        isRead: false,
+      },
     });
     return { count };
   }
 
   /**
-   * Get a single broadcast notification (admin view).
+   * Get a single admin notification (broadcast or this admin's own
+   * per-admin queue row).
    */
-  async getAdminNotificationById(id: string) {
+  async getAdminNotificationById(id: string, user: CurrentUserDto) {
     const notification = await this.prisma.notification.findFirst({
-      where: { id, userId: null },
+      where: { id, OR: [{ userId: null }, { userId: user.id }] },
     });
 
     if (!notification) {
@@ -329,9 +320,9 @@ export class NotificationService {
     return notification;
   }
 
-  async markAdminNotificationAsRead(id: string) {
+  async markAdminNotificationAsRead(id: string, user: CurrentUserDto) {
     const result = await this.prisma.notification.updateMany({
-      where: { id, userId: null },
+      where: { id, OR: [{ userId: null }, { userId: user.id }] },
       data: { isRead: true },
     });
 
@@ -342,23 +333,23 @@ export class NotificationService {
     return result;
   }
 
-  async markBulkAdminNotificationsAsRead(ids: string[]) {
+  async markBulkAdminNotificationsAsRead(ids: string[], user: CurrentUserDto) {
     return this.prisma.notification.updateMany({
-      where: { id: { in: ids }, userId: null },
+      where: { id: { in: ids }, OR: [{ userId: null }, { userId: user.id }] },
       data: { isRead: true },
     });
   }
 
-  async markAllAdminNotificationsAsRead() {
+  async markAllAdminNotificationsAsRead(user: CurrentUserDto) {
     return this.prisma.notification.updateMany({
-      where: { userId: null, isRead: false },
+      where: { OR: [{ userId: null }, { userId: user.id }], isRead: false },
       data: { isRead: true },
     });
   }
 
-  async deleteAdminNotification(id: string) {
+  async deleteAdminNotification(id: string, user: CurrentUserDto) {
     const notification = await this.prisma.notification.findFirst({
-      where: { id, userId: null },
+      where: { id, OR: [{ userId: null }, { userId: user.id }] },
     });
 
     if (!notification) {

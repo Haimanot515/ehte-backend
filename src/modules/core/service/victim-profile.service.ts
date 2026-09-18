@@ -3,11 +3,16 @@ import { BadRequestException, ForbiddenException, Injectable, NotFoundException 
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { ConfigService } from '@nestjs/config';
 
-import { Prisma, VictimProfile, VictimProfileStatus } from '@prisma/client';
+import { Prisma, SupportStatus, VictimProfile, VictimProfileStatus } from '@prisma/client';
 
 import { PrismaService } from 'src/prisma/prisma.service';
 import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
 import { RolesEnum } from 'src/common/enums/roles.enum';
+import { resolveActorType } from 'src/common/utils/actor-type.util';
+
+import { AuditEventEnum } from 'src/common/enums/shared/audit-events.enum';
+import { AuditEventPayload } from 'src/modules/misc/events/audit.events';
+import { NotificationEventEnum } from 'src/common/enums/shared/notification-events.enum';
 
 import { MinioService } from 'src/services/minio/minio.service';
 
@@ -40,6 +45,17 @@ const STALE_ELIGIBLE_EXCLUDED_STATUSES: VictimProfileStatus[] = [
   VictimProfileStatus.REJECTED,
 ];
 
+// FUNDS/TOTALS NOTE:
+// "Money collected" is defined, deliberately and for now, as strictly
+// Support rows with status === SupportStatus.CONFIRMED. This is
+// intentionally NOT abstracted into a shared constant/helper — there
+// is currently only one counting rule and it is used in exactly the
+// two places below (reconcileProfileTotal's live recompute, and the
+// backfill migration alongside this file) plus SupportService's
+// increment/decrement. If a second status ever needs to count (e.g.
+// COMPLETED), promote SupportStatus.CONFIRMED to a small shared
+// helper at that point rather than before.
+
 @Injectable()
 export class VictimProfileService {
   constructor(
@@ -48,6 +64,14 @@ export class VictimProfileService {
     private readonly minioService: MinioService,
     private readonly configService: ConfigService,
   ) {}
+
+  // ─────────────────────────────────────────────
+  // AUDIT HELPER
+  // ─────────────────────────────────────────────
+
+  private emitAudit(payload: AuditEventPayload): void {
+    this.eventEmitter.emit(payload.action, payload);
+  }
 
   // ─────────────────────────────────────────────
   // MEDIA HELPERS
@@ -61,10 +85,6 @@ export class VictimProfileService {
     return MEDIA_FIELD_NAMES.flatMap((field) => entity[field]);
   }
 
-  // Diffs each media field individually (not the flattened whole),
-  // so a client resending the same array doesn't get treated as
-  // "remove and re-add." Only fields present in the incoming DTO
-  // are considered — an omitted field means "leave this one alone."
   private diffMediaFields(
     before: MediaBearing,
     incoming: MediaBearingDto,
@@ -83,15 +103,6 @@ export class VictimProfileService {
     return { added, removed };
   }
 
-  // FIX (item #3): previously only checked existence. Now brought to
-  // parity with ReportService.validateMediaFilesExist — also enforces
-  // size/MIME-type limits, and returns each validated file's size so
-  // callers can maintain mediaTotalBytes without re-statting
-  // already-attached files (item #13).
-  //
-  // NOTE (item #4, EXIF/GPS stripping): deliberately out of scope
-  // here, same as Report/Post — belongs in the media-upload module
-  // at upload time.
   private async validateMediaFilesExist(
     filepaths: string[],
   ): Promise<Array<{ filepath: string; size: number }>> {
@@ -136,11 +147,6 @@ export class VictimProfileService {
     return checks.map((c) => ({ filepath: c.filepath, size: c.size }));
   }
 
-  // FIX (item #13): per-field attachment counts, mirroring
-  // ReportService.assertAttachmentCounts, reading PROFILE_*-prefixed
-  // overrides first, falling back to the shared CONTENT_* defaults.
-  // Photo default is higher than Report's (10 vs 5) per the
-  // checklist's own example limits for Victim Profile.
   private assertAttachmentCounts(media: MediaBearing): void {
     const maxPhotos = Number(
       this.configService.get<string>('PROFILE_MAX_PHOTOS') ??
@@ -171,8 +177,6 @@ export class VictimProfileService {
     }
   }
 
-  // FIX (item #13): total attached-media size cap per profile,
-  // mirroring ReportService.assertTotalBytes.
   private assertTotalBytes(totalBytes: number): void {
     const maxTotalBytes = Number(
       this.configService.get<string>('PROFILE_MAX_TOTAL_UPLOAD_BYTES') ??
@@ -184,18 +188,11 @@ export class VictimProfileService {
     }
   }
 
-  // Best-effort delete against MinIO. A file that's already gone
-  // (or MinIO briefly unreachable) must never block the DB write
-  // that triggered the cleanup — failures are swallowed per-file
-  // via allSettled rather than surfaced to the caller.
   private async deleteMediaFiles(filepaths: string[]): Promise<void> {
     if (!filepaths.length) return;
     await Promise.allSettled(filepaths.map((fp) => this.minioService.deleteFile(fp)));
   }
 
-  // The only media field ever exposed on a public profile is
-  // `photo` (see serializePublicProfile below), and only when the
-  // profile doesn't involve a child.
   private getPubliclyVisibleMediaKeys(
     profile: Pick<VictimProfile, 'photo' | 'involvesChild'>,
   ): string[] {
@@ -204,16 +201,6 @@ export class VictimProfileService {
 
   // ─────────────────────────────────────────────
   // ACCESS CONTROL HELPERS
-  //
-  // FIX (item #9/#17): previously no admin-access gating existed
-  // anywhere in this service — any ADMIN could act on any profile
-  // regardless of who claimed it, and claimedByUserId/claimedAt sat
-  // on the schema unused. Mirrors ReportService's
-  // assertAdminCanAccessReport: SUPER_ADMIN may act on any profile;
-  // a plain ADMIN may only act on a profile that is unclaimed or
-  // claimed specifically by them. Viewing (findOne, getGates,
-  // getHistory, getSupportsSummary, admin media download) stays
-  // open to any admin, same as Report's read/write split.
   // ─────────────────────────────────────────────
 
   private getRoles(user: CurrentUserDto): string[] {
@@ -232,14 +219,6 @@ export class VictimProfileService {
     }
   }
 
-  // FIX (item #9/#26): optimistic-concurrency helper used by every
-  // mutating method below. Guards the write on the `updatedAt` the
-  // caller read a moment earlier — same reasoning as Report's
-  // conditional updateMany on `status`, generalized here since
-  // profile mutations touch far more than just `status` (gates,
-  // bank details, claim state, etc). A losing writer gets
-  // victim_profile_transition_conflict instead of silently
-  // clobbering a concurrent admin's change.
   private async conditionalUpdate(
     id: string,
     expectedUpdatedAt: Date,
@@ -258,15 +237,7 @@ export class VictimProfileService {
   }
 
   // ─────────────────────────────────────────────
-  // ADMIN — CLAIM / UNCLAIM (item #17)
-  //
-  // Self-serve equivalent of Report's SUPER_ADMIN-gated assign(),
-  // matching Post's claim pattern instead: any ADMIN/SUPER_ADMIN can
-  // claim an unclaimed profile; only the claiming admin (or a
-  // SUPER_ADMIN) can release it. Every other mutating method below
-  // calls assertAdminCanAccessProfile(), so claiming is what
-  // actually prevents two admins from silently working the same
-  // profile.
+  // ADMIN — CLAIM / UNCLAIM
   // ─────────────────────────────────────────────
 
   async claim(admin: CurrentUserDto, id: string) {
@@ -276,7 +247,6 @@ export class VictimProfileService {
     }
 
     if (existing.claimedByUserId === admin.id) {
-      // Already claimed by this admin — idempotent no-op.
       return existing;
     }
     if (existing.claimedByUserId) {
@@ -289,17 +259,20 @@ export class VictimProfileService {
     });
 
     if (result.count === 0) {
-      // Someone else claimed it in the gap between our read and write.
       throw new ForbiddenException('victim_profile_already_claimed');
     }
 
     const profile = await this.prisma.victimProfile.findUniqueOrThrow({ where: { id } });
 
-    this.eventEmitter.emit('victim_profile.claimed', {
-      actorId: admin.id,
-      victimProfileId: id,
-      action: 'CLAIM',
+    this.emitAudit({
+      userId: admin.id,
+      actorType: resolveActorType(this.getRoles(admin)),
+      action: AuditEventEnum.VICTIM_PROFILE_CLAIMED,
       entity: 'VictimProfile',
+      entityId: id,
+      diff: {
+        result: 'success',
+      },
     });
 
     return profile;
@@ -333,12 +306,16 @@ export class VictimProfileService {
 
     const profile = await this.prisma.victimProfile.findUniqueOrThrow({ where: { id } });
 
-    this.eventEmitter.emit('victim_profile.unclaimed', {
-      actorId: admin.id,
-      victimProfileId: id,
-      action: 'UNCLAIM',
+    this.emitAudit({
+      userId: admin.id,
+      actorType: resolveActorType(roles),
+      action: AuditEventEnum.VICTIM_PROFILE_UNCLAIMED,
       entity: 'VictimProfile',
-      previousClaimedByUserId: existing.claimedByUserId,
+      entityId: id,
+      diff: {
+        previousClaimedByUserId: existing.claimedByUserId,
+        result: 'success',
+      },
     });
 
     return profile;
@@ -346,11 +323,6 @@ export class VictimProfileService {
 
   // ─────────────────────────────────────────────
   // ADMIN — GET MEDIA DOWNLOAD URL
-  //
-  // FIX (item #14/#25): now emits an audit event on access, matching
-  // ReportService.getMediaDownloadUrlForAdmin — previously this
-  // route left no trace that a specific admin pulled a specific
-  // victim's media.
   // ─────────────────────────────────────────────
 
   async getMediaDownloadUrl(admin: CurrentUserDto, id: string, key: string): Promise<{ url: string }> {
@@ -369,12 +341,16 @@ export class VictimProfileService {
 
     const url = await this.minioService.generatePresignedDownloadUrl(key);
 
-    this.eventEmitter.emit('victim_profile.media_downloaded', {
-      actorId: admin.id,
-      victimProfileId: id,
-      action: 'MEDIA_DOWNLOADED',
+    this.emitAudit({
+      userId: admin.id,
+      actorType: resolveActorType(this.getRoles(admin)),
+      action: AuditEventEnum.VICTIM_PROFILE_MEDIA_DOWNLOADED,
       entity: 'VictimProfile',
-      key,
+      entityId: id,
+      diff: {
+        key,
+        result: 'success',
+      },
     });
 
     return { url };
@@ -382,7 +358,6 @@ export class VictimProfileService {
 
   // ─────────────────────────────────────────────
   // PUBLIC — GET MEDIA DOWNLOAD URL
-  // (unchanged — already correctly scoped)
   // ─────────────────────────────────────────────
 
   async getPublicMediaDownloadUrl(id: string, key: string): Promise<{ url: string }> {
@@ -418,22 +393,6 @@ export class VictimProfileService {
 
   // ─────────────────────────────────────────────
   // CREATE
-  //
-  // FIX (item #8): createdByUserId is now actually persisted — it
-  // was previously omitted entirely despite being on the schema,
-  // so profiles had no record of which admin created them.
-  //
-  // FIX (item #5/#26): optional Idempotency-Key (passed through by
-  // the controller) lets a client safely retry after a dropped
-  // response. A repeat with the same key returns the original
-  // profile. A fast-path lookup runs first; the actual create is
-  // wrapped to catch a P2002 race on the new
-  // (createdByUserId, idempotencyKey) unique constraint, same
-  // pattern as ReportService.createReportWithUniqueCaseReference.
-  //
-  // FIX (item #13): attachment counts/total size are checked before
-  // any MinIO round trips, and the validated sizes are persisted as
-  // mediaTotalBytes.
   // ─────────────────────────────────────────────
 
   async create(currentUser: CurrentUserDto, data: CreateVictimProfileDto, idempotencyKey?: string) {
@@ -499,6 +458,12 @@ export class VictimProfileService {
           createdByUserId: currentUser.id,
           idempotencyKey: idempotencyKey ?? null,
           mediaTotalBytes: totalBytes,
+
+          // Starts at zero — never client-settable (not present on
+          // CreateVictimProfileDto/UpdateVictimProfileDto). Only
+          // SupportService.updateStatus and reconcileProfileTotal
+          // below may change it.
+          totalRaised: 0,
         },
       });
     } catch (err) {
@@ -509,9 +474,6 @@ export class VictimProfileService {
       ) {
         const target = err.meta?.target as string[] | undefined;
         if (target?.some((t) => t.includes('idempotencyKey'))) {
-          // Lost a race against a concurrent identical retry — the
-          // other request's insert won; return that row instead of
-          // creating (or failing to create) a duplicate.
           const winner = await this.prisma.victimProfile.findFirst({
             where: { createdByUserId: currentUser.id, idempotencyKey },
           });
@@ -523,15 +485,19 @@ export class VictimProfileService {
       throw err;
     }
 
-    this.eventEmitter.emit('victim_profile.created', {
-      actorId: currentUser.id,
-      victimProfileId: profile.id,
-      action: 'CREATE',
+    this.emitAudit({
+      userId: currentUser.id,
+      actorType: resolveActorType(this.getRoles(currentUser)),
+      action: AuditEventEnum.VICTIM_PROFILE_CREATED,
       entity: 'VictimProfile',
+      entityId: profile.id,
+      diff: {
+        result: 'success',
+      },
     });
 
-    this.eventEmitter.emit('notification.victim_profile.created', {
-      actorId: currentUser.id,
+    this.eventEmitter.emit(NotificationEventEnum.VICTIM_PROFILE_CREATED, {
+      userId: profile.createdByUserId,
       victimProfileId: profile.id,
     });
 
@@ -539,7 +505,7 @@ export class VictimProfileService {
   }
 
   // ─────────────────────────────────────────────
-  // GET ONE (admin) — unchanged, view access stays open to any admin
+  // GET ONE (admin)
   // ─────────────────────────────────────────────
 
   async findOne(id: string) {
@@ -568,6 +534,8 @@ export class VictimProfileService {
       throw new NotFoundException('victim_profile_not_found');
     }
 
+    // profile.totalRaised is included automatically — this uses the
+    // default full-row `include`, not a narrow `select`.
     return profile;
   }
 
@@ -603,11 +571,6 @@ export class VictimProfileService {
 
   // ─────────────────────────────────────────────
   // PUBLIC PROFILES — LIST
-  //
-  // FIX (item #7): bankAccountName/bankAccountNumber/bankName are no
-  // longer selected or returned here. This was a live bank-detail
-  // leak to anonymous callers — the off-platform transfer
-  // destination has no business being in a public API response.
   // ─────────────────────────────────────────────
 
   async findPublic(query: FindPublicVictimProfilesQueryDto) {
@@ -652,6 +615,9 @@ export class VictimProfileService {
           photo: true,
           involvesChild: true,
 
+          // NEW — needed on the public list card ("$X raised of $Y goal").
+          totalRaised: true,
+
           createdAt: true,
         },
 
@@ -678,7 +644,6 @@ export class VictimProfileService {
 
   // ─────────────────────────────────────────────
   // PUBLIC PROFILES — SINGLE
-  // FIX (item #7): same bank-detail exclusion as findPublic above.
   // ─────────────────────────────────────────────
 
   async findOnePublic(id: string) {
@@ -707,6 +672,9 @@ export class VictimProfileService {
         photo: true,
         involvesChild: true,
 
+        // NEW
+        totalRaised: true,
+
         createdAt: true,
       },
     });
@@ -718,13 +686,6 @@ export class VictimProfileService {
     return this.serializePublicProfile(profile);
   }
 
-  // FIX (item #7): bankAccountName/bankAccountNumber/bankName removed
-  // from both the input type and the returned payload. Off-platform
-  // transfer details are an admin-only field (see
-  // getGates/updateBankDetails) and must never reach an anonymous
-  // caller — supporters are directed to give through the platform's
-  // own support/donation flow, not by wiring money to a bank account
-  // printed on a public page.
   private serializePublicProfile(profile: {
     id: string;
     name: string | null;
@@ -733,6 +694,7 @@ export class VictimProfileService {
     supportGoal: Prisma.Decimal | null;
     photo: string[];
     involvesChild: boolean;
+    totalRaised: Prisma.Decimal;
     createdAt: Date;
   }) {
     return {
@@ -745,29 +707,17 @@ export class VictimProfileService {
       // Child profiles never expose photos publicly.
       photo: profile.involvesChild ? [] : profile.photo,
 
+      // NEW — cached running total of CONFIRMED support for this
+      // profile, kept in sync by SupportService.updateStatus and
+      // periodically checked by reconcileProfileTotal below.
+      totalRaised: Number(profile.totalRaised),
+
       createdAt: profile.createdAt,
     };
   }
 
   // ─────────────────────────────────────────────
   // UPDATE PROFILE
-  //
-  // FIX (item #9): now requires assertAdminCanAccessProfile — a
-  // profile claimed by another admin can no longer be edited out
-  // from under them.
-  //
-  // FIX (item #13): attachment counts are checked against the fully
-  // merged post-update media shape before any MinIO calls, and
-  // mediaTotalBytes is recomputed from the previous total plus/minus
-  // the added/removed files' sizes.
-  //
-  // FIX (item #26): write is now optimistic-concurrency guarded via
-  // conditionalUpdate.
-  //
-  // An edit also clears any in-progress two-admin child-safety
-  // confirmation (item #16) — a profile whose content just changed
-  // shouldn't carry over a stale first-confirmation from before the
-  // edit.
   // ─────────────────────────────────────────────
 
   async update(admin: CurrentUserDto, id: string, data: UpdateVictimProfileDto) {
@@ -807,6 +757,10 @@ export class VictimProfileService {
     const newTotalBytes = Math.max(0, profile.mediaTotalBytes + addedBytes - removedBytes);
     this.assertTotalBytes(newTotalBytes);
 
+    // NOTE: totalRaised is deliberately NOT touched here — editing a
+    // profile's content/media has nothing to do with money already
+    // confirmed against it, and UpdateVictimProfileDto has no
+    // totalRaised field for a client to supply anyway.
     const updatedProfile = await this.conditionalUpdate(id, profile.updatedAt, {
       name: data.name,
       description: data.description,
@@ -829,7 +783,6 @@ export class VictimProfileService {
       involvesChild: data.involvesChild,
       mediaTotalBytes: newTotalBytes,
 
-      // Reset approval pipeline after editing.
       status: VictimProfileStatus.PENDING,
 
       isVerified: false,
@@ -848,21 +801,22 @@ export class VictimProfileService {
       childSafetyFirstConfirmedAt: null,
     });
 
-    // Only after the DB write commits.
     await this.deleteMediaFiles(removed);
 
-    this.eventEmitter.emit('victim_profile.updated', {
-      actorId: admin.id,
-      victimProfileId: id,
-      action: 'UPDATE',
+    this.emitAudit({
+      userId: admin.id,
+      actorType: resolveActorType(this.getRoles(admin)),
+      action: AuditEventEnum.VICTIM_PROFILE_UPDATED,
       entity: 'VictimProfile',
-
-      previousStatus: profile.status,
-      newStatus: VictimProfileStatus.PENDING,
+      entityId: id,
+      diff: {
+        previousStatus: profile.status,
+        newStatus: VictimProfileStatus.PENDING,
+      },
     });
 
-    this.eventEmitter.emit('notification.victim_profile.updated', {
-      actorId: admin.id,
+    this.eventEmitter.emit(NotificationEventEnum.VICTIM_PROFILE_UPDATED, {
+      userId: profile.createdByUserId,
       victimProfileId: id,
     });
 
@@ -871,7 +825,6 @@ export class VictimProfileService {
 
   // ─────────────────────────────────────────────
   // DELETE
-  // FIX (item #9): access-gated; FIX (item #26): concurrency-guarded.
   // ─────────────────────────────────────────────
 
   async remove(admin: CurrentUserDto, id: string) {
@@ -895,17 +848,19 @@ export class VictimProfileService {
 
     await this.deleteMediaFiles(this.collectMediaFields(profile));
 
-    this.eventEmitter.emit('victim_profile.deleted', {
-      actorId: admin.id,
-      victimProfileId: id,
-      action: 'DELETE',
+    this.emitAudit({
+      userId: admin.id,
+      actorType: resolveActorType(this.getRoles(admin)),
+      action: AuditEventEnum.VICTIM_PROFILE_DELETED,
       entity: 'VictimProfile',
-
-      previousStatus: profile.status,
+      entityId: id,
+      diff: {
+        previousStatus: profile.status,
+      },
     });
 
-    this.eventEmitter.emit('notification.victim_profile.deleted', {
-      actorId: admin.id,
+    this.eventEmitter.emit(NotificationEventEnum.VICTIM_PROFILE_DELETED, {
+      userId: profile.createdByUserId,
       victimProfileId: id,
     });
 
@@ -913,7 +868,7 @@ export class VictimProfileService {
   }
 
   // ─────────────────────────────────────────────
-  // ADMIN — GET ALL (unchanged)
+  // ADMIN — GET ALL
   // ─────────────────────────────────────────────
 
   async findAllForAdmin(query: FindAllVictimProfilesQueryDto) {
@@ -937,6 +892,8 @@ export class VictimProfileService {
       this.prisma.victimProfile.count({ where }),
     ]);
 
+    // profiles already include totalRaised via the default full-row
+    // include above — no select changes needed here.
     return {
       data: profiles,
       meta: {
@@ -949,14 +906,7 @@ export class VictimProfileService {
   }
 
   // ─────────────────────────────────────────────
-  // ADMIN — STALE / UNCLAIMED-TOO-LONG PROFILES (item #15)
-  // GET /victim-profiles/admin/stale
-  //
-  // A profile is "forgotten" if it's both unclaimed AND not yet in a
-  // dead-end status (PUBLISHED/REJECTED), same reasoning as
-  // ReportService.findStalePending. Child-involving profiles use a
-  // shorter threshold per the checklist's own guidance ("for
-  // urgent/child-related content, use a shorter threshold").
+  // ADMIN — STALE / UNCLAIMED-TOO-LONG PROFILES
   // ─────────────────────────────────────────────
 
   async findStalePending() {
@@ -992,17 +942,23 @@ export class VictimProfileService {
   }
 
   // ─────────────────────────────────────────────
-  // ADMIN — DASHBOARD STATISTICS (unchanged)
+  // ADMIN — DASHBOARD STATISTICS
+  //
+  // FIX (money-collected addition): now also returns
+  // totalRaisedAllProfiles, a single aggregate SUM over the cached
+  // VictimProfile.totalRaised column across every profile
+  // regardless of status (admin-facing, so no PUBLISHED filter).
   // ─────────────────────────────────────────────
 
   async getStats() {
-    const [total, grouped] = await this.prisma.$transaction([
+    const [total, grouped, raised] = await this.prisma.$transaction([
       this.prisma.victimProfile.count(),
       this.prisma.victimProfile.groupBy({
         by: ['status'],
         _count: { status: true },
         orderBy: { status: 'asc' },
       }),
+      this.prisma.victimProfile.aggregate({ _sum: { totalRaised: true } }),
     ]);
 
     const counts = Object.fromEntries(
@@ -1024,11 +980,36 @@ export class VictimProfileService {
       published: counts[VictimProfileStatus.PUBLISHED] ?? 0,
       unpublished: counts[VictimProfileStatus.UNPUBLISHED] ?? 0,
       rejected: counts[VictimProfileStatus.REJECTED] ?? 0,
+      totalRaisedAllProfiles: Number(raised._sum.totalRaised ?? 0),
     };
   }
 
   // ─────────────────────────────────────────────
-  // ADMIN — AUDIT HISTORY (unchanged)
+  // PUBLIC — PLATFORM-WIDE TOTAL RAISED
+  // GET /victim-profiles/public/stats
+  //
+  // NEW. Scoped strictly to PUBLISHED + isPublished profiles so an
+  // anonymous caller never sees money tallied against a profile
+  // still under review. Reuses the same cached totalRaised column
+  // as getStats above — cheap single aggregate, no join to Support.
+  // ─────────────────────────────────────────────
+
+  async getPublicStats() {
+    const raised = await this.prisma.victimProfile.aggregate({
+      where: {
+        status: VictimProfileStatus.PUBLISHED,
+        isPublished: true,
+      },
+      _sum: { totalRaised: true },
+    });
+
+    return {
+      totalRaisedAllProfiles: Number(raised._sum.totalRaised ?? 0),
+    };
+  }
+
+  // ─────────────────────────────────────────────
+  // ADMIN — AUDIT HISTORY
   // ─────────────────────────────────────────────
 
   async getHistory(id: string) {
@@ -1052,8 +1033,6 @@ export class VictimProfileService {
 
   // ─────────────────────────────────────────────
   // ADMIN — GET APPROVAL/GATE STATUS
-  // Adds claim state to the checklist payload so the dashboard can
-  // show "claimed by X" without a second request.
   // ─────────────────────────────────────────────
 
   async getGates(id: string) {
@@ -1144,7 +1123,6 @@ export class VictimProfileService {
 
   // ─────────────────────────────────────────────
   // ADMIN — UPDATE APPROVAL GATES
-  // FIX (item #9): access-gated. FIX (item #26): concurrency-guarded.
   // ─────────────────────────────────────────────
 
   async updateGates(admin: CurrentUserDto, id: string, data: UpdateVictimGateDto) {
@@ -1203,34 +1181,36 @@ export class VictimProfileService {
         : {}),
     });
 
-    this.eventEmitter.emit('victim_profile.gates_updated', {
-      actorId: admin.id,
-      victimProfileId: id,
-      action: 'UPDATE_APPROVAL_GATES',
+    this.emitAudit({
+      userId: admin.id,
+      actorType: resolveActorType(this.getRoles(admin)),
+      action: AuditEventEnum.VICTIM_PROFILE_GATES_UPDATED,
       entity: 'VictimProfile',
+      entityId: id,
+      diff: {
+        previousStatus: profile.status,
+        newStatus: status,
 
-      previousStatus: profile.status,
-      newStatus: status,
+        previousGates: {
+          isVerified: profile.isVerified,
+          isSafetyReviewed: profile.isSafetyReviewed,
+          hasConsent: profile.hasConsent,
+          isPrivacyReviewed: profile.isPrivacyReviewed,
+          isAdminApproved: profile.isAdminApproved,
+        },
 
-      previousGates: {
-        isVerified: profile.isVerified,
-        isSafetyReviewed: profile.isSafetyReviewed,
-        hasConsent: profile.hasConsent,
-        isPrivacyReviewed: profile.isPrivacyReviewed,
-        isAdminApproved: profile.isAdminApproved,
-      },
-
-      newGates: {
-        isVerified,
-        isSafetyReviewed,
-        hasConsent,
-        isPrivacyReviewed,
-        isAdminApproved,
+        newGates: {
+          isVerified,
+          isSafetyReviewed,
+          hasConsent,
+          isPrivacyReviewed,
+          isAdminApproved,
+        },
       },
     });
 
-    this.eventEmitter.emit('notification.victim_profile.gates_updated', {
-      actorId: admin.id,
+    this.eventEmitter.emit(NotificationEventEnum.VICTIM_PROFILE_GATES_UPDATED, {
+      userId: profile.createdByUserId,
       victimProfileId: id,
       status,
     });
@@ -1239,20 +1219,7 @@ export class VictimProfileService {
   }
 
   // ─────────────────────────────────────────────
-  // ADMIN — CHILD SAFETY REVIEW (§32 / item #16)
-  //
-  // FIX (item #16): previously a single admin could flip
-  // isChildSafetyReviewed straight to true — the schema had
-  // childSafetyFirstConfirmedByUserId/At for two-admin approval but
-  // nothing used them. Now:
-  //   1. First admin confirms  -> recorded as the first confirmer,
-  //      isChildSafetyReviewed stays false.
-  //   2. A DIFFERENT admin confirms -> isChildSafetyReviewed flips
-  //      to true. The same admin cannot supply both confirmations.
-  //   3. Reversing (isChildSafetyReviewed: false) clears the whole
-  //      confirmation chain, not just the flag, so a fresh review
-  //      always starts from zero — and drops admin approval/publish
-  //      state, since those depended on the review being current.
+  // ADMIN — CHILD SAFETY REVIEW
   // ─────────────────────────────────────────────
 
   async updateChildSafetyReview(
@@ -1281,12 +1248,15 @@ export class VictimProfileService {
           childSafetyFirstConfirmedAt: new Date(),
         });
 
-        this.eventEmitter.emit('victim_profile.child_safety_first_confirmed', {
-          actorId: admin.id,
-          victimProfileId: id,
-          action: 'CHILD_SAFETY_FIRST_CONFIRM',
+        this.emitAudit({
+          userId: admin.id,
+          actorType: resolveActorType(this.getRoles(admin)),
+          action: AuditEventEnum.VICTIM_PROFILE_CHILD_SAFETY_FIRST_CONFIRMED,
           entity: 'VictimProfile',
-          reviewNotes: data.reviewNotes,
+          entityId: id,
+          diff: {
+            reviewNotes: data.reviewNotes,
+          },
         });
 
         return updated;
@@ -1311,22 +1281,24 @@ export class VictimProfileService {
         status,
       });
 
-      this.eventEmitter.emit('victim_profile.child_safety_reviewed', {
-        actorId: admin.id,
-        victimProfileId: id,
-        action: 'UPDATE_CHILD_SAFETY_REVIEW',
+      this.emitAudit({
+        userId: admin.id,
+        actorType: resolveActorType(this.getRoles(admin)),
+        action: AuditEventEnum.VICTIM_PROFILE_CHILD_SAFETY_REVIEWED,
         entity: 'VictimProfile',
+        entityId: id,
+        diff: {
+          previousStatus: profile.status,
+          newStatus: status,
 
-        previousStatus: profile.status,
-        newStatus: status,
-
-        firstConfirmedBy: profile.childSafetyFirstConfirmedByUserId,
-        secondConfirmedBy: admin.id,
-        reviewNotes: data.reviewNotes,
+          firstConfirmedBy: profile.childSafetyFirstConfirmedByUserId,
+          secondConfirmedBy: admin.id,
+          reviewNotes: data.reviewNotes,
+        },
       });
 
-      this.eventEmitter.emit('notification.victim_profile.child_safety_reviewed', {
-        actorId: admin.id,
+      this.eventEmitter.emit(NotificationEventEnum.VICTIM_PROFILE_CHILD_SAFETY_REVIEWED, {
+        userId: profile.createdByUserId,
         victimProfileId: id,
         status,
       });
@@ -1334,7 +1306,6 @@ export class VictimProfileService {
       return updatedProfile;
     }
 
-    // Reversal — clear the confirmation chain and anything downstream.
     const status = this.deriveStatus({
       involvesChild: profile.involvesChild,
       isVerified: profile.isVerified,
@@ -1354,19 +1325,21 @@ export class VictimProfileService {
       status,
     });
 
-    this.eventEmitter.emit('victim_profile.child_safety_review_reversed', {
-      actorId: admin.id,
-      victimProfileId: id,
-      action: 'UPDATE_CHILD_SAFETY_REVIEW',
+    this.emitAudit({
+      userId: admin.id,
+      actorType: resolveActorType(this.getRoles(admin)),
+      action: AuditEventEnum.VICTIM_PROFILE_CHILD_SAFETY_REVIEW_REVERSED,
       entity: 'VictimProfile',
-
-      previousStatus: profile.status,
-      newStatus: status,
-      reviewNotes: data.reviewNotes,
+      entityId: id,
+      diff: {
+        previousStatus: profile.status,
+        newStatus: status,
+        reviewNotes: data.reviewNotes,
+      },
     });
 
-    this.eventEmitter.emit('notification.victim_profile.child_safety_reviewed', {
-      actorId: admin.id,
+    this.eventEmitter.emit(NotificationEventEnum.VICTIM_PROFILE_CHILD_SAFETY_REVIEWED, {
+      userId: profile.createdByUserId,
       victimProfileId: id,
       status,
     });
@@ -1376,7 +1349,6 @@ export class VictimProfileService {
 
   // ─────────────────────────────────────────────
   // ADMIN — REVOKE CONSENT
-  // FIX (item #9): access-gated. FIX (item #26): concurrency-guarded.
   // ─────────────────────────────────────────────
 
   async revokeConsent(admin: CurrentUserDto, id: string, data: RevokeConsentDto) {
@@ -1413,23 +1385,25 @@ export class VictimProfileService {
       status,
     });
 
-    this.eventEmitter.emit('victim_profile.consent_revoked', {
-      actorId: admin.id,
-      victimProfileId: id,
-      action: 'REVOKE_CONSENT',
+    this.emitAudit({
+      userId: admin.id,
+      actorType: resolveActorType(this.getRoles(admin)),
+      action: AuditEventEnum.VICTIM_PROFILE_CONSENT_REVOKED,
       entity: 'VictimProfile',
+      entityId: id,
+      diff: {
+        previousStatus: profile.status,
+        newStatus: status,
 
-      previousStatus: profile.status,
-      newStatus: status,
+        previousConsentAt: profile.consentAt,
+        previousConsentRecordedBy: profile.consentRecordedBy,
 
-      previousConsentAt: profile.consentAt,
-      previousConsentRecordedBy: profile.consentRecordedBy,
-
-      reason: data.reason,
+        reason: data.reason,
+      },
     });
 
-    this.eventEmitter.emit('notification.victim_profile.consent_revoked', {
-      actorId: admin.id,
+    this.eventEmitter.emit(NotificationEventEnum.VICTIM_PROFILE_CONSENT_REVOKED, {
+      userId: profile.createdByUserId,
       victimProfileId: id,
     });
 
@@ -1438,7 +1412,6 @@ export class VictimProfileService {
 
   // ─────────────────────────────────────────────
   // ADMIN — UPDATE BANK DETAILS
-  // FIX (item #9): access-gated. FIX (item #26): concurrency-guarded.
   // ─────────────────────────────────────────────
 
   async updateBankDetails(admin: CurrentUserDto, id: string, data: UpdateBankDetailsDto) {
@@ -1474,20 +1447,22 @@ export class VictimProfileService {
       status,
     });
 
-    this.eventEmitter.emit('victim_profile.bank_details_updated', {
-      actorId: admin.id,
-      victimProfileId: id,
-      action: 'UPDATE_BANK_DETAILS',
+    this.emitAudit({
+      userId: admin.id,
+      actorType: resolveActorType(this.getRoles(admin)),
+      action: AuditEventEnum.VICTIM_PROFILE_BANK_DETAILS_UPDATED,
       entity: 'VictimProfile',
+      entityId: id,
+      diff: {
+        previousStatus: profile.status,
+        newStatus: status,
 
-      previousStatus: profile.status,
-      newStatus: status,
-
-      reapprovalRequired: wasApproved,
+        reapprovalRequired: wasApproved,
+      },
     });
 
-    this.eventEmitter.emit('notification.victim_profile.bank_details_updated', {
-      actorId: admin.id,
+    this.eventEmitter.emit(NotificationEventEnum.VICTIM_PROFILE_BANK_DETAILS_UPDATED, {
+      userId: profile.createdByUserId,
       victimProfileId: id,
       reapprovalRequired: wasApproved,
     });
@@ -1497,7 +1472,6 @@ export class VictimProfileService {
 
   // ─────────────────────────────────────────────
   // ADMIN — PUBLISH
-  // FIX (item #9): access-gated. FIX (item #26): concurrency-guarded.
   // ─────────────────────────────────────────────
 
   async publish(admin: CurrentUserDto, id: string) {
@@ -1532,18 +1506,20 @@ export class VictimProfileService {
       isPublished: true,
     });
 
-    this.eventEmitter.emit('victim_profile.published', {
-      actorId: admin.id,
-      victimProfileId: id,
-      action: 'PUBLISH',
+    this.emitAudit({
+      userId: admin.id,
+      actorType: resolveActorType(this.getRoles(admin)),
+      action: AuditEventEnum.VICTIM_PROFILE_PUBLISHED,
       entity: 'VictimProfile',
-
-      previousStatus: profile.status,
-      newStatus: VictimProfileStatus.PUBLISHED,
+      entityId: id,
+      diff: {
+        previousStatus: profile.status,
+        newStatus: VictimProfileStatus.PUBLISHED,
+      },
     });
 
-    this.eventEmitter.emit('notification.victim_profile.published', {
-      actorId: admin.id,
+    this.eventEmitter.emit(NotificationEventEnum.VICTIM_PROFILE_PUBLISHED, {
+      userId: profile.createdByUserId,
       victimProfileId: id,
     });
 
@@ -1552,7 +1528,6 @@ export class VictimProfileService {
 
   // ─────────────────────────────────────────────
   // ADMIN — UNPUBLISH
-  // FIX (item #9): access-gated. FIX (item #26): concurrency-guarded.
   // ─────────────────────────────────────────────
 
   async unpublish(admin: CurrentUserDto, id: string) {
@@ -1575,18 +1550,20 @@ export class VictimProfileService {
       isPublished: false,
     });
 
-    this.eventEmitter.emit('victim_profile.unpublished', {
-      actorId: admin.id,
-      victimProfileId: id,
-      action: 'UNPUBLISH',
+    this.emitAudit({
+      userId: admin.id,
+      actorType: resolveActorType(this.getRoles(admin)),
+      action: AuditEventEnum.VICTIM_PROFILE_UNPUBLISHED,
       entity: 'VictimProfile',
-
-      previousStatus: profile.status,
-      newStatus: VictimProfileStatus.UNPUBLISHED,
+      entityId: id,
+      diff: {
+        previousStatus: profile.status,
+        newStatus: VictimProfileStatus.UNPUBLISHED,
+      },
     });
 
-    this.eventEmitter.emit('notification.victim_profile.unpublished', {
-      actorId: admin.id,
+    this.eventEmitter.emit(NotificationEventEnum.VICTIM_PROFILE_UNPUBLISHED, {
+      userId: profile.createdByUserId,
       victimProfileId: id,
     });
 
@@ -1595,7 +1572,6 @@ export class VictimProfileService {
 
   // ─────────────────────────────────────────────
   // ADMIN — REJECT
-  // FIX (item #9): access-gated. FIX (item #26): concurrency-guarded.
   // ─────────────────────────────────────────────
 
   async reject(admin: CurrentUserDto, id: string) {
@@ -1618,18 +1594,20 @@ export class VictimProfileService {
       isPublished: false,
     });
 
-    this.eventEmitter.emit('victim_profile.rejected', {
-      actorId: admin.id,
-      victimProfileId: id,
-      action: 'REJECT',
+    this.emitAudit({
+      userId: admin.id,
+      actorType: resolveActorType(this.getRoles(admin)),
+      action: AuditEventEnum.VICTIM_PROFILE_REJECTED,
       entity: 'VictimProfile',
-
-      previousStatus: profile.status,
-      newStatus: VictimProfileStatus.REJECTED,
+      entityId: id,
+      diff: {
+        previousStatus: profile.status,
+        newStatus: VictimProfileStatus.REJECTED,
+      },
     });
 
-    this.eventEmitter.emit('notification.victim_profile.rejected', {
-      actorId: admin.id,
+    this.eventEmitter.emit(NotificationEventEnum.VICTIM_PROFILE_REJECTED, {
+      userId: profile.createdByUserId,
       victimProfileId: id,
     });
 
@@ -1638,7 +1616,6 @@ export class VictimProfileService {
 
   // ─────────────────────────────────────────────
   // ADMIN — RESUBMIT AFTER REJECTION
-  // FIX (item #9): access-gated. FIX (item #26): concurrency-guarded.
   // ─────────────────────────────────────────────
 
   async resubmit(admin: CurrentUserDto, id: string) {
@@ -1671,22 +1648,102 @@ export class VictimProfileService {
       isPublished: false,
     });
 
-    this.eventEmitter.emit('victim_profile.resubmitted', {
-      actorId: admin.id,
-      victimProfileId: id,
-      action: 'RESUBMIT',
+    this.emitAudit({
+      userId: admin.id,
+      actorType: resolveActorType(this.getRoles(admin)),
+      action: AuditEventEnum.VICTIM_PROFILE_RESUBMITTED,
       entity: 'VictimProfile',
-
-      previousStatus: profile.status,
-      newStatus: status,
+      entityId: id,
+      diff: {
+        previousStatus: profile.status,
+        newStatus: status,
+      },
     });
 
-    this.eventEmitter.emit('notification.victim_profile.resubmitted', {
-      actorId: admin.id,
+    this.eventEmitter.emit(NotificationEventEnum.VICTIM_PROFILE_RESUBMITTED, {
+      userId: profile.createdByUserId,
       victimProfileId: id,
       status,
     });
 
     return updatedProfile;
+  }
+
+  // ─────────────────────────────────────────────
+  // ADMIN — RECONCILE totalRaised (financial-integrity check)
+  //
+  // NEW. Recomputes the true collected total for one profile
+  // straight from Support (status === CONFIRMED, per the current,
+  // deliberately un-abstracted counting rule — see the module-level
+  // comment at the top of this file), and diffs it against the
+  // cached VictimProfile.totalRaised column.
+  //
+  // autoCorrect=false: read-only diff report (dry run).
+  // autoCorrect=true: also writes the corrected value and emits
+  // VICTIM_PROFILE_TOTAL_RECONCILED with before/after values, so any
+  // rewrite of a financial total leaves an audit trail.
+  // ─────────────────────────────────────────────
+
+  async reconcileProfileTotal(admin: CurrentUserDto, id: string, autoCorrect: boolean) {
+    const profile = await this.prisma.victimProfile.findUnique({ where: { id } });
+    if (!profile) {
+      throw new NotFoundException('victim_profile_not_found');
+    }
+
+    const supports = await this.prisma.support.findMany({
+      where: { victimProfileId: id, status: SupportStatus.CONFIRMED },
+      select: { amount: true, recipientAmount: true },
+    });
+
+    const liveTotal = supports.reduce(
+      (sum, s) => sum + Number(s.recipientAmount ?? s.amount ?? 0),
+      0,
+    );
+    const cachedTotal = Number(profile.totalRaised);
+    const mismatch = Math.abs(liveTotal - cachedTotal) > 0.01;
+
+    if (mismatch && autoCorrect) {
+      await this.conditionalUpdate(id, profile.updatedAt, { totalRaised: liveTotal });
+
+      this.emitAudit({
+        userId: admin.id,
+        actorType: resolveActorType(this.getRoles(admin)),
+        action: AuditEventEnum.VICTIM_PROFILE_TOTAL_RECONCILED,
+        entity: 'VictimProfile',
+        entityId: id,
+        diff: {
+          previousCachedTotal: cachedTotal,
+          liveTotal,
+          corrected: true,
+        },
+      });
+    }
+
+    return {
+      victimProfileId: id,
+      cachedTotal,
+      liveTotal,
+      mismatch,
+      corrected: mismatch && autoCorrect,
+    };
+  }
+
+  // ─────────────────────────────────────────────
+  // ADMIN — RECONCILE ALL PROFILES
+  //
+  // NEW. Sweeps every profile and returns only the mismatches — the
+  // caller (an ops alert channel, or a future cron job) should treat
+  // a non-empty result as something worth paging someone about, not
+  // just a routine dashboard number.
+  // ─────────────────────────────────────────────
+
+  async reconcileAllTotals(admin: CurrentUserDto, autoCorrect: boolean) {
+    const profiles = await this.prisma.victimProfile.findMany({ select: { id: true } });
+
+    const results = await Promise.all(
+      profiles.map((p) => this.reconcileProfileTotal(admin, p.id, autoCorrect)),
+    );
+
+    return results.filter((r) => r.mismatch);
   }
 }
