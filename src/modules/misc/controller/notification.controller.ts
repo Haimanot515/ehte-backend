@@ -126,12 +126,20 @@ export class NotificationController {
   // ADMIN — LIST
   // GET /notifications/admin/list
   //
-  // NOTE: returns broadcast notifications (userId =
-  // null) — the same rows a regular user would see
-  // via GET /notifications. There is no schema-level
-  // separation between "admin" and "everyone"
-  // notifications; access here is restricted only at
-  // the route level via @Roles().
+  // FIXED (previously): only returned broadcast rows
+  // (userId = null). Now also includes this admin's own
+  // per-admin queue rows written by createForAdmins()
+  // (userId = admin.id), via
+  // OR: [{ userId: null }, { userId: user.id }] —
+  // otherwise NEW_REPORT / NEW_POST / etc. notices never
+  // appeared on this endpoint at all.
+  //
+  // NOTE: broadcast rows (userId = null) are still shared
+  // across every user — including regular, non-admin
+  // users via GET /notifications — and isRead on those
+  // rows is still shared state. Only this admin's own
+  // per-admin rows have independent isRead. Access here
+  // is restricted at the route level via @Roles().
   //
   // ADMIN / SUPER_ADMIN
   // ─────────────────────────────────────────────
@@ -140,14 +148,17 @@ export class NotificationController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.NOTIFICATION_READ)
   @ApiOperation({
-    summary: 'Admin: get broadcast notifications',
+    summary: 'Admin: get admin notifications (broadcasts + my queue items)',
   })
   @ApiQuery({ name: 'type', required: false })
   @ApiQuery({ name: 'isRead', required: false })
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
-  async getAdminNotifications(@Query() query: NotificationQueryDto) {
-    return this.notificationService.getAdminNotifications(query);
+  async getAdminNotifications(
+    @CurrentUser() user: CurrentUserDto,
+    @Query() query: NotificationQueryDto,
+  ) {
+    return this.notificationService.getAdminNotifications(user, query);
   }
 
   // ─────────────────────────────────────────────
@@ -160,10 +171,10 @@ export class NotificationController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.NOTIFICATION_READ)
   @ApiOperation({
-    summary: 'Admin: get unread broadcast notification count',
+    summary: 'Admin: get unread admin notification count',
   })
-  async getAdminUnreadCount() {
-    return this.notificationService.getAdminUnreadCount();
+  async getAdminUnreadCount(@CurrentUser() user: CurrentUserDto) {
+    return this.notificationService.getAdminUnreadCount(user);
   }
 
   // ─────────────────────────────────────────────
@@ -182,22 +193,25 @@ export class NotificationController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.NOTIFICATION_READ)
   @ApiOperation({
-    summary: 'Admin: get one broadcast notification',
+    summary: 'Admin: get one admin notification',
   })
   @ApiParam({ name: 'id', description: 'Notification ID' })
-  async getAdminNotificationById(@Param('id') id: string) {
-    return this.notificationService.getAdminNotificationById(id);
+  async getAdminNotificationById(
+    @Param('id') id: string,
+    @CurrentUser() user: CurrentUserDto,
+  ) {
+    return this.notificationService.getAdminNotificationById(id, user);
   }
 
   // ─────────────────────────────────────────────
   // ADMIN — MARK ONE AS READ
   // PATCH /notifications/admin/:id/read
   //
-  // NOTE: marks the shared broadcast row as read —
-  // this affects what every other viewer (including
-  // regular users) sees for this notification, since
-  // there is no per-user read table in the current
-  // schema.
+  // NOTE: for broadcast rows this still marks the shared
+  // row as read, affecting every other viewer — that part
+  // of the schema limitation is unchanged. For this
+  // admin's own per-admin queue rows, isRead is
+  // independent, as intended by createForAdmins().
   //
   // ADMIN / SUPER_ADMIN
   // ─────────────────────────────────────────────
@@ -206,11 +220,14 @@ export class NotificationController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.NOTIFICATION_MANAGE)
   @ApiOperation({
-    summary: 'Admin: mark broadcast notification as read',
+    summary: 'Admin: mark admin notification as read',
   })
   @ApiParam({ name: 'id', description: 'Notification ID' })
-  async markAdminNotificationAsRead(@Param('id') id: string) {
-    return this.notificationService.markAdminNotificationAsRead(id);
+  async markAdminNotificationAsRead(
+    @Param('id') id: string,
+    @CurrentUser() user: CurrentUserDto,
+  ) {
+    return this.notificationService.markAdminNotificationAsRead(id, user);
   }
 
   // ─────────────────────────────────────────────
@@ -223,10 +240,13 @@ export class NotificationController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.NOTIFICATION_MANAGE)
   @ApiOperation({
-    summary: 'Admin: mark multiple broadcast notifications as read',
+    summary: 'Admin: mark multiple admin notifications as read',
   })
-  async markBulkAdminNotificationsAsRead(@Body() dto: MarkBulkReadDto) {
-    return this.notificationService.markBulkAdminNotificationsAsRead(dto.ids);
+  async markBulkAdminNotificationsAsRead(
+    @Body() dto: MarkBulkReadDto,
+    @CurrentUser() user: CurrentUserDto,
+  ) {
+    return this.notificationService.markBulkAdminNotificationsAsRead(dto.ids, user);
   }
 
   // ─────────────────────────────────────────────
@@ -239,19 +259,20 @@ export class NotificationController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.NOTIFICATION_MANAGE)
   @ApiOperation({
-    summary: 'Admin: mark all broadcast notifications as read',
+    summary: 'Admin: mark all admin notifications as read',
   })
-  async markAllAdminNotificationsAsRead() {
-    return this.notificationService.markAllAdminNotificationsAsRead();
+  async markAllAdminNotificationsAsRead(@CurrentUser() user: CurrentUserDto) {
+    return this.notificationService.markAllAdminNotificationsAsRead(user);
   }
 
   // ─────────────────────────────────────────────
   // ADMIN — DELETE
   // DELETE /notifications/admin/:id
   //
-  // NOTE: deletes the shared broadcast row entirely
-  // for all users, since there is no per-user
-  // dismissal table in the current schema.
+  // NOTE: for broadcast rows this still deletes the
+  // shared row entirely for all users — unchanged schema
+  // limitation. For this admin's own per-admin rows, only
+  // that admin's row is affected.
   //
   // ADMIN / SUPER_ADMIN
   // ─────────────────────────────────────────────
@@ -260,11 +281,14 @@ export class NotificationController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.NOTIFICATION_MANAGE)
   @ApiOperation({
-    summary: 'Admin: delete a broadcast notification',
+    summary: 'Admin: delete an admin notification',
   })
   @ApiParam({ name: 'id', description: 'Notification ID' })
-  async deleteAdminNotification(@Param('id') id: string) {
-    return this.notificationService.deleteAdminNotification(id);
+  async deleteAdminNotification(
+    @Param('id') id: string,
+    @CurrentUser() user: CurrentUserDto,
+  ) {
+    return this.notificationService.deleteAdminNotification(id, user);
   }
 
   // ─────────────────────────────────────────────
