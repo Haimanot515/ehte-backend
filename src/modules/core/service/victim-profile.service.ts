@@ -3,7 +3,14 @@ import { BadRequestException, ForbiddenException, Injectable, NotFoundException 
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { ConfigService } from '@nestjs/config';
 
-import { Prisma, SupportStatus, VictimProfile, VictimProfileStatus } from '@prisma/client';
+import {
+  AuditOutcome,
+  AuditSeverity,
+  Prisma,
+  SupportStatus,
+  VictimProfile,
+  VictimProfileStatus,
+} from '@prisma/client';
 
 import { PrismaService } from 'src/prisma/prisma.service';
 import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
@@ -27,35 +34,46 @@ import {
   UpdateVictimProfileDto,
 } from '../dto/victim-profile.dto';
 
-// The six media-array fields shared by CreateVictimProfileDto/
-// UpdateVictimProfileDto and the VictimProfile model itself.
-// Mirrors PostService/ReportService's MEDIA_FIELD_NAMES so every
-// module stays in sync if a new media kind is ever added.
+// Six media-array fields shared by the DTOs and the VictimProfile model.
 const MEDIA_FIELD_NAMES = ['photo', 'video', 'audio', 'pdf', 'document', 'other'] as const;
 type MediaFieldName = (typeof MEDIA_FIELD_NAMES)[number];
 type MediaBearing = Record<MediaFieldName, string[]>;
 type MediaBearingDto = Partial<Record<MediaFieldName, string[] | undefined>>;
 
-// Statuses a profile can be "forgotten" in — used by findStalePending().
-// PUBLISHED and REJECTED are dead ends (REJECTED can still be resubmitted,
-// but that's an explicit admin action, not something a stale sweep should
-// nag about).
+// Fields update() may touch — used only to record which fields an edit touched in audit metadata.
+const UPDATABLE_FIELD_NAMES = [
+  'name',
+  'description',
+  'story',
+  'supportType',
+  'supportGoal',
+  'bankAccountName',
+  'bankAccountNumber',
+  'bankName',
+  'photo',
+  'video',
+  'audio',
+  'pdf',
+  'document',
+  'other',
+  'involvesChild',
+] as const;
+
+type ProfileAuditRef = Pick<VictimProfile, 'id' | 'name' | 'involvesChild' | 'createdByUserId'>;
+
+type ConflictAuditContext = {
+  admin: CurrentUserDto;
+  action: AuditEventEnum;
+  profile: ProfileAuditRef;
+};
+
+// PUBLISHED/REJECTED are dead ends for the stale-pending sweep.
 const STALE_ELIGIBLE_EXCLUDED_STATUSES: VictimProfileStatus[] = [
   VictimProfileStatus.PUBLISHED,
   VictimProfileStatus.REJECTED,
 ];
 
-// FUNDS/TOTALS NOTE:
-// "Money collected" is defined, deliberately and for now, as strictly
-// Support rows with status === SupportStatus.CONFIRMED. This is
-// intentionally NOT abstracted into a shared constant/helper — there
-// is currently only one counting rule and it is used in exactly the
-// two places below (reconcileProfileTotal's live recompute, and the
-// backfill migration alongside this file) plus SupportService's
-// increment/decrement. If a second status ever needs to count (e.g.
-// COMPLETED), promote SupportStatus.CONFIRMED to a small shared
-// helper at that point rather than before.
-
+// "Money collected" = Support rows with status CONFIRMED only, used here and in SupportService.
 @Injectable()
 export class VictimProfileService {
   constructor(
@@ -65,17 +83,65 @@ export class VictimProfileService {
     private readonly configService: ConfigService,
   ) {}
 
-  // ─────────────────────────────────────────────
-  // AUDIT HELPER
-  // ─────────────────────────────────────────────
+  // ─── AUDIT HELPERS ───
+  // Bank details are never written to diff/metadata, only whether they changed (booleans).
 
   private emitAudit(payload: AuditEventPayload): void {
     this.eventEmitter.emit(payload.action, payload);
   }
 
-  // ─────────────────────────────────────────────
-  // MEDIA HELPERS
-  // ─────────────────────────────────────────────
+  // Child profiles get a redacted label so a child's name never lands in the audit table.
+  private profileLabel(
+    profile: Pick<VictimProfile, 'id' | 'name' | 'involvesChild'>,
+  ): string | undefined {
+    if (profile.involvesChild) {
+      return `Child profile ${profile.id.slice(0, 8)}`;
+    }
+    return profile.name ?? undefined;
+  }
+
+  // Returns the profile's creator as targetUserId, unless the actor IS the creator.
+  private targetUserFor(
+    actor: CurrentUserDto,
+    profile: Pick<VictimProfile, 'createdByUserId'>,
+  ): { targetUserId?: string } {
+    const creatorId = profile.createdByUserId;
+    return creatorId && creatorId !== actor.id ? { targetUserId: creatorId } : {};
+  }
+
+  // Single place a DENIED/FAILURE audit row is built, so every guard clause is consistent.
+  private emitProfileFailure(
+    actor: CurrentUserDto,
+    action: AuditEventEnum,
+    profile: ProfileAuditRef,
+    reason: string,
+    opts: {
+      outcome?: AuditOutcome;
+      diff?: Record<string, unknown>;
+      metadata?: Record<string, unknown>;
+    } = {},
+  ): void {
+    const outcome = opts.outcome ?? AuditOutcome.FAILURE;
+
+    this.emitAudit({
+      userId: actor.id,
+      actorType: resolveActorType(this.getRoles(actor)),
+      action,
+      outcome,
+      severity: AuditSeverity.WARNING,
+      entity: 'VictimProfile',
+      entityId: profile.id,
+      entityLabel: this.profileLabel(profile),
+      diff: {
+        result: outcome === AuditOutcome.DENIED ? 'denied' : 'failure',
+        reason,
+        ...(opts.diff ?? {}),
+      } as AuditEventPayload['diff'],
+      ...(opts.metadata ? { metadata: opts.metadata as AuditEventPayload['metadata'] } : {}),
+    });
+  }
+
+  // ─── MEDIA HELPERS ───
 
   private getMediaBucket(): string {
     return this.configService.get<string>('minio.bucketName') ?? 'ehte-media';
@@ -199,30 +265,36 @@ export class VictimProfileService {
     return profile.involvesChild ? [] : profile.photo;
   }
 
-  // ─────────────────────────────────────────────
-  // ACCESS CONTROL HELPERS
-  // ─────────────────────────────────────────────
+  // ─── ACCESS CONTROL HELPERS ───
 
   private getRoles(user: CurrentUserDto): string[] {
     return (user as unknown as { roles?: string[] }).roles ?? [];
   }
 
+  // Denied access attempts now write a DENIED/WARNING audit row before throwing.
   private assertAdminCanAccessProfile(
     admin: CurrentUserDto,
-    profile: { claimedByUserId: string | null },
+    profile: ProfileAuditRef & { claimedByUserId: string | null },
+    action: AuditEventEnum,
   ): void {
     const roles = this.getRoles(admin);
     const isSuperAdmin = roles.includes(RolesEnum.SUPER_ADMIN);
 
     if (!isSuperAdmin && profile.claimedByUserId && profile.claimedByUserId !== admin.id) {
+      this.emitProfileFailure(admin, action, profile, 'claimed_by_another_admin', {
+        outcome: AuditOutcome.DENIED,
+        metadata: { claimedByUserId: profile.claimedByUserId },
+      });
       throw new ForbiddenException('victim_profile_claimed_by_another_admin');
     }
   }
 
+  // Losing the optimistic-concurrency race now emits a FAILURE row before throwing.
   private async conditionalUpdate(
     id: string,
     expectedUpdatedAt: Date,
     data: Prisma.VictimProfileUpdateManyMutationInput,
+    audit: ConflictAuditContext,
   ): Promise<VictimProfile> {
     const result = await this.prisma.victimProfile.updateMany({
       where: { id, updatedAt: expectedUpdatedAt },
@@ -230,15 +302,39 @@ export class VictimProfileService {
     });
 
     if (result.count === 0) {
+      this.emitProfileFailure(
+        audit.admin,
+        audit.action,
+        audit.profile,
+        'victim_profile_transition_conflict',
+      );
       throw new BadRequestException('victim_profile_transition_conflict');
     }
 
     return this.prisma.victimProfile.findUniqueOrThrow({ where: { id } });
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — CLAIM / UNCLAIM
-  // ─────────────────────────────────────────────
+  // Names of unsatisfied approval gates — used only for FAILURE audit metadata, not allow/deny logic.
+  private getMissingApprovalGates(g: {
+    involvesChild: boolean;
+    isVerified: boolean;
+    isSafetyReviewed: boolean;
+    isChildSafetyReviewed: boolean;
+    hasConsent: boolean;
+    isPrivacyReviewed: boolean;
+    hasBankDetails: boolean;
+  }): string[] {
+    const missing: string[] = [];
+    if (!g.isVerified) missing.push('isVerified');
+    if (!g.isSafetyReviewed) missing.push('isSafetyReviewed');
+    if (g.involvesChild && !g.isChildSafetyReviewed) missing.push('isChildSafetyReviewed');
+    if (!g.hasConsent) missing.push('hasConsent');
+    if (!g.isPrivacyReviewed) missing.push('isPrivacyReviewed');
+    if (!g.hasBankDetails) missing.push('hasBankDetails');
+    return missing;
+  }
+
+  // ─── ADMIN — CLAIM / UNCLAIM ───
 
   async claim(admin: CurrentUserDto, id: string) {
     const existing = await this.prisma.victimProfile.findUnique({ where: { id } });
@@ -250,6 +346,16 @@ export class VictimProfileService {
       return existing;
     }
     if (existing.claimedByUserId) {
+      this.emitProfileFailure(
+        admin,
+        AuditEventEnum.VICTIM_PROFILE_CLAIMED,
+        existing,
+        'victim_profile_already_claimed',
+        {
+          outcome: AuditOutcome.DENIED,
+          metadata: { claimedByUserId: existing.claimedByUserId },
+        },
+      );
       throw new ForbiddenException('victim_profile_already_claimed');
     }
 
@@ -259,6 +365,16 @@ export class VictimProfileService {
     });
 
     if (result.count === 0) {
+      this.emitProfileFailure(
+        admin,
+        AuditEventEnum.VICTIM_PROFILE_CLAIMED,
+        existing,
+        'victim_profile_already_claimed',
+        {
+          outcome: AuditOutcome.DENIED,
+          metadata: { lostRace: true },
+        },
+      );
       throw new ForbiddenException('victim_profile_already_claimed');
     }
 
@@ -270,6 +386,7 @@ export class VictimProfileService {
       action: AuditEventEnum.VICTIM_PROFILE_CLAIMED,
       entity: 'VictimProfile',
       entityId: id,
+      entityLabel: this.profileLabel(profile),
       diff: {
         result: 'success',
       },
@@ -278,6 +395,7 @@ export class VictimProfileService {
     return profile;
   }
 
+  // Unclaim by SUPER_ADMIN on another admin's claim records that admin as targetUserId.
   async unclaim(admin: CurrentUserDto, id: string) {
     const existing = await this.prisma.victimProfile.findUnique({ where: { id } });
     if (!existing) {
@@ -285,6 +403,12 @@ export class VictimProfileService {
     }
 
     if (!existing.claimedByUserId) {
+      this.emitProfileFailure(
+        admin,
+        AuditEventEnum.VICTIM_PROFILE_UNCLAIMED,
+        existing,
+        'victim_profile_not_claimed',
+      );
       throw new BadRequestException('victim_profile_not_claimed');
     }
 
@@ -292,6 +416,16 @@ export class VictimProfileService {
     const isSuperAdmin = roles.includes(RolesEnum.SUPER_ADMIN);
 
     if (!isSuperAdmin && existing.claimedByUserId !== admin.id) {
+      this.emitProfileFailure(
+        admin,
+        AuditEventEnum.VICTIM_PROFILE_UNCLAIMED,
+        existing,
+        'claimed_by_another_admin',
+        {
+          outcome: AuditOutcome.DENIED,
+          metadata: { claimedByUserId: existing.claimedByUserId },
+        },
+      );
       throw new ForbiddenException('victim_profile_claimed_by_another_admin');
     }
 
@@ -301,29 +435,39 @@ export class VictimProfileService {
     });
 
     if (result.count === 0) {
+      this.emitProfileFailure(
+        admin,
+        AuditEventEnum.VICTIM_PROFILE_UNCLAIMED,
+        existing,
+        'victim_profile_transition_conflict',
+      );
       throw new BadRequestException('victim_profile_transition_conflict');
     }
 
     const profile = await this.prisma.victimProfile.findUniqueOrThrow({ where: { id } });
 
+    const overrodeAnotherAdmin = existing.claimedByUserId !== admin.id;
+
     this.emitAudit({
       userId: admin.id,
+      ...(overrodeAnotherAdmin ? { targetUserId: existing.claimedByUserId } : {}),
       actorType: resolveActorType(roles),
       action: AuditEventEnum.VICTIM_PROFILE_UNCLAIMED,
       entity: 'VictimProfile',
       entityId: id,
+      entityLabel: this.profileLabel(profile),
       diff: {
         previousClaimedByUserId: existing.claimedByUserId,
         result: 'success',
       },
+      metadata: { overrodeAnotherAdmin },
     });
 
     return profile;
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — GET MEDIA DOWNLOAD URL
-  // ─────────────────────────────────────────────
+  // ─── ADMIN — GET MEDIA DOWNLOAD URL ───
+  // A key not actually attached to the profile is a DENIED event, not a silent 404.
 
   async getMediaDownloadUrl(admin: CurrentUserDto, id: string, key: string): Promise<{ url: string }> {
     const profile = await this.prisma.victimProfile.findUnique({
@@ -336,6 +480,19 @@ export class VictimProfileService {
 
     const owned = this.collectMediaFields(profile).includes(key);
     if (!owned) {
+      this.emitAudit({
+        userId: admin.id,
+        ...this.targetUserFor(admin, profile),
+        actorType: resolveActorType(this.getRoles(admin)),
+        action: AuditEventEnum.VICTIM_PROFILE_MEDIA_DOWNLOADED,
+        outcome: AuditOutcome.DENIED,
+        severity: AuditSeverity.WARNING,
+        entity: 'VictimProfile',
+        entityId: id,
+        entityLabel: this.profileLabel(profile),
+        diff: { result: 'denied', reason: 'media_not_found_on_profile' },
+        metadata: { requestedKey: key },
+      });
       throw new NotFoundException('media_not_found_on_profile');
     }
 
@@ -343,22 +500,23 @@ export class VictimProfileService {
 
     this.emitAudit({
       userId: admin.id,
+      ...this.targetUserFor(admin, profile),
       actorType: resolveActorType(this.getRoles(admin)),
       action: AuditEventEnum.VICTIM_PROFILE_MEDIA_DOWNLOADED,
       entity: 'VictimProfile',
       entityId: id,
+      entityLabel: this.profileLabel(profile),
       diff: {
-        key,
         result: 'success',
       },
+      metadata: { key },
     });
 
     return { url };
   }
 
-  // ─────────────────────────────────────────────
-  // PUBLIC — GET MEDIA DOWNLOAD URL
-  // ─────────────────────────────────────────────
+  // ─── PUBLIC — GET MEDIA DOWNLOAD URL ───
+  // Anonymous endpoint — no actor to attribute a row to, so no AuditLog write here.
 
   async getPublicMediaDownloadUrl(id: string, key: string): Promise<{ url: string }> {
     const profile = await this.prisma.victimProfile.findFirst({
@@ -391,9 +549,8 @@ export class VictimProfileService {
     return { url };
   }
 
-  // ─────────────────────────────────────────────
-  // CREATE
-  // ─────────────────────────────────────────────
+  // ─── CREATE ───
+  // Callable by admins and by regular users creating their own profile.
 
   async create(currentUser: CurrentUserDto, data: CreateVictimProfileDto, idempotencyKey?: string) {
     if (idempotencyKey) {
@@ -459,10 +616,7 @@ export class VictimProfileService {
           idempotencyKey: idempotencyKey ?? null,
           mediaTotalBytes: totalBytes,
 
-          // Starts at zero — never client-settable (not present on
-          // CreateVictimProfileDto/UpdateVictimProfileDto). Only
-          // SupportService.updateStatus and reconcileProfileTotal
-          // below may change it.
+          // Never client-settable; only SupportService.updateStatus / reconcileProfileTotal change it.
           totalRaised: 0,
         },
       });
@@ -491,8 +645,16 @@ export class VictimProfileService {
       action: AuditEventEnum.VICTIM_PROFILE_CREATED,
       entity: 'VictimProfile',
       entityId: profile.id,
+      entityLabel: this.profileLabel(profile),
       diff: {
         result: 'success',
+        status: profile.status,
+      },
+      metadata: {
+        supportType: profile.supportType,
+        involvesChild: profile.involvesChild,
+        attachmentCount: this.collectMediaFields(merged).length,
+        mediaTotalBytes: totalBytes,
       },
     });
 
@@ -504,9 +666,8 @@ export class VictimProfileService {
     return profile;
   }
 
-  // ─────────────────────────────────────────────
-  // GET ONE (admin)
-  // ─────────────────────────────────────────────
+  // ─── GET ONE (admin) ───
+  // Full row including bank details, currently un-audited — needs a VICTIM_PROFILE_OPENED event.
 
   async findOne(id: string) {
     const profile = await this.prisma.victimProfile.findUnique({
@@ -534,8 +695,6 @@ export class VictimProfileService {
       throw new NotFoundException('victim_profile_not_found');
     }
 
-    // profile.totalRaised is included automatically — this uses the
-    // default full-row `include`, not a narrow `select`.
     return profile;
   }
 
@@ -569,9 +728,7 @@ export class VictimProfileService {
     };
   }
 
-  // ─────────────────────────────────────────────
-  // PUBLIC PROFILES — LIST
-  // ─────────────────────────────────────────────
+  // ─── PUBLIC PROFILES — LIST ───
 
   async findPublic(query: FindPublicVictimProfilesQueryDto) {
     const page = query.page && query.page > 0 ? query.page : 1;
@@ -615,7 +772,6 @@ export class VictimProfileService {
           photo: true,
           involvesChild: true,
 
-          // NEW — needed on the public list card ("$X raised of $Y goal").
           totalRaised: true,
 
           createdAt: true,
@@ -642,9 +798,7 @@ export class VictimProfileService {
     };
   }
 
-  // ─────────────────────────────────────────────
-  // PUBLIC PROFILES — SINGLE
-  // ─────────────────────────────────────────────
+  // ─── PUBLIC PROFILES — SINGLE ───
 
   async findOnePublic(id: string) {
     const profile = await this.prisma.victimProfile.findFirst({
@@ -672,7 +826,6 @@ export class VictimProfileService {
         photo: true,
         involvesChild: true,
 
-        // NEW
         totalRaised: true,
 
         createdAt: true,
@@ -707,18 +860,13 @@ export class VictimProfileService {
       // Child profiles never expose photos publicly.
       photo: profile.involvesChild ? [] : profile.photo,
 
-      // NEW — cached running total of CONFIRMED support for this
-      // profile, kept in sync by SupportService.updateStatus and
-      // periodically checked by reconcileProfileTotal below.
       totalRaised: Number(profile.totalRaised),
 
       createdAt: profile.createdAt,
     };
   }
 
-  // ─────────────────────────────────────────────
-  // UPDATE PROFILE
-  // ─────────────────────────────────────────────
+  // ─── UPDATE PROFILE ───
 
   async update(admin: CurrentUserDto, id: string, data: UpdateVictimProfileDto) {
     const profile = await this.prisma.victimProfile.findUnique({
@@ -729,7 +877,7 @@ export class VictimProfileService {
       throw new NotFoundException('victim_profile_not_found');
     }
 
-    this.assertAdminCanAccessProfile(admin, profile);
+    this.assertAdminCanAccessProfile(admin, profile, AuditEventEnum.VICTIM_PROFILE_UPDATED);
 
     const { added, removed } = this.diffMediaFields(profile, data);
 
@@ -741,77 +889,112 @@ export class VictimProfileService {
       document: data.document ?? profile.document,
       other: data.other ?? profile.other,
     };
-    this.assertAttachmentCounts(merged);
 
-    const validatedAdded = await this.validateMediaFilesExist(added);
-    const addedBytes = validatedAdded.reduce((sum, v) => sum + v.size, 0);
+    let newTotalBytes = profile.mediaTotalBytes;
 
-    const removedStats = await Promise.allSettled(
-      removed.map((fp) => this.minioService.statObject(fp)),
+    try {
+      this.assertAttachmentCounts(merged);
+
+      const validatedAdded = await this.validateMediaFilesExist(added);
+      const addedBytes = validatedAdded.reduce((sum, v) => sum + v.size, 0);
+
+      const removedStats = await Promise.allSettled(
+        removed.map((fp) => this.minioService.statObject(fp)),
+      );
+      const removedBytes = removedStats.reduce(
+        (sum, r) => sum + (r.status === 'fulfilled' ? r.value.size : 0),
+        0,
+      );
+
+      newTotalBytes = Math.max(0, profile.mediaTotalBytes + addedBytes - removedBytes);
+      this.assertTotalBytes(newTotalBytes);
+    } catch (err) {
+      this.emitProfileFailure(
+        admin,
+        AuditEventEnum.VICTIM_PROFILE_UPDATED,
+        profile,
+        'media_validation_failed',
+        { diff: { message: err instanceof Error ? err.message : String(err) } },
+      );
+      throw err;
+    }
+
+    const fieldsUpdated = UPDATABLE_FIELD_NAMES.filter((field) => data[field] !== undefined);
+    const bankDetailsChanged =
+      (data.bankAccountName !== undefined && data.bankAccountName !== profile.bankAccountName) ||
+      (data.bankAccountNumber !== undefined &&
+        data.bankAccountNumber !== profile.bankAccountNumber) ||
+      (data.bankName !== undefined && data.bankName !== profile.bankName);
+
+    // totalRaised is deliberately untouched here — editing content/media has nothing to do with confirmed money.
+    const updatedProfile = await this.conditionalUpdate(
+      id,
+      profile.updatedAt,
+      {
+        name: data.name,
+        description: data.description,
+        story: data.story,
+
+        supportType: data.supportType,
+        supportGoal: data.supportGoal,
+
+        bankAccountName: data.bankAccountName,
+        bankAccountNumber: data.bankAccountNumber,
+        bankName: data.bankName,
+
+        photo: data.photo,
+        video: data.video,
+        audio: data.audio,
+        pdf: data.pdf,
+        document: data.document,
+        other: data.other,
+
+        involvesChild: data.involvesChild,
+        mediaTotalBytes: newTotalBytes,
+
+        status: VictimProfileStatus.PENDING,
+
+        isVerified: false,
+        isSafetyReviewed: false,
+        isChildSafetyReviewed: false,
+        hasConsent: false,
+
+        consentAt: null,
+        consentRecordedBy: null,
+
+        isPrivacyReviewed: false,
+        isAdminApproved: false,
+        isPublished: false,
+
+        childSafetyFirstConfirmedByUserId: null,
+        childSafetyFirstConfirmedAt: null,
+      },
+      { admin, action: AuditEventEnum.VICTIM_PROFILE_UPDATED, profile },
     );
-    const removedBytes = removedStats.reduce(
-      (sum, r) => sum + (r.status === 'fulfilled' ? r.value.size : 0),
-      0,
-    );
-
-    const newTotalBytes = Math.max(0, profile.mediaTotalBytes + addedBytes - removedBytes);
-    this.assertTotalBytes(newTotalBytes);
-
-    // NOTE: totalRaised is deliberately NOT touched here — editing a
-    // profile's content/media has nothing to do with money already
-    // confirmed against it, and UpdateVictimProfileDto has no
-    // totalRaised field for a client to supply anyway.
-    const updatedProfile = await this.conditionalUpdate(id, profile.updatedAt, {
-      name: data.name,
-      description: data.description,
-      story: data.story,
-
-      supportType: data.supportType,
-      supportGoal: data.supportGoal,
-
-      bankAccountName: data.bankAccountName,
-      bankAccountNumber: data.bankAccountNumber,
-      bankName: data.bankName,
-
-      photo: data.photo,
-      video: data.video,
-      audio: data.audio,
-      pdf: data.pdf,
-      document: data.document,
-      other: data.other,
-
-      involvesChild: data.involvesChild,
-      mediaTotalBytes: newTotalBytes,
-
-      status: VictimProfileStatus.PENDING,
-
-      isVerified: false,
-      isSafetyReviewed: false,
-      isChildSafetyReviewed: false,
-      hasConsent: false,
-
-      consentAt: null,
-      consentRecordedBy: null,
-
-      isPrivacyReviewed: false,
-      isAdminApproved: false,
-      isPublished: false,
-
-      childSafetyFirstConfirmedByUserId: null,
-      childSafetyFirstConfirmedAt: null,
-    });
 
     await this.deleteMediaFiles(removed);
 
     this.emitAudit({
       userId: admin.id,
+      ...this.targetUserFor(admin, profile),
       actorType: resolveActorType(this.getRoles(admin)),
       action: AuditEventEnum.VICTIM_PROFILE_UPDATED,
       entity: 'VictimProfile',
       entityId: id,
+      entityLabel: this.profileLabel(updatedProfile),
       diff: {
+        result: 'success',
         previousStatus: profile.status,
         newStatus: VictimProfileStatus.PENDING,
+        previousIsPublished: profile.isPublished,
+        newIsPublished: false,
+      },
+      metadata: {
+        fieldsUpdated,
+        bankDetailsChanged,
+        mediaAdded: added.length,
+        mediaRemoved: removed.length,
+        mediaTotalBytes: newTotalBytes,
       },
     });
 
@@ -823,9 +1006,7 @@ export class VictimProfileService {
     return updatedProfile;
   }
 
-  // ─────────────────────────────────────────────
-  // DELETE
-  // ─────────────────────────────────────────────
+  // ─── DELETE ───
 
   async remove(admin: CurrentUserDto, id: string) {
     const profile = await this.prisma.victimProfile.findUnique({
@@ -836,26 +1017,43 @@ export class VictimProfileService {
       throw new NotFoundException('victim_profile_not_found');
     }
 
-    this.assertAdminCanAccessProfile(admin, profile);
+    this.assertAdminCanAccessProfile(admin, profile, AuditEventEnum.VICTIM_PROFILE_DELETED);
 
     const result = await this.prisma.victimProfile.deleteMany({
       where: { id, updatedAt: profile.updatedAt },
     });
 
     if (result.count === 0) {
+      this.emitProfileFailure(
+        admin,
+        AuditEventEnum.VICTIM_PROFILE_DELETED,
+        profile,
+        'victim_profile_transition_conflict',
+      );
       throw new BadRequestException('victim_profile_transition_conflict');
     }
 
-    await this.deleteMediaFiles(this.collectMediaFields(profile));
+    const mediaKeys = this.collectMediaFields(profile);
+    await this.deleteMediaFiles(mediaKeys);
 
     this.emitAudit({
       userId: admin.id,
+      ...this.targetUserFor(admin, profile),
       actorType: resolveActorType(this.getRoles(admin)),
       action: AuditEventEnum.VICTIM_PROFILE_DELETED,
       entity: 'VictimProfile',
       entityId: id,
+      entityLabel: this.profileLabel(profile),
       diff: {
+        result: 'success',
         previousStatus: profile.status,
+        previousIsPublished: profile.isPublished,
+      },
+      metadata: {
+        involvesChild: profile.involvesChild,
+        mediaFilesDeleted: mediaKeys.length,
+        mediaTotalBytes: profile.mediaTotalBytes,
+        totalRaisedAtDeletion: Number(profile.totalRaised),
       },
     });
 
@@ -867,9 +1065,7 @@ export class VictimProfileService {
     return { message: 'victim_profile_deleted', id };
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — GET ALL
-  // ─────────────────────────────────────────────
+  // ─── ADMIN — GET ALL ───
 
   async findAllForAdmin(query: FindAllVictimProfilesQueryDto) {
     const page = query.page && query.page > 0 ? query.page : 1;
@@ -892,8 +1088,6 @@ export class VictimProfileService {
       this.prisma.victimProfile.count({ where }),
     ]);
 
-    // profiles already include totalRaised via the default full-row
-    // include above — no select changes needed here.
     return {
       data: profiles,
       meta: {
@@ -905,9 +1099,7 @@ export class VictimProfileService {
     };
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — STALE / UNCLAIMED-TOO-LONG PROFILES
-  // ─────────────────────────────────────────────
+  // ─── ADMIN — STALE / UNCLAIMED-TOO-LONG PROFILES ───
 
   async findStalePending() {
     const staleHours = Number(
@@ -941,14 +1133,7 @@ export class VictimProfileService {
     }));
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — DASHBOARD STATISTICS
-  //
-  // FIX (money-collected addition): now also returns
-  // totalRaisedAllProfiles, a single aggregate SUM over the cached
-  // VictimProfile.totalRaised column across every profile
-  // regardless of status (admin-facing, so no PUBLISHED filter).
-  // ─────────────────────────────────────────────
+  // ─── ADMIN — DASHBOARD STATISTICS ───
 
   async getStats() {
     const [total, grouped, raised] = await this.prisma.$transaction([
@@ -984,15 +1169,8 @@ export class VictimProfileService {
     };
   }
 
-  // ─────────────────────────────────────────────
-  // PUBLIC — PLATFORM-WIDE TOTAL RAISED
-  // GET /victim-profiles/public/stats
-  //
-  // NEW. Scoped strictly to PUBLISHED + isPublished profiles so an
-  // anonymous caller never sees money tallied against a profile
-  // still under review. Reuses the same cached totalRaised column
-  // as getStats above — cheap single aggregate, no join to Support.
-  // ─────────────────────────────────────────────
+  // ─── PUBLIC — PLATFORM-WIDE TOTAL RAISED ───
+  // Scoped strictly to PUBLISHED + isPublished profiles.
 
   async getPublicStats() {
     const raised = await this.prisma.victimProfile.aggregate({
@@ -1008,9 +1186,7 @@ export class VictimProfileService {
     };
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — AUDIT HISTORY
-  // ─────────────────────────────────────────────
+  // ─── ADMIN — AUDIT HISTORY ───
 
   async getHistory(id: string) {
     const profile = await this.prisma.victimProfile.findUnique({
@@ -1031,9 +1207,7 @@ export class VictimProfileService {
     });
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — GET APPROVAL/GATE STATUS
-  // ─────────────────────────────────────────────
+  // ─── ADMIN — GET APPROVAL/GATE STATUS ───
 
   async getGates(id: string) {
     const profile = await this.prisma.victimProfile.findUnique({
@@ -1121,9 +1295,7 @@ export class VictimProfileService {
     return !!profile.bankAccountName && !!profile.bankAccountNumber && !!profile.bankName;
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — UPDATE APPROVAL GATES
-  // ─────────────────────────────────────────────
+  // ─── ADMIN — UPDATE APPROVAL GATES ───
 
   async updateGates(admin: CurrentUserDto, id: string, data: UpdateVictimGateDto) {
     const profile = await this.prisma.victimProfile.findUnique({
@@ -1134,7 +1306,7 @@ export class VictimProfileService {
       throw new NotFoundException('victim_profile_not_found');
     }
 
-    this.assertAdminCanAccessProfile(admin, profile);
+    this.assertAdminCanAccessProfile(admin, profile, AuditEventEnum.VICTIM_PROFILE_GATES_UPDATED);
 
     const isVerified = data.isVerified ?? profile.isVerified;
     const isSafetyReviewed = data.isSafetyReviewed ?? profile.isSafetyReviewed;
@@ -1155,6 +1327,25 @@ export class VictimProfileService {
         !isPrivacyReviewed ||
         !hasBankDetails)
     ) {
+      this.emitProfileFailure(
+        admin,
+        AuditEventEnum.VICTIM_PROFILE_GATES_UPDATED,
+        profile,
+        'all_approval_gates_required',
+        {
+          metadata: {
+            missingGates: this.getMissingApprovalGates({
+              involvesChild: profile.involvesChild,
+              isVerified,
+              isSafetyReviewed,
+              isChildSafetyReviewed,
+              hasConsent,
+              isPrivacyReviewed,
+              hasBankDetails,
+            }),
+          },
+        },
+      );
       throw new BadRequestException('all_approval_gates_required');
     }
 
@@ -1168,28 +1359,38 @@ export class VictimProfileService {
       isAdminApproved,
     });
 
-    const updatedProfile = await this.conditionalUpdate(id, profile.updatedAt, {
-      isVerified,
-      isSafetyReviewed,
-      hasConsent,
-      isPrivacyReviewed,
-      isAdminApproved,
-      status,
-      isPublished: false,
-      ...(data.hasConsent === true && !profile.hasConsent
-        ? { consentAt: new Date(), consentRecordedBy: admin.id }
-        : {}),
-    });
+    const consentNewlyRecorded = data.hasConsent === true && !profile.hasConsent;
+
+    const updatedProfile = await this.conditionalUpdate(
+      id,
+      profile.updatedAt,
+      {
+        isVerified,
+        isSafetyReviewed,
+        hasConsent,
+        isPrivacyReviewed,
+        isAdminApproved,
+        status,
+        isPublished: false,
+        ...(consentNewlyRecorded ? { consentAt: new Date(), consentRecordedBy: admin.id } : {}),
+      },
+      { admin, action: AuditEventEnum.VICTIM_PROFILE_GATES_UPDATED, profile },
+    );
 
     this.emitAudit({
       userId: admin.id,
+      ...this.targetUserFor(admin, profile),
       actorType: resolveActorType(this.getRoles(admin)),
       action: AuditEventEnum.VICTIM_PROFILE_GATES_UPDATED,
       entity: 'VictimProfile',
       entityId: id,
+      entityLabel: this.profileLabel(profile),
       diff: {
+        result: 'success',
         previousStatus: profile.status,
         newStatus: status,
+        previousIsPublished: profile.isPublished,
+        newIsPublished: false,
 
         previousGates: {
           isVerified: profile.isVerified,
@@ -1207,6 +1408,7 @@ export class VictimProfileService {
           isAdminApproved,
         },
       },
+      metadata: { consentNewlyRecorded },
     });
 
     this.eventEmitter.emit(NotificationEventEnum.VICTIM_PROFILE_GATES_UPDATED, {
@@ -1218,9 +1420,8 @@ export class VictimProfileService {
     return updatedProfile;
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — CHILD SAFETY REVIEW
-  // ─────────────────────────────────────────────
+  // ─── ADMIN — CHILD SAFETY REVIEW ───
+  // Second-admin requirement violation is recorded as DENIED, not a plain FAILURE.
 
   async updateChildSafetyReview(
     admin: CurrentUserDto,
@@ -1235,34 +1436,65 @@ export class VictimProfileService {
       throw new NotFoundException('victim_profile_not_found');
     }
 
-    this.assertAdminCanAccessProfile(admin, profile);
+    this.assertAdminCanAccessProfile(
+      admin,
+      profile,
+      AuditEventEnum.VICTIM_PROFILE_CHILD_SAFETY_REVIEWED,
+    );
 
     if (!profile.involvesChild) {
+      this.emitProfileFailure(
+        admin,
+        AuditEventEnum.VICTIM_PROFILE_CHILD_SAFETY_REVIEWED,
+        profile,
+        'child_safety_review_not_applicable',
+      );
       throw new BadRequestException('child_safety_review_not_applicable');
     }
 
     if (data.isChildSafetyReviewed) {
       if (!profile.childSafetyFirstConfirmedByUserId) {
-        const updated = await this.conditionalUpdate(id, profile.updatedAt, {
-          childSafetyFirstConfirmedByUserId: admin.id,
-          childSafetyFirstConfirmedAt: new Date(),
-        });
+        const updated = await this.conditionalUpdate(
+          id,
+          profile.updatedAt,
+          {
+            childSafetyFirstConfirmedByUserId: admin.id,
+            childSafetyFirstConfirmedAt: new Date(),
+          },
+          {
+            admin,
+            action: AuditEventEnum.VICTIM_PROFILE_CHILD_SAFETY_FIRST_CONFIRMED,
+            profile,
+          },
+        );
 
         this.emitAudit({
           userId: admin.id,
+          ...this.targetUserFor(admin, profile),
           actorType: resolveActorType(this.getRoles(admin)),
           action: AuditEventEnum.VICTIM_PROFILE_CHILD_SAFETY_FIRST_CONFIRMED,
           entity: 'VictimProfile',
           entityId: id,
-          diff: {
-            reviewNotes: data.reviewNotes,
-          },
+          entityLabel: this.profileLabel(profile),
+          reason: data.reviewNotes ?? null,
+          diff: { result: 'success' },
+          metadata: { stage: 'first_confirmation' },
         });
 
         return updated;
       }
 
       if (profile.childSafetyFirstConfirmedByUserId === admin.id) {
+        this.emitProfileFailure(
+          admin,
+          AuditEventEnum.VICTIM_PROFILE_CHILD_SAFETY_REVIEWED,
+          profile,
+          'child_safety_review_requires_second_admin',
+          {
+            outcome: AuditOutcome.DENIED,
+            metadata: { firstConfirmedBy: profile.childSafetyFirstConfirmedByUserId },
+          },
+        );
         throw new BadRequestException('child_safety_review_requires_second_admin');
       }
 
@@ -1276,25 +1508,34 @@ export class VictimProfileService {
         isAdminApproved: profile.isAdminApproved,
       });
 
-      const updatedProfile = await this.conditionalUpdate(id, profile.updatedAt, {
-        isChildSafetyReviewed: true,
-        status,
-      });
+      const updatedProfile = await this.conditionalUpdate(
+        id,
+        profile.updatedAt,
+        {
+          isChildSafetyReviewed: true,
+          status,
+        },
+        { admin, action: AuditEventEnum.VICTIM_PROFILE_CHILD_SAFETY_REVIEWED, profile },
+      );
 
       this.emitAudit({
         userId: admin.id,
+        ...this.targetUserFor(admin, profile),
         actorType: resolveActorType(this.getRoles(admin)),
         action: AuditEventEnum.VICTIM_PROFILE_CHILD_SAFETY_REVIEWED,
         entity: 'VictimProfile',
         entityId: id,
+        entityLabel: this.profileLabel(profile),
+        reason: data.reviewNotes ?? null,
         diff: {
+          result: 'success',
           previousStatus: profile.status,
           newStatus: status,
 
           firstConfirmedBy: profile.childSafetyFirstConfirmedByUserId,
           secondConfirmedBy: admin.id,
-          reviewNotes: data.reviewNotes,
         },
+        metadata: { stage: 'second_confirmation' },
       });
 
       this.eventEmitter.emit(NotificationEventEnum.VICTIM_PROFILE_CHILD_SAFETY_REVIEWED, {
@@ -1316,26 +1557,37 @@ export class VictimProfileService {
       isAdminApproved: false,
     });
 
-    const updatedProfile = await this.conditionalUpdate(id, profile.updatedAt, {
-      isChildSafetyReviewed: false,
-      childSafetyFirstConfirmedByUserId: null,
-      childSafetyFirstConfirmedAt: null,
-      isAdminApproved: false,
-      isPublished: false,
-      status,
-    });
+    const updatedProfile = await this.conditionalUpdate(
+      id,
+      profile.updatedAt,
+      {
+        isChildSafetyReviewed: false,
+        childSafetyFirstConfirmedByUserId: null,
+        childSafetyFirstConfirmedAt: null,
+        isAdminApproved: false,
+        isPublished: false,
+        status,
+      },
+      { admin, action: AuditEventEnum.VICTIM_PROFILE_CHILD_SAFETY_REVIEW_REVERSED, profile },
+    );
 
     this.emitAudit({
       userId: admin.id,
+      ...this.targetUserFor(admin, profile),
       actorType: resolveActorType(this.getRoles(admin)),
       action: AuditEventEnum.VICTIM_PROFILE_CHILD_SAFETY_REVIEW_REVERSED,
       entity: 'VictimProfile',
       entityId: id,
+      entityLabel: this.profileLabel(profile),
+      reason: data.reviewNotes ?? null,
       diff: {
+        result: 'success',
         previousStatus: profile.status,
         newStatus: status,
-        reviewNotes: data.reviewNotes,
+        previousIsAdminApproved: profile.isAdminApproved,
+        previousIsPublished: profile.isPublished,
       },
+      metadata: { stage: 'reversal' },
     });
 
     this.eventEmitter.emit(NotificationEventEnum.VICTIM_PROFILE_CHILD_SAFETY_REVIEWED, {
@@ -1347,9 +1599,7 @@ export class VictimProfileService {
     return updatedProfile;
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — REVOKE CONSENT
-  // ─────────────────────────────────────────────
+  // ─── ADMIN — REVOKE CONSENT ───
 
   async revokeConsent(admin: CurrentUserDto, id: string, data: RevokeConsentDto) {
     const profile = await this.prisma.victimProfile.findUnique({
@@ -1360,9 +1610,15 @@ export class VictimProfileService {
       throw new NotFoundException('victim_profile_not_found');
     }
 
-    this.assertAdminCanAccessProfile(admin, profile);
+    this.assertAdminCanAccessProfile(admin, profile, AuditEventEnum.VICTIM_PROFILE_CONSENT_REVOKED);
 
     if (!profile.hasConsent) {
+      this.emitProfileFailure(
+        admin,
+        AuditEventEnum.VICTIM_PROFILE_CONSENT_REVOKED,
+        profile,
+        'consent_not_currently_recorded',
+      );
       throw new BadRequestException('consent_not_currently_recorded');
     }
 
@@ -1376,29 +1632,38 @@ export class VictimProfileService {
       isAdminApproved: false,
     });
 
-    const updatedProfile = await this.conditionalUpdate(id, profile.updatedAt, {
-      hasConsent: false,
-      consentAt: null,
-      consentRecordedBy: null,
-      isAdminApproved: false,
-      isPublished: false,
-      status,
-    });
+    const updatedProfile = await this.conditionalUpdate(
+      id,
+      profile.updatedAt,
+      {
+        hasConsent: false,
+        consentAt: null,
+        consentRecordedBy: null,
+        isAdminApproved: false,
+        isPublished: false,
+        status,
+      },
+      { admin, action: AuditEventEnum.VICTIM_PROFILE_CONSENT_REVOKED, profile },
+    );
 
     this.emitAudit({
       userId: admin.id,
+      ...this.targetUserFor(admin, profile),
       actorType: resolveActorType(this.getRoles(admin)),
       action: AuditEventEnum.VICTIM_PROFILE_CONSENT_REVOKED,
       entity: 'VictimProfile',
       entityId: id,
+      entityLabel: this.profileLabel(profile),
+      reason: data.reason ?? null,
       diff: {
+        result: 'success',
         previousStatus: profile.status,
         newStatus: status,
+        previousIsAdminApproved: profile.isAdminApproved,
+        previousIsPublished: profile.isPublished,
 
         previousConsentAt: profile.consentAt,
         previousConsentRecordedBy: profile.consentRecordedBy,
-
-        reason: data.reason,
       },
     });
 
@@ -1410,9 +1675,8 @@ export class VictimProfileService {
     return updatedProfile;
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — UPDATE BANK DETAILS
-  // ─────────────────────────────────────────────
+  // ─── ADMIN — UPDATE BANK DETAILS ───
+  // Records only WHICH of the three fields changed, never the values (see AUDIT-DATA POLICY above).
 
   async updateBankDetails(admin: CurrentUserDto, id: string, data: UpdateBankDetailsDto) {
     const profile = await this.prisma.victimProfile.findUnique({
@@ -1423,7 +1687,11 @@ export class VictimProfileService {
       throw new NotFoundException('victim_profile_not_found');
     }
 
-    this.assertAdminCanAccessProfile(admin, profile);
+    this.assertAdminCanAccessProfile(
+      admin,
+      profile,
+      AuditEventEnum.VICTIM_PROFILE_BANK_DETAILS_UPDATED,
+    );
 
     const wasApproved = profile.isAdminApproved;
     const isAdminApproved = wasApproved ? false : profile.isAdminApproved;
@@ -1438,26 +1706,44 @@ export class VictimProfileService {
       isAdminApproved,
     });
 
-    const updatedProfile = await this.conditionalUpdate(id, profile.updatedAt, {
-      bankAccountName: data.bankAccountName,
-      bankAccountNumber: data.bankAccountNumber,
-      bankName: data.bankName,
-      isAdminApproved,
-      isPublished: wasApproved ? false : profile.isPublished,
-      status,
-    });
+    const updatedProfile = await this.conditionalUpdate(
+      id,
+      profile.updatedAt,
+      {
+        bankAccountName: data.bankAccountName,
+        bankAccountNumber: data.bankAccountNumber,
+        bankName: data.bankName,
+        isAdminApproved,
+        isPublished: wasApproved ? false : profile.isPublished,
+        status,
+      },
+      { admin, action: AuditEventEnum.VICTIM_PROFILE_BANK_DETAILS_UPDATED, profile },
+    );
 
     this.emitAudit({
       userId: admin.id,
+      ...this.targetUserFor(admin, profile),
       actorType: resolveActorType(this.getRoles(admin)),
       action: AuditEventEnum.VICTIM_PROFILE_BANK_DETAILS_UPDATED,
       entity: 'VictimProfile',
       entityId: id,
+      entityLabel: this.profileLabel(profile),
       diff: {
+        result: 'success',
         previousStatus: profile.status,
         newStatus: status,
+        previousIsPublished: profile.isPublished,
+        newIsPublished: wasApproved ? false : profile.isPublished,
 
         reapprovalRequired: wasApproved,
+      },
+      metadata: {
+        accountNameChanged:
+          data.bankAccountName !== undefined && data.bankAccountName !== profile.bankAccountName,
+        accountNumberChanged:
+          data.bankAccountNumber !== undefined &&
+          data.bankAccountNumber !== profile.bankAccountNumber,
+        bankNameChanged: data.bankName !== undefined && data.bankName !== profile.bankName,
       },
     });
 
@@ -1470,9 +1756,7 @@ export class VictimProfileService {
     return updatedProfile;
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — PUBLISH
-  // ─────────────────────────────────────────────
+  // ─── ADMIN — PUBLISH ───
 
   async publish(admin: CurrentUserDto, id: string) {
     const profile = await this.prisma.victimProfile.findUnique({
@@ -1483,7 +1767,7 @@ export class VictimProfileService {
       throw new NotFoundException('victim_profile_not_found');
     }
 
-    this.assertAdminCanAccessProfile(admin, profile);
+    this.assertAdminCanAccessProfile(admin, profile, AuditEventEnum.VICTIM_PROFILE_PUBLISHED);
 
     const hasBankDetails = this.hasBankDetails(profile);
     const childSafetySatisfied = !profile.involvesChild || profile.isChildSafetyReviewed;
@@ -1498,21 +1782,47 @@ export class VictimProfileService {
       hasBankDetails;
 
     if (!allGatesSatisfied) {
+      const missingGates = this.getMissingApprovalGates({
+        involvesChild: profile.involvesChild,
+        isVerified: profile.isVerified,
+        isSafetyReviewed: profile.isSafetyReviewed,
+        isChildSafetyReviewed: profile.isChildSafetyReviewed,
+        hasConsent: profile.hasConsent,
+        isPrivacyReviewed: profile.isPrivacyReviewed,
+        hasBankDetails,
+      });
+      if (!profile.isAdminApproved) missingGates.push('isAdminApproved');
+
+      this.emitProfileFailure(
+        admin,
+        AuditEventEnum.VICTIM_PROFILE_PUBLISHED,
+        profile,
+        'all_approval_gates_required',
+        { diff: { currentStatus: profile.status }, metadata: { missingGates } },
+      );
       throw new BadRequestException('all_approval_gates_required');
     }
 
-    const updatedProfile = await this.conditionalUpdate(id, profile.updatedAt, {
-      status: VictimProfileStatus.PUBLISHED,
-      isPublished: true,
-    });
+    const updatedProfile = await this.conditionalUpdate(
+      id,
+      profile.updatedAt,
+      {
+        status: VictimProfileStatus.PUBLISHED,
+        isPublished: true,
+      },
+      { admin, action: AuditEventEnum.VICTIM_PROFILE_PUBLISHED, profile },
+    );
 
     this.emitAudit({
       userId: admin.id,
+      ...this.targetUserFor(admin, profile),
       actorType: resolveActorType(this.getRoles(admin)),
       action: AuditEventEnum.VICTIM_PROFILE_PUBLISHED,
       entity: 'VictimProfile',
       entityId: id,
+      entityLabel: this.profileLabel(profile),
       diff: {
+        result: 'success',
         previousStatus: profile.status,
         newStatus: VictimProfileStatus.PUBLISHED,
       },
@@ -1526,9 +1836,7 @@ export class VictimProfileService {
     return updatedProfile;
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — UNPUBLISH
-  // ─────────────────────────────────────────────
+  // ─── ADMIN — UNPUBLISH ───
 
   async unpublish(admin: CurrentUserDto, id: string) {
     const profile = await this.prisma.victimProfile.findUnique({
@@ -1539,24 +1847,39 @@ export class VictimProfileService {
       throw new NotFoundException('victim_profile_not_found');
     }
 
-    this.assertAdminCanAccessProfile(admin, profile);
+    this.assertAdminCanAccessProfile(admin, profile, AuditEventEnum.VICTIM_PROFILE_UNPUBLISHED);
 
     if (!profile.isPublished) {
+      this.emitProfileFailure(
+        admin,
+        AuditEventEnum.VICTIM_PROFILE_UNPUBLISHED,
+        profile,
+        'victim_profile_not_published',
+        { diff: { currentStatus: profile.status } },
+      );
       throw new BadRequestException('victim_profile_not_published');
     }
 
-    const updatedProfile = await this.conditionalUpdate(id, profile.updatedAt, {
-      status: VictimProfileStatus.UNPUBLISHED,
-      isPublished: false,
-    });
+    const updatedProfile = await this.conditionalUpdate(
+      id,
+      profile.updatedAt,
+      {
+        status: VictimProfileStatus.UNPUBLISHED,
+        isPublished: false,
+      },
+      { admin, action: AuditEventEnum.VICTIM_PROFILE_UNPUBLISHED, profile },
+    );
 
     this.emitAudit({
       userId: admin.id,
+      ...this.targetUserFor(admin, profile),
       actorType: resolveActorType(this.getRoles(admin)),
       action: AuditEventEnum.VICTIM_PROFILE_UNPUBLISHED,
       entity: 'VictimProfile',
       entityId: id,
+      entityLabel: this.profileLabel(profile),
       diff: {
+        result: 'success',
         previousStatus: profile.status,
         newStatus: VictimProfileStatus.UNPUBLISHED,
       },
@@ -1570,9 +1893,7 @@ export class VictimProfileService {
     return updatedProfile;
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — REJECT
-  // ─────────────────────────────────────────────
+  // ─── ADMIN — REJECT ───
 
   async reject(admin: CurrentUserDto, id: string) {
     const profile = await this.prisma.victimProfile.findUnique({
@@ -1583,24 +1904,39 @@ export class VictimProfileService {
       throw new NotFoundException('victim_profile_not_found');
     }
 
-    this.assertAdminCanAccessProfile(admin, profile);
+    this.assertAdminCanAccessProfile(admin, profile, AuditEventEnum.VICTIM_PROFILE_REJECTED);
 
     if (profile.isPublished) {
+      this.emitProfileFailure(
+        admin,
+        AuditEventEnum.VICTIM_PROFILE_REJECTED,
+        profile,
+        'published_profile_cannot_be_rejected',
+        { diff: { currentStatus: profile.status } },
+      );
       throw new BadRequestException('published_profile_cannot_be_rejected');
     }
 
-    const updatedProfile = await this.conditionalUpdate(id, profile.updatedAt, {
-      status: VictimProfileStatus.REJECTED,
-      isPublished: false,
-    });
+    const updatedProfile = await this.conditionalUpdate(
+      id,
+      profile.updatedAt,
+      {
+        status: VictimProfileStatus.REJECTED,
+        isPublished: false,
+      },
+      { admin, action: AuditEventEnum.VICTIM_PROFILE_REJECTED, profile },
+    );
 
     this.emitAudit({
       userId: admin.id,
+      ...this.targetUserFor(admin, profile),
       actorType: resolveActorType(this.getRoles(admin)),
       action: AuditEventEnum.VICTIM_PROFILE_REJECTED,
       entity: 'VictimProfile',
       entityId: id,
+      entityLabel: this.profileLabel(profile),
       diff: {
+        result: 'success',
         previousStatus: profile.status,
         newStatus: VictimProfileStatus.REJECTED,
       },
@@ -1614,9 +1950,7 @@ export class VictimProfileService {
     return updatedProfile;
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — RESUBMIT AFTER REJECTION
-  // ─────────────────────────────────────────────
+  // ─── ADMIN — RESUBMIT AFTER REJECTION ───
 
   async resubmit(admin: CurrentUserDto, id: string) {
     const profile = await this.prisma.victimProfile.findUnique({
@@ -1627,9 +1961,16 @@ export class VictimProfileService {
       throw new NotFoundException('victim_profile_not_found');
     }
 
-    this.assertAdminCanAccessProfile(admin, profile);
+    this.assertAdminCanAccessProfile(admin, profile, AuditEventEnum.VICTIM_PROFILE_RESUBMITTED);
 
     if (profile.status !== VictimProfileStatus.REJECTED) {
+      this.emitProfileFailure(
+        admin,
+        AuditEventEnum.VICTIM_PROFILE_RESUBMITTED,
+        profile,
+        'victim_profile_not_rejected',
+        { diff: { currentStatus: profile.status } },
+      );
       throw new BadRequestException('victim_profile_not_rejected');
     }
 
@@ -1643,18 +1984,26 @@ export class VictimProfileService {
       isAdminApproved: profile.isAdminApproved,
     });
 
-    const updatedProfile = await this.conditionalUpdate(id, profile.updatedAt, {
-      status,
-      isPublished: false,
-    });
+    const updatedProfile = await this.conditionalUpdate(
+      id,
+      profile.updatedAt,
+      {
+        status,
+        isPublished: false,
+      },
+      { admin, action: AuditEventEnum.VICTIM_PROFILE_RESUBMITTED, profile },
+    );
 
     this.emitAudit({
       userId: admin.id,
+      ...this.targetUserFor(admin, profile),
       actorType: resolveActorType(this.getRoles(admin)),
       action: AuditEventEnum.VICTIM_PROFILE_RESUBMITTED,
       entity: 'VictimProfile',
       entityId: id,
+      entityLabel: this.profileLabel(profile),
       diff: {
+        result: 'success',
         previousStatus: profile.status,
         newStatus: status,
       },
@@ -1669,20 +2018,8 @@ export class VictimProfileService {
     return updatedProfile;
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — RECONCILE totalRaised (financial-integrity check)
-  //
-  // NEW. Recomputes the true collected total for one profile
-  // straight from Support (status === CONFIRMED, per the current,
-  // deliberately un-abstracted counting rule — see the module-level
-  // comment at the top of this file), and diffs it against the
-  // cached VictimProfile.totalRaised column.
-  //
-  // autoCorrect=false: read-only diff report (dry run).
-  // autoCorrect=true: also writes the corrected value and emits
-  // VICTIM_PROFILE_TOTAL_RECONCILED with before/after values, so any
-  // rewrite of a financial total leaves an audit trail.
-  // ─────────────────────────────────────────────
+  // ─── ADMIN — RECONCILE totalRaised (financial-integrity check) ───
+  // Any mismatch writes a row (severity WARNING); a clean, matching profile writes nothing.
 
   async reconcileProfileTotal(admin: CurrentUserDto, id: string, autoCorrect: boolean) {
     const profile = await this.prisma.victimProfile.findUnique({ where: { id } });
@@ -1702,19 +2039,36 @@ export class VictimProfileService {
     const cachedTotal = Number(profile.totalRaised);
     const mismatch = Math.abs(liveTotal - cachedTotal) > 0.01;
 
-    if (mismatch && autoCorrect) {
-      await this.conditionalUpdate(id, profile.updatedAt, { totalRaised: liveTotal });
+    let corrected = false;
 
+    if (mismatch && autoCorrect) {
+      await this.conditionalUpdate(
+        id,
+        profile.updatedAt,
+        { totalRaised: liveTotal },
+        { admin, action: AuditEventEnum.VICTIM_PROFILE_TOTAL_RECONCILED, profile },
+      );
+      corrected = true;
+    }
+
+    if (mismatch) {
       this.emitAudit({
         userId: admin.id,
         actorType: resolveActorType(this.getRoles(admin)),
         action: AuditEventEnum.VICTIM_PROFILE_TOTAL_RECONCILED,
+        severity: AuditSeverity.WARNING,
         entity: 'VictimProfile',
         entityId: id,
+        entityLabel: this.profileLabel(profile),
         diff: {
+          result: corrected ? 'success' : 'mismatch_detected',
           previousCachedTotal: cachedTotal,
           liveTotal,
-          corrected: true,
+          corrected,
+        },
+        metadata: {
+          difference: Number((liveTotal - cachedTotal).toFixed(2)),
+          confirmedSupportCount: supports.length,
         },
       });
     }
@@ -1724,18 +2078,11 @@ export class VictimProfileService {
       cachedTotal,
       liveTotal,
       mismatch,
-      corrected: mismatch && autoCorrect,
+      corrected,
     };
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — RECONCILE ALL PROFILES
-  //
-  // NEW. Sweeps every profile and returns only the mismatches — the
-  // caller (an ops alert channel, or a future cron job) should treat
-  // a non-empty result as something worth paging someone about, not
-  // just a routine dashboard number.
-  // ─────────────────────────────────────────────
+  // ─── ADMIN — RECONCILE ALL PROFILES ───
 
   async reconcileAllTotals(admin: CurrentUserDto, autoCorrect: boolean) {
     const profiles = await this.prisma.victimProfile.findMany({ select: { id: true } });

@@ -43,19 +43,16 @@ import {
 export class VictimProfileController {
   constructor(private readonly victimProfileService: VictimProfileService) {}
 
-  // ─────────────────────────────────────────────
-  // CREATE
-  // POST /victim-profiles
-  // ─────────────────────────────────────────────
-
+  // CREATE — POST /victim-profiles
+  // Now open to regular users (self-submission) as well as admins.
   @Post()
-  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @Roles(RolesEnum.USER, RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.PROFILE_CREATE)
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @RequireReauthentication()
   @ApiBearerAuth('access-token')
   @ApiOperation({
-    summary: 'Admin: create a victim/survivor support profile',
+    summary: 'Create a victim/survivor support profile (admin or self-submitted by user)',
   })
   async create(
     @CurrentUser()
@@ -70,11 +67,7 @@ export class VictimProfileController {
     return this.victimProfileService.create(user, data, idempotencyKey);
   }
 
-  // ─────────────────────────────────────────────
-  // PUBLIC PROFILES — LIST
-  // GET /victim-profiles/public
-  // ─────────────────────────────────────────────
-
+  // PUBLIC — GET /victim-profiles/public
   @Get('public')
   @AllowAnonymous()
   @ApiOperation({
@@ -87,15 +80,7 @@ export class VictimProfileController {
     return this.victimProfileService.findPublic(query);
   }
 
-  // ─────────────────────────────────────────────
-  // PUBLIC — PLATFORM-WIDE TOTAL RAISED
-  // GET /victim-profiles/public/stats
-  //
-  // NEW. Placed before 'public/:id' so Nest's route matching
-  // doesn't treat "stats" as an :id param — same reasoning as why
-  // 'public' and 'public/:id' are already ordered this way below.
-  // ─────────────────────────────────────────────
-
+  // PUBLIC — GET /victim-profiles/public/stats (kept above public/:id so "stats" isn't matched as :id)
   @Get('public/stats')
   @AllowAnonymous()
   @ApiOperation({
@@ -105,11 +90,7 @@ export class VictimProfileController {
     return this.victimProfileService.getPublicStats();
   }
 
-  // ─────────────────────────────────────────────
-  // PUBLIC PROFILES — SINGLE
-  // GET /victim-profiles/public/:id
-  // ─────────────────────────────────────────────
-
+  // PUBLIC — GET /victim-profiles/public/:id
   @Get('public/:id')
   @AllowAnonymous()
   @ApiOperation({
@@ -122,11 +103,7 @@ export class VictimProfileController {
     return this.victimProfileService.findOnePublic(id);
   }
 
-  // ─────────────────────────────────────────────
-  // PUBLIC PROFILES — MEDIA DOWNLOAD URL
-  // GET /victim-profiles/public/:id/media?key=...
-  // ─────────────────────────────────────────────
-
+  // PUBLIC — GET /victim-profiles/public/:id/media?key=...
   @Get('public/:id/media')
   @AllowAnonymous()
   @ApiOperation({
@@ -142,11 +119,7 @@ export class VictimProfileController {
     return this.victimProfileService.getPublicMediaDownloadUrl(id, query.key);
   }
 
-  // ─────────────────────────────────────────────
-  // GET ONE
-  // GET /victim-profiles/:id
-  // ─────────────────────────────────────────────
-
+  // GET ONE — GET /victim-profiles/:id
   @Get(':id')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.PROFILE_READ)
@@ -175,11 +148,7 @@ export class VictimProfileController {
     return this.victimProfileService.getSupportsSummary(id);
   }
 
-  // ─────────────────────────────────────────────
-  // GET MEDIA DOWNLOAD URL (admin)
-  // GET /victim-profiles/:id/media?key=...
-  // ─────────────────────────────────────────────
-
+  // GET MEDIA DOWNLOAD URL (admin) — GET /victim-profiles/:id/media?key=...
   @Get(':id/media')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.PROFILE_READ)
@@ -200,12 +169,7 @@ export class VictimProfileController {
     return this.victimProfileService.getMediaDownloadUrl(admin, id, query.key);
   }
 
-  // ─────────────────────────────────────────────
-  // CLAIM / UNCLAIM
-  // PATCH /victim-profiles/:id/claim
-  // PATCH /victim-profiles/:id/unclaim
-  // ─────────────────────────────────────────────
-
+  // CLAIM / UNCLAIM — PATCH /victim-profiles/:id/claim, /unclaim
   @Patch(':id/claim')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.PROFILE_UPDATE)
@@ -236,11 +200,7 @@ export class VictimProfileController {
     return this.victimProfileService.unclaim(admin, id);
   }
 
-  // ─────────────────────────────────────────────
-  // UPDATE
-  // PATCH /victim-profiles/:id
-  // ─────────────────────────────────────────────
-
+  // UPDATE — PATCH /victim-profiles/:id
   @Patch(':id')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.PROFILE_UPDATE)
@@ -261,11 +221,7 @@ export class VictimProfileController {
     return this.victimProfileService.update(user, id, data);
   }
 
-  // ─────────────────────────────────────────────
-  // DELETE
-  // DELETE /victim-profiles/:id
-  // ─────────────────────────────────────────────
-
+  // DELETE — DELETE /victim-profiles/:id
   @Delete(':id')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.PROFILE_UPDATE)
@@ -283,11 +239,7 @@ export class VictimProfileController {
     return this.victimProfileService.remove(user, id);
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — ALL
-  // GET /victim-profiles/admin/all
-  // ─────────────────────────────────────────────
-
+  // ADMIN — GET /victim-profiles/admin/all
   @Get('admin/all')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.PROFILE_READ)
@@ -302,11 +254,7 @@ export class VictimProfileController {
     return this.victimProfileService.findAllForAdmin(query);
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — DASHBOARD STATISTICS
-  // GET /victim-profiles/admin/stats
-  // ─────────────────────────────────────────────
-
+  // ADMIN — GET /victim-profiles/admin/stats
   @Get('admin/stats')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.DASHBOARD_READ)
@@ -318,11 +266,7 @@ export class VictimProfileController {
     return this.victimProfileService.getStats();
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — STALE / UNCLAIMED-TOO-LONG PROFILES
-  // GET /victim-profiles/admin/stale
-  // ─────────────────────────────────────────────
-
+  // ADMIN — GET /victim-profiles/admin/stale
   @Get('admin/stale')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.PROFILE_READ)
@@ -334,24 +278,7 @@ export class VictimProfileController {
     return this.victimProfileService.findStalePending();
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — RECONCILE totalRaised (financial-integrity check)
-  // GET  /victim-profiles/admin/reconcile-totals       — dry run, all profiles
-  // POST /victim-profiles/admin/reconcile-totals       — auto-correct, all profiles
-  // GET  /victim-profiles/admin/:id/reconcile-total    — dry run, one profile
-  //
-  // NEW. Read-only diffing uses SUPPORT_PAYMENT_READ (same tier as
-  // viewing bank details); the auto-correcting write uses
-  // SUPPORT_PAYMENT_MANAGE (same tier as editing bank details) plus
-  // re-authentication, since it rewrites a financial total on
-  // possibly many profiles at once.
-  //
-  // Placed above ':id' routes is unnecessary here since these all
-  // use the literal 'admin' prefix already used by the routes below,
-  // but kept in this position for readability/grouping with the
-  // other admin/* routes.
-  // ─────────────────────────────────────────────
-
+  // ADMIN — RECONCILE totalRaised: dry run vs. auto-correct, financial-integrity check.
   @Get('admin/reconcile-totals')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.SUPPORT_PAYMENT_READ)
@@ -398,11 +325,7 @@ export class VictimProfileController {
     return this.victimProfileService.reconcileProfileTotal(user, id, false);
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — AUDIT HISTORY
-  // GET /victim-profiles/admin/:id/history
-  // ─────────────────────────────────────────────
-
+  // ADMIN — GET /victim-profiles/admin/:id/history
   @Get('admin/:id/history')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.AUDIT_LOG_READ)
@@ -417,11 +340,7 @@ export class VictimProfileController {
     return this.victimProfileService.getHistory(id);
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — GET APPROVAL/GATE STATUS
-  // GET /victim-profiles/admin/:id/gates
-  // ─────────────────────────────────────────────
-
+  // ADMIN — GET /victim-profiles/admin/:id/gates
   @Get('admin/:id/gates')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.PROFILE_REVIEW)
@@ -436,11 +355,7 @@ export class VictimProfileController {
     return this.victimProfileService.getGates(id);
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — UPDATE APPROVAL GATES
-  // PATCH /victim-profiles/admin/:id/gates
-  // ─────────────────────────────────────────────
-
+  // ADMIN — PATCH /victim-profiles/admin/:id/gates
   @Patch('admin/:id/gates')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.PROFILE_REVIEW)
@@ -461,11 +376,7 @@ export class VictimProfileController {
     return this.victimProfileService.updateGates(user, id, data);
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — CHILD SAFETY REVIEW
-  // PATCH /victim-profiles/admin/:id/child-safety-review
-  // ─────────────────────────────────────────────
-
+  // ADMIN — PATCH /victim-profiles/admin/:id/child-safety-review
   @Patch('admin/:id/child-safety-review')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.PROFILE_REVIEW)
@@ -486,11 +397,7 @@ export class VictimProfileController {
     return this.victimProfileService.updateChildSafetyReview(user, id, data);
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — REVOKE CONSENT
-  // PATCH /victim-profiles/admin/:id/consent/revoke
-  // ─────────────────────────────────────────────
-
+  // ADMIN — PATCH /victim-profiles/admin/:id/consent/revoke
   @Patch('admin/:id/consent/revoke')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.PROFILE_UPDATE)
@@ -512,11 +419,7 @@ export class VictimProfileController {
     return this.victimProfileService.revokeConsent(user, id, data);
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — UPDATE BANK DETAILS
-  // PATCH /victim-profiles/admin/:id/bank-details
-  // ─────────────────────────────────────────────
-
+  // ADMIN — PATCH /victim-profiles/admin/:id/bank-details
   @Patch('admin/:id/bank-details')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.SUPPORT_PAYMENT_MANAGE)
@@ -538,11 +441,7 @@ export class VictimProfileController {
     return this.victimProfileService.updateBankDetails(user, id, data);
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — PUBLISH
-  // PATCH /victim-profiles/admin/:id/publish
-  // ─────────────────────────────────────────────
-
+  // ADMIN — PATCH /victim-profiles/admin/:id/publish
   @Patch('admin/:id/publish')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.PROFILE_PUBLISH)
@@ -560,11 +459,7 @@ export class VictimProfileController {
     return this.victimProfileService.publish(user, id);
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — UNPUBLISH
-  // PATCH /victim-profiles/admin/:id/unpublish
-  // ─────────────────────────────────────────────
-
+  // ADMIN — PATCH /victim-profiles/admin/:id/unpublish
   @Patch('admin/:id/unpublish')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.PROFILE_UNPUBLISH)
@@ -582,11 +477,7 @@ export class VictimProfileController {
     return this.victimProfileService.unpublish(user, id);
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — REJECT
-  // PATCH /victim-profiles/admin/:id/reject
-  // ─────────────────────────────────────────────
-
+  // ADMIN — PATCH /victim-profiles/admin/:id/reject
   @Patch('admin/:id/reject')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.PROFILE_REVIEW)
@@ -604,11 +495,7 @@ export class VictimProfileController {
     return this.victimProfileService.reject(user, id);
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — RESUBMIT AFTER REJECTION
-  // PATCH /victim-profiles/admin/:id/resubmit
-  // ─────────────────────────────────────────────
-
+  // ADMIN — PATCH /victim-profiles/admin/:id/resubmit
   @Patch('admin/:id/resubmit')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.PROFILE_REVIEW)

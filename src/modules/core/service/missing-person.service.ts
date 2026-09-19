@@ -5,7 +5,14 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 
-import { MissingPersonStatus, MissingPersonType, Prisma } from '@prisma/client';
+import {
+  AuditOutcome,
+  AuditSeverity,
+  MissingPerson,
+  MissingPersonStatus,
+  MissingPersonType,
+  Prisma,
+} from '@prisma/client';
 
 import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { ConfigService } from '@nestjs/config';
@@ -22,24 +29,39 @@ import { NotificationEventEnum } from 'src/common/enums/shared/notification-even
 import { MinioService } from 'src/services/minio/minio.service';
 
 import {
+  AdminCreateMissingPersonDto,
   CreateMissingPersonDto,
   ListMissingPersonsAdminQueryDto,
   ListMissingPersonsQueryDto,
   UpdateMissingPersonDto,
 } from '../dto/missing-person.dto';
 
-// The six media-array fields shared by CreateMissingPersonDto/
-// UpdateMissingPersonDto and the MissingPerson model itself.
-// Mirrors PostService's/ReportService's MEDIA_FIELD_NAMES so every
-// module stays in sync if a new media kind is ever added.
+// Media array fields shared by the DTOs and the MissingPerson model.
 const MEDIA_FIELD_NAMES = ['photo', 'video', 'audio', 'pdf', 'document', 'other'] as const;
 type MediaFieldName = (typeof MEDIA_FIELD_NAMES)[number];
 type MediaBearing = Record<MediaFieldName, string[]>;
 type MediaBearingDto = Partial<Record<MediaFieldName, string[] | undefined>>;
 
-// A case here is done, one way or another. Used by findStalePending()
-// (a terminal case can't be "stale") and maybeFlagUserForRejections()
-// (only REJECTED counts against the user, not FOUND).
+const UPDATABLE_FIELD_NAMES = [
+  'personType',
+  'name',
+  'description',
+  'dateLastSeen',
+  'lastKnownArea',
+  'photo',
+  'video',
+  'audio',
+  'pdf',
+  'document',
+  'other',
+  'rewardOffered',
+  'rewardAmount',
+  'rewardDetails',
+] as const;
+
+type MissingPersonAuditRef = Pick<MissingPerson, 'id' | 'name' | 'personType' | 'userId'>;
+
+// Finished cases: never stale, and only REJECTED counts against a user.
 const TERMINAL_STATUSES: MissingPersonStatus[] = [
   MissingPersonStatus.REJECTED,
   MissingPersonStatus.FOUND,
@@ -54,31 +76,12 @@ export class MissingPersonService {
     private readonly configService: ConfigService,
   ) {}
 
-  // ─────────────────────────────────────────────
-  // A case is only user-editable while it's PENDING or while an
-  // admin has asked for more information. Any other status is
-  // effectively read-only for the submitter.
-  // ─────────────────────────────────────────────
-
   private readonly EDITABLE_STATUSES: MissingPersonStatus[] = [
     MissingPersonStatus.PENDING,
     MissingPersonStatus.MORE_INFORMATION_REQUESTED,
   ];
 
-  // ─────────────────────────────────────────────
-  // Admin status workflow.
-  //
-  //   PENDING → UNDER_REVIEW
-  //   UNDER_REVIEW → MORE_INFORMATION_REQUESTED | APPROVED | REJECTED
-  //   MORE_INFORMATION_REQUESTED → (user edit moves it back to PENDING)
-  //   APPROVED → FOUND
-  //   REJECTED → (final)
-  //   FOUND → (final)
-  //
-  // PENDING can only reach APPROVED/REJECTED by first passing
-  // through UNDER_REVIEW.
-  // ─────────────────────────────────────────────
-
+  // Admin status workflow. PENDING must pass through UNDER_REVIEW first.
   private readonly ALLOWED_TRANSITIONS: Record<MissingPersonStatus, MissingPersonStatus[]> = {
     [MissingPersonStatus.PENDING]: [MissingPersonStatus.UNDER_REVIEW],
     [MissingPersonStatus.UNDER_REVIEW]: [
@@ -92,13 +95,7 @@ export class MissingPersonService {
     [MissingPersonStatus.FOUND]: [],
   };
 
-  // ─────────────────────────────────────────────
-  // Explicit public projection — nothing added to the Prisma
-  // model (userId, reviewNote, reward review fields, claim
-  // fields, etc.) can leak through the public endpoints without
-  // a deliberate change here.
-  // ─────────────────────────────────────────────
-
+  // Explicit public projection so new model fields never leak by default.
   private readonly publicSelect = {
     id: true,
     personType: true,
@@ -115,35 +112,81 @@ export class MissingPersonService {
     status: true,
     createdAt: true,
     updatedAt: true,
-    // NEW (reward): rewardOffered/rewardApproved are safe to expose
-    // as-is — they're just booleans indicating whether a reward
-    // exists and whether it's been reviewed. rewardAmount/
-    // rewardDetails are selected here too, but findOne()/findAll()
-    // run every row through maskUnapprovedReward() before
-    // returning, so an unapproved amount/details never actually
-    // reaches a public caller even though it's in this select.
     rewardOffered: true,
     rewardApproved: true,
     rewardAmount: true,
     rewardDetails: true,
   } as const;
 
-  // AUDIT EMIT (typed helper): routes every audit emit through AuditEventPayload so a
-  // missing field (actorType, entity, etc.) is caught at compile time, not silently dropped
-
   private emitAudit(payload: AuditEventPayload): void {
     this.eventEmitter.emit(payload.action, payload);
   }
 
-  // ─────────────────────────────────────────────
-  // MEDIA HELPERS
-  //
-  // Mirrors PostService's/ReportService's media helpers.
-  // MissingPerson stores media as plain filepath strings in typed
-  // arrays (photo/video/audio/pdf/document/other), same as Post,
-  // Report, and VictimProfile — kept in one place so every
-  // read/write of that shape stays consistent.
-  // ─────────────────────────────────────────────
+  // CHILD cases get a redacted label in audit rows.
+  private caseLabel(
+    missingPerson: Pick<MissingPerson, 'id' | 'name' | 'personType'>,
+  ): string | undefined {
+    if (missingPerson.personType === MissingPersonType.CHILD) {
+      return `Child case ${missingPerson.id.slice(0, 8)}`;
+    }
+    return missingPerson.name ?? undefined;
+  }
+
+  private targetUserFor(
+    actor: CurrentUserDto,
+    missingPerson: Pick<MissingPerson, 'userId'>,
+  ): { targetUserId?: string } {
+    const ownerId = missingPerson.userId;
+    return ownerId && ownerId !== actor.id ? { targetUserId: ownerId } : {};
+  }
+
+  private emitCaseFailure(
+    actor: CurrentUserDto,
+    action: AuditEventEnum,
+    missingPerson: MissingPersonAuditRef,
+    reason: string,
+    opts: {
+      outcome?: AuditOutcome;
+      targetUserId?: string;
+      diff?: Record<string, unknown>;
+      metadata?: Record<string, unknown>;
+    } = {},
+  ): void {
+    const outcome = opts.outcome ?? AuditOutcome.FAILURE;
+
+    this.emitAudit({
+      userId: actor.id,
+      ...(opts.targetUserId ? { targetUserId: opts.targetUserId } : {}),
+      actorType: resolveActorType(actor.roles ?? []),
+      action,
+      outcome,
+      severity: AuditSeverity.WARNING,
+      entity: 'MissingPerson',
+      entityId: missingPerson.id,
+      entityLabel: this.caseLabel(missingPerson),
+      diff: {
+        result: outcome === AuditOutcome.DENIED ? 'denied' : 'failure',
+        reason,
+        ...(opts.diff ?? {}),
+      } as AuditEventPayload['diff'],
+      ...(opts.metadata ? { metadata: opts.metadata as AuditEventPayload['metadata'] } : {}),
+    });
+  }
+
+  private auditEventForStatus(status: MissingPersonStatus): AuditEventEnum {
+    switch (status) {
+      case MissingPersonStatus.APPROVED:
+        return AuditEventEnum.MISSING_PERSON_APPROVED;
+      case MissingPersonStatus.REJECTED:
+        return AuditEventEnum.MISSING_PERSON_REJECTED;
+      case MissingPersonStatus.FOUND:
+        return AuditEventEnum.MISSING_PERSON_FOUND;
+      case MissingPersonStatus.MORE_INFORMATION_REQUESTED:
+        return AuditEventEnum.MISSING_PERSON_MORE_INFO_REQUESTED;
+      default:
+        return AuditEventEnum.MISSING_PERSON_UPDATED;
+    }
+  }
 
   private collectMediaFields(entity: MediaBearing): string[] {
     return MEDIA_FIELD_NAMES.flatMap((field) => entity[field]);
@@ -153,10 +196,6 @@ export class MissingPersonService {
     return MEDIA_FIELD_NAMES.flatMap((field) => dto[field] ?? []);
   }
 
-  // Diffs each media field individually (not the flattened whole),
-  // so a client resending the same array doesn't get treated as
-  // "remove and re-add." Only fields present in the incoming DTO
-  // are considered — an omitted field means "leave this one alone."
   private diffMediaFields(
     before: MediaBearing,
     incoming: MediaBearingDto,
@@ -175,21 +214,7 @@ export class MissingPersonService {
     return { added, removed };
   }
 
-  // FIX (item #3): confirms every filepath the client is attaching
-  // actually exists in the media bucket, AND now also enforces
-  // size/MIME-type limits — previously this only checked existence,
-  // unlike Report/PostService.validateMediaFilesExist which already
-  // did all three. Brought to parity so a missing-person submission
-  // can't reference an object that's oversized or of a disallowed
-  // type any more than a report or post can.
-  //
-  // FIX (item #13, partial): returns each validated file's size so
-  // callers can maintain a running mediaTotalBytes without
-  // re-statting already-attached files.
-  //
-  // NOTE (item #3, virus scanning) / NOTE (item #4, EXIF/GPS
-  // stripping): deliberately out of scope here — belongs in the
-  // media-upload module at upload time, same as every other module.
+  // Checks existence, size and MIME type; returns sizes for the running total.
   private async validateMediaFilesExist(
     filepaths: string[],
   ): Promise<Array<{ filepath: string; size: number }>> {
@@ -234,10 +259,6 @@ export class MissingPersonService {
     return checks.map((c) => ({ filepath: c.filepath, size: c.size }));
   }
 
-  // FIX (item #13): per-field attachment counts, mirroring
-  // Report/PostService.assertAttachmentCounts exactly, but reading
-  // MISSING_PERSON_*-prefixed overrides first. Checked BEFORE any
-  // MinIO calls so an over-attached request fails fast.
   private assertAttachmentCounts(media: MediaBearing): void {
     const maxPhotos = Number(
       this.configService.get<string>('MISSING_PERSON_MAX_PHOTOS') ??
@@ -268,8 +289,6 @@ export class MissingPersonService {
     }
   }
 
-  // FIX (item #13): total attached-media size cap per case,
-  // mirroring Report/PostService.assertTotalBytes.
   private assertTotalBytes(totalBytes: number): void {
     const maxTotalBytes = Number(
       this.configService.get<string>('MISSING_PERSON_MAX_TOTAL_UPLOAD_BYTES') ??
@@ -281,35 +300,13 @@ export class MissingPersonService {
     }
   }
 
-  // Best-effort delete against MinIO. A file that's already gone
-  // (or MinIO briefly unreachable) must never block the DB write
-  // that triggered the cleanup — failures are swallowed per-file
-  // via allSettled rather than surfaced to the caller.
+  // Best-effort; failures never block the DB write.
   private async deleteMediaFiles(filepaths: string[]): Promise<void> {
     if (!filepaths.length) return;
     await Promise.allSettled(filepaths.map((fp) => this.minioService.deleteFile(fp)));
   }
 
-  // ─────────────────────────────────────────────
-  // REWARD HELPERS
-  //
-  // buildRewardProposalUpdate: the submitter-facing half. Applies
-  // to create() and update(). rewardAmount/rewardDetails are only
-  // ever persisted when rewardOffered is (or becomes) true — if
-  // rewardOffered is false, both are forced to null regardless of
-  // what the client sent, so a stale amount can't linger from a
-  // reward the submitter has since retracted. In update(), returns
-  // null when the DTO touches none of the three fields, so the
-  // caller knows to leave the existing row alone entirely.
-  //
-  // maskUnapprovedReward: the public-read half. rewardAmount/
-  // rewardDetails are stripped from any row returned to a public
-  // caller unless rewardApproved is true — an unreviewed reward
-  // proposal should never be visible on the public listing/detail
-  // endpoints, only after an admin has approved it via
-  // updateReward().
-  // ─────────────────────────────────────────────
-
+  // Reward amount and details are stored only while rewardOffered is true.
   private buildRewardProposalUpdate(
     incoming: { rewardOffered?: boolean; rewardAmount?: number; rewardDetails?: string },
     existing?: { rewardOffered: boolean; rewardAmount: number | null; rewardDetails: string | null },
@@ -319,8 +316,6 @@ export class MissingPersonService {
       incoming.rewardAmount !== undefined ||
       incoming.rewardDetails !== undefined;
 
-    // On create() there's no `existing` row yet and every call is
-    // "touched" by definition (there's nothing to leave alone).
     if (!touched && existing) return null;
 
     const base = existing ?? { rewardOffered: false, rewardAmount: null, rewardDetails: null };
@@ -332,6 +327,7 @@ export class MissingPersonService {
     return { rewardOffered, rewardAmount, rewardDetails };
   }
 
+  // Hides reward amount and details publicly until an admin approves.
   private maskUnapprovedReward<
     T extends { rewardApproved: boolean; rewardAmount: number | null; rewardDetails: string | null },
   >(record: T): T {
@@ -339,24 +335,17 @@ export class MissingPersonService {
     return { ...record, rewardAmount: null, rewardDetails: null };
   }
 
-  // ─────────────────────────────────────────────
-  // CLAIM HELPERS (item #17)
-  //
-  // Missing Person had no assignment/claim concept at all before
-  // this. Follows Post's self-serve claimPost()/unclaimPost() model
-  // (rather than Report's SUPER_ADMIN-mediated assign()/unassign())
-  // since there is no dedicated "assignee" relation on this model to
-  // add — any ADMIN/SUPER_ADMIN may claim an unclaimed case, and
-  // only the claimant (or an explicit unclaim) can release it.
-  // Enforced on the review-decision write (updateStatus), not on
-  // reads.
-  // ─────────────────────────────────────────────
-
+  // Blocks status changes on a case claimed by another admin.
   private assertNotClaimedByOther(
-    missingPerson: { claimedByUserId: string | null },
-    actorUserId: string,
+    actor: CurrentUserDto,
+    missingPerson: MissingPersonAuditRef & { claimedByUserId: string | null },
+    action: AuditEventEnum,
   ): void {
-    if (missingPerson.claimedByUserId && missingPerson.claimedByUserId !== actorUserId) {
+    if (missingPerson.claimedByUserId && missingPerson.claimedByUserId !== actor.id) {
+      this.emitCaseFailure(actor, action, missingPerson, 'claimed_by_another_admin', {
+        outcome: AuditOutcome.DENIED,
+        metadata: { claimedByUserId: missingPerson.claimedByUserId },
+      });
       throw new ForbiddenException('missing_person_claimed_by_another_admin');
     }
   }
@@ -366,7 +355,7 @@ export class MissingPersonService {
     if (!existing) {
       throw new NotFoundException('missing_person_not_found');
     }
-    this.assertNotClaimedByOther(existing, admin.id);
+    this.assertNotClaimedByOther(admin, existing, AuditEventEnum.MISSING_PERSON_UPDATED);
 
     const updated = await this.prisma.missingPerson.update({
       where: { id },
@@ -379,7 +368,9 @@ export class MissingPersonService {
       action: AuditEventEnum.MISSING_PERSON_UPDATED,
       entity: 'MissingPerson',
       entityId: id,
+      entityLabel: this.caseLabel(updated),
       diff: { claimedBy: admin.id, result: 'success' },
+      metadata: { operation: 'claim' },
     });
 
     return updated;
@@ -390,7 +381,7 @@ export class MissingPersonService {
     if (!existing) {
       throw new NotFoundException('missing_person_not_found');
     }
-    this.assertNotClaimedByOther(existing, admin.id);
+    this.assertNotClaimedByOther(admin, existing, AuditEventEnum.MISSING_PERSON_UPDATED);
 
     const updated = await this.prisma.missingPerson.update({
       where: { id },
@@ -403,35 +394,29 @@ export class MissingPersonService {
       action: AuditEventEnum.MISSING_PERSON_UPDATED,
       entity: 'MissingPerson',
       entityId: id,
+      entityLabel: this.caseLabel(updated),
       diff: { unclaimedBy: admin.id, result: 'success' },
+      metadata: { operation: 'unclaim' },
     });
 
     return updated;
   }
 
-  // ─────────────────────────────────────────────
-  // CHILD-SAFETY DUAL CONTROL (item #16)
-  //
-  // Only relevant when personType = CHILD. A single admin's status
-  // call is no longer enough to move a CHILD case to APPROVED — the
-  // first admin's confirmation is only recorded; a second, DIFFERENT
-  // admin must confirm again before the transition actually goes
-  // through. Mirrors PostService.ensureChildSafetySatisfied exactly,
-  // adapted to MissingPerson's field names.
-  // ─────────────────────────────────────────────
-
+  // CHILD approval needs confirmation from two different admins.
   private async ensureChildSafetySatisfied(
-    missingPerson: {
-      id: string;
-      personType: MissingPersonType;
-      childSafetyFirstConfirmedByUserId: string | null;
-    },
-    actorUserId: string,
+    missingPerson: MissingPersonAuditRef & { childSafetyFirstConfirmedByUserId: string | null },
+    admin: CurrentUserDto,
     confirmed: boolean | undefined,
   ): Promise<'not_required' | 'first_confirmation_recorded' | 'satisfied'> {
     if (missingPerson.personType !== MissingPersonType.CHILD) return 'not_required';
 
     if (confirmed !== true) {
+      this.emitCaseFailure(
+        admin,
+        AuditEventEnum.MISSING_PERSON_APPROVED,
+        missingPerson,
+        'child_safety_confirmation_required',
+      );
       throw new BadRequestException('child_safety_confirmation_required');
     }
 
@@ -439,38 +424,36 @@ export class MissingPersonService {
       await this.prisma.missingPerson.update({
         where: { id: missingPerson.id },
         data: {
-          childSafetyFirstConfirmedByUserId: actorUserId,
+          childSafetyFirstConfirmedByUserId: admin.id,
           childSafetyFirstConfirmedAt: new Date(),
         },
       });
       return 'first_confirmation_recorded';
     }
 
-    if (missingPerson.childSafetyFirstConfirmedByUserId === actorUserId) {
+    if (missingPerson.childSafetyFirstConfirmedByUserId === admin.id) {
+      this.emitCaseFailure(
+        admin,
+        AuditEventEnum.MISSING_PERSON_APPROVED,
+        missingPerson,
+        'child_safety_requires_second_distinct_admin',
+        {
+          outcome: AuditOutcome.DENIED,
+          metadata: { firstConfirmedBy: missingPerson.childSafetyFirstConfirmedByUserId },
+        },
+      );
       throw new BadRequestException('child_safety_requires_second_distinct_admin');
     }
 
     return 'satisfied';
   }
 
-  // ─────────────────────────────────────────────
-  // BANNED / SUSPENDED OWNER HANDLING (item #6)
-  //
-  // ASSUMPTION: same event contract as Report/PostService — the
-  // user module emits 'user.suspended' with a { userId } payload.
-  //
-  // Same reasoning as ReportService: a missing-person case has no
-  // safe intermediate "hidden" state, and is if anything MORE
-  // safety-critical than a report — so this only stamps
-  // ownerSuspendedAt for admin filtering and deliberately does NOT
-  // change status or pull anything out of the review queue.
-  // ─────────────────────────────────────────────
-
+  // Stamps ownerSuspendedAt only; status and review queue are unchanged.
   @OnEvent('user.suspended')
   async handleUserSuspended(payload: { userId: string }): Promise<void> {
     const now = new Date();
 
-    await this.prisma.missingPerson.updateMany({
+    const { count } = await this.prisma.missingPerson.updateMany({
       where: {
         userId: payload.userId,
         status: { notIn: TERMINAL_STATUSES },
@@ -479,30 +462,24 @@ export class MissingPersonService {
       data: { ownerSuspendedAt: now },
     });
 
+    const suspendedUser = await this.prisma.user.findUnique({
+      where: { id: payload.userId },
+      select: { name: true },
+    });
+
     this.emitAudit({
-      userId: payload.userId,
-      // ASSUMPTION: resolveActorType only knows about role-bearing
-      // actors; cast until AuditEventPayload's actorType union is
-      // extended with a SYSTEM variant. Same cast Report/PostService use.
+      targetUserId: payload.userId,
       actorType: 'SYSTEM' as unknown as ReturnType<typeof resolveActorType>,
       action: AuditEventEnum.MISSING_PERSON_UPDATED,
-      entity: 'MissingPerson',
-      entityId: `user:${payload.userId}`,
+      entity: 'User',
+      entityId: payload.userId,
+      entityLabel: suspendedUser?.name ?? undefined,
       diff: { reason: 'owner_account_suspended', result: 'success' },
+      metadata: { casesFlagged: count },
     });
   }
 
-  // ─────────────────────────────────────────────
-  // AUTOMATIC FLAGS (item #21)
-  //
-  // Flag ≠ reject. Writes an audit-log entry an admin can see
-  // against the user; never blocks or auto-rejects anything, and
-  // never changes any MissingPerson's status. Mirrors
-  // Report/PostService.maybeFlagUserForRejections, reading
-  // MISSING_PERSON_* overrides first. Only called from
-  // updateStatus() on a transition TO REJECTED.
-  // ─────────────────────────────────────────────
-
+  // Audit flag only; never blocks or rejects anything.
   private async maybeFlagUserForRejections(userId: string): Promise<void> {
     const threshold = Number(
       this.configService.get<string>('MISSING_PERSON_AUTO_FLAG_REJECTION_COUNT') ??
@@ -521,12 +498,18 @@ export class MissingPersonService {
     });
 
     if (recentRejections >= threshold) {
+      const flaggedUser = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { name: true },
+      });
+
       this.emitAudit({
-        userId,
+        targetUserId: userId,
         actorType: 'SYSTEM' as unknown as ReturnType<typeof resolveActorType>,
         action: AuditEventEnum.USER_AUTO_FLAGGED,
         entity: 'User',
         entityId: userId,
+        entityLabel: flaggedUser?.name ?? undefined,
         diff: {
           reason: 'repeated_missing_person_rejections',
           rejectionCount: recentRejections,
@@ -537,19 +520,6 @@ export class MissingPersonService {
     }
   }
 
-  // ─────────────────────────────────────────────
-  // OWNER — GET MEDIA DOWNLOAD URL
-  // GET /missing-persons/mine/:id/media?key=...
-  //
-  // The submitter can request a download URL for a key attached to
-  // their own submission, in any status — mirrors
-  // ReportService.getMediaDownloadUrl's reporter-owned scoping.
-  // findMine() returns raw filepaths with no way to turn them into
-  // an actual URL; this closes that gap without waiting on
-  // approval, since the submitter should be able to confirm their
-  // own uploads regardless of review state.
-  // ─────────────────────────────────────────────
-
   async getMediaDownloadUrlForOwner(
     user: CurrentUserDto,
     id: string,
@@ -557,7 +527,22 @@ export class MissingPersonService {
   ): Promise<{ url: string }> {
     const missingPerson = await this.prisma.missingPerson.findUnique({ where: { id } });
 
-    if (!missingPerson || missingPerson.userId !== user.id) {
+    if (!missingPerson) {
+      throw new NotFoundException('missing_person_not_found');
+    }
+
+    if (missingPerson.userId !== user.id) {
+      this.emitCaseFailure(
+        user,
+        AuditEventEnum.MISSING_PERSON_MEDIA_DOWNLOADED,
+        missingPerson,
+        'not_case_owner',
+        {
+          outcome: AuditOutcome.DENIED,
+          targetUserId: missingPerson.userId,
+          metadata: { requestedKey: key },
+        },
+      );
       throw new NotFoundException('missing_person_not_found');
     }
 
@@ -569,17 +554,6 @@ export class MissingPersonService {
     const url = await this.minioService.generatePresignedDownloadUrl(key);
     return { url };
   }
-
-  // ─────────────────────────────────────────────
-  // ADMIN — GET MEDIA DOWNLOAD URL
-  // GET /missing-persons/admin/:id/media?key=...
-  //
-  // Admins can request a download URL for any media key actually
-  // attached to the submission, regardless of status — matches
-  // findOneForAdmin()'s admin-only, no-visibility-filtering access.
-  // Now also audit-logged, matching
-  // ReportService.getMediaDownloadUrlForAdmin.
-  // ─────────────────────────────────────────────
 
   async getMediaDownloadUrl(
     admin: CurrentUserDto,
@@ -594,6 +568,17 @@ export class MissingPersonService {
 
     const owned = this.collectMediaFields(missingPerson).includes(key);
     if (!owned) {
+      this.emitCaseFailure(
+        admin,
+        AuditEventEnum.MISSING_PERSON_MEDIA_DOWNLOADED,
+        missingPerson,
+        'media_not_found_on_missing_person',
+        {
+          outcome: AuditOutcome.DENIED,
+          ...this.targetUserFor(admin, missingPerson),
+          metadata: { requestedKey: key },
+        },
+      );
       throw new NotFoundException('media_not_found_on_missing_person');
     }
 
@@ -601,26 +586,18 @@ export class MissingPersonService {
 
     this.emitAudit({
       userId: admin.id,
+      ...this.targetUserFor(admin, missingPerson),
       actorType: resolveActorType(admin.roles ?? []),
       action: AuditEventEnum.MISSING_PERSON_MEDIA_DOWNLOADED,
       entity: 'MissingPerson',
       entityId: id,
-      diff: { result: 'success', key },
+      entityLabel: this.caseLabel(missingPerson),
+      diff: { result: 'success' },
+      metadata: { key },
     });
 
     return { url };
   }
-
-  // ─────────────────────────────────────────────
-  // PUBLIC — GET MEDIA DOWNLOAD URL
-  // GET /missing-persons/:id/media?key=...
-  //
-  // Same visibility gate as findOne(): the record must be
-  // APPROVED. Unlike VictimProfile/Post there's no child-safety
-  // suppression concept on MissingPerson's media, so every media
-  // field attached to an approved case is fair game here — matches
-  // publicSelect already exposing all six media arrays as-is.
-  // ─────────────────────────────────────────────
 
   async getPublicMediaDownloadUrl(id: string, key: string): Promise<{ url: string }> {
     const missingPerson = await this.prisma.missingPerson.findUnique({
@@ -640,36 +617,6 @@ export class MissingPersonService {
     const url = await this.minioService.generatePresignedDownloadUrl(key);
     return { url };
   }
-
-  // ─────────────────────────────────────────────
-  // CREATE
-  //
-  // FIX (item #1): a per-user cooldown
-  // (MISSING_PERSON_CREATE_RATE_LIMIT_WINDOW_SECONDS, falling back
-  // to the shared CONTENT_* default) blocks rapid-fire spam, and a
-  // max-pending-per-user cap
-  // (MISSING_PERSON_MAX_PENDING_PER_USER / CONTENT_MAX_PENDING_PER_USER)
-  // is enforced here — a missing-person case is PENDING the moment
-  // it's created, same as Report.
-  //
-  // FIX (item #5): optional Idempotency-Key (sent as a header by the
-  // controller) lets a client safely retry after a dropped response.
-  // A repeat with the same key returns the original record.
-  //
-  // FIX (item #13): attachment counts/total size are checked before
-  // any MinIO round trips, and the validated sizes are persisted as
-  // mediaTotalBytes.
-  //
-  // FIX (notification routing): NEW_MISSING_PERSON_REQUEST is an
-  // admin-queue event — the same family as NEW_REPORT/NEW_POST, both
-  // of which fan out to admins via createForAdmins in the listener —
-  // not a personal notification to the submitter. Previously this
-  // emitted with `userId: user.id`, which reads as "notify the
-  // submitter," which doesn't make sense for a "new case needs
-  // review" event and doesn't match the NEW_REPORT/NEW_POST pattern.
-  // The submitter-facing `userId` field is dropped from the payload
-  // accordingly; the listener's admin fan-out only needs the case id.
-  // ─────────────────────────────────────────────
 
   private async enforceCreateRateLimit(userId: string): Promise<void> {
     const cooldownSeconds = Number(
@@ -705,21 +652,8 @@ export class MissingPersonService {
     }
   }
 
-  async create(user: CurrentUserDto, data: CreateMissingPersonDto, idempotencyKey?: string) {
-    if (idempotencyKey) {
-      const existing = await this.prisma.missingPerson.findFirst({
-        where: { userId: user.id, idempotencyKey },
-      });
-      if (existing) {
-        // Safe replay of a duplicate submission — return the
-        // original instead of creating a second record.
-        return existing;
-      }
-    }
-
-    await this.enforceCreateRateLimit(user.id);
-    await this.enforceMaxPending(user.id);
-
+  // Shared by create() and createByAdmin(): media limits, MinIO checks, total size.
+  private async buildCreateInput(data: CreateMissingPersonDto) {
     const merged: MediaBearing = {
       photo: data.photo ?? [],
       video: data.video ?? [],
@@ -734,10 +668,24 @@ export class MissingPersonService {
     const totalBytes = validated.reduce((sum, v) => sum + v.size, 0);
     this.assertTotalBytes(totalBytes);
 
-    // NEW (reward): rewardApproved is never set here — it always
-    // starts false (the Prisma default) regardless of what's
-    // proposed, since CreateMissingPersonDto has no rewardApproved
-    // field for a submitter to even send.
+    return { merged, totalBytes };
+  }
+
+  async create(user: CurrentUserDto, data: CreateMissingPersonDto, idempotencyKey?: string) {
+    if (idempotencyKey) {
+      const existing = await this.prisma.missingPerson.findFirst({
+        where: { userId: user.id, idempotencyKey },
+      });
+      if (existing) {
+        return existing;
+      }
+    }
+
+    await this.enforceCreateRateLimit(user.id);
+    await this.enforceMaxPending(user.id);
+
+    const { merged, totalBytes } = await this.buildCreateInput(data);
+
     const rewardProposal = this.buildRewardProposalUpdate(data)!;
 
     const missingPerson = await this.createWithIdempotencyRaceHandling(
@@ -746,6 +694,7 @@ export class MissingPersonService {
       merged,
       totalBytes,
       rewardProposal,
+      { status: MissingPersonStatus.PENDING, rewardApproved: false },
       idempotencyKey,
     );
 
@@ -755,19 +704,19 @@ export class MissingPersonService {
       action: AuditEventEnum.MISSING_PERSON_CREATED,
       entity: 'MissingPerson',
       entityId: missingPerson.id,
+      entityLabel: this.caseLabel(missingPerson),
       diff: {
         personType: missingPerson.personType,
         status: missingPerson.status,
         result: 'success',
       },
+      metadata: {
+        rewardOffered: missingPerson.rewardOffered,
+        attachmentCount: this.collectMediaFields(merged).length,
+        mediaTotalBytes: totalBytes,
+      },
     });
 
-    // FIXED — was `{ userId: user.id, missingPersonId }`, which
-    // reads as a personal notification to the submitter. This is an
-    // admin-queue event (mirrors NEW_REPORT/NEW_POST), so it carries
-    // no `userId` — the listener fans it out to every ADMIN/
-    // SUPER_ADMIN via createForAdmins instead of notifying the
-    // person who just submitted the case.
     this.eventEmitter.emit(NotificationEventEnum.NEW_MISSING_PERSON_REQUEST, {
       missingPersonId: missingPerson.id,
     });
@@ -775,19 +724,83 @@ export class MissingPersonService {
     return missingPerson;
   }
 
-  // FIX (item #5/#26): handles a race on the (userId, idempotencyKey)
-  // unique constraint — the fast-path findFirst in create() is
-  // inherently racy under concurrent identical retries: two
-  // near-simultaneous retries with the same key can both pass the
-  // findFirst and race to insert. Mirrors ReportService's equivalent
-  // helper, minus the caseReference retry loop (MissingPerson has no
-  // analogous unique-generated field to retry).
+  // Admin-created case. Owner is the admin; skips cooldown and pending cap.
+  // CHILD cases start UNDER_REVIEW so the two-admin approval still applies.
+  async createByAdmin(
+    admin: CurrentUserDto,
+    data: AdminCreateMissingPersonDto,
+    idempotencyKey?: string,
+  ) {
+    if (idempotencyKey) {
+      const existing = await this.prisma.missingPerson.findFirst({
+        where: { userId: admin.id, idempotencyKey },
+      });
+      if (existing) return existing;
+    }
+
+    const { merged, totalBytes } = await this.buildCreateInput(data);
+    const rewardProposal = this.buildRewardProposalUpdate(data)!;
+
+    // An admin can approve a reward only if one was offered with an amount.
+    const rewardApproved = data.rewardApproved === true;
+    if (rewardApproved && (!rewardProposal.rewardOffered || rewardProposal.rewardAmount === null)) {
+      throw new BadRequestException('cannot_approve_reward_without_offer_and_amount');
+    }
+
+    const status =
+      data.personType === MissingPersonType.CHILD
+        ? MissingPersonStatus.UNDER_REVIEW
+        : MissingPersonStatus.APPROVED;
+
+    const missingPerson = await this.createWithIdempotencyRaceHandling(
+      admin,
+      data,
+      merged,
+      totalBytes,
+      rewardProposal,
+      { status, rewardApproved },
+      idempotencyKey,
+    );
+
+    this.emitAudit({
+      userId: admin.id,
+      actorType: resolveActorType(admin.roles ?? []),
+      action: AuditEventEnum.MISSING_PERSON_CREATED,
+      entity: 'MissingPerson',
+      entityId: missingPerson.id,
+      entityLabel: this.caseLabel(missingPerson),
+      diff: {
+        personType: missingPerson.personType,
+        status: missingPerson.status,
+        result: 'success',
+      },
+      metadata: {
+        operation: 'admin_create',
+        rewardOffered: missingPerson.rewardOffered,
+        rewardApproved: missingPerson.rewardApproved,
+        attachmentCount: this.collectMediaFields(merged).length,
+        mediaTotalBytes: totalBytes,
+      },
+    });
+
+    // Only cases still needing a second admin go to the admin queue.
+    if (status !== MissingPersonStatus.APPROVED) {
+      this.eventEmitter.emit(NotificationEventEnum.NEW_MISSING_PERSON_REQUEST, {
+        missingPersonId: missingPerson.id,
+      });
+    }
+
+    return missingPerson;
+  }
+
+  // Returns the winning row if a concurrent retry hits the idempotency constraint.
   private async createWithIdempotencyRaceHandling(
     user: CurrentUserDto,
     data: CreateMissingPersonDto,
     merged: MediaBearing,
     totalBytes: number,
     rewardProposal: { rewardOffered: boolean; rewardAmount: number | null; rewardDetails: string | null },
+    initial: { status: MissingPersonStatus; rewardApproved: boolean },
     idempotencyKey?: string,
   ) {
     try {
@@ -806,7 +819,8 @@ export class MissingPersonService {
           document: merged.document,
           other: merged.other,
           mediaTotalBytes: totalBytes,
-          status: MissingPersonStatus.PENDING,
+          status: initial.status,
+          rewardApproved: initial.rewardApproved,
           rewardOffered: rewardProposal.rewardOffered,
           rewardAmount: rewardProposal.rewardAmount,
           rewardDetails: rewardProposal.rewardDetails,
@@ -821,9 +835,6 @@ export class MissingPersonService {
       ) {
         const target = err.meta?.target as string[] | undefined;
         if (target?.some((t) => t.includes('idempotencyKey'))) {
-          // Lost a race against a concurrent identical retry — the
-          // other request's insert won; return that row instead of
-          // creating (or failing to create) a duplicate.
           const winner = await this.prisma.missingPerson.findFirst({
             where: { userId: user.id, idempotencyKey },
           });
@@ -835,10 +846,6 @@ export class MissingPersonService {
       throw err;
     }
   }
-
-  // ─────────────────────────────────────────────
-  // FIND ONE (public — approved only, explicit select)
-  // ─────────────────────────────────────────────
 
   async findOne(id: string) {
     const missingPerson = await this.prisma.missingPerson.findUnique({
@@ -852,10 +859,6 @@ export class MissingPersonService {
 
     return this.maskUnapprovedReward(missingPerson);
   }
-
-  // ─────────────────────────────────────────────
-  // FIND ALL PUBLIC (paginated, explicit select)
-  // ─────────────────────────────────────────────
 
   async findAll(query: ListMissingPersonsQueryDto) {
     const page = query.page ?? 1;
@@ -883,10 +886,6 @@ export class MissingPersonService {
     };
   }
 
-  // ─────────────────────────────────────────────
-  // FIND MINE (paginated)
-  // ─────────────────────────────────────────────
-
   async findMine(user: CurrentUserDto, query: ListMissingPersonsQueryDto) {
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
@@ -909,20 +908,7 @@ export class MissingPersonService {
     };
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — STALE / UNREVIEWED-TOO-LONG CASES
-  // GET /missing-persons/admin/stale
-  // (item #15)
-  //
-  // Flags non-terminal cases older than the configured threshold so
-  // admins can prioritize "forgotten" cases. No assignment/claim
-  // gate the way ReportService.findStalePending has (assignedToId),
-  // since a claim here doesn't remove urgency the way an active
-  // assignment does elsewhere — a claimed-but-still-old case is
-  // arguably still worth surfacing. Purely informational — nothing
-  // here changes status, ownership, or claim.
-  // ─────────────────────────────────────────────
-
+  // Informational only; nothing here changes status, ownership or claim.
   async findStalePending() {
     const staleHours = Number(
       this.configService.get<string>('MISSING_PERSON_STALE_PENDING_HOURS') ??
@@ -945,34 +931,6 @@ export class MissingPersonService {
     }));
   }
 
-  // ─────────────────────────────────────────────
-  // UPDATE
-  // Only PENDING or MORE_INFORMATION_REQUESTED submissions may be
-  // edited by their owner. Editing a MORE_INFORMATION_REQUESTED
-  // case moves it back to PENDING so it re-enters the review queue.
-  // Empty patches are rejected.
-  //
-  // Media handling: diffs each media field present in the request
-  // against what's currently on the row. Newly-added filepaths are
-  // validated against MinIO before the write; filepaths dropped
-  // from the new array are deleted from MinIO after the write
-  // commits — same ordering discipline as PostService.updateMyPost.
-  //
-  // FIX (item #13): attachment counts are checked against the
-  // fully-merged post-update media shape before any MinIO calls,
-  // and mediaTotalBytes is recomputed from the previous total
-  // plus/minus the added/removed files' sizes — same approach as
-  // Report/PostService.
-  //
-  // NOTE (reward): the submitter may also revise their reward
-  // proposal here (rewardOffered/rewardAmount/rewardDetails) via
-  // buildRewardProposalUpdate(). rewardApproved itself is never
-  // touched by this method except to auto-reset it to false when
-  // the submitter changes an already-approved reward's terms — see
-  // shouldResetRewardApproval below. Approving a proposal can only
-  // happen via updateReward().
-  // ─────────────────────────────────────────────
-
   async update(user: CurrentUserDto, id: string, data: UpdateMissingPersonDto) {
     const existing = await this.prisma.missingPerson.findUnique({ where: { id } });
 
@@ -981,16 +939,36 @@ export class MissingPersonService {
     }
 
     if (existing.userId !== user.id) {
+      this.emitCaseFailure(
+        user,
+        AuditEventEnum.MISSING_PERSON_UPDATED,
+        existing,
+        'not_authorized_to_update',
+        { outcome: AuditOutcome.DENIED, targetUserId: existing.userId },
+      );
       throw new ForbiddenException('not_authorized_to_update');
     }
 
     if (!this.EDITABLE_STATUSES.includes(existing.status)) {
+      this.emitCaseFailure(
+        user,
+        AuditEventEnum.MISSING_PERSON_UPDATED,
+        existing,
+        'submission_not_editable_in_current_status',
+        { diff: { currentStatus: existing.status } },
+      );
       throw new ForbiddenException('submission_not_editable_in_current_status');
     }
 
     const hasAnyField = Object.values(data).some((value) => value !== undefined);
 
     if (!hasAnyField) {
+      this.emitCaseFailure(
+        user,
+        AuditEventEnum.MISSING_PERSON_UPDATED,
+        existing,
+        'no_fields_provided',
+      );
       throw new BadRequestException('no_fields_provided');
     }
 
@@ -1004,46 +982,50 @@ export class MissingPersonService {
       document: data.document ?? existing.document,
       other: data.other ?? existing.other,
     };
-    this.assertAttachmentCounts(merged);
 
-    const validatedAdded = await this.validateMediaFilesExist(added);
-    const addedBytes = validatedAdded.reduce((sum, v) => sum + v.size, 0);
+    let newTotalBytes = existing.mediaTotalBytes;
 
-    // Stat removed files before they're deleted, purely to back out
-    // their bytes from the running total — a stat failure here
-    // (already gone, MinIO hiccup) just means we can't credit that
-    // byte count back, so treat it as 0 rather than blocking the
-    // update.
-    const removedStats = await Promise.allSettled(
-      removed.map((fp) => this.minioService.statObject(fp)),
-    );
-    const removedBytes = removedStats.reduce(
-      (sum, r) => sum + (r.status === 'fulfilled' ? r.value.size : 0),
-      0,
-    );
+    try {
+      this.assertAttachmentCounts(merged);
 
-    const newTotalBytes = Math.max(0, existing.mediaTotalBytes + addedBytes - removedBytes);
-    this.assertTotalBytes(newTotalBytes);
+      const validatedAdded = await this.validateMediaFilesExist(added);
+      const addedBytes = validatedAdded.reduce((sum, v) => sum + v.size, 0);
+
+      const removedStats = await Promise.allSettled(
+        removed.map((fp) => this.minioService.statObject(fp)),
+      );
+      const removedBytes = removedStats.reduce(
+        (sum, r) => sum + (r.status === 'fulfilled' ? r.value.size : 0),
+        0,
+      );
+
+      newTotalBytes = Math.max(0, existing.mediaTotalBytes + addedBytes - removedBytes);
+      this.assertTotalBytes(newTotalBytes);
+    } catch (err) {
+      this.emitCaseFailure(
+        user,
+        AuditEventEnum.MISSING_PERSON_UPDATED,
+        existing,
+        'media_validation_failed',
+        { diff: { message: err instanceof Error ? err.message : String(err) } },
+      );
+      throw err;
+    }
 
     const shouldReturnToPending =
       existing.status === MissingPersonStatus.MORE_INFORMATION_REQUESTED;
 
-    // NEW (reward): null when the DTO doesn't touch any of the
-    // three reward fields — leave the existing row's reward
-    // proposal untouched in that case.
     const rewardUpdate = this.buildRewardProposalUpdate(data, existing);
 
-    // If the submitter changes the actual terms of an
-    // already-approved reward, the approval no longer covers what's
-    // being displayed — un-approve so it goes back through review
-    // rather than silently keeping a stale sign-off on new terms.
-    // A no-op resend of identical values does NOT reset approval.
+    // Changing the terms of an approved reward resets its approval.
     const rewardTermsChanged =
       rewardUpdate !== null &&
       (rewardUpdate.rewardOffered !== existing.rewardOffered ||
         rewardUpdate.rewardAmount !== existing.rewardAmount ||
         rewardUpdate.rewardDetails !== existing.rewardDetails);
     const shouldResetRewardApproval = rewardTermsChanged && existing.rewardApproved;
+
+    const fieldsUpdated = UPDATABLE_FIELD_NAMES.filter((field) => data[field] !== undefined);
 
     const updated = await this.prisma.missingPerson.update({
       where: { id },
@@ -1072,8 +1054,7 @@ export class MissingPersonService {
       },
     });
 
-    // Only after the DB write commits — deleting first and having
-    // the write fail would strand the case pointing at nothing.
+    // Delete removed files only after the DB write commits.
     await this.deleteMediaFiles(removed);
 
     this.emitAudit({
@@ -1082,9 +1063,19 @@ export class MissingPersonService {
       action: AuditEventEnum.MISSING_PERSON_UPDATED,
       entity: 'MissingPerson',
       entityId: updated.id,
+      entityLabel: this.caseLabel(updated),
       diff: {
         returnedToPending: shouldReturnToPending,
+        previousStatus: existing.status,
+        currentStatus: updated.status,
+        rewardApprovalReset: shouldResetRewardApproval,
         result: 'success',
+      },
+      metadata: {
+        fieldsUpdated,
+        mediaAdded: added.length,
+        mediaRemoved: removed.length,
+        mediaTotalBytes: newTotalBytes,
       },
     });
 
@@ -1097,15 +1088,6 @@ export class MissingPersonService {
     return updated;
   }
 
-  // ─────────────────────────────────────────────
-  // DELETE
-  // Only PENDING submissions may be deleted by their owner.
-  // Deletes the DB row, then removes every attached media object
-  // from MinIO — once the row referencing them is gone, an
-  // orphaned object in the bucket serves no purpose. Same ordering
-  // as PostService.deleteMyPost.
-  // ─────────────────────────────────────────────
-
   async remove(user: CurrentUserDto, id: string) {
     const existing = await this.prisma.missingPerson.findUnique({ where: { id } });
 
@@ -1114,16 +1096,31 @@ export class MissingPersonService {
     }
 
     if (existing.userId !== user.id) {
+      this.emitCaseFailure(
+        user,
+        AuditEventEnum.MISSING_PERSON_DELETED,
+        existing,
+        'not_authorized_to_delete',
+        { outcome: AuditOutcome.DENIED, targetUserId: existing.userId },
+      );
       throw new ForbiddenException('not_authorized_to_delete');
     }
 
     if (existing.status !== MissingPersonStatus.PENDING) {
+      this.emitCaseFailure(
+        user,
+        AuditEventEnum.MISSING_PERSON_DELETED,
+        existing,
+        'only_pending_submissions_can_be_deleted',
+        { diff: { currentStatus: existing.status } },
+      );
       throw new ForbiddenException('only_pending_submissions_can_be_deleted');
     }
 
     await this.prisma.missingPerson.delete({ where: { id } });
 
-    await this.deleteMediaFiles(this.collectMediaFields(existing));
+    const mediaKeys = this.collectMediaFields(existing);
+    await this.deleteMediaFiles(mediaKeys);
 
     this.emitAudit({
       userId: user.id,
@@ -1131,18 +1128,20 @@ export class MissingPersonService {
       action: AuditEventEnum.MISSING_PERSON_DELETED,
       entity: 'MissingPerson',
       entityId: id,
+      entityLabel: this.caseLabel(existing),
       diff: {
         previousStatus: existing.status,
         result: 'success',
+      },
+      metadata: {
+        mediaFilesDeleted: mediaKeys.length,
+        mediaTotalBytes: existing.mediaTotalBytes,
+        rewardOffered: existing.rewardOffered,
       },
     });
 
     return { message: 'missing_person_deleted' };
   }
-
-  // ─────────────────────────────────────────────
-  // ADMIN — FIND ALL (paginated, lightweight — no submissions)
-  // ─────────────────────────────────────────────
 
   async findAllForAdmin(query: ListMissingPersonsAdminQueryDto) {
     const page = query.page ?? 1;
@@ -1166,10 +1165,6 @@ export class MissingPersonService {
     };
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — FIND ONE (full detail, includes submissions)
-  // ─────────────────────────────────────────────
-
   async findOneForAdmin(id: string) {
     const missingPerson = await this.prisma.missingPerson.findUnique({
       where: { id },
@@ -1183,16 +1178,6 @@ export class MissingPersonService {
     return missingPerson;
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — PER-CASE HISTORY / TIMELINE
-  // GET /missing-persons/admin/:id/history
-  // (item #18)
-  //
-  // ASSUMPTION: same as Report/PostService.getHistory — an
-  // `auditLog` Prisma model populated by a listener subscribed to
-  // the events emitAudit() already fires throughout this service.
-  // ─────────────────────────────────────────────
-
   async getHistory(id: string) {
     const existing = await this.prisma.missingPerson.findUnique({ where: { id } });
     if (!existing) {
@@ -1204,30 +1189,6 @@ export class MissingPersonService {
       orderBy: { createdAt: 'asc' },
     });
   }
-
-  // ─────────────────────────────────────────────
-  // ADMIN — UPDATE STATUS
-  // Enforces ALLOWED_TRANSITIONS and requires a reviewNote when
-  // rejecting or requesting more information.
-  //
-  // FIX (item #16): a personType=CHILD case moving to APPROVED now
-  // requires two distinct admins via ensureChildSafetySatisfied,
-  // same dual-control gate as Post's approve()/updateStatus().
-  //
-  // FIX (item #17): blocked if claimed by a different admin; claim
-  // is released once the transition actually goes through.
-  //
-  // FIX (item #22/#26): the read-then-write is now a conditional
-  // update guarded on the status read a moment earlier, same
-  // pattern as Report/PostService, so two admins racing to
-  // transition the same case can't silently clobber each other —
-  // the loser gets missing_person_transition_conflict instead of an
-  // unvalidated write going through.
-  //
-  // FIX (item #21): on a transition TO REJECTED, checks whether the
-  // submitter has crossed the auto-flag threshold for repeated
-  // rejections.
-  // ─────────────────────────────────────────────
 
   async updateStatus(
     admin: CurrentUserDto,
@@ -1246,11 +1207,16 @@ export class MissingPersonService {
       return existing;
     }
 
-    this.assertNotClaimedByOther(existing, admin.id);
+    const auditEvent = this.auditEventForStatus(status);
+
+    this.assertNotClaimedByOther(admin, existing, auditEvent);
 
     const allowedNext = this.ALLOWED_TRANSITIONS[existing.status] ?? [];
 
     if (!allowedNext.includes(status)) {
+      this.emitCaseFailure(admin, auditEvent, existing, 'invalid_status_transition', {
+        diff: { attemptedStatus: status, currentStatus: existing.status },
+      });
       throw new BadRequestException(`invalid_status_transition: ${existing.status} -> ${status}`);
     }
 
@@ -1259,23 +1225,33 @@ export class MissingPersonService {
         status === MissingPersonStatus.MORE_INFORMATION_REQUESTED) &&
       !reviewNote?.trim()
     ) {
+      this.emitCaseFailure(admin, auditEvent, existing, 'review_note_required_for_this_status', {
+        diff: { attemptedStatus: status, currentStatus: existing.status },
+      });
       throw new BadRequestException('review_note_required_for_this_status');
     }
 
-    if (status === MissingPersonStatus.APPROVED && existing.personType === MissingPersonType.CHILD) {
-      const safety = await this.ensureChildSafetySatisfied(existing, admin.id, childSafetyConfirmed);
+    const isChildApproval =
+      status === MissingPersonStatus.APPROVED && existing.personType === MissingPersonType.CHILD;
+
+    if (isChildApproval) {
+      const safety = await this.ensureChildSafetySatisfied(existing, admin, childSafetyConfirmed);
       if (safety === 'first_confirmation_recorded') {
         const partial = await this.prisma.missingPerson.findUniqueOrThrow({ where: { id } });
         this.emitAudit({
           userId: admin.id,
+          ...this.targetUserFor(admin, existing),
           actorType: resolveActorType(admin.roles ?? []),
           action: AuditEventEnum.MISSING_PERSON_UPDATED,
           entity: 'MissingPerson',
           entityId: id,
+          entityLabel: this.caseLabel(existing),
+          reason: reviewNote ?? null,
           diff: {
             childSafetyFirstConfirmationBy: admin.id,
             result: 'pending_second_admin_confirmation',
           },
+          metadata: { operation: 'child_safety_first_confirmation' },
         });
         return { ...partial, pendingSecondConfirmation: true };
       }
@@ -1292,49 +1268,37 @@ export class MissingPersonService {
     });
 
     if (result.count === 0) {
+      this.emitCaseFailure(admin, auditEvent, existing, 'missing_person_transition_conflict', {
+        diff: { attemptedStatus: status, currentStatus: existing.status },
+      });
       throw new BadRequestException('missing_person_transition_conflict');
     }
 
     const updated = await this.prisma.missingPerson.findUniqueOrThrow({ where: { id } });
 
-    let auditEvent: AuditEventEnum;
-
-    switch (status) {
-      case MissingPersonStatus.APPROVED:
-        auditEvent = AuditEventEnum.MISSING_PERSON_APPROVED;
-        break;
-
-      case MissingPersonStatus.REJECTED:
-        auditEvent = AuditEventEnum.MISSING_PERSON_REJECTED;
-        break;
-
-      case MissingPersonStatus.FOUND:
-        auditEvent = AuditEventEnum.MISSING_PERSON_FOUND;
-        break;
-
-      case MissingPersonStatus.MORE_INFORMATION_REQUESTED:
-        auditEvent = AuditEventEnum.MISSING_PERSON_MORE_INFO_REQUESTED;
-        break;
-
-      default:
-        auditEvent = AuditEventEnum.MISSING_PERSON_UPDATED;
-        break;
-    }
-
     this.emitAudit({
       userId: admin.id,
+      ...this.targetUserFor(admin, existing),
       actorType: resolveActorType(admin.roles ?? []),
       action: auditEvent,
       entity: 'MissingPerson',
       entityId: updated.id,
+      entityLabel: this.caseLabel(updated),
+      reason: reviewNote ?? null,
       diff: {
         previousStatus: existing.status,
         newStatus: updated.status,
-        childSafetyDualControlSatisfied:
-          status === MissingPersonStatus.APPROVED && existing.personType === MissingPersonType.CHILD
-            ? true
-            : undefined,
+        ...(isChildApproval ? { childSafetyDualControlSatisfied: true } : {}),
         result: 'success',
+      },
+      metadata: {
+        claimReleased: existing.claimedByUserId !== null,
+        ...(isChildApproval
+          ? {
+              childSafetyFirstConfirmedBy: existing.childSafetyFirstConfirmedByUserId,
+              childSafetySecondConfirmedBy: admin.id,
+            }
+          : {}),
       },
     });
 
@@ -1377,37 +1341,7 @@ export class MissingPersonService {
     return updated;
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — UPDATE REWARD
-  // PATCH /missing-persons/admin/:id/reward
-  //
-  // Deliberately separate from updateStatus(): reward approval is
-  // its own decision, independent of where the case sits in the
-  // review workflow. No ALLOWED_TRANSITIONS gate and no claim check
-  // — an unclaimed or already-claimed-by-someone-else case can
-  // still have its reward set, since reward decisions don't carry
-  // the same "only one admin actively reviewing" concern that
-  // status transitions do. Reconsider this if that assumption turns
-  // out to be wrong for your workflow.
-  //
-  // Approval requires the case to actually have a reward proposal:
-  // rewardApproved: true is rejected outright if the submitter's
-  // rewardOffered is false — an admin approves what was offered,
-  // never invents an offer. rewardAmount/rewardDetails passed here
-  // are OPTIONAL overrides on top of whatever the submitter last
-  // proposed; omitting them keeps the existing value. A final
-  // amount (existing or overridden) is required whenever
-  // rewardApproved is true.
-  //
-  // Unlike the first draft of this method, rewardApproved: false
-  // no longer nulls rewardAmount/rewardDetails in the DB — the
-  // submitter's proposal is preserved so a later re-review doesn't
-  // start from scratch. Public-facing reads mask
-  // rewardAmount/rewardDetails via maskUnapprovedReward() whenever
-  // rewardApproved is false, which is what actually keeps an
-  // unreviewed or rejected figure off the public endpoints.
-  // ─────────────────────────────────────────────
-
+  // Independent of the status workflow and claims. Approval needs an existing offer and amount.
   async updateReward(
     admin: CurrentUserDto,
     id: string,
@@ -1422,6 +1356,13 @@ export class MissingPersonService {
     }
 
     if (rewardApproved && !existing.rewardOffered) {
+      this.emitCaseFailure(
+        admin,
+        AuditEventEnum.MISSING_PERSON_UPDATED,
+        existing,
+        'cannot_approve_reward_that_was_not_offered',
+        { metadata: { operation: 'reward_review' } },
+      );
       throw new BadRequestException('cannot_approve_reward_that_was_not_offered');
     }
 
@@ -1429,6 +1370,13 @@ export class MissingPersonService {
     const finalDetails = rewardDetails !== undefined ? rewardDetails : existing.rewardDetails;
 
     if (rewardApproved && (finalAmount === undefined || finalAmount === null)) {
+      this.emitCaseFailure(
+        admin,
+        AuditEventEnum.MISSING_PERSON_UPDATED,
+        existing,
+        'reward_amount_required_when_approved',
+        { metadata: { operation: 'reward_review' } },
+      );
       throw new BadRequestException('reward_amount_required_when_approved');
     }
 
@@ -1443,10 +1391,12 @@ export class MissingPersonService {
 
     this.emitAudit({
       userId: admin.id,
+      ...this.targetUserFor(admin, existing),
       actorType: resolveActorType(admin.roles ?? []),
       action: AuditEventEnum.MISSING_PERSON_UPDATED,
       entity: 'MissingPerson',
       entityId: id,
+      entityLabel: this.caseLabel(updated),
       diff: {
         previousRewardApproved: existing.rewardApproved,
         previousRewardAmount: existing.rewardAmount,
@@ -1455,6 +1405,12 @@ export class MissingPersonService {
         rewardAmount: updated.rewardAmount,
         rewardDetails: updated.rewardDetails,
         result: 'success',
+      },
+      metadata: {
+        operation: 'reward_review',
+        amountOverriddenByAdmin: rewardAmount !== undefined && rewardAmount !== existing.rewardAmount,
+        detailsOverriddenByAdmin:
+          rewardDetails !== undefined && rewardDetails !== existing.rewardDetails,
       },
     });
 

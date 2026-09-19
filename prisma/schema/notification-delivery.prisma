@@ -1,0 +1,138 @@
+// prisma/schema/notification-delivery.prisma  (NEW FILE)
+//
+// Also add these lines INSIDE your existing `model Notification { ... }`
+// (in notification.prisma). Prisma needs both sides of each relation:
+//
+//   actorName   String?
+//   actorRole   String?
+//   broadcastId String?
+//   broadcast   NotificationBroadcast? @relation(fields: [broadcastId], references: [id], onDelete: SetNull)
+//   deliveries  NotificationDelivery[]
+//
+//   @@index([broadcastId])
+//   @@index([actorId, createdAt])
+//
+// No relation to User is declared here on purpose, so user.prisma stays
+// untouched. The service deletes these rows explicitly in eraseForUser().
+//
+// Statuses are plain strings (like AuditPurgeRun.status) so the queue claim
+// can use simple raw SQL. Allowed values are listed in each comment.
+
+/// One row per user, notification type. Null channel = "use the default policy".
+/// In-app is always on (the inbox is the record), so it has no column.
+/// Security types (SECURITY_ALERT, PASSWORD_CHANGED, PASSWORD_RESET) ignore this table.
+model NotificationPreference {
+  id              String   @id @default(uuid())
+  userId          String
+  type            NotificationType
+  email           Boolean?
+  sms             Boolean?
+  push            Boolean?
+  /// "HH:mm" 24h in `timezone`. Both set = quiet window. URGENT and security types bypass it.
+  quietHoursStart String?
+  quietHoursEnd   String?
+  timezone        String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @default(now()) @updatedAt
+
+  @@unique([userId, type])
+  @@index([userId])
+  @@map("notification_preference")
+}
+
+/// One row per notification and OUTSIDE channel. This table is the durable delivery queue.
+/// channel: EMAIL | SMS | PUSH
+/// status:  PENDING | SENDING | SENT | FAILED | SKIPPED
+model NotificationDelivery {
+  id             String   @id @default(uuid())
+  notificationId String
+  userId         String
+  channel        String
+  status         String   @default("PENDING")
+  attempts       Int      @default(0)
+  nextAttemptAt  DateTime @default(now())
+  lastError      String?
+  sentAt         DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @default(now()) @updatedAt
+
+  notification Notification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+
+  @@unique([notificationId, channel])
+  @@index([status, nextAttemptAt])
+  @@index([userId, createdAt])
+  @@index([channel, status])
+  @@map("notification_delivery")
+}
+
+/// Push tokens. A token belongs to one user at a time (it moves if the device signs in as someone else).
+/// platform: ios | android | web
+model DeviceToken {
+  id         String   @id @default(uuid())
+  userId     String
+  token      String   @unique
+  platform   String
+  lastSeenAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+  @@map("device_token")
+}
+
+/// One row per admin audience send. Recipients are personal Notification rows linked by broadcastId.
+/// audience: ADMINS | ALL_USERS
+/// status:   SCHEDULED | PROCESSING | COMPLETED | CANCELLED | FAILED
+model NotificationBroadcast {
+  id             String   @id @default(uuid())
+  createdById    String?
+  audience       String
+  type           NotificationType
+  title          String
+  body           String
+  priority       NotificationPriority @default(NORMAL)
+  templateId     String?
+  status         String   @default("SCHEDULED")
+  scheduledAt    DateTime @default(now())
+  startedAt      DateTime?
+  finishedAt     DateTime?
+  recipientCount Int      @default(0)
+  attempts       Int      @default(0)
+  error          String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @default(now()) @updatedAt
+
+  notifications Notification[]
+
+  @@index([status, scheduledAt])
+  @@index([createdById, createdAt])
+  @@map("notification_broadcast")
+}
+
+/// Title and body per type and language (en | am | it). Placeholders look like {{name}}.
+model NotificationTemplate {
+  id          String   @id @default(uuid())
+  type        NotificationType
+  language    String
+  title       String
+  body        String
+  isActive    Boolean  @default(true)
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @default(now()) @updatedAt
+
+  @@unique([type, language])
+  @@map("notification_template")
+}
+
+/// Makes POST /notifications/admin and /admin/broadcast safe to retry (Idempotency-Key header).
+model NotificationIdempotencyKey {
+  id        String   @id @default(uuid())
+  actorId   String
+  key       String
+  result    Json?
+  createdAt DateTime @default(now())
+
+  @@unique([actorId, key])
+  @@index([createdAt])
+  @@map("notification_idempotency_key")
+}

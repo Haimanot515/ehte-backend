@@ -1,24 +1,152 @@
-model AuditLog {
-  id        String    @id @default(uuid())
-  userId    String?
-  actorType ActorType
-  action    String
-  entity    String
-  entityId  String?
-  diff      Json?
-  createdAt DateTime  @default(now())
-  user      User?     @relation(fields: [userId], references: [id])
-
-  @@index([userId])
-  @@index([createdAt])
-  @@index([entity, entityId])
-  @@index([action])
-  @@map("audit_log")
-}
-
 enum ActorType {
   USER
   ADMIN
   SUPER_ADMIN
   SYSTEM
+}
+
+enum AuditOutcome {
+  SUCCESS
+  FAILURE
+  DENIED
+}
+
+enum AuditSeverity {
+  INFO
+  WARNING
+  CRITICAL
+}
+
+enum AuditSource {
+  WEB
+  MOBILE
+  API
+  SYSTEM
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+
+  // Actor
+  userId       String?
+  actorType    ActorType
+  actorName    String?
+  actorRole    String?
+  sessionId    String?
+  targetUserId String?
+
+  // What happened
+  action   String
+  outcome  AuditOutcome  @default(SUCCESS)
+  severity AuditSeverity @default(INFO)
+  reason   String?
+
+  // Affected object
+  entity      String
+  entityId    String?
+  entityLabel String?
+
+  // Changes and extra data
+  diff     Json?
+  metadata Json?
+
+  // Request context
+  ipAddress String?
+  userAgent String?
+  country   String?
+  city      String?
+  source    AuditSource?
+  method    String?
+  path      String?
+  requestId String?
+
+  // Integrity (hash chain). Null on rows written before the chain existed.
+  seq      Int?    @unique
+  hash     String?
+  prevHash String?
+
+  // Retention and privacy
+  legalHold    Boolean   @default(false)
+  anonymizedAt DateTime?
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([createdAt])
+  @@index([entity, entityId, createdAt])
+  @@index([action, createdAt])
+  @@index([outcome])
+  @@index([targetUserId, createdAt])
+  @@index([ipAddress])
+  @@index([requestId])
+  @@index([actorType])
+  @@index([severity, createdAt])
+  @@index([sessionId])
+  @@map("audit_log")
+}
+
+model AuditExport {
+  id           String   @id @default(uuid())
+  exportedById String?
+  filter       Json?
+  rowCount     Int
+  truncated    Boolean  @default(false)
+  createdAt    DateTime @default(now())
+
+  @@index([createdAt])
+  @@map("audit_export")
+}
+
+model AuditSavedFilter {
+  id        String   @id @default(uuid())
+  userId    String
+  name      String
+  filter    Json
+  createdAt DateTime @default(now())
+
+  @@unique([userId, name])
+  @@map("audit_saved_filter")
+}
+
+model AuditAlert {
+  id              String         @id @default(uuid())
+  name            String
+  enabled         Boolean        @default(true)
+  action          String?
+  entity          String?
+  outcome         AuditOutcome?
+  severity        AuditSeverity?
+  threshold       Int
+  windowMinutes   Int
+  cooldownMinutes Int            @default(60)
+  lastTriggeredAt DateTime?
+  createdById     String?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  @@map("audit_alert")
+}
+
+/// One row per purge attempt. tokenId makes the confirm token single-use.
+/// minSeq/maxSeq let the integrity check tell a purge gap from a deleted row.
+/// status: STARTED | ARCHIVED | COMPLETED | FAILED
+model AuditPurgeRun {
+  id            String    @id @default(uuid())
+  tokenId       String    @unique
+  cutoff        DateTime
+  reason        String
+  status        String
+  requestedById String?
+  archiveKey    String?
+  archivedCount Int       @default(0)
+  deletedCount  Int       @default(0)
+  heldCount     Int       @default(0)
+  minSeq        Int?
+  maxSeq        Int?
+  error         String?
+  createdAt     DateTime  @default(now())
+  finishedAt    DateTime?
+
+  @@map("audit_purge_run")
 }

@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 
-import { PostStatus, PostType, Prisma } from '@prisma/client';
+import { AuditOutcome, AuditSeverity, PostStatus, PostType, Prisma } from '@prisma/client';
 
 import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { ConfigService } from '@nestjs/config';
@@ -50,6 +50,20 @@ type MediaFieldName = (typeof MEDIA_FIELD_NAMES)[number];
 type MediaBearing = Record<MediaFieldName, string[]>;
 type MediaBearingDto = Partial<Record<MediaFieldName, string[] | undefined>>;
 
+// Minimal shape every audit call site needs from a post row to
+// build entityId / entityLabel / targetUserId. A full Prisma Post
+// row satisfies this.
+type PostAuditRef = {
+  id: string;
+  userId: string;
+  title: string | null;
+  type: PostType;
+};
+
+// Posts can be untitled and titles are free text, so the label
+// written to the audit row is capped to keep it list-friendly.
+const ENTITY_LABEL_MAX_LENGTH = 120;
+
 // Single source of truth for what status can move to what. Every
 // approve/reject/requestChanges/publish/unpublish/updateStatus call
 // goes through this one map instead of its own ad hoc guard, so the
@@ -68,12 +82,6 @@ const ALLOWED_STATUS_TRANSITIONS: Record<PostStatus, PostStatus[]> = {
   [PostStatus.UNPUBLISHED]: [PostStatus.PUBLISHED],
   [PostStatus.REJECTED]: [],
 };
-
-function assertTransitionAllowed(from: PostStatus, to: PostStatus): void {
-  if (!ALLOWED_STATUS_TRANSITIONS[from]?.includes(to)) {
-    throw new BadRequestException(`post_transition_not_allowed:${from}->${to}`);
-  }
-}
 
 // Fields that must never leave the process on a PUBLIC route.
 // userId would deanonymize the poster (item #7); reviewNote,
@@ -104,14 +112,121 @@ export class PostService {
     this.eventEmitter.emit(payload.action, payload);
   }
 
-  // ─────────────────────────────────────────────
+  // -----------------------------------------------------------
+  // AUDIT HELPERS
+  //
+  // FIX (audit coverage): shared building blocks so every call
+  // site labels the entity the same way, attributes moderation
+  // actions to the affected user, and records blocked attempts
+  // (denied / failed) instead of only the success path.
+  //
+  // ASSUMPTION: AuditEventPayload.metadata accepts a plain JSON
+  // object, and AuditSeverity has an INFO member (it is the
+  // schema default). Adjust the Prisma.InputJsonObject typing
+  // below if metadata is typed differently.
+  // -----------------------------------------------------------
+
+  // Human-readable label for the audit row. Falls back to the post
+  // type when the post has no title, so the row is never blank.
+  private postLabel(post: Pick<PostAuditRef, 'title' | 'type'>): string {
+    const raw = post.title?.trim() || `Untitled ${post.type} post`;
+    return raw.length > ENTITY_LABEL_MAX_LENGTH
+      ? `${raw.slice(0, ENTITY_LABEL_MAX_LENGTH - 3)}...`
+      : raw;
+  }
+
+  // The user an action is ABOUT, when that is someone other than
+  // the actor. Undefined when an admin acts on their own post
+  // (official posts), since actor and target would be identical.
+  private auditTarget(post: Pick<PostAuditRef, 'userId'>, actorUserId: string): string | undefined {
+    return post.userId !== actorUserId ? post.userId : undefined;
+  }
+
+  // Writes the audit row for an attempt that was blocked, before the
+  // caller throws. DENIED = not allowed to do this (permission or
+  // workflow control); FAILURE = allowed in principle but the request
+  // could not be completed (invalid transition, lost race).
+  // The machine-readable cause goes in the top-level reason column.
+  private emitBlockedAttempt(args: {
+    outcome: AuditOutcome;
+    severity?: AuditSeverity;
+    user: CurrentUserDto;
+    post: PostAuditRef;
+    action: AuditEventEnum;
+    reason: string;
+    diff?: Prisma.InputJsonObject;
+    metadata?: Prisma.InputJsonObject;
+  }): void {
+    this.emitAudit({
+      userId: args.user.id,
+      targetUserId: this.auditTarget(args.post, args.user.id),
+      actorType: resolveActorType(args.user.roles ?? []),
+      action: args.action,
+      outcome: args.outcome,
+      severity: args.severity ?? AuditSeverity.WARNING,
+      entity: 'Post',
+      entityId: args.post.id,
+      entityLabel: this.postLabel(args.post),
+      reason: args.reason,
+      diff: {
+        result: args.outcome === AuditOutcome.DENIED ? 'denied' : 'failure',
+        ...(args.diff ?? {}),
+      },
+      metadata: args.metadata,
+    });
+  }
+
+  // Shared by updateStatus() and approve(): the first admin's child
+  // safety confirmation was recorded but the status did not move.
+  private emitChildSafetyFirstConfirmation(user: CurrentUserDto, post: PostAuditRef): void {
+    this.emitAudit({
+      userId: user.id,
+      targetUserId: this.auditTarget(post, user.id),
+      actorType: resolveActorType(user.roles ?? []),
+      action: AuditEventEnum.POST_UPDATED,
+      entity: 'Post',
+      entityId: post.id,
+      entityLabel: this.postLabel(post),
+      diff: {
+        childSafetyFirstConfirmationBy: user.id,
+        result: 'pending_second_admin_confirmation',
+      },
+    });
+  }
+
+  // FIX (audit coverage): moved from a module-level function into
+  // the class so an invalid transition can write an audit row
+  // (outcome: FAILURE, severity: WARNING) before throwing. Still
+  // reads the single ALLOWED_STATUS_TRANSITIONS map above.
+  private assertTransitionAllowed(
+    user: CurrentUserDto,
+    post: PostAuditRef & { status: PostStatus },
+    to: PostStatus,
+    action: AuditEventEnum,
+    metadata?: Prisma.InputJsonObject,
+  ): void {
+    if (ALLOWED_STATUS_TRANSITIONS[post.status]?.includes(to)) return;
+
+    this.emitBlockedAttempt({
+      outcome: AuditOutcome.FAILURE,
+      user,
+      post,
+      action,
+      reason: 'post_transition_not_allowed',
+      diff: { attemptedStatus: to, currentStatus: post.status },
+      metadata,
+    });
+    throw new BadRequestException(`post_transition_not_allowed:${post.status}->${to}`);
+  }
+
+  // -----------------------------------------------------------
   // MEDIA HELPERS
   //
   // Post stores media as plain filepath strings in
   // typed arrays (photo/video/audio/pdf/document/other)
   // rather than a relational Media table. These helpers
   // keep every read/write of that shape in one place.
-  // ─────────────────────────────────────────────
+  // -----------------------------------------------------------
 
   private collectMediaFields(entity: MediaBearing): string[] {
     return MEDIA_FIELD_NAMES.flatMap((field) => entity[field]);
@@ -311,20 +426,36 @@ export class PostService {
   // on every review-decision write; NOT enforced on
   // read endpoints or on publish/unpublish, which are
   // routine operational actions rather than case review.
+  //
+  // FIX (audit coverage): a denied claim check now writes an
+  // audit row (outcome: DENIED, severity: WARNING) before
+  // throwing, recording which admin currently holds the claim.
+  // Callers pass the specific action being attempted so the
+  // DENIED row records what was actually blocked.
   // ─────────────────────────────────────────────
 
   private assertNotClaimedByOther(
-    post: { claimedByUserId: string | null },
-    actorUserId: string,
+    user: CurrentUserDto,
+    post: PostAuditRef & { claimedByUserId: string | null },
+    action: AuditEventEnum,
+    metadata?: Prisma.InputJsonObject,
   ): void {
-    if (post.claimedByUserId && post.claimedByUserId !== actorUserId) {
+    if (post.claimedByUserId && post.claimedByUserId !== user.id) {
+      this.emitBlockedAttempt({
+        outcome: AuditOutcome.DENIED,
+        user,
+        post,
+        action,
+        reason: 'claimed_by_another_admin',
+        metadata: { ...(metadata ?? {}), claimedByUserId: post.claimedByUserId },
+      });
       throw new BadRequestException('post_claimed_by_another_admin');
     }
   }
 
   async claimPost(user: CurrentUserDto, postId: string) {
     const post = await this.findOne(postId);
-    this.assertNotClaimedByOther(post, user.id);
+    this.assertNotClaimedByOther(user, post, AuditEventEnum.POST_UPDATED);
 
     const updated = await this.prisma.post.update({
       where: { id: postId },
@@ -333,10 +464,12 @@ export class PostService {
 
     this.emitAudit({
       userId: user.id,
+      targetUserId: this.auditTarget(post, user.id),
       actorType: resolveActorType(user.roles ?? []),
       action: AuditEventEnum.POST_UPDATED,
       entity: 'Post',
       entityId: postId,
+      entityLabel: this.postLabel(post),
       diff: { claimedBy: user.id, result: 'success' },
     });
 
@@ -345,7 +478,7 @@ export class PostService {
 
   async unclaimPost(user: CurrentUserDto, postId: string) {
     const post = await this.findOne(postId);
-    this.assertNotClaimedByOther(post, user.id);
+    this.assertNotClaimedByOther(user, post, AuditEventEnum.POST_UPDATED);
 
     const updated = await this.prisma.post.update({
       where: { id: postId },
@@ -354,10 +487,12 @@ export class PostService {
 
     this.emitAudit({
       userId: user.id,
+      targetUserId: this.auditTarget(post, user.id),
       actorType: resolveActorType(user.roles ?? []),
       action: AuditEventEnum.POST_UPDATED,
       entity: 'Post',
       entityId: postId,
+      entityLabel: this.postLabel(post),
       diff: { unclaimedBy: user.id, result: 'success' },
     });
 
@@ -373,20 +508,37 @@ export class PostService {
   // has their confirmation recorded; a second, DIFFERENT
   // admin must confirm again before the transition
   // actually goes through.
+  //
+  // FIX (audit coverage): both rejection paths now write an
+  // audit row before throwing. A missing confirmation is a
+  // FAILURE; the same admin trying to be their own second
+  // confirmer is a DENIED (dual-control violation). Both are
+  // severity WARNING. The method now takes the acting user
+  // (not just their id) and the action being attempted so the
+  // rows can be attributed correctly.
   // ─────────────────────────────────────────────
 
   private async ensureChildSafetySatisfied(
-    post: {
-      id: string;
+    post: PostAuditRef & {
       involvesChild: boolean;
       childSafetyFirstConfirmedByUserId: string | null;
     },
-    actorUserId: string,
+    user: CurrentUserDto,
     confirmed: boolean | undefined,
+    action: AuditEventEnum,
+    metadata?: Prisma.InputJsonObject,
   ): Promise<'not_required' | 'first_confirmation_recorded' | 'satisfied'> {
     if (!post.involvesChild) return 'not_required';
 
     if (confirmed !== true) {
+      this.emitBlockedAttempt({
+        outcome: AuditOutcome.FAILURE,
+        user,
+        post,
+        action,
+        reason: 'child_safety_confirmation_required',
+        metadata,
+      });
       throw new BadRequestException('child_safety_confirmation_required');
     }
 
@@ -394,14 +546,25 @@ export class PostService {
       await this.prisma.post.update({
         where: { id: post.id },
         data: {
-          childSafetyFirstConfirmedByUserId: actorUserId,
+          childSafetyFirstConfirmedByUserId: user.id,
           childSafetyFirstConfirmedAt: new Date(),
         },
       });
       return 'first_confirmation_recorded';
     }
 
-    if (post.childSafetyFirstConfirmedByUserId === actorUserId) {
+    if (post.childSafetyFirstConfirmedByUserId === user.id) {
+      this.emitBlockedAttempt({
+        outcome: AuditOutcome.DENIED,
+        user,
+        post,
+        action,
+        reason: 'child_safety_requires_second_distinct_admin',
+        metadata: {
+          ...(metadata ?? {}),
+          firstConfirmedByUserId: post.childSafetyFirstConfirmedByUserId,
+        },
+      });
       throw new BadRequestException('child_safety_requires_second_distinct_admin');
     }
 
@@ -426,18 +589,27 @@ export class PostService {
   // of the admin review queue, and every non-terminal post owned
   // by the user is timestamped via ownerSuspendedAt so admin
   // tooling can filter/flag them.
+  //
+  // FIX (audit coverage): this is a bulk system action about the
+  // user, not about one specific post. userId (the actor) is no
+  // longer set to the suspended user, since there is no human
+  // actor here; the affected user is now targetUserId. entity is
+  // 'User' with the user's id as entityId, instead of a synthetic
+  // 'user:<id>' Post entityId. The cause moved out of diff into
+  // the top-level reason column, and the number of posts touched
+  // is recorded in metadata.
   // ─────────────────────────────────────────────
 
   @OnEvent('user.suspended')
   async handleUserSuspended(payload: { userId: string }): Promise<void> {
     const now = new Date();
 
-    await this.prisma.post.updateMany({
+    const withdrawn = await this.prisma.post.updateMany({
       where: { userId: payload.userId, status: PostStatus.PENDING },
       data: { status: PostStatus.DRAFT, ownerSuspendedAt: now },
     });
 
-    await this.prisma.post.updateMany({
+    const stamped = await this.prisma.post.updateMany({
       where: {
         userId: payload.userId,
         status: { in: [PostStatus.DRAFT, PostStatus.CHANGES_REQUESTED] },
@@ -447,15 +619,20 @@ export class PostService {
     });
 
     this.emitAudit({
-      userId: payload.userId,
+      targetUserId: payload.userId,
       // ASSUMPTION: resolveActorType only knows about role-bearing
       // actors; cast until AuditEventPayload's actorType union is
       // extended with a SYSTEM variant.
       actorType: 'SYSTEM' as unknown as ReturnType<typeof resolveActorType>,
       action: AuditEventEnum.POST_UPDATED,
-      entity: 'Post',
-      entityId: `user:${payload.userId}`,
-      diff: { reason: 'owner_account_suspended', result: 'success' },
+      entity: 'User',
+      entityId: payload.userId,
+      reason: 'owner_account_suspended',
+      diff: { result: 'success' },
+      metadata: {
+        pendingPostsWithdrawn: withdrawn.count,
+        otherPostsTimestamped: stamped.count,
+      },
     });
   }
 
@@ -469,6 +646,12 @@ export class PostService {
   // ASSUMPTION: AuditEventEnum needs a new USER_AUTO_FLAGGED
   // member — add it alongside POST_CREATED/POST_UPDATED/etc. in
   // src/common/enums/shared/audit-events.enum.ts.
+  //
+  // FIX (audit coverage): userId -> targetUserId (this row is about
+  // the flagged user; there is no human actor). The cause moved out
+  // of diff into the top-level reason column, and the configured
+  // threshold is recorded in metadata so a reader can tell what
+  // rule fired without looking up config.
   // ─────────────────────────────────────────────
 
   private async maybeFlagUserForRejections(userId: string): Promise<void> {
@@ -490,17 +673,18 @@ export class PostService {
 
     if (recentRejections >= threshold) {
       this.emitAudit({
-        userId,
+        targetUserId: userId,
         actorType: 'SYSTEM' as unknown as ReturnType<typeof resolveActorType>,
         action: AuditEventEnum.USER_AUTO_FLAGGED,
         entity: 'User',
         entityId: userId,
+        reason: 'repeated_post_rejections',
         diff: {
-          reason: 'repeated_post_rejections',
           rejectionCount: recentRejections,
           windowDays,
           result: 'flagged_for_review',
         },
+        metadata: { threshold },
       });
     }
   }
@@ -594,6 +778,10 @@ export class PostService {
   // validateMediaFilesExist()'s returned sizes and persisted as
   // mediaTotalBytes so future updates don't need to re-stat
   // already-attached files just to know the running total.
+  //
+  // FIX (audit coverage): the success row now carries entityLabel
+  // and metadata (post type, attachment count and size, whether the
+  // request was sent with an idempotency key).
   // ─────────────────────────────────────────────
 
   private async enforceCreateRateLimit(userId: string): Promise<void> {
@@ -672,9 +860,17 @@ export class PostService {
       action: AuditEventEnum.POST_CREATED,
       entity: 'Post',
       entityId: post.id,
+      entityLabel: this.postLabel(post),
       diff: {
         status: PostStatus.DRAFT,
         result: 'success',
+      },
+      metadata: {
+        postType,
+        involvesChild: post.involvesChild,
+        mediaCount: this.collectMediaFields(merged).length,
+        mediaTotalBytes: totalBytes,
+        idempotencyKeyProvided: idempotencyKey !== undefined,
       },
     });
 
@@ -697,6 +893,16 @@ export class PostService {
   // FIX (item #13): same attachment-count/total-size guard
   // as create(), for consistency — official posts shouldn't
   // be exempt just because they're admin-authored.
+  //
+  // FIX (audit coverage): the success row now carries entityLabel
+  // and metadata (post type, publishImmediately, attachment count
+  // and size).
+  //
+  // NOTE (audit coverage): the child_safety_confirmation_required
+  // guard below throws before any Post row exists, so there is no
+  // entityId to attach a DENIED/FAILURE row to. Left un-audited on
+  // purpose; if AuditEventPayload allows a null entityId, an audit
+  // row could be added there.
   // ─────────────────────────────────────────────
 
   async createOfficial(actor: CurrentUserDto, data: AdminCreatePostDto) {
@@ -749,12 +955,19 @@ export class PostService {
       action: AuditEventEnum.POST_CREATED,
       entity: 'Post',
       entityId: post.id,
+      entityLabel: this.postLabel(post),
       diff: {
         official: true,
         status,
         involvesChild,
         childSafetyConfirmed: publishImmediately && involvesChild ? true : undefined,
         result: 'success',
+      },
+      metadata: {
+        postType,
+        publishImmediately,
+        mediaCount: this.collectMediaFields(merged).length,
+        mediaTotalBytes: totalBytes,
       },
     });
 
@@ -811,6 +1024,10 @@ export class PostService {
   // present in the request are carried over unchanged) before
   // any MinIO calls, and mediaTotalBytes is recomputed from the
   // previous total plus/minus the added/removed files' sizes.
+  //
+  // FIX (audit coverage): the success row now carries entityLabel
+  // (the post's current title) and metadata (how many media files
+  // were added/removed and the new running total).
   // ─────────────────────────────────────────────
 
   async updateMyPost(userId: string, postId: string, data: UpdatePostDto) {
@@ -888,9 +1105,15 @@ export class PostService {
       action: AuditEventEnum.POST_UPDATED,
       entity: 'Post',
       entityId: post.id,
+      entityLabel: this.postLabel(post),
       diff: {
         updatedFields,
         result: 'success',
+      },
+      metadata: {
+        mediaAdded: added.length,
+        mediaRemoved: removed.length,
+        mediaTotalBytes: newTotalBytes,
       },
     });
 
@@ -909,6 +1132,8 @@ export class PostService {
   // CONTENT_MAX_PENDING_PER_USER default (same rule applies
   // to Reports, Missing Person requests, etc.); set
   // POST_MAX_PENDING_PER_USER to give Posts its own limit.
+  //
+  // FIX (audit coverage): the success row now carries entityLabel.
   // ─────────────────────────────────────────────
 
   async submitMyPost(userId: string, postId: string) {
@@ -955,6 +1180,7 @@ export class PostService {
       action: AuditEventEnum.POST_UPDATED,
       entity: 'Post',
       entityId: post.id,
+      entityLabel: this.postLabel(post),
       diff: {
         previousStatus: existing.status,
         newStatus: PostStatus.PENDING,
@@ -974,6 +1200,10 @@ export class PostService {
   // ─────────────────────────────────────────────
   // CANCEL / WITHDRAW MY POST
   // PENDING → DRAFT.
+  //
+  // FIX (audit coverage): 'withdrawn_by_owner' moved out of diff
+  // into the top-level reason column, and the row now carries
+  // entityLabel.
   // ─────────────────────────────────────────────
 
   async cancelMyPost(userId: string, postId: string) {
@@ -1006,10 +1236,11 @@ export class PostService {
       action: AuditEventEnum.POST_UPDATED,
       entity: 'Post',
       entityId: post.id,
+      entityLabel: this.postLabel(post),
+      reason: 'withdrawn_by_owner',
       diff: {
         previousStatus: PostStatus.PENDING,
         newStatus: PostStatus.DRAFT,
-        reason: 'withdrawn_by_owner',
         result: 'success',
       },
     });
@@ -1023,6 +1254,11 @@ export class PostService {
   // removes every attached media object from MinIO —
   // once the row referencing them is gone, an orphaned
   // object in the bucket serves no purpose.
+  //
+  // FIX (audit coverage): the row is gone after this call, so the
+  // audit entry is the only place a reader can still see WHICH post
+  // was deleted. entityLabel (the title as it was) and metadata
+  // (post type, number of media files purged) preserve that.
   // ─────────────────────────────────────────────
 
   async deleteMyPost(userId: string, postId: string) {
@@ -1038,9 +1274,11 @@ export class PostService {
       throw new BadRequestException('only_draft_posts_can_be_deleted');
     }
 
+    const mediaToPurge = this.collectMediaFields(existing);
+
     await this.prisma.post.delete({ where: { id: postId } });
 
-    await this.deleteMediaFiles(this.collectMediaFields(existing));
+    await this.deleteMediaFiles(mediaToPurge);
 
     this.emitAudit({
       userId,
@@ -1048,9 +1286,14 @@ export class PostService {
       action: AuditEventEnum.POST_DELETED,
       entity: 'Post',
       entityId: postId,
+      entityLabel: this.postLabel(existing),
       diff: {
         previousStatus: PostStatus.DRAFT,
         result: 'success',
+      },
+      metadata: {
+        postType: existing.type,
+        mediaFilesPurged: mediaToPurge.length,
       },
     });
 
@@ -1197,6 +1440,13 @@ export class PostService {
   // reject() endpoints and their dual-control gate (#16).
   // Each id's outcome is reported independently so a
   // failure on one post never blocks the rest.
+  //
+  // FIX (audit coverage): skipping a child-involving post is a
+  // blocked attempt, so it now writes a DENIED row (severity INFO,
+  // since it is an expected, by-design skip rather than a
+  // suspicious one) instead of leaving no trace. Every audit row
+  // produced through the bulk path is tagged metadata.bulk = true
+  // so a reader can tell a bulk action from an individual one.
   // ─────────────────────────────────────────────
 
   async bulkApprove(user: CurrentUserDto, ids: string[]) {
@@ -1206,6 +1456,15 @@ export class PostService {
       try {
         const post = await this.findOne(id);
         if (post.involvesChild) {
+          this.emitBlockedAttempt({
+            outcome: AuditOutcome.DENIED,
+            severity: AuditSeverity.INFO,
+            user,
+            post,
+            action: AuditEventEnum.POST_APPROVED,
+            reason: 'requires_individual_child_safety_review',
+            metadata: { bulk: true },
+          });
           results.push({
             id,
             success: false,
@@ -1213,7 +1472,7 @@ export class PostService {
           });
           continue;
         }
-        await this.approve(user, id, {});
+        await this.approve(user, id, {}, { bulk: true });
         results.push({ id, success: true });
       } catch (err) {
         results.push({ id, success: false, error: (err as Error).message });
@@ -1230,6 +1489,15 @@ export class PostService {
       try {
         const post = await this.findOne(id);
         if (post.involvesChild) {
+          this.emitBlockedAttempt({
+            outcome: AuditOutcome.DENIED,
+            severity: AuditSeverity.INFO,
+            user,
+            post,
+            action: AuditEventEnum.POST_REJECTED,
+            reason: 'requires_individual_review',
+            metadata: { bulk: true },
+          });
           results.push({
             id,
             success: false,
@@ -1237,7 +1505,7 @@ export class PostService {
           });
           continue;
         }
-        await this.reject(user, id, { reason });
+        await this.reject(user, id, { reason }, { bulk: true });
         results.push({ id, success: true });
       } catch (err) {
         results.push({ id, success: false, error: (err as Error).message });
@@ -1295,6 +1563,14 @@ export class PostService {
   // gate, item #16), enforces the claim guard (#17),
   // and uses a conditional update to avoid racing
   // another concurrent transition.
+  //
+  // FIX (audit coverage): invalid transitions, claim denials,
+  // child-safety gate rejections and lost-race conflicts now each
+  // write a FAILURE/DENIED row (severity WARNING) before throwing.
+  // The success and pending-confirmation rows now carry
+  // targetUserId (the post owner, when different from the acting
+  // admin), entityLabel, and metadata (post type, whether the post
+  // involves a child).
   // ─────────────────────────────────────────────
 
   async updateStatus(
@@ -1305,26 +1581,21 @@ export class PostService {
   ) {
     const existing = await this.findOne(postId);
 
-    assertTransitionAllowed(existing.status, status);
-    this.assertNotClaimedByOther(existing, user.id);
+    this.assertTransitionAllowed(user, existing, status, AuditEventEnum.POST_UPDATED);
+    this.assertNotClaimedByOther(user, existing, AuditEventEnum.POST_UPDATED);
 
     const movesToLiveReview = status === PostStatus.APPROVED || status === PostStatus.PUBLISHED;
 
     if (existing.involvesChild && movesToLiveReview) {
-      const safety = await this.ensureChildSafetySatisfied(existing, user.id, childSafetyConfirmed);
+      const safety = await this.ensureChildSafetySatisfied(
+        existing,
+        user,
+        childSafetyConfirmed,
+        AuditEventEnum.POST_UPDATED,
+      );
       if (safety === 'first_confirmation_recorded') {
         const partial = await this.prisma.post.findUniqueOrThrow({ where: { id: postId } });
-        this.emitAudit({
-          userId: user.id,
-          actorType: resolveActorType(user.roles ?? []),
-          action: AuditEventEnum.POST_UPDATED,
-          entity: 'Post',
-          entityId: postId,
-          diff: {
-            childSafetyFirstConfirmationBy: user.id,
-            result: 'pending_second_admin_confirmation',
-          },
-        });
+        this.emitChildSafetyFirstConfirmation(user, existing);
         return { ...partial, pendingSecondConfirmation: true };
       }
     }
@@ -1335,6 +1606,14 @@ export class PostService {
     });
 
     if (result.count === 0) {
+      this.emitBlockedAttempt({
+        outcome: AuditOutcome.FAILURE,
+        user,
+        post: existing,
+        action: AuditEventEnum.POST_UPDATED,
+        reason: 'post_transition_conflict',
+        diff: { attemptedStatus: status, currentStatus: existing.status },
+      });
       throw new BadRequestException('post_transition_conflict');
     }
 
@@ -1342,10 +1621,12 @@ export class PostService {
 
     this.emitAudit({
       userId: user.id,
+      targetUserId: this.auditTarget(existing, user.id),
       actorType: resolveActorType(user.roles ?? []),
       action: AuditEventEnum.POST_UPDATED,
       entity: 'Post',
       entityId: postId,
+      entityLabel: this.postLabel(updated),
       diff: {
         previousStatus: existing.status,
         newStatus: status,
@@ -1353,6 +1634,7 @@ export class PostService {
           existing.involvesChild && movesToLiveReview ? true : undefined,
         result: 'success',
       },
+      metadata: { postType: existing.type, involvesChild: existing.involvesChild },
     });
 
     return updated;
@@ -1372,28 +1654,43 @@ export class PostService {
   // omitted here, so an approved post's notification always
   // fell back to the generic "Your post has been approved."
   // even when the post had a title, unlike reject().
+  //
+  // FIX (audit coverage): every blocked path (invalid transition,
+  // claim denial, child-safety gate, lost race) now writes an
+  // audit row before throwing. Success row carries targetUserId,
+  // entityLabel and metadata. The optional `options.bulk` flag
+  // (set only by bulkApprove) is recorded as metadata.bulk on
+  // every row this call produces.
   // ─────────────────────────────────────────────
 
-  async approve(user: CurrentUserDto, postId: string, data: ApprovePostDto) {
+  async approve(
+    user: CurrentUserDto,
+    postId: string,
+    data: ApprovePostDto,
+    options: { bulk?: boolean } = {},
+  ) {
     const post = await this.findOne(postId);
+    const bulkMeta: Prisma.InputJsonObject = { bulk: options.bulk === true };
 
-    assertTransitionAllowed(post.status, PostStatus.APPROVED);
-    this.assertNotClaimedByOther(post, user.id);
+    this.assertTransitionAllowed(
+      user,
+      post,
+      PostStatus.APPROVED,
+      AuditEventEnum.POST_APPROVED,
+      bulkMeta,
+    );
+    this.assertNotClaimedByOther(user, post, AuditEventEnum.POST_APPROVED, bulkMeta);
 
-    const safety = await this.ensureChildSafetySatisfied(post, user.id, data.childSafetyConfirmed);
+    const safety = await this.ensureChildSafetySatisfied(
+      post,
+      user,
+      data.childSafetyConfirmed,
+      AuditEventEnum.POST_APPROVED,
+      bulkMeta,
+    );
     if (safety === 'first_confirmation_recorded') {
       const partial = await this.prisma.post.findUniqueOrThrow({ where: { id: postId } });
-      this.emitAudit({
-        userId: user.id,
-        actorType: resolveActorType(user.roles ?? []),
-        action: AuditEventEnum.POST_UPDATED,
-        entity: 'Post',
-        entityId: postId,
-        diff: {
-          childSafetyFirstConfirmationBy: user.id,
-          result: 'pending_second_admin_confirmation',
-        },
-      });
+      this.emitChildSafetyFirstConfirmation(user, post);
       return { ...partial, pendingSecondConfirmation: true };
     }
 
@@ -1403,6 +1700,15 @@ export class PostService {
     });
 
     if (result.count === 0) {
+      this.emitBlockedAttempt({
+        outcome: AuditOutcome.FAILURE,
+        user,
+        post,
+        action: AuditEventEnum.POST_APPROVED,
+        reason: 'post_transition_conflict',
+        diff: { attemptedStatus: PostStatus.APPROVED, currentStatus: post.status },
+        metadata: bulkMeta,
+      });
       throw new BadRequestException('post_transition_conflict');
     }
 
@@ -1410,10 +1716,12 @@ export class PostService {
 
     this.emitAudit({
       userId: user.id,
+      targetUserId: this.auditTarget(post, user.id),
       actorType: resolveActorType(user.roles ?? []),
       action: AuditEventEnum.POST_APPROVED,
       entity: 'Post',
       entityId: postId,
+      entityLabel: this.postLabel(post),
       diff: {
         previousStatus: post.status,
         newStatus: PostStatus.APPROVED,
@@ -1421,6 +1729,7 @@ export class PostService {
         childSafetyDualControlSatisfied: post.involvesChild ? true : undefined,
         result: 'success',
       },
+      metadata: { postType: post.type, ...bulkMeta },
     });
 
     const postApprovedEvent: PostApprovedEvent = {
@@ -1447,13 +1756,24 @@ export class PostService {
   //
   // NOTE: requires a `reviewNote String?` column on
   // the Post model. See the schema file.
+  //
+  // FIX (audit coverage): the admin's message moved out of diff
+  // into the top-level reason column. Blocked paths (invalid
+  // transition, claim denial, lost race) now write a
+  // FAILURE/DENIED row before throwing. Success row carries
+  // targetUserId and entityLabel.
   // ─────────────────────────────────────────────
 
   async requestChanges(user: CurrentUserDto, postId: string, data: RequestPostChangesDto) {
     const post = await this.findOne(postId);
 
-    assertTransitionAllowed(post.status, PostStatus.CHANGES_REQUESTED);
-    this.assertNotClaimedByOther(post, user.id);
+    this.assertTransitionAllowed(
+      user,
+      post,
+      PostStatus.CHANGES_REQUESTED,
+      AuditEventEnum.POST_UPDATED,
+    );
+    this.assertNotClaimedByOther(user, post, AuditEventEnum.POST_UPDATED);
 
     const result = await this.prisma.post.updateMany({
       where: { id: postId, status: post.status },
@@ -1466,6 +1786,14 @@ export class PostService {
     });
 
     if (result.count === 0) {
+      this.emitBlockedAttempt({
+        outcome: AuditOutcome.FAILURE,
+        user,
+        post,
+        action: AuditEventEnum.POST_UPDATED,
+        reason: 'post_transition_conflict',
+        diff: { attemptedStatus: PostStatus.CHANGES_REQUESTED, currentStatus: post.status },
+      });
       throw new BadRequestException('post_transition_conflict');
     }
 
@@ -1473,16 +1801,19 @@ export class PostService {
 
     this.emitAudit({
       userId: user.id,
+      targetUserId: this.auditTarget(post, user.id),
       actorType: resolveActorType(user.roles ?? []),
       action: AuditEventEnum.POST_UPDATED,
       entity: 'Post',
       entityId: postId,
+      entityLabel: this.postLabel(post),
+      reason: data.message,
       diff: {
         previousStatus: post.status,
         newStatus: PostStatus.CHANGES_REQUESTED,
-        message: data.message,
         result: 'success',
       },
+      metadata: { postType: post.type, involvesChild: post.involvesChild },
     });
 
     this.eventEmitter.emit(NotificationEventEnum.POST_CHANGES_REQUESTED, {
@@ -1496,12 +1827,17 @@ export class PostService {
 
   // ─────────────────────────────────────────────
   // ADMIN — PUBLISH POST
+  //
+  // FIX (audit coverage): an invalid transition or a lost race
+  // now writes a FAILURE row before throwing. Success row carries
+  // targetUserId, entityLabel and metadata. (No claim check here
+  // by design, see CLAIM HELPERS above.)
   // ─────────────────────────────────────────────
 
   async publish(user: CurrentUserDto, postId: string) {
     const post = await this.findOne(postId);
 
-    assertTransitionAllowed(post.status, PostStatus.PUBLISHED);
+    this.assertTransitionAllowed(user, post, PostStatus.PUBLISHED, AuditEventEnum.POST_PUBLISHED);
 
     const result = await this.prisma.post.updateMany({
       where: { id: postId, status: post.status },
@@ -1509,6 +1845,14 @@ export class PostService {
     });
 
     if (result.count === 0) {
+      this.emitBlockedAttempt({
+        outcome: AuditOutcome.FAILURE,
+        user,
+        post,
+        action: AuditEventEnum.POST_PUBLISHED,
+        reason: 'post_transition_conflict',
+        diff: { attemptedStatus: PostStatus.PUBLISHED, currentStatus: post.status },
+      });
       throw new BadRequestException('post_transition_conflict');
     }
 
@@ -1516,15 +1860,18 @@ export class PostService {
 
     this.emitAudit({
       userId: user.id,
+      targetUserId: this.auditTarget(post, user.id),
       actorType: resolveActorType(user.roles ?? []),
       action: AuditEventEnum.POST_PUBLISHED,
       entity: 'Post',
       entityId: postId,
+      entityLabel: this.postLabel(post),
       diff: {
         previousStatus: post.status,
         newStatus: PostStatus.PUBLISHED,
         result: 'success',
       },
+      metadata: { postType: post.type, involvesChild: post.involvesChild },
     });
 
     return updated;
@@ -1546,13 +1893,33 @@ export class PostService {
   // whether the owner has crossed the auto-flag threshold
   // for repeated rejections and, if so, writes a
   // USER_AUTO_FLAGGED audit entry for admin review.
+  //
+  // FIX (audit coverage): the rejection reason moved out of diff
+  // into the top-level reason column. Blocked paths (invalid
+  // transition, claim denial, lost race) now write a
+  // FAILURE/DENIED row before throwing. Success row carries
+  // targetUserId, entityLabel and metadata. The optional
+  // `options.bulk` flag (set only by bulkReject) is recorded as
+  // metadata.bulk on every row this call produces.
   // ─────────────────────────────────────────────
 
-  async reject(user: CurrentUserDto, postId: string, data: RejectPostDto) {
+  async reject(
+    user: CurrentUserDto,
+    postId: string,
+    data: RejectPostDto,
+    options: { bulk?: boolean } = {},
+  ) {
     const post = await this.findOne(postId);
+    const bulkMeta: Prisma.InputJsonObject = { bulk: options.bulk === true };
 
-    assertTransitionAllowed(post.status, PostStatus.REJECTED);
-    this.assertNotClaimedByOther(post, user.id);
+    this.assertTransitionAllowed(
+      user,
+      post,
+      PostStatus.REJECTED,
+      AuditEventEnum.POST_REJECTED,
+      bulkMeta,
+    );
+    this.assertNotClaimedByOther(user, post, AuditEventEnum.POST_REJECTED, bulkMeta);
 
     const result = await this.prisma.post.updateMany({
       where: { id: postId, status: post.status },
@@ -1565,6 +1932,15 @@ export class PostService {
     });
 
     if (result.count === 0) {
+      this.emitBlockedAttempt({
+        outcome: AuditOutcome.FAILURE,
+        user,
+        post,
+        action: AuditEventEnum.POST_REJECTED,
+        reason: 'post_transition_conflict',
+        diff: { attemptedStatus: PostStatus.REJECTED, currentStatus: post.status },
+        metadata: bulkMeta,
+      });
       throw new BadRequestException('post_transition_conflict');
     }
 
@@ -1572,16 +1948,19 @@ export class PostService {
 
     this.emitAudit({
       userId: user.id,
+      targetUserId: this.auditTarget(post, user.id),
       actorType: resolveActorType(user.roles ?? []),
       action: AuditEventEnum.POST_REJECTED,
       entity: 'Post',
       entityId: postId,
+      entityLabel: this.postLabel(post),
+      reason: data.reason,
       diff: {
         previousStatus: post.status,
         newStatus: PostStatus.REJECTED,
-        reason: data.reason,
         result: 'success',
       },
+      metadata: { postType: post.type, involvesChild: post.involvesChild, ...bulkMeta },
     });
 
     await this.maybeFlagUserForRejections(post.userId);
@@ -1600,12 +1979,21 @@ export class PostService {
   // ADMIN — UNPUBLISH POST
   // Notifies the post owner, matching
   // approve/reject/request-changes.
+  //
+  // FIX (audit coverage): an invalid transition or a lost race
+  // now writes a FAILURE row before throwing. Success row carries
+  // targetUserId, entityLabel and metadata.
   // ─────────────────────────────────────────────
 
   async unpublish(user: CurrentUserDto, postId: string) {
     const post = await this.findOne(postId);
 
-    assertTransitionAllowed(post.status, PostStatus.UNPUBLISHED);
+    this.assertTransitionAllowed(
+      user,
+      post,
+      PostStatus.UNPUBLISHED,
+      AuditEventEnum.POST_UNPUBLISHED,
+    );
 
     const result = await this.prisma.post.updateMany({
       where: { id: postId, status: post.status },
@@ -1613,6 +2001,14 @@ export class PostService {
     });
 
     if (result.count === 0) {
+      this.emitBlockedAttempt({
+        outcome: AuditOutcome.FAILURE,
+        user,
+        post,
+        action: AuditEventEnum.POST_UNPUBLISHED,
+        reason: 'post_transition_conflict',
+        diff: { attemptedStatus: PostStatus.UNPUBLISHED, currentStatus: post.status },
+      });
       throw new BadRequestException('post_transition_conflict');
     }
 
@@ -1620,15 +2016,18 @@ export class PostService {
 
     this.emitAudit({
       userId: user.id,
+      targetUserId: this.auditTarget(post, user.id),
       actorType: resolveActorType(user.roles ?? []),
       action: AuditEventEnum.POST_UNPUBLISHED,
       entity: 'Post',
       entityId: postId,
+      entityLabel: this.postLabel(post),
       diff: {
         previousStatus: post.status,
         newStatus: PostStatus.UNPUBLISHED,
         result: 'success',
       },
+      metadata: { postType: post.type, involvesChild: post.involvesChild },
     });
 
     this.eventEmitter.emit(NotificationEventEnum.POST_UNPUBLISHED, {

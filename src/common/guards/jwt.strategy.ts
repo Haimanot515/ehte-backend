@@ -15,12 +15,19 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt-access') {
     });
   }
 
-  validate(payload: { sub: string; phone: string; roles: string[]; permissions: string[] }) {
+  validate(payload: {
+    sub: string;
+    phone: string;
+    roles: string[];
+    permissions: string[];
+    sid?: string;
+  }) {
     return {
       id: payload.sub,
       phone: payload.phone,
       roles: payload.roles,
       permissions: payload.permissions,
+      sessionId: payload.sid,
     };
   }
 }

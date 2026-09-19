@@ -5,7 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 
-import { InformationRequestStatus, Prisma, ReportStatus } from '@prisma/client';
+import { AuditOutcome, AuditSeverity, InformationRequestStatus, Prisma, ReportStatus } from '@prisma/client';
 
 import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { ConfigService } from '@nestjs/config';
@@ -307,6 +307,21 @@ export class ReportService {
   // (updateStatus, requestMoreInformation, escalate), not reading
   // it. Same key-ownership check as the reporter-facing method
   // above.
+  //
+  // FIX (audit review, item #1): a mismatched `key` (one that isn't
+  // actually attached to this report) is a meaningful "denied"
+  // event — it can indicate an admin fumbling a stale link, or
+  // someone probing for media on a report they don't otherwise have
+  // a reason to touch — and previously left no trace at all before
+  // throwing. Now emits a DENIED row before throwing.
+  //
+  // FIX (audit review, item #2): the reporter whose media is being
+  // viewed is recorded as targetUserId — this is an admin viewing
+  // another user's uploaded content, not a self-action.
+  //
+  // FIX (audit review, item #5): `key` moved out of `diff` (which
+  // should describe a state change) into `metadata` (contextual
+  // detail about the action) on the success row.
   // ─────────────────────────────────────────────
 
   async getMediaDownloadUrlForAdmin(
@@ -324,6 +339,19 @@ export class ReportService {
 
     const owned = this.collectMediaFields(report).includes(key);
     if (!owned) {
+      this.emitAudit({
+        userId: admin.id,
+        targetUserId: report.userId,
+        actorType: resolveActorType(this.getRoles(admin)),
+        action: AuditEventEnum.REPORT_MEDIA_DOWNLOADED,
+        outcome: AuditOutcome.DENIED,
+        severity: AuditSeverity.WARNING,
+        entity: 'Report',
+        entityId: reportId,
+        entityLabel: report.caseReference,
+        diff: { result: 'denied', reason: 'media_not_found_on_report' },
+        metadata: { requestedKey: key },
+      });
       throw new NotFoundException('media_not_found_on_report');
     }
 
@@ -331,11 +359,14 @@ export class ReportService {
 
     this.emitAudit({
       userId: admin.id,
+      targetUserId: report.userId,
       actorType: resolveActorType(this.getRoles(admin)),
       action: AuditEventEnum.REPORT_MEDIA_DOWNLOADED,
       entity: 'Report',
       entityId: reportId,
-      diff: { result: 'success', key },
+      entityLabel: report.caseReference,
+      diff: { result: 'success' },
+      metadata: { key },
     });
 
     return { url };
@@ -351,6 +382,12 @@ export class ReportService {
   // findOneForAdmin() enforced this; updateStatus(),
   // requestMoreInformation(), and escalate() did not.
   //
+  // FIX (audit coverage): a denied access attempt now writes an
+  // audit row (outcome: DENIED, severity: WARNING) before throwing,
+  // instead of leaving no trace at all. Callers pass the specific
+  // action being attempted so the DENIED row records what was
+  // actually blocked, not a generic "access" action.
+  //
   // NOTE (item #17): this — combined with assign()/unassign()
   // being SUPER_ADMIN-gated — already serves the same
   // "prevent two admins working the same case" purpose Post's
@@ -364,12 +401,24 @@ export class ReportService {
 
   private assertAdminCanAccessReport(
     admin: CurrentUserDto,
-    report: { assignedToId: string | null },
+    report: { id: string; assignedToId: string | null; caseReference: string },
+    action: AuditEventEnum,
   ): void {
     const roles = this.getRoles(admin);
     const isSuperAdmin = roles.includes(RolesEnum.SUPER_ADMIN);
 
     if (!isSuperAdmin && report.assignedToId && report.assignedToId !== admin.id) {
+      this.emitAudit({
+        userId: admin.id,
+        actorType: resolveActorType(roles),
+        action,
+        outcome: AuditOutcome.DENIED,
+        severity: AuditSeverity.WARNING,
+        entity: 'Report',
+        entityId: report.id,
+        entityLabel: report.caseReference,
+        diff: { result: 'denied', reason: 'assigned_to_another_admin' },
+      });
       throw new ForbiddenException('report_assigned_to_another_admin');
     }
   }
@@ -387,6 +436,19 @@ export class ReportService {
   // was later suspended. So this handler ONLY stamps ownerSuspendedAt
   // for admin filtering — it deliberately does NOT change status or
   // pull anything out of the review queue.
+  //
+  // FIX (audit coverage): this is a bulk action across every one of the
+  // user's non-terminal reports, not one specific report — userId is
+  // now recorded as targetUserId (the user this action is ABOUT), not
+  // userId (the actor), since there is no human actor here. entity is
+  // now 'User' rather than a synthetic 'user:<id>' Report entityId.
+  //
+  // FIX (audit review, item #4): entityLabel was missing on this
+  // 'User' entity row (there's nothing else in an audit list to
+  // identify *which* user was suspended without joining back to the
+  // users table). Fetches the user's name for the label — an extra
+  // read, but this handler runs once per suspension event, not on a
+  // hot path.
   // ─────────────────────────────────────────────
 
   @OnEvent('user.suspended')
@@ -402,15 +464,21 @@ export class ReportService {
       data: { ownerSuspendedAt: now },
     });
 
+    const suspendedUser = await this.prisma.user.findUnique({
+      where: { id: payload.userId },
+      select: { name: true },
+    });
+
     this.emitAudit({
-      userId: payload.userId,
+      targetUserId: payload.userId,
       // ASSUMPTION: resolveActorType only knows about role-bearing
       // actors; cast until AuditEventPayload's actorType union is
       // extended with a SYSTEM variant. Same cast PostService uses.
       actorType: 'SYSTEM' as unknown as ReturnType<typeof resolveActorType>,
       action: AuditEventEnum.REPORT_UPDATED,
-      entity: 'Report',
-      entityId: `user:${payload.userId}`,
+      entity: 'User',
+      entityId: payload.userId,
+      entityLabel: suspendedUser?.name ?? undefined,
       diff: { reason: 'owner_account_suspended', result: 'success' },
     });
   }
@@ -426,6 +494,12 @@ export class ReportService {
   // transition TO REJECTED — not from withdraw(), since a reporter
   // withdrawing their own report is not the same signal as an
   // admin actually rejecting it.
+  //
+  // FIX (audit coverage): userId -> targetUserId — this row is about
+  // the flagged user, not acted on by them; there is no human actor.
+  //
+  // FIX (audit review, item #4): entityLabel was missing here too,
+  // same fix and same reasoning as handleUserSuspended above.
   // ─────────────────────────────────────────────
 
   private async maybeFlagUserForRejections(userId: string): Promise<void> {
@@ -446,12 +520,18 @@ export class ReportService {
     });
 
     if (recentRejections >= threshold) {
+      const flaggedUser = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { name: true },
+      });
+
       this.emitAudit({
-        userId,
+        targetUserId: userId,
         actorType: 'SYSTEM' as unknown as ReturnType<typeof resolveActorType>,
         action: AuditEventEnum.USER_AUTO_FLAGGED,
         entity: 'User',
         entityId: userId,
+        entityLabel: flaggedUser?.name ?? undefined,
         diff: {
           reason: 'repeated_report_rejections',
           rejectionCount: recentRejections,
@@ -484,6 +564,16 @@ export class ReportService {
   // caseReference — previously omitted, which meant the listener's
   // "Your report {caseReference} has been received" message rendered
   // as "Your report undefined has been received."
+  //
+  // NOTE (audit review, item #1 — deliberately NOT fixed here): the
+  // rate-limit, max-pending, and media/attachment validation failures
+  // below all throw with no audit row. Unlike the other gaps fixed in
+  // this pass, there is no Report row yet at the point they throw, so
+  // there's no natural entityId to attach the row to. Closing this
+  // gap needs a schema/product decision first — e.g. allowing a null
+  // entityId for pre-creation events, or a synthetic "attempted
+  // report creation" entity — rather than a guess made here. Flagging
+  // this explicitly rather than silently leaving it.
   // ─────────────────────────────────────────────
 
   private async enforceCreateRateLimit(userId: string): Promise<void> {
@@ -563,7 +653,17 @@ export class ReportService {
       action: AuditEventEnum.REPORT_CREATED,
       entity: 'Report',
       entityId: report.id,
+      entityLabel: report.caseReference,
       diff: { result: 'success', status: report.status },
+      // FIX (audit review, item #5): category and the resolved
+      // attachment footprint are useful investigative context that
+      // aren't a "diff" of anything — moved to metadata rather than
+      // left off entirely.
+      metadata: {
+        category: report.category,
+        attachmentCount: this.collectMediaFields(merged).length,
+        mediaTotalBytes: totalBytes,
+      },
     });
 
     this.eventEmitter.emit(NotificationEventEnum.REPORT_RECEIVED, {
@@ -626,6 +726,12 @@ export class ReportService {
   // FIX (notifications): REPORT_UPDATED now includes caseReference
   // and status — previously omitted, so the listener's "Status: X"
   // message rendered as "Status: undefined."
+  //
+  // FIX (audit review, item #1): the "only PENDING reports can be
+  // updated" guard and the attachment/size-limit validation guards
+  // both threw with no audit trail before. Unlike create(), there IS
+  // an existing report row here to attach the failure to, so both
+  // now emit a FAILURE row before throwing.
   // ─────────────────────────────────────────────
 
   async update(user: CurrentUserDto, reportId: string, data: UpdateReportDto) {
@@ -638,6 +744,21 @@ export class ReportService {
     }
 
     if (existing.status !== ReportStatus.PENDING) {
+      this.emitAudit({
+        userId: user.id,
+        actorType: resolveActorType(this.getRoles(user)),
+        action: AuditEventEnum.REPORT_UPDATED,
+        outcome: AuditOutcome.FAILURE,
+        severity: AuditSeverity.WARNING,
+        entity: 'Report',
+        entityId: reportId,
+        entityLabel: existing.caseReference,
+        diff: {
+          result: 'failure',
+          reason: 'only_pending_reports_can_be_updated',
+          currentStatus: existing.status,
+        },
+      });
       throw new BadRequestException('only_pending_reports_can_be_updated');
     }
 
@@ -651,26 +772,50 @@ export class ReportService {
       document: data.document ?? existing.document,
       other: data.other ?? existing.other,
     };
-    this.assertAttachmentCounts(merged);
 
-    const validatedAdded = await this.validateMediaFilesExist(added);
-    const addedBytes = validatedAdded.reduce((sum, v) => sum + v.size, 0);
+    let addedBytes = 0;
+    let removedBytes = 0;
+    let newTotalBytes = existing.mediaTotalBytes;
 
-    // Stat removed files before they're deleted, purely to back out
-    // their bytes from the running total — a stat failure here
-    // (already gone, MinIO hiccup) just means we can't credit that
-    // byte count back, so treat it as 0 rather than blocking the
-    // update.
-    const removedStats = await Promise.allSettled(
-      removed.map((fp) => this.minioService.statObject(fp)),
-    );
-    const removedBytes = removedStats.reduce(
-      (sum, r) => sum + (r.status === 'fulfilled' ? r.value.size : 0),
-      0,
-    );
+    try {
+      this.assertAttachmentCounts(merged);
 
-    const newTotalBytes = Math.max(0, existing.mediaTotalBytes + addedBytes - removedBytes);
-    this.assertTotalBytes(newTotalBytes);
+      const validatedAdded = await this.validateMediaFilesExist(added);
+      addedBytes = validatedAdded.reduce((sum, v) => sum + v.size, 0);
+
+      // Stat removed files before they're deleted, purely to back out
+      // their bytes from the running total — a stat failure here
+      // (already gone, MinIO hiccup) just means we can't credit that
+      // byte count back, so treat it as 0 rather than blocking the
+      // update.
+      const removedStats = await Promise.allSettled(
+        removed.map((fp) => this.minioService.statObject(fp)),
+      );
+      removedBytes = removedStats.reduce(
+        (sum, r) => sum + (r.status === 'fulfilled' ? r.value.size : 0),
+        0,
+      );
+
+      newTotalBytes = Math.max(0, existing.mediaTotalBytes + addedBytes - removedBytes);
+      this.assertTotalBytes(newTotalBytes);
+    } catch (err) {
+      this.emitAudit({
+        userId: user.id,
+        actorType: resolveActorType(this.getRoles(user)),
+        action: AuditEventEnum.REPORT_UPDATED,
+        outcome: AuditOutcome.FAILURE,
+        severity: AuditSeverity.WARNING,
+        entity: 'Report',
+        entityId: reportId,
+        entityLabel: existing.caseReference,
+        diff: {
+          result: 'failure',
+          reason: 'media_validation_failed',
+          message: err instanceof Error ? err.message : String(err),
+        },
+      });
+      throw err;
+    }
 
     const report = await this.prisma.report.update({
       where: { id: reportId },
@@ -699,10 +844,18 @@ export class ReportService {
       action: AuditEventEnum.REPORT_UPDATED,
       entity: 'Report',
       entityId: report.id,
+      entityLabel: report.caseReference,
       diff: {
         result: 'success',
         previousStatus: existing.status,
         currentStatus: report.status,
+      },
+      // FIX (audit review, item #5): media churn counts weren't
+      // captured anywhere before.
+      metadata: {
+        mediaAdded: added.length,
+        mediaRemoved: removed.length,
+        mediaTotalBytes: newTotalBytes,
       },
     });
 
@@ -742,6 +895,10 @@ export class ReportService {
   //
   // FIX (notifications): REPORT_UPDATED now includes caseReference
   // and status, same as update()/updateStatus().
+  //
+  // FIX (audit review, item #1): both guard clauses here (wrong
+  // status, and the race window between findFirst/updateMany) threw
+  // with no audit trail. Now both emit a FAILURE row first.
   // ─────────────────────────────────────────────
 
   async withdraw(user: CurrentUserDto, reportId: string) {
@@ -754,6 +911,21 @@ export class ReportService {
     }
 
     if (existing.status !== ReportStatus.PENDING) {
+      this.emitAudit({
+        userId: user.id,
+        actorType: resolveActorType(this.getRoles(user)),
+        action: AuditEventEnum.REPORT_WITHDRAWN,
+        outcome: AuditOutcome.FAILURE,
+        severity: AuditSeverity.WARNING,
+        entity: 'Report',
+        entityId: reportId,
+        entityLabel: existing.caseReference,
+        diff: {
+          result: 'failure',
+          reason: 'only_pending_reports_can_be_withdrawn',
+          currentStatus: existing.status,
+        },
+      });
       throw new BadRequestException('only_pending_reports_can_be_withdrawn');
     }
 
@@ -765,6 +937,17 @@ export class ReportService {
     });
 
     if (result.count === 0) {
+      this.emitAudit({
+        userId: user.id,
+        actorType: resolveActorType(this.getRoles(user)),
+        action: AuditEventEnum.REPORT_WITHDRAWN,
+        outcome: AuditOutcome.FAILURE,
+        severity: AuditSeverity.WARNING,
+        entity: 'Report',
+        entityId: reportId,
+        entityLabel: existing.caseReference,
+        diff: { result: 'failure', reason: 'report_transition_conflict' },
+      });
       throw new BadRequestException('only_pending_reports_can_be_withdrawn');
     }
 
@@ -776,6 +959,7 @@ export class ReportService {
       action: AuditEventEnum.REPORT_WITHDRAWN,
       entity: 'Report',
       entityId: reportId,
+      entityLabel: report.caseReference,
       diff: {
         result: 'success',
         previousStatus: existing.status,
@@ -914,6 +1098,13 @@ export class ReportService {
   // only gates the write-side admin actions further down
   // (updateStatus, requestMoreInformation, escalate), via
   // assertAdminCanAccessReport().
+  //
+  // FIX (audit review, item #2): REPORTER_INFORMATION_OPENED is
+  // specifically about an admin viewing the reporter's personal
+  // details (name/phone, via the `user` include below) — that's
+  // exactly the "admin acting on/viewing another user's data" case
+  // targetUserId exists for, so it's now recorded there instead of
+  // only being inferable via the Report entityId.
   // ─────────────────────────────────────────────
 
   async findOneForAdmin(admin: CurrentUserDto, reportId: string) {
@@ -942,15 +1133,18 @@ export class ReportService {
       action: AuditEventEnum.REPORT_OPENED,
       entity: 'Report',
       entityId: reportId,
+      entityLabel: report.caseReference,
       diff: { result: 'success' },
     });
 
     this.emitAudit({
       userId: admin.id,
+      targetUserId: report.user.id,
       actorType,
       action: AuditEventEnum.REPORTER_INFORMATION_OPENED,
       entity: 'Report',
       entityId: reportId,
+      entityLabel: report.caseReference,
       diff: { result: 'success' },
     });
 
@@ -997,6 +1191,18 @@ export class ReportService {
   //
   // FIX (notifications): REPORT_UPDATED now includes caseReference
   // and status, same as update()/withdraw().
+  //
+  // FIX (audit coverage): an invalid-transition attempt now writes
+  // an audit row (outcome: FAILURE, severity: WARNING) before
+  // throwing. The success row now promotes the admin's note out of
+  // diff into the top-level reason column, and includes entityLabel.
+  //
+  // FIX (audit review, item #1): the *other* failure path here —
+  // losing the optimistic-concurrency race (report_transition_conflict)
+  // — still had no audit row at all. It's arguably more worth tracing
+  // than the invalid-transition case, since it means two admins
+  // collided on the same report. Now emits a FAILURE row before
+  // throwing, same as the invalid-transition branch above it.
   // ─────────────────────────────────────────────
 
   async updateStatus(admin: CurrentUserDto, reportId: string, data: UpdateReportStatusDto) {
@@ -1008,11 +1214,26 @@ export class ReportService {
       throw new NotFoundException('report_not_found');
     }
 
-    this.assertAdminCanAccessReport(admin, existing);
+    this.assertAdminCanAccessReport(admin, existing, AuditEventEnum.REPORT_STATUS_CHANGED);
 
     const allowedNext = ALLOWED_STATUS_TRANSITIONS[existing.status] ?? [];
 
     if (!allowedNext.includes(data.status)) {
+      this.emitAudit({
+        userId: admin.id,
+        actorType: resolveActorType(this.getRoles(admin)),
+        action: AuditEventEnum.REPORT_STATUS_CHANGED,
+        outcome: AuditOutcome.FAILURE,
+        severity: AuditSeverity.WARNING,
+        entity: 'Report',
+        entityId: reportId,
+        entityLabel: existing.caseReference,
+        diff: {
+          result: 'failure',
+          attemptedStatus: data.status,
+          currentStatus: existing.status,
+        },
+      });
       throw new BadRequestException(
         `invalid_status_transition: ${existing.status} -> ${data.status}`,
       );
@@ -1024,6 +1245,17 @@ export class ReportService {
     });
 
     if (result.count === 0) {
+      this.emitAudit({
+        userId: admin.id,
+        actorType: resolveActorType(this.getRoles(admin)),
+        action: AuditEventEnum.REPORT_STATUS_CHANGED,
+        outcome: AuditOutcome.FAILURE,
+        severity: AuditSeverity.WARNING,
+        entity: 'Report',
+        entityId: reportId,
+        entityLabel: existing.caseReference,
+        diff: { result: 'failure', reason: 'report_transition_conflict', attemptedStatus: data.status },
+      });
       throw new BadRequestException('report_transition_conflict');
     }
 
@@ -1035,11 +1267,12 @@ export class ReportService {
       action: AuditEventEnum.REPORT_STATUS_CHANGED,
       entity: 'Report',
       entityId: reportId,
+      entityLabel: report.caseReference,
+      reason: data.note ?? null,
       diff: {
         result: 'success',
         previousStatus: existing.status,
         currentStatus: report.status,
-        note: data.note ?? null,
       },
     });
 
@@ -1069,6 +1302,18 @@ export class ReportService {
   //
   // FIX (notifications): MORE_INFORMATION_REQUESTED now includes
   // caseReference — previously omitted.
+  //
+  // FIX (audit review, item #1): the "already pending" guard threw
+  // with no audit row. Now emits a FAILURE row first.
+  //
+  // FIX (audit review, item #3): `data.message` is the admin's actual
+  // human-written reason for requesting more information from the
+  // reporter — it was nested inside `diff` instead of the top-level
+  // `reason` column. Promoted.
+  //
+  // FIX (audit review, item #5): `informationRequestId` isn't a diff
+  // of the report's state, it's a contextual reference — moved to
+  // metadata.
   // ─────────────────────────────────────────────
 
   async requestMoreInformation(
@@ -1084,13 +1329,29 @@ export class ReportService {
       throw new NotFoundException('report_not_found');
     }
 
-    this.assertAdminCanAccessReport(admin, existing);
+    this.assertAdminCanAccessReport(
+      admin,
+      existing,
+      AuditEventEnum.REPORT_MORE_INFORMATION_REQUESTED,
+    );
 
     const openRequest = await this.prisma.reportInformationRequest.findFirst({
       where: { reportId, status: InformationRequestStatus.PENDING },
     });
 
     if (openRequest) {
+      this.emitAudit({
+        userId: admin.id,
+        actorType: resolveActorType(this.getRoles(admin)),
+        action: AuditEventEnum.REPORT_MORE_INFORMATION_REQUESTED,
+        outcome: AuditOutcome.FAILURE,
+        severity: AuditSeverity.WARNING,
+        entity: 'Report',
+        entityId: reportId,
+        entityLabel: existing.caseReference,
+        diff: { result: 'failure', reason: 'information_request_already_pending' },
+        metadata: { existingRequestId: openRequest.id },
+      });
       throw new BadRequestException('information_request_already_pending');
     }
 
@@ -1109,7 +1370,10 @@ export class ReportService {
       action: AuditEventEnum.REPORT_MORE_INFORMATION_REQUESTED,
       entity: 'Report',
       entityId: reportId,
-      diff: { result: 'success', informationRequestId: infoRequest.id, message: data.message },
+      entityLabel: existing.caseReference,
+      reason: data.message,
+      diff: { result: 'success' },
+      metadata: { informationRequestId: infoRequest.id },
     });
 
     this.eventEmitter.emit(NotificationEventEnum.MORE_INFORMATION_REQUESTED, {
@@ -1207,6 +1471,13 @@ export class ReportService {
   // caseReference, and now actually has a listener (previously the
   // event was emitted but silently dropped — no @OnEvent handler
   // existed for it).
+  //
+  // FIX (audit review, item #1): the "already responded" guard threw
+  // with no audit row. Now emits a FAILURE row first.
+  //
+  // FIX (audit review, item #5): informationRequestId moved to
+  // metadata; response file count added as useful context that
+  // wasn't captured anywhere before.
   // ─────────────────────────────────────────────
 
   async respondToInformationRequest(
@@ -1232,6 +1503,18 @@ export class ReportService {
     }
 
     if (infoRequest.status !== InformationRequestStatus.PENDING) {
+      this.emitAudit({
+        userId: user.id,
+        actorType: resolveActorType(this.getRoles(user)),
+        action: AuditEventEnum.REPORT_INFORMATION_RESPONDED,
+        outcome: AuditOutcome.FAILURE,
+        severity: AuditSeverity.WARNING,
+        entity: 'Report',
+        entityId: reportId,
+        entityLabel: report.caseReference,
+        diff: { result: 'failure', reason: 'information_request_already_responded' },
+        metadata: { informationRequestId: requestId },
+      });
       throw new BadRequestException('information_request_already_responded');
     }
 
@@ -1253,7 +1536,12 @@ export class ReportService {
       action: AuditEventEnum.REPORT_INFORMATION_RESPONDED,
       entity: 'Report',
       entityId: reportId,
-      diff: { result: 'success', informationRequestId: requestId },
+      entityLabel: report.caseReference,
+      diff: { result: 'success' },
+      metadata: {
+        informationRequestId: requestId,
+        responseFileCount: (data.responseFiles ?? []).length,
+      },
     });
 
     this.eventEmitter.emit(NotificationEventEnum.INFORMATION_REQUEST_RESPONDED, {
@@ -1293,6 +1581,22 @@ export class ReportService {
   // FIX (notifications): REPORT_ASSIGNED now includes
   // caseReference, and now actually has a listener (previously the
   // event was emitted but silently dropped).
+  //
+  // FIX (audit review, item #1): both the "assignee isn't an admin"
+  // guard and the transition-conflict guard threw with no audit
+  // row. Both now emit a FAILURE row first.
+  //
+  // FIX (audit review, item #2): the assignee (the admin being
+  // assigned the case) is the user this action is actually about —
+  // it was previously smuggled into `diff.assignedToUserId` only.
+  // Now also recorded as top-level targetUserId.
+  //
+  // FIX (audit review, item #3): `data.note` is the admin's actual
+  // human-written rationale for the assignment — it was nested in
+  // `diff` instead of the top-level `reason` column. Promoted.
+  //
+  // FIX (audit review, item #5): the assignee's name is useful
+  // context for reading the log without a join — added to metadata.
   // ─────────────────────────────────────────────
 
   async assign(admin: CurrentUserDto, reportId: string, data: AssignReportDto) {
@@ -1323,6 +1627,18 @@ export class ReportService {
     );
 
     if (!isEligibleAdmin) {
+      this.emitAudit({
+        userId: admin.id,
+        targetUserId: data.assignedToUserId,
+        actorType: resolveActorType(this.getRoles(admin)),
+        action: AuditEventEnum.REPORT_ASSIGNED,
+        outcome: AuditOutcome.FAILURE,
+        severity: AuditSeverity.WARNING,
+        entity: 'Report',
+        entityId: reportId,
+        entityLabel: existing.caseReference,
+        diff: { result: 'failure', reason: 'assignee_must_be_an_admin' },
+      });
       throw new BadRequestException('assignee_must_be_an_admin');
     }
 
@@ -1339,6 +1655,18 @@ export class ReportService {
     });
 
     if (result.count === 0) {
+      this.emitAudit({
+        userId: admin.id,
+        targetUserId: data.assignedToUserId,
+        actorType: resolveActorType(this.getRoles(admin)),
+        action: AuditEventEnum.REPORT_ASSIGNED,
+        outcome: AuditOutcome.FAILURE,
+        severity: AuditSeverity.WARNING,
+        entity: 'Report',
+        entityId: reportId,
+        entityLabel: existing.caseReference,
+        diff: { result: 'failure', reason: 'report_transition_conflict' },
+      });
       throw new BadRequestException('report_transition_conflict');
     }
 
@@ -1346,16 +1674,21 @@ export class ReportService {
 
     this.emitAudit({
       userId: admin.id,
+      targetUserId: data.assignedToUserId,
       actorType: resolveActorType(this.getRoles(admin)),
       action: AuditEventEnum.REPORT_ASSIGNED,
       entity: 'Report',
       entityId: reportId,
+      entityLabel: report.caseReference,
+      reason: data.note ?? null,
       diff: {
         result: 'success',
         assignedToUserId: data.assignedToUserId,
         previousStatus: existing.status,
         currentStatus: report.status,
-        note: data.note ?? null,
+      },
+      metadata: {
+        assignedToName: target.name ?? null,
       },
     });
 
@@ -1379,6 +1712,10 @@ export class ReportService {
   // when a report becomes unassigned. No status change here, so
   // no concurrency guard is needed beyond confirming the report
   // still exists.
+  //
+  // FIX (audit review, item #2): the admin being unassigned is the
+  // user this action is about — recorded as targetUserId (when
+  // there was a previous assignee to unassign).
   // ─────────────────────────────────────────────
 
   async unassign(admin: CurrentUserDto, reportId: string) {
@@ -1397,10 +1734,12 @@ export class ReportService {
 
     this.emitAudit({
       userId: admin.id,
+      ...(existing.assignedToId ? { targetUserId: existing.assignedToId } : {}),
       actorType: resolveActorType(this.getRoles(admin)),
       action: AuditEventEnum.REPORT_UNASSIGNED,
       entity: 'Report',
       entityId: reportId,
+      entityLabel: report.caseReference,
       diff: {
         result: 'success',
         previousAssignedToId: existing.assignedToId,
@@ -1425,6 +1764,15 @@ export class ReportService {
   // FIX (notifications): HIGH_PRIORITY_REPORT now includes
   // caseReference and reason, and now actually has a listener
   // (previously the event was emitted but silently dropped).
+  //
+  // FIX (audit coverage): an invalid-transition attempt now writes
+  // an audit row (outcome: FAILURE, severity: WARNING) before
+  // throwing. The success row now promotes reason out of diff into
+  // the top-level reason column, and includes entityLabel.
+  //
+  // FIX (audit review, item #1): same gap as updateStatus() — the
+  // transition-conflict branch (losing the optimistic-concurrency
+  // race) threw with no audit row. Now emits FAILURE first.
   // ─────────────────────────────────────────────
 
   async escalate(admin: CurrentUserDto, reportId: string, data: EscalateReportDto) {
@@ -1436,11 +1784,22 @@ export class ReportService {
       throw new NotFoundException('report_not_found');
     }
 
-    this.assertAdminCanAccessReport(admin, existing);
+    this.assertAdminCanAccessReport(admin, existing, AuditEventEnum.REPORT_ESCALATED);
 
     const allowedNext = ALLOWED_STATUS_TRANSITIONS[existing.status] ?? [];
 
     if (!allowedNext.includes(ReportStatus.ESCALATED)) {
+      this.emitAudit({
+        userId: admin.id,
+        actorType: resolveActorType(this.getRoles(admin)),
+        action: AuditEventEnum.REPORT_ESCALATED,
+        outcome: AuditOutcome.FAILURE,
+        severity: AuditSeverity.WARNING,
+        entity: 'Report',
+        entityId: reportId,
+        entityLabel: existing.caseReference,
+        diff: { result: 'failure', currentStatus: existing.status },
+      });
       throw new BadRequestException(
         `invalid_status_transition: ${existing.status} -> ${ReportStatus.ESCALATED}`,
       );
@@ -1452,6 +1811,17 @@ export class ReportService {
     });
 
     if (result.count === 0) {
+      this.emitAudit({
+        userId: admin.id,
+        actorType: resolveActorType(this.getRoles(admin)),
+        action: AuditEventEnum.REPORT_ESCALATED,
+        outcome: AuditOutcome.FAILURE,
+        severity: AuditSeverity.WARNING,
+        entity: 'Report',
+        entityId: reportId,
+        entityLabel: existing.caseReference,
+        diff: { result: 'failure', reason: 'report_transition_conflict' },
+      });
       throw new BadRequestException('report_transition_conflict');
     }
 
@@ -1463,10 +1833,11 @@ export class ReportService {
       action: AuditEventEnum.REPORT_ESCALATED,
       entity: 'Report',
       entityId: reportId,
+      entityLabel: report.caseReference,
+      reason: data.reason,
       diff: {
         result: 'success',
         previousStatus: existing.status,
-        reason: data.reason,
       },
     });
 

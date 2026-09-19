@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
 
+import { AuthModule } from 'src/modules/auth/auth.module';
+
 import { UserController } from './controller/user.controller';
 import { ReportController } from './controller/report.controller';
 import { PostController } from './controller/post.controller';
@@ -17,6 +19,11 @@ import { VictimProfileService } from './service/victim-profile.service';
 import { SupportService } from './service/support.service';
 
 @Module({
+  // FIX: AuthModule imported so UserService can inject OtpUtil and
+  // LockoutUtil, both exported from AuthModule (see auth.module.ts).
+  // No circular dependency — AuthModule does not import CoreModule.
+  imports: [AuthModule],
+
   controllers: [
     UserController,
     ReportController,
