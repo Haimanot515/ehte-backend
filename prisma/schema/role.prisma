@@ -1,6 +1,12 @@
+// role.prisma
+// isProtected replaces the hardcoded PROTECTED_ROLE_NAMES array in RoleService.
+// description lets roles self-document the way Permission already can.
+
 model Role {
   id              String           @id @default(uuid())
   name            String           @unique
+  description     String?
+  isProtected     Boolean          @default(false)
   createdAt       DateTime         @default(now())
   rolePermissions RolePermission[]
   userRoles       UserRole[]

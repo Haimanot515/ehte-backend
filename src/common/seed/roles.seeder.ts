@@ -4,23 +4,44 @@ import { PrismaService } from 'src/prisma/prisma.service';
 
 import { RolesEnum } from '../enums/roles.enum';
 
-// ─────────────────────────────────────────────
-// RETRY CONFIG
-//
-// Neon (and other serverless/autosuspend Postgres providers) can
-// take longer than a single query timeout to wake a suspended
-// compute on the very first connection of a boot cycle. Rather
-// than let that cold-start delay crash the entire app on startup
-// (onApplicationBootstrap failures are fatal — see main.ts's
-// bootstrap().catch()), retry with backoff before giving up.
-// ─────────────────────────────────────────────
-
 const MAX_ATTEMPTS = 5;
 const BASE_DELAY_MS = 2000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+// isProtected/description now set explicitly here rather than via a hardcoded TS array.
+// SYSTEM is now protected — it was missing from the old PROTECTED_ROLE_NAMES array.
+
+interface SeedRoleDef {
+  name: RolesEnum;
+  description: string;
+  isProtected: boolean;
+}
+
+const ROLE_DEFS: SeedRoleDef[] = [
+  {
+    name: RolesEnum.SUPER_ADMIN,
+    description: 'Full system access. Cannot be renamed or deleted.',
+    isProtected: true,
+  },
+  {
+    name: RolesEnum.ADMIN,
+    description: 'Operational admin access. Cannot be renamed or deleted.',
+    isProtected: true,
+  },
+  {
+    name: RolesEnum.SYSTEM,
+    description: 'Reserved for automated/service actors. Cannot be renamed or deleted.',
+    isProtected: true,
+  },
+  {
+    name: RolesEnum.USER,
+    description: 'Default role for authenticated non-admin users.',
+    isProtected: false,
+  },
+];
 
 @Injectable()
 export class RolesSeeder implements OnApplicationBootstrap {
@@ -29,24 +50,27 @@ export class RolesSeeder implements OnApplicationBootstrap {
   constructor(private readonly prisma: PrismaService) {}
 
   async onApplicationBootstrap(): Promise<void> {
-    for (const name of Object.values(RolesEnum)) {
-      await this.upsertWithRetry(name);
+    for (const def of ROLE_DEFS) {
+      await this.upsertWithRetry(def);
     }
   }
 
-  private async upsertWithRetry(name: RolesEnum): Promise<void> {
+  private async upsertWithRetry(def: SeedRoleDef): Promise<void> {
     let lastError: unknown;
 
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       try {
         await this.prisma.role.upsert({
-          where: {
-            name,
-          },
+          where: { name: def.name },
           create: {
-            name,
+            name: def.name,
+            description: def.description,
+            isProtected: def.isProtected,
           },
-          update: {},
+          update: {
+            isProtected: def.isProtected,
+            description: def.description,
+          },
         });
 
         return;
@@ -62,7 +86,7 @@ export class RolesSeeder implements OnApplicationBootstrap {
         const delayMs = BASE_DELAY_MS * attempt;
 
         this.logger.warn(
-          `Failed to seed role "${name}" (attempt ${attempt}/${MAX_ATTEMPTS}), ` +
+          `Failed to seed role "${def.name}" (attempt ${attempt}/${MAX_ATTEMPTS}), ` +
             `retrying in ${delayMs}ms. This is expected if the database is waking ` +
             `from a suspended state. Error: ${(error as Error).message}`,
         );
@@ -71,7 +95,9 @@ export class RolesSeeder implements OnApplicationBootstrap {
       }
     }
 
-    this.logger.error(`Failed to seed role "${name}" after ${MAX_ATTEMPTS} attempts. Giving up.`);
+    this.logger.error(
+      `Failed to seed role "${def.name}" after ${MAX_ATTEMPTS} attempts. Giving up.`,
+    );
 
     throw lastError;
   }
