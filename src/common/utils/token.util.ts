@@ -43,8 +43,17 @@ export class TokenUtil {
 
     const expiresIn = expiresInStr as any;
 
+    // Generated up front so the same id can be embedded in both tokens (as
+    // `sid`) AND used as the Session row's own primary key below — one
+    // create, no separate update to attach it after the fact. Assumes
+    // Session.id is a plain string PK (e.g. `id String @id @default(uuid())`);
+    // @default() only applies when the field is omitted, so passing it
+    // explicitly here is safe. Confirm against schema.prisma if Session.id
+    // isn't a string uuid.
+    const sessionId = randomUUID();
+
     const accessToken = this.jwtService.sign(
-      { sub: userId, phone, email, roles, permissions },
+      { sub: userId, phone, email, roles, permissions, sid: sessionId },
       { expiresIn },
     );
 
@@ -65,7 +74,9 @@ export class TokenUtil {
         roles,
         permissions,
         type: 'refresh',
-        // Unique jti so same-second tokens stay distinguishable
+        sid: sessionId,
+        // Unique jti so same-second tokens stay distinguishable; sid is
+        // per-session, jti is per-token — distinct purposes, both kept.
         jti: randomUUID(),
       },
       {
@@ -76,6 +87,7 @@ export class TokenUtil {
 
     await tx.session.create({
       data: {
+        id: sessionId,
         userId,
         // Store an HMAC hash, not the raw token, so a DB read can't be replayed.
         refreshToken: this.hashOpaqueToken(refreshToken, 'refresh'),

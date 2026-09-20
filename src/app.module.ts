@@ -3,7 +3,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 
 import * as Joi from 'joi';
 
-import { APP_GUARD } from '@nestjs/core';
+import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 
 import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
@@ -44,6 +44,7 @@ import emailConfig from './config/email.config';
 import { PrismaModule } from './prisma/prisma.module';
 import { MinioModule } from './services/minio/minio.module';
 import { AppLoggerModule } from './common/logger/logger.module';
+import { RequestContextModule } from './common/request-context/request-context.module';
 import { EmailModule } from './services/email/email.module';
 
 // ─────────────────────────────────────────────
@@ -105,6 +106,19 @@ import { PermissionsGuard } from './common/guards/permissions.guard';
 
 import { ReauthGuard } from './common/guards/reauth.guard';
 import { ReauthService } from './services/reauthentication/reauth.service';
+
+// ─────────────────────────────────────────────
+// REQUEST CONTEXT — ACTOR ENRICHMENT
+//
+// Runs after every APP_GUARD below (interceptors always run after guards
+// in Nest's pipeline), once request.user has been populated by
+// JwtStrategy. Copies userId/actorName/actorRole/sessionId onto the
+// AsyncLocalStorage store RequestContextMiddleware created earlier, so
+// AuditLogService.record() can read them instead of always falling back
+// to null.
+// ─────────────────────────────────────────────
+
+import { ActorContextInterceptor } from './common/interceptors/actor-context.interceptor';
 
 // ─────────────────────────────────────────────
 // SEEDERS
@@ -641,6 +655,15 @@ import { PermissionsSeeder } from './common/seed/permissions.seeder';
     AppLoggerModule,
 
     // ─────────────────────────────────────────
+    // REQUEST CONTEXT
+    //
+    // Global. Creates requestId / IP / userAgent / path per request
+    // so AuditLogService can enrich every audit row automatically.
+    // ─────────────────────────────────────────
+
+    RequestContextModule,
+
+    // ─────────────────────────────────────────
     // MINIO
     // ─────────────────────────────────────────
 
@@ -769,6 +792,21 @@ import { PermissionsSeeder } from './common/seed/permissions.seeder';
     {
       provide: APP_GUARD,
       useClass: PermissionsGuard,
+    },
+
+    // ─────────────────────────────────────────
+    // GLOBAL ACTOR-CONTEXT INTERCEPTOR
+    //
+    // Runs after every guard above. Copies
+    // userId/actorName/actorRole/sessionId from the now-populated
+    // request.user onto the RequestContextService store, so
+    // AuditLogService.record() can read them instead of always
+    // falling back to null.
+    // ─────────────────────────────────────────
+
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: ActorContextInterceptor,
     },
 
     // ─────────────────────────────────────────

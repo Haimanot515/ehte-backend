@@ -1,10 +1,12 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsBoolean,
+  IsDateString,
   IsIn,
   IsOptional,
   IsString,
   IsUUID,
+  Matches,
   MaxLength,
   MinLength,
   ValidateIf,
@@ -13,44 +15,86 @@ import { Transform, Type } from 'class-transformer';
 
 import { RolesEnum } from 'src/common/enums/roles.enum';
 
+// PATCH /users/me. Deliberately excludes bio/social-link vanity fields —
+// nationalIdNumber needs its own access-controlled table, not a plain column.
 export class UpdateUserDto {
-  @ApiPropertyOptional({
-    example: 'Haimanot',
-    description: 'Updated display name',
-  })
+  @ApiPropertyOptional({ example: 'Haimanot', description: 'Updated display name' })
   @IsOptional()
   @IsString()
   @MinLength(2)
   @MaxLength(100)
   name?: string;
+
+  @ApiPropertyOptional({ example: 'Addis Ababa', description: 'Region' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  region?: string;
+
+  @ApiPropertyOptional({ description: 'Zone (skip for city administrations)' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  zone?: string;
+
+  @ApiPropertyOptional({ example: 'Addis Ababa', description: 'City' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  city?: string;
+
+  @ApiPropertyOptional({ example: 'Bole', description: 'Sub-city' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  subCity?: string;
+
+  @ApiPropertyOptional({ example: 'Woreda 03', description: 'Woreda' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  woreda?: string;
+
+  @ApiPropertyOptional({ example: 'Kebele 07', description: 'Kebele' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  kebele?: string;
+
+  @ApiPropertyOptional({ example: 'am', description: 'ISO language code for SMS/notifications' })
+  @IsOptional()
+  @IsString()
+  @IsIn(['am', 'en'])
+  preferredLanguage?: string;
+
+  @ApiPropertyOptional({ example: '1995-03-14' })
+  @IsOptional()
+  @IsDateString()
+  dateOfBirth?: string;
+
+  @ApiPropertyOptional({ example: 'female' })
+  @IsOptional()
+  @IsString()
+  @IsIn(['male', 'female', 'other', 'prefer_not_to_say'])
+  gender?: string;
+
+  @ApiPropertyOptional({ description: 'Backup contact number, distinct from login phone' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(20)
+  alternatePhone?: string;
+
+  @ApiPropertyOptional({ example: 'Teacher' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  occupation?: string;
 }
 
-// ─────────────────────────────────────────────
-// DISCREET MODE
-// PATCH /users/me/discreet-mode
-//
-// This endpoint only configures Discreet Mode — it does not
-// perform sensitive-action re-authentication. That is a separate
-// concern, handled by a re-auth guard/flow elsewhere: Discreet
-// Mode OFF checks the normal password; Discreet Mode ON accepts
-// either the password or the Discreet Mode passcode.
-//
-// passcode is required when enabled === true (covers both
-// first-time setup and rotating an existing passcode). It is
-// ignored when enabled === false.
-//
-// NOTE: the re-auth credential itself (body.password) is NOT a
-// field on this DTO. ReauthGuard reads and deletes it from the raw
-// request body before NestJS's ValidationPipe ever builds this
-// DTO, so it never reaches the controller/service layer. See
-// ReauthGuard + @RequireReauthentication() on
-// UserController.updateDiscreetMode().
-// ─────────────────────────────────────────────
+// PATCH /users/me/discreet-mode. passcode required only when enabling.
+// body.password is stripped by ReauthGuard before this DTO is built.
 export class UpdateDiscreetModeDto {
-  @ApiProperty({
-    example: true,
-    description: 'Enable or disable Discreet Mode',
-  })
+  @ApiProperty({ example: true, description: 'Enable or disable Discreet Mode' })
   @IsBoolean()
   enabled: boolean;
 
@@ -65,17 +109,27 @@ export class UpdateDiscreetModeDto {
   passcode?: string;
 }
 
-// ─────────────────────────────────────────────
-// ADMIN — ASSIGN ROLE
-// PRD 23/24: Admin Portal > Users / Roles and Permissions
-//
-// Kept as a fixed enum of role names (RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
-// rather than accepting an arbitrary role id, matching RolesEnum
-// (src/common/enums/roles.enum.ts) and the names seeded by
-// RolesSeeder. If your Role table grows beyond these two admin-side
-// names, swap this for a roleId lookup instead.
-// ─────────────────────────────────────────────
+// PATCH /users/:id/discreet-mode (admin). Admin sets the passcode directly —
+// there's no existing passcode to rotate blind on someone else's behalf.
+export class AdminUpdateDiscreetModeDto extends UpdateDiscreetModeDto {
+  @ApiPropertyOptional({ description: 'Admin justification, stored in the audit log' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  reason?: string;
+}
 
+// Shared optional reason for admin routes with no other body
+// (deactivate/reactivate/unlock/force-logout).
+export class AdminActionReasonDto {
+  @ApiPropertyOptional({ description: 'Admin justification, stored in the audit log' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  reason?: string;
+}
+
+// PATCH /users/:id/role
 export class AssignUserRoleDto {
   @ApiProperty({
     example: RolesEnum.ADMIN,
@@ -85,14 +139,16 @@ export class AssignUserRoleDto {
   @IsString()
   @IsIn([RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN])
   role: RolesEnum.ADMIN | RolesEnum.SUPER_ADMIN;
+
+  @ApiPropertyOptional({ description: 'Admin justification, stored in the audit log' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  reason?: string;
 }
 
-// ─────────────────────────────────────────────
-// ADMIN — LIST USERS (query)
-// GET /users
-// PRD 23: Admin Portal > Users
-// ─────────────────────────────────────────────
-
+// GET /users (admin list query). Address fields deliberately not
+// filterable here — see UserService.listUsers().
 export class ListUsersQueryDto {
   @ApiPropertyOptional({ example: 1 })
   @IsOptional()
@@ -104,17 +160,12 @@ export class ListUsersQueryDto {
   @Type(() => Number)
   limit?: number = 20;
 
-  @ApiPropertyOptional({
-    example: 'haim',
-    description: 'Matches against name or phone',
-  })
+  @ApiPropertyOptional({ example: 'haim', description: 'Matches against name or phone' })
   @IsOptional()
   @IsString()
   search?: string;
 
-  @ApiPropertyOptional({
-    description: 'Filter to users holding this role id',
-  })
+  @ApiPropertyOptional({ description: 'Filter to users holding this role id' })
   @IsOptional()
   @IsUUID('4')
   roleId?: string;
@@ -131,19 +182,41 @@ export class ListUsersQueryDto {
   @IsBoolean()
   discreetModeEnabled?: boolean;
 
-  // FIX: added to support filtering admin registrations by completion
-  // status — e.g. "show me every registration still stuck in REGISTERING
-  // state" (no password set, never activated) versus completed accounts.
-  // Maps to `passwordHash IS NULL` / `IS NOT NULL` in UserService.listUsers()
-  // rather than a stored enum column, since "pending" isn't a persisted
-  // state of its own — it's derived from passwordHash being unset.
   @ApiPropertyOptional({
-    description:
-      'Filter admin registrations by completion status — "pending" is a registration ' +
-      'still awaiting the invited admin to set their password; "completed" already has one.',
+    description: 'Filter admin registrations by completion status',
     enum: ['pending', 'completed'],
   })
   @IsOptional()
   @IsIn(['pending', 'completed'])
   registrationStatus?: 'pending' | 'completed';
+}
+
+// Self-service phone change, OTP-gated — mirrors AdminAuthService's
+// email-change flow, adapted to SMS.
+export class ChangePhoneInitiateDto {
+  @ApiProperty({ example: '+251911223344', description: 'New phone number to move the account to' })
+  @IsString()
+  @Matches(/^\+?[0-9]{6,15}$/, { message: 'invalid_phone_number_format' })
+  newPhone: string;
+}
+
+export class ChangePhoneVerifyDto {
+  @ApiProperty({ description: 'Verification id returned by change-phone/initiate' })
+  @IsUUID('4')
+  verificationId: string;
+
+  @ApiProperty({ example: '482913', description: 'OTP sent to the new phone number' })
+  @IsString()
+  @MinLength(4)
+  @MaxLength(8)
+  otp: string;
+}
+
+// Client uploads to MinIO via a presigned URL first, then passes the
+// resulting object key here for validation + persistence.
+export class UpdateProfilePictureDto {
+  @ApiProperty({ description: 'MinIO object key of the already-uploaded image' })
+  @IsString()
+  @MaxLength(500)
+  filepath: string;
 }

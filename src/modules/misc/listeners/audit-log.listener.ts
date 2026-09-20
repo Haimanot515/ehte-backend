@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 
 import { AuditEventEnum } from 'src/common/enums/shared/audit-events.enum';
@@ -9,108 +9,26 @@ import { AuditLogService } from '../service/audit-log.service';
 
 @Injectable()
 export class AuditLogListener {
+  private readonly logger = new Logger(AuditLogListener.name);
+
   constructor(private readonly auditLogService: AuditLogService) {}
 
-  @OnEvent(AuditEventEnum.USER_CREATED)
-  @OnEvent(AuditEventEnum.USER_UPDATED)
-  @OnEvent(AuditEventEnum.USER_DEACTIVATED)
-  @OnEvent(AuditEventEnum.LOGIN_SUCCESS)
-  @OnEvent(AuditEventEnum.LOGIN_FAILED)
-  @OnEvent(AuditEventEnum.LOGOUT)
-  @OnEvent(AuditEventEnum.PASSWORD_CHANGED)
-  @OnEvent(AuditEventEnum.PASSWORD_RESET)
-  @OnEvent(AuditEventEnum.OTP_VERIFIED)
-  @OnEvent(AuditEventEnum.DISCREET_MODE_ENABLED)
-  @OnEvent(AuditEventEnum.DISCREET_MODE_DISABLED)
-  @OnEvent(AuditEventEnum.USER_DEACTIVATED_BY_ADMIN)
-  @OnEvent(AuditEventEnum.USER_REACTIVATED)
-  @OnEvent(AuditEventEnum.USER_SESSIONS_REVOKED)
-  @OnEvent(AuditEventEnum.USER_UNLOCKED)
-  @OnEvent(AuditEventEnum.USER_ROLE_ASSIGNED)
-  @OnEvent(AuditEventEnum.USER_ROLE_REVOKED)
-  @OnEvent(AuditEventEnum.DISCREET_MODE_PASSCODE_CHANGED)
-  @OnEvent(AuditEventEnum.REPORT_CREATED)
-  @OnEvent(AuditEventEnum.REPORT_UPDATED)
-  @OnEvent(AuditEventEnum.REPORT_STATUS_CHANGED)
-  @OnEvent(AuditEventEnum.REPORT_ASSIGNED)
-  @OnEvent(AuditEventEnum.REPORT_ESCALATED)
-  @OnEvent(AuditEventEnum.REPORT_CLOSED)
-  @OnEvent(AuditEventEnum.REPORT_REJECTED)
-  @OnEvent(AuditEventEnum.REPORT_OPENED)
-  @OnEvent(AuditEventEnum.REPORTER_INFORMATION_OPENED)
-  @OnEvent(AuditEventEnum.REPORT_MEDIA_DOWNLOADED)
-  @OnEvent(AuditEventEnum.REPORT_MORE_INFORMATION_REQUESTED)
-  @OnEvent(AuditEventEnum.REPORT_INFORMATION_RESPONDED)
-  @OnEvent(AuditEventEnum.REPORT_UNASSIGNED)
-  @OnEvent(AuditEventEnum.REPORT_WITHDRAWN)
-  @OnEvent(AuditEventEnum.USER_AUTO_FLAGGED)
-  @OnEvent(AuditEventEnum.POST_CREATED)
-  @OnEvent(AuditEventEnum.POST_UPDATED)
-  @OnEvent(AuditEventEnum.POST_DELETED)
-  @OnEvent(AuditEventEnum.POST_APPROVED)
-  @OnEvent(AuditEventEnum.POST_REJECTED)
-  @OnEvent(AuditEventEnum.POST_PUBLISHED)
-  @OnEvent(AuditEventEnum.POST_UNPUBLISHED)
-  @OnEvent(AuditEventEnum.MISSING_PERSON_CREATED)
-  @OnEvent(AuditEventEnum.MISSING_PERSON_UPDATED)
-  @OnEvent(AuditEventEnum.MISSING_PERSON_APPROVED)
-  @OnEvent(AuditEventEnum.MISSING_PERSON_REJECTED)
-  @OnEvent(AuditEventEnum.MISSING_PERSON_FOUND)
-  @OnEvent(AuditEventEnum.MISSING_PERSON_MORE_INFO_REQUESTED)
-  @OnEvent(AuditEventEnum.MISSING_PERSON_REDACTED)
-  @OnEvent(AuditEventEnum.MISSING_PERSON_REWARD_REVIEWED)
-  @OnEvent(AuditEventEnum.MISSING_PERSON_DELETED)
-  @OnEvent(AuditEventEnum.MISSING_PERSON_MEDIA_DOWNLOADED)
-  @OnEvent(AuditEventEnum.INFORMATION_SUBMITTED)
-  @OnEvent(AuditEventEnum.INFORMATION_REVIEWED)
-  @OnEvent(AuditEventEnum.INFORMATION_REJECTED)
-  @OnEvent(AuditEventEnum.INFORMATION_UNDER_REVIEW)
-  @OnEvent(AuditEventEnum.INFORMATION_SUBMISSION_DELETED)
-  @OnEvent(AuditEventEnum.VICTIM_PROFILE_CREATED)
-  @OnEvent(AuditEventEnum.VICTIM_PROFILE_UPDATED)
-  @OnEvent(AuditEventEnum.VICTIM_PROFILE_VERIFIED)
-  @OnEvent(AuditEventEnum.VICTIM_PROFILE_CONSENT_RECORDED)
-  @OnEvent(AuditEventEnum.VICTIM_PROFILE_PRIVACY_REVIEWED)
-  @OnEvent(AuditEventEnum.VICTIM_PROFILE_APPROVED)
-  @OnEvent(AuditEventEnum.VICTIM_PROFILE_PUBLISHED)
-  @OnEvent(AuditEventEnum.VICTIM_PROFILE_REJECTED)
-  // NEW — closes the VictimProfileService string/enum mismatch. These 12
-  // back actions the service already performs (claim, unclaim, media
-  // download, delete, unpublish, approval-gates update, both stages of
-  // child-safety review + its reversal, consent revocation, bank-detail
-  // updates, resubmission) that previously had no AuditEventEnum member
-  // and were emitted as raw, unmatched string literals.
-  @OnEvent(AuditEventEnum.VICTIM_PROFILE_CLAIMED)
-  @OnEvent(AuditEventEnum.VICTIM_PROFILE_UNCLAIMED)
-  @OnEvent(AuditEventEnum.VICTIM_PROFILE_MEDIA_DOWNLOADED)
-  @OnEvent(AuditEventEnum.VICTIM_PROFILE_DELETED)
-  @OnEvent(AuditEventEnum.VICTIM_PROFILE_UNPUBLISHED)
-  @OnEvent(AuditEventEnum.VICTIM_PROFILE_GATES_UPDATED)
-  @OnEvent(AuditEventEnum.VICTIM_PROFILE_CHILD_SAFETY_FIRST_CONFIRMED)
-  @OnEvent(AuditEventEnum.VICTIM_PROFILE_CHILD_SAFETY_REVIEWED)
-  @OnEvent(AuditEventEnum.VICTIM_PROFILE_CHILD_SAFETY_REVIEW_REVERSED)
-  @OnEvent(AuditEventEnum.VICTIM_PROFILE_CONSENT_REVOKED)
-  @OnEvent(AuditEventEnum.VICTIM_PROFILE_BANK_DETAILS_UPDATED)
-  @OnEvent(AuditEventEnum.VICTIM_PROFILE_RESUBMITTED)
-  @OnEvent(AuditEventEnum.SUPPORT_CREATED)
-  @OnEvent(AuditEventEnum.SUPPORT_CONFIRMED)
-  @OnEvent(AuditEventEnum.SUPPORT_COMPLETED)
-  @OnEvent(AuditEventEnum.SUPPORT_CANCELLED)
-  @OnEvent(AuditEventEnum.SUPPORT_FAILED)
-  @OnEvent(AuditEventEnum.SECURITY_ALERT)
-  @OnEvent(AuditEventEnum.ADMIN_REGISTERED)
-  @OnEvent(AuditEventEnum.ADMIN_REGISTRATION_RESENT)
-  @OnEvent(AuditEventEnum.ADMIN_REGISTRATION_CANCELLED)
-  @OnEvent(AuditEventEnum.ADMIN_EMAIL_CHANGE_INITIATED)
-  @OnEvent(AuditEventEnum.ADMIN_EMAIL_CHANGE_VERIFIED)
-  @OnEvent(AuditEventEnum.USER_PROMOTION_INITIATED)
-  @OnEvent(AuditEventEnum.USER_PROMOTION_RESENT)
-  @OnEvent(AuditEventEnum.ROLE_CREATED)
-  @OnEvent(AuditEventEnum.ROLE_UPDATED)
-  @OnEvent(AuditEventEnum.ROLE_DELETED)
-  @OnEvent(AuditEventEnum.PERMISSION_ASSIGNED)
-  @OnEvent(AuditEventEnum.PERMISSION_REVOKED)
+  @OnEvent(Object.values(AuditEventEnum))
   async handleAuditEvent(payload: AuditEventPayload): Promise<void> {
-    await this.auditLogService.record(payload);
+    // Guards against a non-audit payload arriving on a shared event name
+    if (!payload?.actorType || !payload?.entity || !payload?.action) {
+      this.logger.warn('Ignored event with a non-audit payload shape');
+      return;
+    }
+
+    try {
+      await this.auditLogService.record(payload);
+    } catch (error) {
+      // Never log the payload itself: log only identifiers
+      this.logger.error(
+        `Audit write failed: action=${payload.action} entity=${payload.entity} entityId=${payload.entityId ?? '-'}`,
+        error instanceof Error ? error.stack : String(error),
+      );
+    }
   }
 }

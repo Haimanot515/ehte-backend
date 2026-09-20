@@ -148,6 +148,9 @@ export class SupportController {
   // adminPermissions, so an ordinary ADMIN will be denied
   // on this route even with the decorator present — only
   // SUPER_ADMIN gets it, by design (least privilege).
+  //
+  // FIX (compile): service.confirm now takes the acting admin
+  // so the audit row records who verified the transfer.
   // ─────────────────────────────────────────────
 
   @Patch(':id/confirm')
@@ -160,8 +163,8 @@ export class SupportController {
       'has been received. This does not process a payment through EHTE. It only changes ' +
       'the support status to CONFIRMED after staff verification.',
   })
-  async confirm(@Param('id') id: string) {
-    return this.supportService.confirm(id);
+  async confirm(@Param('id') id: string, @CurrentUser() admin: CurrentUserDto) {
+    return this.supportService.confirm(id, admin);
   }
 
   // ─────────────────────────────────────────────
@@ -174,6 +177,8 @@ export class SupportController {
   //
   // PURPOSE:
   // Marks a confirmed support request as completed.
+  //
+  // FIX (compile): service.complete now takes the acting admin.
   // ─────────────────────────────────────────────
 
   @Patch(':id/complete')
@@ -186,8 +191,8 @@ export class SupportController {
       'the support process has been fully handled. This endpoint does not process ' +
       'or transfer money.',
   })
-  async complete(@Param('id') id: string) {
-    return this.supportService.complete(id);
+  async complete(@Param('id') id: string, @CurrentUser() admin: CurrentUserDto) {
+    return this.supportService.complete(id, admin);
   }
 
   // ─────────────────────────────────────────────

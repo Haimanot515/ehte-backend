@@ -8,7 +8,7 @@
 // ─────────────────────────────────────────────
 
 model MissingPerson {
-  id            String            @id @default(uuid())
+  id            String              @id @default(uuid())
   userId        String
   personType    MissingPersonType
   name          String?
@@ -71,7 +71,7 @@ model MissingPerson {
   childSafetyFirstConfirmedAt       DateTime?
 
   informationSubmissions InformationSubmission[]
-  user                   User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user                   User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, idempotencyKey])
   @@index([userId])

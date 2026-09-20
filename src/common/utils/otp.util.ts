@@ -1,6 +1,6 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { UserOtpPurposeEnum, OtpChannelEnum } from '@prisma/client';
+import { UserOtpPurposeEnum, OtpChannelEnum, Prisma } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { randomInt } from 'crypto';
 
@@ -15,17 +15,17 @@ import {
   renderOtpEmailHtml,
 } from 'src/services/email/templates/otp-email.template';
 
-// Extracted from AuthService: shared OTP issue/send logic used by signup, login,
-// forgot-password (user + admin), and every resend endpoint.
+type OtpDb = Pick<Prisma.TransactionClient, 'userOtp'>;
 
 @Injectable()
 export class OtpUtil {
+  private readonly logger = new Logger(OtpUtil.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly configService: ConfigService,
   ) {}
 
-  // Invalidates prior unused OTP of this purpose, creates a new one, sends via the channel.
   async issueAndSendOtp(
     userId: string,
     contact: string,
@@ -33,28 +33,29 @@ export class OtpUtil {
     channel: OtpChannelEnum = OtpChannelEnum.sms,
   ): Promise<{ verificationId: string }> {
     const cooldownSeconds = this.configService.get<number>('otp.resendCooldownSeconds', 60);
-
     const otpExpiresInMinutes = this.configService.get<number>('otp.expiresInMinutes', 10);
+
+    const cooling = await this.findCooldownOtp(
+      this.prisma,
+      userId,
+      purpose,
+      channel,
+      cooldownSeconds,
+    );
+
+    if (cooling) {
+      return { verificationId: cooling.id };
+    }
 
     const otp = this.generateOtp();
     const otpHash = await bcrypt.hash(otp, 12);
 
-    // Cooldown check + create/invalidate wrapped in one transaction.
+    // Re-checked inside the transaction to cover concurrent requests.
     const result = await this.prisma.$transaction(async (tx) => {
-      // Scoped to channel too, so SMS and email OTPs don't share one cooldown window.
-      const latestOtp = await tx.userOtp.findFirst({
-        where: { userId, purpose, channel },
-        orderBy: { createdAt: 'desc' },
-      });
+      const active = await this.findCooldownOtp(tx, userId, purpose, channel, cooldownSeconds);
 
-      const cooldownActive =
-        !!latestOtp &&
-        !latestOtp.usedAt &&
-        Date.now() - latestOtp.createdAt.getTime() < cooldownSeconds * 1000;
-
-      if (cooldownActive) {
-        // Reuse existing OTP/verificationId; nothing regenerated, no message sent
-        return { reused: true as const, verificationId: latestOtp.id };
+      if (active) {
+        return { reused: true as const, verificationId: active.id };
       }
 
       await tx.userOtp.updateMany({
@@ -76,9 +77,10 @@ export class OtpUtil {
     });
 
     if (result.reused) {
-      // Cooldown active: no message, no dev log
       return { verificationId: result.verificationId };
     }
+
+    const maskedContact = this.maskContact(contact);
 
     if (channel === OtpChannelEnum.email) {
       try {
@@ -88,28 +90,63 @@ export class OtpUtil {
           renderOtpEmailHtml({ otp, expiresInMinutes: otpExpiresInMinutes }),
         );
       } catch (error) {
-        console.error(`[EHTE EMAIL] Failed to send OTP (${purpose}) to ${contact}`, error);
+        this.logger.error(
+          `Failed to send OTP (${purpose}) to ${maskedContact}`,
+          error instanceof Error ? error.stack : String(error),
+        );
       }
     } else {
-      const smsMessage = renderOtpSms({ otp, expiresInMinutes: otpExpiresInMinutes });
+      const smsMessage = renderOtpSms({ otp, expiresInMinutes: otpExpiresInMinutes, purpose });
 
       try {
         await sendSms(contact, smsMessage);
       } catch (error) {
-        console.error(`[EHTE SMS] Failed to send OTP (${purpose}) to ${contact}`, error);
+        this.logger.error(
+          `Failed to send OTP (${purpose}) to ${maskedContact}`,
+          error instanceof Error ? error.stack : String(error),
+        );
       }
     }
 
-    // DEV ONLY
-    if (this.configService.get<boolean>('app.debug', false)) {
-      console.log(`[EHTE DEV] OTP (${purpose}, ${channel}) for ${contact}: ${otp}`);
+    // Local development only; requires both NODE_ENV and the debug flag.
+    if (
+      process.env.NODE_ENV === 'development' &&
+      this.configService.get<boolean>('app.debug', false)
+    ) {
+      this.logger.debug(`OTP (${purpose}, ${channel}) for ${maskedContact}: ${otp}`);
     }
 
     return { verificationId: result.verificationId };
   }
 
-  // Uses crypto.randomInt (CSPRNG), never Math.random().
   generateOtp(): string {
     return randomInt(100000, 1000000).toString();
+  }
+
+  private async findCooldownOtp(
+    db: OtpDb,
+    userId: string,
+    purpose: UserOtpPurposeEnum,
+    channel: OtpChannelEnum,
+    cooldownSeconds: number,
+  ) {
+    const latest = await db.userOtp.findFirst({
+      where: { userId, purpose, channel },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    const active =
+      !!latest && !latest.usedAt && Date.now() - latest.createdAt.getTime() < cooldownSeconds * 1000;
+
+    return active ? latest : null;
+  }
+
+  private maskContact(contact: string): string {
+    if (contact.includes('@')) {
+      const [local, domain] = contact.split('@');
+      return `${local.slice(0, 1)}***@${domain}`;
+    }
+
+    return contact.length <= 4 ? '****' : `${'*'.repeat(contact.length - 4)}${contact.slice(-4)}`;
   }
 }

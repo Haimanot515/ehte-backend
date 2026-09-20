@@ -1,17 +1,60 @@
-model Notification {
-  id        String           @id @default(uuid())
-  userId    String?
-  type      NotificationType
-  title     String
-  body      String
-  isRead    Boolean          @default(false)
-  createdAt DateTime         @default(now())
-  updatedAt DateTime         @updatedAt
-  user      User?            @relation(fields: [userId], references: [id], onDelete: Cascade)
+enum NotificationPriority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
 
-  @@index([userId])
+model Notification {
+  id     String           @id @default(uuid())
+  userId String
+  type   NotificationType
+  title  String
+  body   String
+
+  priority NotificationPriority @default(NORMAL)
+
+  // Link to the domain object
+  entity    String?
+  entityId  String?
+  actorId   String?
+  actionUrl String?
+
+  // Who caused it, stored on the row so it survives later name or role changes.
+  // Both are null for system-generated notifications.
+  actorName String?
+  actorRole String?
+
+  // Set when the row was created by an admin broadcast
+  broadcastId String?
+
+  // Structured, non-sensitive data only
+  data Json?
+
+  // Read state
+  // isRead is kept temporarily for compatibility; remove it after all code uses readAt
+  isRead Boolean   @default(false)
+  readAt DateTime?
+
+  expiresAt DateTime?
+  dedupeKey String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user       User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  broadcast  NotificationBroadcast? @relation(fields: [broadcastId], references: [id], onDelete: SetNull)
+  deliveries NotificationDelivery[]
+
+  @@unique([userId, dedupeKey])
+  @@index([userId, createdAt])
+  @@index([userId, readAt, createdAt])
   @@index([userId, isRead])
   @@index([type])
+  @@index([expiresAt])
+  @@index([entity, entityId])
+  @@index([broadcastId])
+  @@index([actorId, createdAt])
   @@map("notification")
 }
 
@@ -24,6 +67,7 @@ enum NotificationType {
   POST_REJECTED
   MISSING_PERSON_UPDATED
   NEW_MISSING_PERSON_INFORMATION
+  SUPPORT_PLEDGE_CREATED
   SUPPORT_PAYMENT_CONFIRMED
   NEW_REPORT
   HIGH_PRIORITY_REPORT
@@ -33,10 +77,6 @@ enum NotificationType {
   PASSWORD_CHANGED
   PASSWORD_RESET
 
-  // NEW — added to fix NotificationListener compile errors (these
-  // values were referenced by the listener but never existed in the
-  // enum). Run `npx prisma migrate dev` (or `db push` + `generate`
-  // for a shared/prod DB) after adding these.
   REPORT_ASSIGNED
   INFORMATION_REQUEST_RESPONDED
   POST_CHANGES_REQUESTED
@@ -46,14 +86,6 @@ enum NotificationType {
   MISSING_PERSON_FOUND
   MISSING_PERSON_MORE_INFORMATION_REQUESTED
 
-  // NEW — added alongside the VictimProfileService audit/notification
-  // fix (see NotificationListener's VICTIM PROFILE section). These 11
-  // are referenced by NotificationListener's handleVictimProfile*
-  // methods, which previously would have thrown at runtime — Prisma
-  // rejects any `type` value not in this enum — the moment any of
-  // those handlers fired. claim/unclaim/media-download/child-safety-
-  // first-confirm are deliberately excluded: they're audit-only, with
-  // no paired notification, per NotificationEventEnum's own comment.
   VICTIM_PROFILE_CREATED
   VICTIM_PROFILE_UPDATED
   VICTIM_PROFILE_DELETED
@@ -66,14 +98,6 @@ enum NotificationType {
   VICTIM_PROFILE_REJECTED
   VICTIM_PROFILE_RESUBMITTED
 
-  // NEW — InformationSubmissionService.review() emits
-  // NotificationEventEnum.INFORMATION_SUBMISSION_REVIEWED /
-  // ...REJECTED correctly (dynamic enum reference, not a raw
-  // string), but NotificationListener had no @OnEvent() handler
-  // for either and this enum had no matching member — so both
-  // silently dropped at the listener/type level, same failure
-  // mode as the VictimProfile gap above, just one call site
-  // instead of eighteen.
   INFORMATION_SUBMISSION_REVIEWED
   INFORMATION_SUBMISSION_REJECTED
 }

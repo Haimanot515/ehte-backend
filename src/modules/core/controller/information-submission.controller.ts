@@ -62,6 +62,9 @@ export class InformationSubmissionController {
   // flaky connection) doesn't end up creating two identical
   // submissions — InformationSubmissionService.create returns the
   // original submission on a repeat key instead.
+  //
+  // FIX (compile): service.create now takes the full CurrentUserDto
+  // (needed to resolve actorType), not user.id.
   // ─────────────────────────────────────────────
 
   @Post('missing-person/:missingPersonId')
@@ -73,7 +76,7 @@ export class InformationSubmissionController {
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
     return this.informationSubmissionService.create(
-      user.id,
+      user,
       missingPersonId,
       data,
       idempotencyKey,
@@ -186,6 +189,8 @@ export class InformationSubmissionController {
   // UPDATE MY SUBMISSION
   // PATCH /information-submissions/:id
   // Only while PENDING (enforced in service).
+  //
+  // FIX (compile): service.update now takes the full CurrentUserDto.
   // ─────────────────────────────────────────────
 
   @Patch(':id')
@@ -195,7 +200,7 @@ export class InformationSubmissionController {
     @Body() data: UpdateInformationSubmissionDto,
     @CurrentUser() user: CurrentUserDto,
   ) {
-    return this.informationSubmissionService.update(id, user.id, data);
+    return this.informationSubmissionService.update(id, user, data);
   }
 
   // ─────────────────────────────────────────────
@@ -273,14 +278,21 @@ export class InformationSubmissionController {
   // Admins can request a download URL for any media key actually
   // attached to the submission, regardless of status — same
   // admin-only, no-visibility-filtering access as findOneForAdmin().
+  //
+  // FIX (compile): service.getMediaDownloadUrlForAdmin now takes the
+  // acting admin as its FIRST argument so the download is audited.
   // ─────────────────────────────────────────────
 
   @Get('admin/:id/media')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.MISSING_PERSON_INFO_READ)
   @ApiOperation({ summary: "Admin: get a short-lived download URL for a submission's media" })
-  async getMediaForAdmin(@Param('id') id: string, @Query() query: MediaKeyQueryDto) {
-    return this.informationSubmissionService.getMediaDownloadUrlForAdmin(id, query.key);
+  async getMediaForAdmin(
+    @Param('id') id: string,
+    @Query() query: MediaKeyQueryDto,
+    @CurrentUser() admin: CurrentUserDto,
+  ) {
+    return this.informationSubmissionService.getMediaDownloadUrlForAdmin(admin, id, query.key);
   }
 
   // ─────────────────────────────────────────────
