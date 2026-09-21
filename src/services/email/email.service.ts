@@ -40,12 +40,7 @@ function getTransporter(): nodemailer.Transporter {
       user,
       pass: password,
     },
-    // FIX: some networks (WSL, certain home routers/VPNs) advertise IPv6
-    // DNS records for smtp.gmail.com but have no actual IPv6 route, causing
-    // ENETUNREACH on connect. Forcing IPv4 here sidesteps that entirely.
-    // NOTE: 'family' is a genuine, working nodemailer/net.connect option at
-    // runtime, but this project's installed @types for nodemailer don't
-    // declare it — hence the `as any` cast below rather than a type fix.
+    // Forces IPv4 to avoid ENETUNREACH on networks with broken IPv6 routes; `as any` below since @types/nodemailer lacks this valid runtime option.
     family: 4,
   };
 
