@@ -80,6 +80,8 @@ ADD COLUMN     "source" "AuditSource",
 ADD COLUMN     "targetUserId" TEXT,
 ADD COLUMN     "userAgent" TEXT;
 
+DELETE FROM "notification" WHERE "userId" IS NULL;
+
 -- AlterTable
 ALTER TABLE "notification" ADD COLUMN     "actionUrl" TEXT,
 ADD COLUMN     "actorId" TEXT,
