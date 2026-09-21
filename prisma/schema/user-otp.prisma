@@ -1,7 +1,4 @@
-// user-otp.prisma
-// Every existing field/relation reproduced as-is. Only addition:
-// phone_change on UserOtpPurposeEnum, for UserService's change-phone flow.
-
+// phone_change on UserOtpPurposeEnum supports UserService's change-phone flow
 model UserOtp {
   id        String             @id @default(uuid())
   userId    String

@@ -17,26 +17,12 @@ model Report {
   assignedToId  String?
   category      ReportCategory
 
-  // NEW — duplicate-submission protection (item #5), mirrors Post.
-  // Scoped to the user, not global: two different users retrying
-  // with the same client-generated key must not collide. Postgres
-  // treats NULLs as distinct, so rows with a null idempotencyKey
-  // don't conflict with each other.
+  // Per-user duplicate-submission protection, NULL keys never conflict
   idempotencyKey String?
 
-  // NEW — running total of attached-media bytes (item #13), mirrors
-  // Post.mediaTotalBytes. Lets update() recompute the total from a
-  // delta (added/removed bytes) instead of re-statting every
-  // already-attached file on every write.
   mediaTotalBytes Int @default(0)
 
-  // NEW — timestamp set when the owning account is suspended (item
-  // #6), so admin tooling can filter/flag these. Deliberately does
-  // NOT change `status` or pull the report out of the review queue —
-  // unlike Post (which has a safe DRAFT state to fall back to),
-  // a Report has no non-terminal "hidden" state, and safety-related
-  // reports should be preserved/visible to admins even if the
-  // reporter's account is later suspended.
+  // Set when the owner is suspended, status is deliberately left unchanged
   ownerSuspendedAt DateTime?
 
   assignedTo          User?                      @relation("ReportAssignee", fields: [assignedToId], references: [id])
@@ -49,9 +35,6 @@ model Report {
   @@index([assignedToId])
   @@index([caseReference])
   @@index([category])
-  // NEW — supports findStalePending()'s cutoff query (item #15) and
-  // any future retention sweep (item #19), same pattern as Post's
-  // [status, createdAt] index.
   @@index([status, createdAt])
   @@map("report")
 }

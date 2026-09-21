@@ -1,8 +1,4 @@
-// user.prisma
-// Every existing field/relation reproduced as-is. Profile/address fields
-// moved to UserProfile (see user-profile.prisma) — only pendingPhone
-// (part of the auth/verification flow, not "profile" data) stays here.
-
+// Holds a not-yet-verified new phone during the change-phone flow
 model User {
   id                       String                     @id @default(uuid())
   name                     String?
@@ -22,7 +18,6 @@ model User {
   inviteTokenHash          String?                    @unique
   isEmailVerified          Boolean                    @default(false)
 
-  // Holds a not-yet-verified new phone during change-phone flow; not unique.
   pendingPhone             String?
 
   auditLogs                AuditLog[]
@@ -37,12 +32,9 @@ model User {
   supports                 Support[]
   otps                     UserOtp[]
   userRoles                UserRole[]
-  // NEW — inverse side of UserRole.assignedByUser. Lets you query
-  // "which role grants did this user make" (e.g. user.assignedRoles).
   assignedRoles            UserRole[]                 @relation("UserRoleAssignedBy")
 
-  // NEW — one-to-one, optional. Row is created lazily on first profile
-  // edit (see UserService.updateMe's upsert), not at signup time.
+  // One-to-one, created lazily on first profile edit
   profile                  UserProfile?
 
   @@map("user")
