@@ -1,10 +1,16 @@
+// user-role.prisma
+// assignedBy added: records who granted the role. Previously only assignedAt
+// existed, so "who assigned this" was reconstructable only from audit logs.
+
 model UserRole {
-  id         String   @id @default(uuid())
-  userId     String
-  roleId     String
-  assignedAt DateTime @default(now())
-  role       Role     @relation(fields: [roleId], references: [id], onDelete: Cascade)
-  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id             String   @id @default(uuid())
+  userId         String
+  roleId         String
+  assignedAt     DateTime @default(now())
+  assignedBy     String?
+  role           Role     @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  assignedByUser User?    @relation("UserRoleAssignedBy", fields: [assignedBy], references: [id], onDelete: SetNull)
 
   @@unique([userId, roleId])
   @@index([userId])

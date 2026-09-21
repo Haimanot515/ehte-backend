@@ -8,7 +8,7 @@ import {
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { ConfigService } from '@nestjs/config';
 
-import { InformationStatus, MissingPersonStatus } from '@prisma/client';
+import { AuditOutcome, AuditSeverity, InformationStatus, MissingPersonStatus } from '@prisma/client';
 
 import { PrismaService } from 'src/prisma/prisma.service';
 import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
@@ -35,6 +35,20 @@ const MEDIA_FIELD_NAMES = ['photo', 'video', 'audio', 'pdf', 'document', 'other'
 type MediaFieldName = (typeof MEDIA_FIELD_NAMES)[number];
 type MediaBearing = Record<MediaFieldName, string[]>;
 type MediaBearingDto = Partial<Record<MediaFieldName, string[] | undefined>>;
+
+// ⚠️ ASSUMPTIONS ON THE AUDIT ENUM
+//
+// Two action names are referenced below that this file didn't
+// previously import: AuditEventEnum.INFORMATION_SUBMISSION_UPDATED
+// and AuditEventEnum.INFORMATION_SUBMISSION_MEDIA_DOWNLOADED. Every
+// other service in this codebase follows a <Entity>_<VERB> naming
+// convention for its audit actions (REPORT_UPDATED, REPORT_MEDIA_
+// DOWNLOADED, USER_UPDATED, SUPPORT_CANCELLED, ...), so these are
+// assumed to exist or to be trivial additions to the shared enum. If
+// they don't exist yet, add them there rather than repurposing an
+// unrelated action name — reusing e.g. INFORMATION_SUBMITTED for an
+// edit would make "who submitted this" and "who edited this" show up
+// as the same action in a history view.
 
 @Injectable()
 export class InformationSubmissionService {
@@ -63,6 +77,31 @@ export class InformationSubmissionService {
 
   private emitAudit(payload: AuditEventPayload): void {
     this.eventEmitter.emit(payload.action, payload);
+  }
+
+  private getRoles(user: CurrentUserDto): string[] {
+    return (user as unknown as { roles?: string[] }).roles ?? [];
+  }
+
+  // FIX (audit review, item #4): InformationSubmission has no
+  // caseReference-style human identifier, and the tipster is
+  // deliberately anonymous-ish to the public (their identity is only
+  // ever exposed to admins via findOneForAdmin). So the label leans
+  // on whichever missing-person case the tip is about — the thing an
+  // admin actually searches an audit list by — falling back to a
+  // truncated snippet of the tip text, and only then to an id prefix.
+  private buildSubmissionLabel(
+    submission: { id: string; information: string },
+    missingPersonName?: string | null,
+  ): string {
+    if (missingPersonName) {
+      return `Tip re: ${missingPersonName}`;
+    }
+    const snippet = submission.information.trim().slice(0, 40);
+    if (snippet) {
+      return snippet.length < submission.information.trim().length ? `${snippet}…` : snippet;
+    }
+    return `submission:${submission.id.slice(0, 8)}`;
   }
 
   // ─────────────────────────────────────────────
@@ -218,6 +257,11 @@ export class InformationSubmissionService {
   // ─────────────────────────────────────────────
   // MEDIA — DOWNLOAD URL (owner)
   // GET /information-submissions/:id/media?key=...
+  //
+  // No audit trail here, matching ReportService.getMediaDownloadUrl
+  // (the reporter-facing equivalent) — a user downloading their own
+  // attachment isn't a "someone accessed something" event the way an
+  // admin doing the same is.
   // ─────────────────────────────────────────────
 
   async getMediaDownloadUrl(id: string, userId: string, key: string): Promise<{ url: string }> {
@@ -245,9 +289,26 @@ export class InformationSubmissionService {
   // ─────────────────────────────────────────────
   // ADMIN — MEDIA DOWNLOAD URL
   // GET /information-submissions/admin/:id/media?key=...
+  //
+  // FIX (audit review, items #1/#2/#5): this method previously took
+  // no acting-admin parameter at all, so there was no honest way to
+  // record who accessed a tipster's attachment — the exact case
+  // ReportService.getMediaDownloadUrlForAdmin exists to audit. Now
+  // mirrors it: a mismatched key emits a DENIED row before throwing
+  // (a stale link, or someone probing for media on a submission they
+  // have no other reason to open), the submitter is recorded as
+  // targetUserId, and the accessed key is captured in metadata on
+  // the success row.
+  //
+  // ⚠️ SIGNATURE CHANGE: takes the acting admin. Update the
+  // controller to pass @CurrentUser().
   // ─────────────────────────────────────────────
 
-  async getMediaDownloadUrlForAdmin(id: string, key: string): Promise<{ url: string }> {
+  async getMediaDownloadUrlForAdmin(
+    admin: CurrentUserDto,
+    id: string,
+    key: string,
+  ): Promise<{ url: string }> {
     const submission = await this.prisma.informationSubmission.findUnique({
       where: { id },
     });
@@ -256,12 +317,41 @@ export class InformationSubmissionService {
       throw new NotFoundException('information_submission_not_found');
     }
 
+    const actorType = resolveActorType(this.getRoles(admin));
+    const label = this.buildSubmissionLabel(submission);
+
     const owned = this.collectMediaFields(submission).includes(key);
     if (!owned) {
+      this.emitAudit({
+        userId: admin.id,
+        targetUserId: submission.userId,
+        actorType,
+        action: AuditEventEnum.INFORMATION_SUBMISSION_MEDIA_DOWNLOADED,
+        outcome: AuditOutcome.DENIED,
+        severity: AuditSeverity.WARNING,
+        entity: 'InformationSubmission',
+        entityId: submission.id,
+        entityLabel: label,
+        diff: { result: 'denied', reason: 'media_not_found_on_submission' },
+        metadata: { requestedKey: key },
+      });
       throw new NotFoundException('media_not_found_on_submission');
     }
 
     const url = await this.minioService.generatePresignedDownloadUrl(key);
+
+    this.emitAudit({
+      userId: admin.id,
+      targetUserId: submission.userId,
+      actorType,
+      action: AuditEventEnum.INFORMATION_SUBMISSION_MEDIA_DOWNLOADED,
+      entity: 'InformationSubmission',
+      entityId: submission.id,
+      entityLabel: label,
+      diff: { result: 'success' },
+      metadata: { key },
+    });
+
     return { url };
   }
 
@@ -321,6 +411,43 @@ export class InformationSubmissionService {
   //
   // FIX (item #13): attachment counts checked before any MinIO
   // round trips; total size persisted as mediaTotalBytes.
+  //
+  // FIX (audit review, item #1): actorType was hardcoded to
+  // resolveActorType(['USER']) rather than resolved from the actual
+  // submitter's roles — a plain typo-shaped bug (every other create()
+  // in this codebase resolves from the real actor). It's now resolved
+  // properly, which requires the actor's roles, so this method now
+  // takes the full CurrentUserDto instead of a bare userId.
+  //
+  // ⚠️ SIGNATURE CHANGE: create(user: CurrentUserDto, ...) instead of
+  // create(userId: string, ...). Update the controller accordingly.
+  //
+  // FIX (audit review, item #1, continued): every guard below —
+  // not-approved, self-submission, rate limit, max-pending, media
+  // validation — threw with no audit row. The not-approved and
+  // self-submission guards run after the MissingPerson is loaded, so
+  // both now emit against entity: 'MissingPerson' (there's no
+  // InformationSubmission row yet to attach to). Deliberately NOT
+  // fixed: missing_person_not_found itself, and the rate-limit/max-
+  // pending/media-validation failures, for the same reason
+  // ReportService.create() leaves its pre-creation guards unaudited —
+  // no natural entity to hang the row on without a schema/product
+  // decision on nullable entityIds.
+  //
+  // FIX (audit review, item #2): cannot_submit_information_on_own_report
+  // is a user attempting to act on THEIR OWN missing-person report by
+  // routing through the tip pathway — the missing person's owner
+  // (i.e. the actor themselves here) is recorded as targetUserId for
+  // consistency with how every other "acting on a record tied to a
+  // user" case is audited elsewhere, even though actor and subject
+  // are the same person in this specific case.
+  //
+  // FIX (audit review, item #4): entityLabel added, via the
+  // already-loaded missingPerson's name.
+  //
+  // FIX (audit review, item #5): missingPersonId, attachment count,
+  // and mediaTotalBytes are the investigative context worth keeping
+  // and weren't captured before — moved into metadata.
   // ─────────────────────────────────────────────
 
   private async enforceCreateRateLimit(userId: string): Promise<void> {
@@ -363,14 +490,16 @@ export class InformationSubmissionService {
   }
 
   async create(
-    userId: string,
+    user: CurrentUserDto,
     missingPersonId: string,
     data: CreateInformationSubmissionDto,
     idempotencyKey?: string,
   ) {
+    const actorType = resolveActorType(this.getRoles(user));
+
     if (idempotencyKey) {
       const existing = await this.prisma.informationSubmission.findFirst({
-        where: { userId, idempotencyKey },
+        where: { userId: user.id, idempotencyKey },
       });
       if (existing) {
         // Safe replay of a duplicate submission (double-tap, retried
@@ -389,15 +518,42 @@ export class InformationSubmissionService {
     }
 
     if (missingPerson.status !== MissingPersonStatus.APPROVED) {
+      this.emitAudit({
+        userId: user.id,
+        actorType,
+        action: AuditEventEnum.INFORMATION_SUBMITTED,
+        outcome: AuditOutcome.FAILURE,
+        severity: AuditSeverity.WARNING,
+        entity: 'MissingPerson',
+        entityId: missingPersonId,
+        entityLabel: missingPerson.name ?? undefined,
+        diff: {
+          result: 'failure',
+          reason: 'information_submission_not_allowed',
+          missingPersonStatus: missingPerson.status,
+        },
+      });
       throw new BadRequestException('information_submission_not_allowed');
     }
 
-    if (missingPerson.userId === userId) {
+    if (missingPerson.userId === user.id) {
+      this.emitAudit({
+        userId: user.id,
+        targetUserId: missingPerson.userId,
+        actorType,
+        action: AuditEventEnum.INFORMATION_SUBMITTED,
+        outcome: AuditOutcome.DENIED,
+        severity: AuditSeverity.WARNING,
+        entity: 'MissingPerson',
+        entityId: missingPersonId,
+        entityLabel: missingPerson.name ?? undefined,
+        diff: { result: 'denied', reason: 'cannot_submit_information_on_own_report' },
+      });
       throw new ForbiddenException('cannot_submit_information_on_own_report');
     }
 
-    await this.enforceCreateRateLimit(userId);
-    await this.enforceMaxPending(userId);
+    await this.enforceCreateRateLimit(user.id);
+    await this.enforceMaxPending(user.id);
 
     const merged: MediaBearing = {
       photo: data.photo ?? [],
@@ -415,7 +571,7 @@ export class InformationSubmissionService {
 
     const submission = await this.prisma.informationSubmission.create({
       data: {
-        userId,
+        userId: user.id,
         missingPersonId,
 
         information: data.information,
@@ -435,15 +591,20 @@ export class InformationSubmissionService {
     });
 
     this.emitAudit({
-      userId,
-      actorType: resolveActorType(['USER']),
+      userId: user.id,
+      actorType,
       action: AuditEventEnum.INFORMATION_SUBMITTED,
       entity: 'InformationSubmission',
       entityId: submission.id,
+      entityLabel: this.buildSubmissionLabel(submission, missingPerson.name),
       diff: {
-        missingPersonId,
         status: InformationStatus.PENDING,
         result: 'success',
+      },
+      metadata: {
+        missingPersonId,
+        attachmentCount: this.collectMediaFields(merged).length,
+        mediaTotalBytes: totalBytes,
       },
     });
 
@@ -577,26 +738,87 @@ export class InformationSubmissionService {
   // FIX (item #13): attachment counts checked against the merged
   // post-update media shape; mediaTotalBytes recomputed from the
   // previous total plus/minus added/removed files' sizes.
+  //
+  // FIX (audit review, item #1 — the big one for this method): this
+  // method emitted NO audit row at all, success or failure, despite
+  // being a write to reporter-submitted evidence. Every guard
+  // (not_authorized, submission_not_editable_in_current_status,
+  // no_fields_provided, media validation) now emits a FAILURE/DENIED
+  // row before throwing, and a SUCCESS row is emitted after the
+  // write commits.
+  //
+  // ⚠️ SIGNATURE CHANGE: takes the full CurrentUserDto instead of a
+  // bare userId string, since resolving actorType needs the actor's
+  // roles — same reasoning as create() above. Update the controller
+  // to pass @CurrentUser().
+  //
+  // FIX (audit review, item #4): entityLabel added.
+  //
+  // FIX (audit review, item #5): media churn (added/removed counts,
+  // new total) captured in metadata, same as
+  // ReportService.update()/PostService's equivalent.
   // ─────────────────────────────────────────────
 
-  async update(id: string, userId: string, data: UpdateInformationSubmissionDto) {
+  async update(id: string, user: CurrentUserDto, data: UpdateInformationSubmissionDto) {
+    const actorType = resolveActorType(this.getRoles(user));
+
     const existing = await this.prisma.informationSubmission.findUnique({ where: { id } });
 
     if (!existing) {
       throw new NotFoundException('information_submission_not_found');
     }
 
-    if (existing.userId !== userId) {
+    const label = this.buildSubmissionLabel(existing);
+
+    if (existing.userId !== user.id) {
+      this.emitAudit({
+        userId: user.id,
+        targetUserId: existing.userId,
+        actorType,
+        action: AuditEventEnum.INFORMATION_SUBMISSION_UPDATED,
+        outcome: AuditOutcome.DENIED,
+        severity: AuditSeverity.WARNING,
+        entity: 'InformationSubmission',
+        entityId: id,
+        entityLabel: label,
+        diff: { result: 'denied', reason: 'not_authorized' },
+      });
       throw new ForbiddenException('not_authorized');
     }
 
     if (existing.status !== InformationStatus.PENDING) {
+      this.emitAudit({
+        userId: user.id,
+        actorType,
+        action: AuditEventEnum.INFORMATION_SUBMISSION_UPDATED,
+        outcome: AuditOutcome.FAILURE,
+        severity: AuditSeverity.WARNING,
+        entity: 'InformationSubmission',
+        entityId: id,
+        entityLabel: label,
+        diff: {
+          result: 'failure',
+          reason: 'submission_not_editable_in_current_status',
+          currentStatus: existing.status,
+        },
+      });
       throw new ForbiddenException('submission_not_editable_in_current_status');
     }
 
     const hasAnyField = Object.values(data).some((value) => value !== undefined);
 
     if (!hasAnyField) {
+      this.emitAudit({
+        userId: user.id,
+        actorType,
+        action: AuditEventEnum.INFORMATION_SUBMISSION_UPDATED,
+        outcome: AuditOutcome.FAILURE,
+        severity: AuditSeverity.WARNING,
+        entity: 'InformationSubmission',
+        entityId: id,
+        entityLabel: label,
+        diff: { result: 'failure', reason: 'no_fields_provided' },
+      });
       throw new BadRequestException('no_fields_provided');
     }
 
@@ -610,26 +832,50 @@ export class InformationSubmissionService {
       document: data.document ?? existing.document,
       other: data.other ?? existing.other,
     };
-    this.assertAttachmentCounts(merged);
 
-    const validatedAdded = await this.validateMediaFilesExist(added);
-    const addedBytes = validatedAdded.reduce((sum, v) => sum + v.size, 0);
+    let addedBytes = 0;
+    let removedBytes = 0;
+    let newTotalBytes = existing.mediaTotalBytes;
 
-    // Stat removed files before they're deleted, purely to back out
-    // their bytes from the running total — a stat failure here
-    // (already gone, MinIO hiccup) just means we can't credit that
-    // byte count back, so treat it as 0 rather than blocking the
-    // update.
-    const removedStats = await Promise.allSettled(
-      removed.map((fp) => this.minioService.statObject(fp)),
-    );
-    const removedBytes = removedStats.reduce(
-      (sum, r) => sum + (r.status === 'fulfilled' ? r.value.size : 0),
-      0,
-    );
+    try {
+      this.assertAttachmentCounts(merged);
 
-    const newTotalBytes = Math.max(0, existing.mediaTotalBytes + addedBytes - removedBytes);
-    this.assertTotalBytes(newTotalBytes);
+      const validatedAdded = await this.validateMediaFilesExist(added);
+      addedBytes = validatedAdded.reduce((sum, v) => sum + v.size, 0);
+
+      // Stat removed files before they're deleted, purely to back out
+      // their bytes from the running total — a stat failure here
+      // (already gone, MinIO hiccup) just means we can't credit that
+      // byte count back, so treat it as 0 rather than blocking the
+      // update.
+      const removedStats = await Promise.allSettled(
+        removed.map((fp) => this.minioService.statObject(fp)),
+      );
+      removedBytes = removedStats.reduce(
+        (sum, r) => sum + (r.status === 'fulfilled' ? r.value.size : 0),
+        0,
+      );
+
+      newTotalBytes = Math.max(0, existing.mediaTotalBytes + addedBytes - removedBytes);
+      this.assertTotalBytes(newTotalBytes);
+    } catch (err) {
+      this.emitAudit({
+        userId: user.id,
+        actorType,
+        action: AuditEventEnum.INFORMATION_SUBMISSION_UPDATED,
+        outcome: AuditOutcome.FAILURE,
+        severity: AuditSeverity.WARNING,
+        entity: 'InformationSubmission',
+        entityId: id,
+        entityLabel: label,
+        diff: {
+          result: 'failure',
+          reason: 'media_validation_failed',
+          message: err instanceof Error ? err.message : String(err),
+        },
+      });
+      throw err;
+    }
 
     const updated = await this.prisma.informationSubmission.update({
       where: { id },
@@ -651,6 +897,21 @@ export class InformationSubmissionService {
     // nothing.
     await this.deleteMediaFiles(removed);
 
+    this.emitAudit({
+      userId: user.id,
+      actorType,
+      action: AuditEventEnum.INFORMATION_SUBMISSION_UPDATED,
+      entity: 'InformationSubmission',
+      entityId: updated.id,
+      entityLabel: this.buildSubmissionLabel(updated),
+      diff: { result: 'success' },
+      metadata: {
+        mediaAdded: added.length,
+        mediaRemoved: removed.length,
+        mediaTotalBytes: newTotalBytes,
+      },
+    });
+
     return updated;
   }
 
@@ -660,36 +921,84 @@ export class InformationSubmissionService {
   // attached media object from MinIO — once the row referencing
   // them is gone, an orphaned object in the bucket serves no
   // purpose. Same ordering as PostService.deleteMyPost.
+  //
+  // FIX (audit review, item #1): both guards (not_authorized,
+  // only_pending_submissions_can_be_deleted) threw with no row. Now
+  // emit DENIED/FAILURE before throwing.
+  //
+  // FIX (audit review, item #4): entityLabel added — built before the
+  // delete, since the row (and the label's source data) won't exist
+  // afterward.
+  //
+  // FIX (audit review, item #5): count of media objects removed
+  // wasn't captured anywhere — added to metadata.
   // ─────────────────────────────────────────────
 
   async remove(id: string, user: CurrentUserDto) {
+    const actorType = resolveActorType(this.getRoles(user));
+
     const existing = await this.prisma.informationSubmission.findUnique({ where: { id } });
 
     if (!existing) {
       throw new NotFoundException('information_submission_not_found');
     }
 
+    const label = this.buildSubmissionLabel(existing);
+
     if (existing.userId !== user.id) {
+      this.emitAudit({
+        userId: user.id,
+        targetUserId: existing.userId,
+        actorType,
+        action: AuditEventEnum.INFORMATION_SUBMISSION_DELETED,
+        outcome: AuditOutcome.DENIED,
+        severity: AuditSeverity.WARNING,
+        entity: 'InformationSubmission',
+        entityId: id,
+        entityLabel: label,
+        diff: { result: 'denied', reason: 'not_authorized' },
+      });
       throw new ForbiddenException('not_authorized');
     }
 
     if (existing.status !== InformationStatus.PENDING) {
+      this.emitAudit({
+        userId: user.id,
+        actorType,
+        action: AuditEventEnum.INFORMATION_SUBMISSION_DELETED,
+        outcome: AuditOutcome.FAILURE,
+        severity: AuditSeverity.WARNING,
+        entity: 'InformationSubmission',
+        entityId: id,
+        entityLabel: label,
+        diff: {
+          result: 'failure',
+          reason: 'only_pending_submissions_can_be_deleted',
+          currentStatus: existing.status,
+        },
+      });
       throw new ForbiddenException('only_pending_submissions_can_be_deleted');
     }
 
     await this.prisma.informationSubmission.delete({ where: { id } });
 
-    await this.deleteMediaFiles(this.collectMediaFields(existing));
+    const mediaFields = this.collectMediaFields(existing);
+    await this.deleteMediaFiles(mediaFields);
 
     this.emitAudit({
       userId: user.id,
-      actorType: resolveActorType(user.roles ?? []),
+      actorType,
       action: AuditEventEnum.INFORMATION_SUBMISSION_DELETED,
       entity: 'InformationSubmission',
       entityId: id,
+      entityLabel: label,
       diff: {
         previousStatus: existing.status,
         result: 'success',
+      },
+      metadata: {
+        missingPersonId: existing.missingPersonId,
+        mediaFilesRemoved: mediaFields.length,
       },
     });
 
@@ -723,6 +1032,18 @@ export class InformationSubmissionService {
 
   // ─────────────────────────────────────────────
   // ADMIN — GET ONE (full detail)
+  //
+  // NOTE (audit gap, deliberately NOT fixed here): this include pulls
+  // the tipster's name and phone — the same class of PII access
+  // ReportService.findOneForAdmin audits as REPORTER_INFORMATION_
+  // OPENED. It isn't audited here because doing so needs (a) an
+  // acting-admin parameter, which this method doesn't currently take,
+  // and (b) confidence that a matching action enum member exists,
+  // which I don't have for this file the way I did for Report's. Add
+  // an `admin: CurrentUserDto` parameter and an
+  // INFORMATION_SUBMITTER_INFORMATION_OPENED-shaped emit here once
+  // that enum member exists, following the exact pattern in
+  // ReportService.findOneForAdmin.
   // ─────────────────────────────────────────────
 
   async findOneForAdmin(id: string) {
@@ -797,9 +1118,23 @@ export class InformationSubmissionService {
   // ADMIN — UPDATE STATUS
   // Only moves PENDING → UNDER_REVIEW. Terminal decisions
   // (REVIEWED / REJECTED) must go through review().
+  //
+  // FIX (audit review, item #1): the invalid-transition guard threw
+  // with no row. Now emits FAILURE first.
+  //
+  // FIX (audit review, item #4): entityLabel added.
+  //
+  // NOTE: the submission.status === status branch stays a silent
+  // no-op rather than an audited failure — unlike ReportService's
+  // updateStatus, a same-status "transition" here isn't reachable
+  // from more than one caller racing (there's exactly one legal
+  // transition out of PENDING), so it's much more likely to be an
+  // idempotent retry than a conflict worth surfacing.
   // ─────────────────────────────────────────────
 
   async updateStatus(admin: CurrentUserDto, id: string, status: InformationStatus) {
+    const actorType = resolveActorType(this.getRoles(admin));
+
     const submission = await this.prisma.informationSubmission.findUnique({ where: { id } });
 
     if (!submission) {
@@ -810,9 +1145,26 @@ export class InformationSubmissionService {
       return submission;
     }
 
+    const label = this.buildSubmissionLabel(submission);
     const allowedNext = this.ALLOWED_STATUS_TRANSITIONS[submission.status] ?? [];
 
     if (!allowedNext.includes(status)) {
+      this.emitAudit({
+        userId: admin.id,
+        targetUserId: submission.userId,
+        actorType,
+        action: AuditEventEnum.INFORMATION_UNDER_REVIEW,
+        outcome: AuditOutcome.FAILURE,
+        severity: AuditSeverity.WARNING,
+        entity: 'InformationSubmission',
+        entityId: id,
+        entityLabel: label,
+        diff: {
+          result: 'failure',
+          currentStatus: submission.status,
+          attemptedStatus: status,
+        },
+      });
       throw new BadRequestException(`invalid_status_transition: ${submission.status} -> ${status}`);
     }
 
@@ -823,15 +1175,18 @@ export class InformationSubmissionService {
 
     this.emitAudit({
       userId: admin.id,
-      actorType: resolveActorType(admin.roles ?? []),
+      targetUserId: submission.userId,
+      actorType,
       action: AuditEventEnum.INFORMATION_UNDER_REVIEW,
       entity: 'InformationSubmission',
       entityId: updated.id,
+      entityLabel: label,
       diff: {
         previousStatus: submission.status,
         newStatus: updated.status,
         result: 'success',
       },
+      metadata: { missingPersonId: submission.missingPersonId },
     });
 
     return updated;
@@ -840,6 +1195,30 @@ export class InformationSubmissionService {
   // ─────────────────────────────────────────────
   // ADMIN — REVIEW (terminal decision)
   // Only valid from UNDER_REVIEW. reviewNote required on REJECTED.
+  //
+  // FIX (audit review, item #2): submissionOwnerId was buried inside
+  // `diff`, which should describe the change to the submission's
+  // status — the tipster whose submission this is about the actual
+  // subject of an admin's terminal decision, so it's now the
+  // top-level targetUserId instead.
+  //
+  // FIX (audit review, item #3): reviewNote is the reviewing admin's
+  // actual human-written rationale (mandatory on rejection, optional
+  // on approval) — it was previously only forwarded to the
+  // notification event and never written to the audit trail at all.
+  // Now promoted to the top-level reason column.
+  //
+  // FIX (audit review, item #1): all three guards
+  // (invalid_review_status, invalid_status_transition,
+  // review_note_required_for_rejection) threw with no row. Now emit
+  // FAILURE first. The reviewer's roles are resolved up front so
+  // these early emits have a real actorType rather than a guess.
+  //
+  // FIX (audit review, item #4): entityLabel added.
+  //
+  // FIX (audit review, item #5): missingPersonId added to metadata —
+  // it was already in the notification payload but never in the
+  // audit row itself.
   // ─────────────────────────────────────────────
 
   async review(
@@ -848,21 +1227,71 @@ export class InformationSubmissionService {
     reviewNote: string | undefined,
     reviewer: CurrentUserDto,
   ) {
+    const actorType = resolveActorType(this.getRoles(reviewer));
+
     const submission = await this.prisma.informationSubmission.findUnique({ where: { id } });
 
     if (!submission) {
       throw new NotFoundException('information_submission_not_found');
     }
 
+    const label = this.buildSubmissionLabel(submission);
+
     if (status !== InformationStatus.REVIEWED && status !== InformationStatus.REJECTED) {
+      this.emitAudit({
+        userId: reviewer.id,
+        targetUserId: submission.userId,
+        actorType,
+        action: AuditEventEnum.INFORMATION_REJECTED,
+        outcome: AuditOutcome.FAILURE,
+        severity: AuditSeverity.WARNING,
+        entity: 'InformationSubmission',
+        entityId: id,
+        entityLabel: label,
+        diff: { result: 'failure', reason: 'invalid_review_status', attemptedStatus: status },
+      });
       throw new BadRequestException('invalid_review_status');
     }
 
+    const auditEventForStatus =
+      status === InformationStatus.REVIEWED
+        ? AuditEventEnum.INFORMATION_REVIEWED
+        : AuditEventEnum.INFORMATION_REJECTED;
+
     if (submission.status !== InformationStatus.UNDER_REVIEW) {
+      this.emitAudit({
+        userId: reviewer.id,
+        targetUserId: submission.userId,
+        actorType,
+        action: auditEventForStatus,
+        outcome: AuditOutcome.FAILURE,
+        severity: AuditSeverity.WARNING,
+        entity: 'InformationSubmission',
+        entityId: id,
+        entityLabel: label,
+        diff: {
+          result: 'failure',
+          reason: 'invalid_status_transition',
+          currentStatus: submission.status,
+          attemptedStatus: status,
+        },
+      });
       throw new BadRequestException(`invalid_status_transition: ${submission.status} -> ${status}`);
     }
 
     if (status === InformationStatus.REJECTED && !reviewNote?.trim()) {
+      this.emitAudit({
+        userId: reviewer.id,
+        targetUserId: submission.userId,
+        actorType,
+        action: auditEventForStatus,
+        outcome: AuditOutcome.FAILURE,
+        severity: AuditSeverity.WARNING,
+        entity: 'InformationSubmission',
+        entityId: id,
+        entityLabel: label,
+        diff: { result: 'failure', reason: 'review_note_required_for_rejection' },
+      });
       throw new BadRequestException('review_note_required_for_rejection');
     }
 
@@ -874,23 +1303,21 @@ export class InformationSubmissionService {
       },
     });
 
-    const auditEvent =
-      status === InformationStatus.REVIEWED
-        ? AuditEventEnum.INFORMATION_REVIEWED
-        : AuditEventEnum.INFORMATION_REJECTED;
-
     this.emitAudit({
       userId: reviewer.id,
-      actorType: resolveActorType(reviewer.roles ?? []),
-      action: auditEvent,
+      targetUserId: submission.userId,
+      actorType,
+      action: auditEventForStatus,
       entity: 'InformationSubmission',
       entityId: updated.id,
+      entityLabel: label,
+      reason: reviewNote ?? null,
       diff: {
-        submissionOwnerId: submission.userId,
         previousStatus: submission.status,
         newStatus: status,
         result: 'success',
       },
+      metadata: { missingPersonId: submission.missingPersonId },
     });
 
     const notificationEvent =

@@ -24,6 +24,7 @@ import { RequireReauthentication } from 'src/common/decorators/reauth.decorator'
 import { MediaKeyQueryDto } from 'src/modules/media/dto/media-key-query.dto';
 
 import {
+  AdminCreateMissingPersonDto,
   CreateMissingPersonDto,
   ListMissingPersonsAdminQueryDto,
   ListMissingPersonsQueryDto,
@@ -39,17 +40,6 @@ import { MissingPersonService } from '../service/missing-person.service';
 export class MissingPersonController {
   constructor(private readonly missingPersonService: MissingPersonService) {}
 
-  // ─────────────────────────────────────────────
-  // CREATE
-  // POST /missing-persons
-  // Authenticated USER
-  //
-  // FIX (item #5): accepts an optional Idempotency-Key header —
-  // same convention as ReportController.create()/PostController.create().
-  // A client retrying after a dropped response gets the original
-  // submission back instead of creating a duplicate.
-  // ─────────────────────────────────────────────
-
   @Post()
   @ApiBearerAuth('access-token')
   @RequireReauthentication()
@@ -62,11 +52,19 @@ export class MissingPersonController {
     return this.missingPersonService.create(user, data, idempotencyKey);
   }
 
-  // ─────────────────────────────────────────────
-  // MY SUBMISSIONS (paginated)
-  // GET /missing-persons/mine
-  // Authenticated USER
-  // ─────────────────────────────────────────────
+  // Admin creates a case directly. CHILD cases still need two-admin approval.
+  @Post('admin')
+  @ApiBearerAuth('access-token')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.MISSING_PERSON_REVIEW)
+  @ApiOperation({ summary: 'Admin: create a missing person case directly' })
+  async createByAdmin(
+    @CurrentUser() admin: CurrentUserDto,
+    @Body() data: AdminCreateMissingPersonDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.missingPersonService.createByAdmin(admin, data, idempotencyKey);
+  }
 
   @Get('mine')
   @ApiBearerAuth('access-token')
@@ -79,17 +77,6 @@ export class MissingPersonController {
     return this.missingPersonService.findMine(user, query);
   }
 
-  // ─────────────────────────────────────────────
-  // OWNER — GET MEDIA DOWNLOAD URL
-  // GET /missing-persons/mine/:id/media?key=...
-  //
-  // Lets the submitter request a download URL for a key attached
-  // to their own submission, in any status — mirrors
-  // ReportController's reporter-owned media route.
-  //
-  // Authenticated USER
-  // ─────────────────────────────────────────────
-
   @Get('mine/:id/media')
   @ApiBearerAuth('access-token')
   @ApiOperation({ summary: "Get a short-lived download URL for one of my own submission's media" })
@@ -101,20 +88,6 @@ export class MissingPersonController {
     return this.missingPersonService.getMediaDownloadUrlForOwner(user, id, query.key);
   }
 
-  // ─────────────────────────────────────────────
-  // APPROVED LIST
-  // GET /missing-persons
-  // Authenticated USER (CHANGED — was Anonymous)
-  //
-  // CHANGED: approved missing-person records are sensitive enough
-  // that browsing the list should require being logged in, not be
-  // open to anonymous visitors. @AllowAnonymous() removed; the
-  // global auth guard now applies same as any other authenticated
-  // route on this controller. Any authenticated role can read this
-  // — no @Roles()/@RequirePermissions() beyond "logged in", since
-  // this isn't an admin-only view.
-  // ─────────────────────────────────────────────
-
   @Get()
   @ApiBearerAuth('access-token')
   @ApiOperation({ summary: 'Get approved missing persons (requires login)' })
@@ -125,15 +98,7 @@ export class MissingPersonController {
     return this.missingPersonService.findAll(query);
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — GET ALL (lightweight list)
-  // GET /missing-persons/admin/all
-  // ADMIN / SUPER_ADMIN
-  //
-  // Registered before ':id' and 'admin/:id' so this literal route
-  // is never swallowed by a param route.
-  // ─────────────────────────────────────────────
-
+  // Literal admin routes come before ':id' so they are not swallowed.
   @Get('admin/all')
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
@@ -147,18 +112,6 @@ export class MissingPersonController {
     return this.missingPersonService.findAllForAdmin(query);
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — STALE / UNREVIEWED-TOO-LONG CASES
-  // GET /missing-persons/admin/stale
-  // (item #15)
-  //
-  // Declared BEFORE 'admin/:id' so Nest doesn't treat "stale" as a
-  // missing-person id — same route-order reasoning as Report/Post's
-  // equivalent routes.
-  //
-  // ADMIN / SUPER_ADMIN
-  // ─────────────────────────────────────────────
-
   @Get('admin/stale')
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
@@ -167,14 +120,6 @@ export class MissingPersonController {
   async findStalePending() {
     return this.missingPersonService.findStalePending();
   }
-
-  // ─────────────────────────────────────────────
-  // ADMIN — GET ONE (full detail, incl. information submissions)
-  // GET /missing-persons/admin/:id
-  // ADMIN / SUPER_ADMIN
-  //
-  // Registered before the public ':id' route below.
-  // ─────────────────────────────────────────────
 
   @Get('admin/:id')
   @ApiBearerAuth('access-token')
@@ -185,17 +130,6 @@ export class MissingPersonController {
   async findOneForAdmin(@Param('id') id: string) {
     return this.missingPersonService.findOneForAdmin(id);
   }
-
-  // ─────────────────────────────────────────────
-  // ADMIN — GET MEDIA DOWNLOAD URL
-  // GET /missing-persons/admin/:id/media?key=...
-  //
-  // Admins can request a download URL for any media key actually
-  // attached to the submission, regardless of status — same
-  // admin-only, no-visibility-filtering access as findOneForAdmin().
-  // Now passes the admin through for audit logging, matching
-  // ReportController's admin media route.
-  // ─────────────────────────────────────────────
 
   @Get('admin/:id/media')
   @ApiBearerAuth('access-token')
@@ -210,16 +144,6 @@ export class MissingPersonController {
     return this.missingPersonService.getMediaDownloadUrl(admin, id, query.key);
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — PER-CASE HISTORY / TIMELINE
-  // GET /missing-persons/admin/:id/history
-  // (item #18)
-  //
-  // Mirrors ReportController.getHistory / PostController.getHistory.
-  //
-  // ADMIN / SUPER_ADMIN
-  // ─────────────────────────────────────────────
-
   @Get('admin/:id/history')
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
@@ -228,19 +152,6 @@ export class MissingPersonController {
   async getHistory(@Param('id') id: string) {
     return this.missingPersonService.getHistory(id);
   }
-
-  // ─────────────────────────────────────────────
-  // ADMIN — CLAIM / UNCLAIM
-  // PATCH /missing-persons/admin/:id/claim
-  // PATCH /missing-persons/admin/:id/unclaim
-  // (item #17)
-  //
-  // Self-serve claim, mirroring PostController.claimPost/unclaimPost
-  // — any ADMIN/SUPER_ADMIN may claim an unclaimed case; only the
-  // claimant (or an explicit unclaim) may release it.
-  //
-  // ADMIN / SUPER_ADMIN
-  // ─────────────────────────────────────────────
 
   @Patch('admin/:id/claim')
   @ApiBearerAuth('access-token')
@@ -259,22 +170,6 @@ export class MissingPersonController {
   async unclaim(@CurrentUser() admin: CurrentUserDto, @Param('id') id: string) {
     return this.missingPersonService.unclaimMissingPerson(admin, id);
   }
-
-  // ─────────────────────────────────────────────
-  // ADMIN — UPDATE REWARD
-  // PATCH /missing-persons/admin/:id/reward
-  // (NEW)
-  //
-  // Separate from status: approving/revising a reward is its own
-  // decision, independent of where the case sits in the review
-  // workflow (PENDING/UNDER_REVIEW/APPROVED/etc. — deliberately NOT
-  // gated by ALLOWED_TRANSITIONS in the service). Same
-  // ADMIN/SUPER_ADMIN + MISSING_PERSON_REVIEW gate as claim/unclaim
-  // and status, since granting a reward is a review-level decision,
-  // not a read-only one.
-  //
-  // ADMIN / SUPER_ADMIN
-  // ─────────────────────────────────────────────
 
   @Patch('admin/:id/reward')
   @ApiBearerAuth('access-token')
@@ -295,35 +190,12 @@ export class MissingPersonController {
     );
   }
 
-  // ─────────────────────────────────────────────
-  // APPROVED — GET ONE
-  // GET /missing-persons/:id
-  // Authenticated USER (CHANGED — was Anonymous) — only ever
-  // returns APPROVED records
-  //
-  // CHANGED: same reasoning as findAll() above — @AllowAnonymous()
-  // removed, now requires login.
-  // ─────────────────────────────────────────────
-
   @Get(':id')
   @ApiBearerAuth('access-token')
   @ApiOperation({ summary: 'Get one approved missing person (requires login)' })
   async findOne(@Param('id') id: string) {
     return this.missingPersonService.findOne(id);
   }
-
-  // ─────────────────────────────────────────────
-  // APPROVED — GET MEDIA DOWNLOAD URL
-  // GET /missing-persons/:id/media?key=...
-  //
-  // Same visibility gate as findOne(): the record must be
-  // APPROVED. Different path depth from the single-segment ':id'
-  // route above, so order relative to it doesn't matter — grouped
-  // here for readability.
-  //
-  // Authenticated USER (CHANGED — was Anonymous), same reasoning
-  // as findAll()/findOne() above.
-  // ─────────────────────────────────────────────
 
   @Get(':id/media')
   @ApiBearerAuth('access-token')
@@ -333,13 +205,6 @@ export class MissingPersonController {
   async getPublicMedia(@Param('id') id: string, @Query() query: MediaKeyQueryDto) {
     return this.missingPersonService.getPublicMediaDownloadUrl(id, query.key);
   }
-
-  // ─────────────────────────────────────────────
-  // UPDATE MY SUBMISSION
-  // PATCH /missing-persons/:id
-  // Authenticated USER — only while PENDING or
-  // MORE_INFORMATION_REQUESTED (enforced in service)
-  // ─────────────────────────────────────────────
 
   @Patch(':id')
   @ApiBearerAuth('access-token')
@@ -353,12 +218,6 @@ export class MissingPersonController {
     return this.missingPersonService.update(user, id, data);
   }
 
-  // ─────────────────────────────────────────────
-  // DELETE MY SUBMISSION
-  // DELETE /missing-persons/:id
-  // Authenticated USER — only while PENDING (enforced in service)
-  // ─────────────────────────────────────────────
-
   @Delete(':id')
   @ApiBearerAuth('access-token')
   @RequireReauthentication()
@@ -366,15 +225,6 @@ export class MissingPersonController {
   async remove(@CurrentUser() user: CurrentUserDto, @Param('id') id: string) {
     return this.missingPersonService.remove(user, id);
   }
-
-  // ─────────────────────────────────────────────
-  // ADMIN — UPDATE STATUS
-  // PATCH /missing-persons/admin/:id/status
-  // ADMIN / SUPER_ADMIN — transitions enforced in service;
-  // reviewNote required for REJECTED / MORE_INFORMATION_REQUESTED;
-  // childSafetyConfirmed required (and dual-control gated) when
-  // approving a personType=CHILD case (item #16).
-  // ─────────────────────────────────────────────
 
   @Patch('admin/:id/status')
   @ApiBearerAuth('access-token')

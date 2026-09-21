@@ -36,9 +36,7 @@ export class CreateVictimProfileDto {
   @Min(0)
   supportGoal?: number;
 
-  // ─── Off-platform transfer destination ───
-  // Not required at creation (draft profiles may not have these yet),
-  // but enforced at the gate stage — see UpdateVictimGateDto handling.
+  // Off-platform transfer destination. Optional here; enforced at the gate stage.
   @IsOptional()
   @IsString()
   @MaxLength(200)
@@ -186,13 +184,7 @@ export class UpdateVictimGateDto {
   isAdminApproved?: boolean;
 }
 
-// ─────────────────────────────────────────────
-// §32 — dedicated gate, only meaningful/enforced when
-// the profile has involvesChild = true. Kept as its own
-// endpoint/DTO rather than folded into UpdateVictimGateDto
-// so the sensitive review always leaves its own audit trail
-// and can't be silently flipped alongside unrelated gates.
-// ─────────────────────────────────────────────
+// §32 — dedicated child-safety gate, kept as its own DTO so it always leaves its own audit trail.
 export class UpdateChildSafetyReviewDto {
   @IsBoolean()
   isChildSafetyReviewed: boolean;
@@ -238,12 +230,7 @@ export class FindAllVictimProfilesQueryDto {
   status?: VictimProfileStatus;
 }
 
-// ─────────────────────────────────────────────
-// Public listing filters — mirrors the admin list's
-// pagination but only exposes fields safe/relevant for
-// the public-facing app (no status filter; public list is
-// implicitly PUBLISHED-only).
-// ─────────────────────────────────────────────
+// Public listing filters — pagination only, implicitly PUBLISHED-only.
 export class FindPublicVictimProfilesQueryDto {
   @IsOptional()
   @Type(() => Number)

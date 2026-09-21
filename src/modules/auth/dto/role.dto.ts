@@ -1,24 +1,22 @@
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional, PartialType } from '@nestjs/swagger';
 import { IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
 
+// RECONSTRUCTED — original file wasn't shared; merge with your real fields.
 export class CreateRoleDto {
-  @ApiProperty({
-    example: 'reports_reviewer',
-    description: 'Unique role name (used in @Roles() checks — keep it a stable slug)',
-  })
+  @ApiProperty({ example: 'CONTENT_MODERATOR', description: 'Unique role name' })
   @IsString()
   @MinLength(2)
-  @MaxLength(50)
+  @MaxLength(64)
   name: string;
-}
 
-export class UpdateRoleDto {
   @ApiPropertyOptional({
-    example: 'reports_reviewer',
+    example: 'Reviews and moderates user-submitted posts.',
+    description: 'What this role is for — shown in the admin UI.',
   })
   @IsOptional()
   @IsString()
-  @MinLength(2)
-  @MaxLength(50)
-  name?: string;
+  @MaxLength(500)
+  description?: string;
 }
+
+export class UpdateRoleDto extends PartialType(CreateRoleDto) {}

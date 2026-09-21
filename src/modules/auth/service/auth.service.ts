@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Injectable,
+  Logger,
   NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -9,7 +10,13 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 
-import { UserOtpPurposeEnum, OtpChannelEnum, Prisma } from '@prisma/client';
+import {
+  AuditOutcome,
+  AuditSeverity,
+  UserOtpPurposeEnum,
+  OtpChannelEnum,
+  Prisma,
+} from '@prisma/client';
 
 import * as bcrypt from 'bcrypt';
 
@@ -50,7 +57,6 @@ type TokenPair = {
   refreshToken: string;
 };
 
-// login() result; if phone isn't verified, a fresh OTP is sent instead of tokens.
 type LoginResult =
   | TokenPair
   | {
@@ -59,7 +65,6 @@ type LoginResult =
       message: string;
     };
 
-// forgotPassword() result; purpose tells client which OTP screen to use.
 type ForgotPasswordResult = {
   verificationId: string;
   purpose?: 'password_reset' | 'phone_verification';
@@ -67,7 +72,6 @@ type ForgotPasswordResult = {
 
 const ADMIN_ROLES = [RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN];
 
-// Shape shared by every userRoles->role->rolePermissions->permission Prisma query result.
 type UserRoleWithPermissions = {
   role: {
     name: string;
@@ -75,8 +79,17 @@ type UserRoleWithPermissions = {
   };
 };
 
+type OtpAuditRecord = { id: string; purpose: UserOtpPurposeEnum; attempts: number };
+type OtpAuditUser = { id: string; name: string | null };
+
+type AuditMetadata = Record<string, string | number | boolean | null>;
+
+const SYSTEM_ACTOR = 'SYSTEM' as unknown as ReturnType<typeof resolveActorType>;
+
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
@@ -87,12 +100,62 @@ export class AuthService {
     private readonly tokenUtil: TokenUtil,
   ) {}
 
-  // Typed audit-emit helper so a missing field is caught at compile time, not silently dropped.
   private emitAudit(payload: AuditEventPayload): void {
     this.eventEmitter.emit(payload.action, payload);
   }
 
-  // Narrows `string | null` -> `string` for phone; throws instead of passing null downstream.
+  private maskPhone(phone: string): string {
+    return phone.length <= 4 ? '****' : `${'*'.repeat(phone.length - 4)}${phone.slice(-4)}`;
+  }
+
+  private emitOtpRejected(args: {
+    action: AuditEventEnum;
+    reason: string;
+    outcome: AuditOutcome;
+    severity: AuditSeverity;
+    otp?: OtpAuditRecord;
+    user?: OtpAuditUser;
+    roles?: string[];
+    metadata?: AuditMetadata;
+  }): void {
+    const { action, reason, outcome, severity, otp, user, roles, metadata } = args;
+
+    this.emitAudit({
+      userId: user?.id ?? null,
+      actorType: resolveActorType(roles ?? []),
+      action,
+      outcome,
+      severity,
+      entity: 'UserOtp',
+      entityId: otp?.id ?? null,
+      entityLabel: otp ? `${otp.purpose} OTP` : undefined,
+      diff: { result: outcome === AuditOutcome.DENIED ? 'denied' : 'failure', reason },
+      metadata: {
+        ...(otp ? { purpose: otp.purpose, attempts: otp.attempts } : {}),
+        ...(metadata ?? {}),
+      },
+    });
+  }
+
+  private emitOtpLockout(otp: OtpAuditRecord, user: OtpAuditUser): void {
+    this.emitAudit({
+      targetUserId: user.id,
+      actorType: SYSTEM_ACTOR,
+      action: AuditEventEnum.SECURITY_ALERT,
+      outcome: AuditOutcome.DENIED,
+      severity: AuditSeverity.WARNING,
+      entity: 'UserOtp',
+      entityId: otp.id,
+      entityLabel: `${otp.purpose} OTP`,
+      diff: { result: 'denied', reason: 'too_many_otp_attempts', accountLocked: true },
+      metadata: {
+        purpose: otp.purpose,
+        attempts: otp.attempts,
+        targetUserName: user.name ?? null,
+      },
+    });
+  }
+
   private requirePhone(phone: string | null): string {
     if (!phone) {
       throw new BadRequestException('phone_number_missing');
@@ -100,13 +163,10 @@ export class AuthService {
     return phone;
   }
 
-  // Shared "is this role set an admin?" check — duplicated in AdminAuthService by design
-  // (auth/ and admin-auth/ deliberately don't import from each other).
   private hasAdminRole(roles: string[]): boolean {
     return roles.some((role) => ADMIN_ROLES.includes(role as RolesEnum));
   }
 
-  // Flattens every permission across every role a user holds into one deduped array.
   private derivePermissions(userRoles: UserRoleWithPermissions[]): string[] {
     return [
       ...new Set(
@@ -117,12 +177,9 @@ export class AuthService {
     ];
   }
 
-  // Detects a Prisma P2002 unique-constraint violation for clean 400s on races.
   private isUniqueConstraintError(error: unknown): boolean {
     return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002';
   }
-
-  // SIGN UP
 
   async signup(data: SignupDto): Promise<{ verificationId: string }> {
     const phone = this.normalizePhoneOrThrow(data.phone);
@@ -133,10 +190,20 @@ export class AuthService {
 
     if (existingUser) {
       if (existingUser.isPhoneVerified) {
+        this.emitAudit({
+          targetUserId: existingUser.id,
+          actorType: resolveActorType([]),
+          action: AuditEventEnum.USER_CREATED,
+          outcome: AuditOutcome.FAILURE,
+          severity: AuditSeverity.INFO,
+          entity: 'User',
+          entityId: existingUser.id,
+          entityLabel: existingUser.name ?? undefined,
+          diff: { result: 'failure', reason: 'phone_already_registered' },
+        });
         throw new BadRequestException('phone_already_registered');
       }
 
-      // Unverified existing account: resend OTP instead of blocking or duplicating.
       const { verificationId } = await this.otpUtil.issueAndSendOtp(
         existingUser.id,
         this.requirePhone(existingUser.phone),
@@ -152,12 +219,21 @@ export class AuthService {
     });
 
     if (!userRole) {
+      this.emitAudit({
+        actorType: resolveActorType([]),
+        action: AuditEventEnum.USER_CREATED,
+        outcome: AuditOutcome.FAILURE,
+        severity: AuditSeverity.CRITICAL,
+        entity: 'User',
+        entityId: null,
+        diff: { result: 'failure', reason: 'user_role_not_configured' },
+        metadata: { attemptedPhone: this.maskPhone(phone) },
+      });
       throw new BadRequestException('user_role_not_configured');
     }
 
     const hashedPassword = await bcrypt.hash(data.password, 10);
 
-    // Create user + OTP in one transaction; SMS sent outside it.
     let result: { verificationId: string; otp: string; phone: string | null; userId: string };
 
     try {
@@ -196,45 +272,53 @@ export class AuthService {
         };
       });
     } catch (error) {
-      // Concurrent request created this phone between our lookup and this write.
       if (this.isUniqueConstraintError(error)) {
+        this.emitAudit({
+          actorType: resolveActorType([]),
+          action: AuditEventEnum.USER_CREATED,
+          outcome: AuditOutcome.FAILURE,
+          severity: AuditSeverity.INFO,
+          entity: 'User',
+          entityId: null,
+          diff: { result: 'failure', reason: 'phone_already_registered' },
+          metadata: { attemptedPhone: this.maskPhone(phone), raceLost: true },
+        });
         throw new BadRequestException('phone_already_registered');
       }
       throw error;
     }
 
-    // Send signup OTP SMS
     const smsMessage = renderOtpSms({
       otp: result.otp,
       expiresInMinutes: this.configService.get<number>('otp.expiresInMinutes', 10),
+      purpose: UserOtpPurposeEnum.phone_verification,
     });
+
+    let smsDelivered = true;
 
     try {
       await sendSms(this.requirePhone(result.phone), smsMessage);
     } catch (error) {
-      // Log failure only; user/OTP already persisted, client can use resendSignupOtp().
-      console.error(`[EHTE SMS] Failed to send signup OTP to ${result.phone}`, error);
+      smsDelivered = false;
+      this.logger.error(
+        `Failed to send signup OTP to ${this.maskPhone(phone)}`,
+        error instanceof Error ? error.stack : String(error),
+      );
     }
 
-    // DEV ONLY: remove before production
-    if (this.configService.get<boolean>('app.debug', false)) {
-      console.log(`[EHTE DEV] Signup OTP for ${result.phone}: ${result.otp}`);
-    }
-
-    // Audit user creation (never include password/OTP/token data)
     this.emitAudit({
       userId: result.userId,
       actorType: resolveActorType([userRole.name]),
       action: AuditEventEnum.USER_CREATED,
       entity: 'User',
       entityId: result.userId,
+      entityLabel: data.name,
       diff: { result: 'success' },
+      metadata: { otpChannel: 'sms', smsDelivered },
     });
 
     return { verificationId: result.verificationId };
   }
-
-  // VERIFY SIGNUP OTP
 
   async verifySignupOtp(data: SignupVerifyDto): Promise<TokenPair> {
     const phone = this.normalizePhoneOrThrow(data.phone);
@@ -259,39 +343,84 @@ export class AuthService {
     });
 
     if (!otpRecord) {
-      throw new BadRequestException('invalid_or_expired_otp');
-    }
-
-    if (otpRecord.user.phone !== phone) {
-      throw new BadRequestException('invalid_or_expired_otp');
-    }
-
-    if (
-      otpRecord.purpose !== UserOtpPurposeEnum.phone_verification ||
-      otpRecord.usedAt ||
-      otpRecord.expiresAt < new Date()
-    ) {
+      this.emitOtpRejected({
+        action: AuditEventEnum.OTP_VERIFIED,
+        reason: 'otp_not_found',
+        outcome: AuditOutcome.DENIED,
+        severity: AuditSeverity.WARNING,
+        metadata: { attemptedVerificationId: data.verificationId },
+      });
       throw new BadRequestException('invalid_or_expired_otp');
     }
 
     const roles = otpRecord.user.userRoles.map((userRole) => userRole.role.name);
     const permissions = this.derivePermissions(otpRecord.user.userRoles);
 
-    // Enforce max OTP attempts
+    const otpAudit: OtpAuditRecord = {
+      id: otpRecord.id,
+      purpose: otpRecord.purpose,
+      attempts: otpRecord.attempts,
+    };
+    const userAudit: OtpAuditUser = { id: otpRecord.user.id, name: otpRecord.user.name };
+
+    if (otpRecord.user.phone !== phone) {
+      this.emitOtpRejected({
+        action: AuditEventEnum.OTP_VERIFIED,
+        reason: 'phone_mismatch',
+        outcome: AuditOutcome.DENIED,
+        severity: AuditSeverity.WARNING,
+        otp: otpAudit,
+        user: userAudit,
+        roles,
+        metadata: { attemptedPhone: this.maskPhone(phone) },
+      });
+      throw new BadRequestException('invalid_or_expired_otp');
+    }
+
+    if (otpRecord.purpose !== UserOtpPurposeEnum.phone_verification) {
+      this.emitOtpRejected({
+        action: AuditEventEnum.OTP_VERIFIED,
+        reason: 'otp_purpose_mismatch',
+        outcome: AuditOutcome.DENIED,
+        severity: AuditSeverity.WARNING,
+        otp: otpAudit,
+        user: userAudit,
+        roles,
+        metadata: { expectedPurpose: UserOtpPurposeEnum.phone_verification },
+      });
+      throw new BadRequestException('invalid_or_expired_otp');
+    }
+
+    if (otpRecord.usedAt) {
+      this.emitOtpRejected({
+        action: AuditEventEnum.OTP_VERIFIED,
+        reason: 'otp_already_used',
+        outcome: AuditOutcome.DENIED,
+        severity: AuditSeverity.WARNING,
+        otp: otpAudit,
+        user: userAudit,
+        roles,
+      });
+      throw new BadRequestException('invalid_or_expired_otp');
+    }
+
+    if (otpRecord.expiresAt < new Date()) {
+      this.emitOtpRejected({
+        action: AuditEventEnum.OTP_VERIFIED,
+        reason: 'otp_expired',
+        outcome: AuditOutcome.DENIED,
+        severity: AuditSeverity.INFO,
+        otp: otpAudit,
+        user: userAudit,
+        roles,
+      });
+      throw new BadRequestException('invalid_or_expired_otp');
+    }
+
     if (otpRecord.attempts >= 5) {
       await this.lockoutUtil.lockAccountForOtpAbuse(otpRecord.user.id);
 
-      this.emitAudit({
-        userId: otpRecord.user.id,
-        actorType: resolveActorType(roles),
-        action: AuditEventEnum.SECURITY_ALERT,
-        entity: 'UserOtp',
-        entityId: otpRecord.id,
-        diff: {
-          reason: 'too_many_otp_attempts',
-          purpose: 'phone_verification',
-        },
-      });
+      this.emitOtpLockout(otpAudit, userAudit);
 
       throw new BadRequestException('too_many_otp_attempts');
     }
@@ -305,27 +434,25 @@ export class AuthService {
         select: { attempts: true },
       });
 
-      // Lock the account once failed attempts hit the max, not just alert.
       if (updatedOtp.attempts >= 5) {
         await this.lockoutUtil.lockAccountForOtpAbuse(otpRecord.user.id);
 
-        this.emitAudit({
-          userId: otpRecord.user.id,
-          actorType: resolveActorType(roles),
-          action: AuditEventEnum.SECURITY_ALERT,
-          entity: 'UserOtp',
-          entityId: otpRecord.id,
-          diff: {
-            reason: 'too_many_otp_attempts',
-            purpose: 'phone_verification',
-          },
+        this.emitOtpLockout({ ...otpAudit, attempts: updatedOtp.attempts }, userAudit);
+      } else {
+        this.emitOtpRejected({
+          action: AuditEventEnum.OTP_VERIFIED,
+          reason: 'invalid_otp',
+          outcome: AuditOutcome.FAILURE,
+          severity: AuditSeverity.WARNING,
+          otp: { ...otpAudit, attempts: updatedOtp.attempts },
+          user: userAudit,
+          roles,
         });
       }
 
       throw new BadRequestException('invalid_or_expired_otp');
     }
 
-    // Atomically claim the OTP (usedAt: null in where) and flip isPhoneVerified together.
     await this.prisma.$transaction(async (tx) => {
       const claimed = await tx.userOtp.updateMany({
         where: {
@@ -338,7 +465,15 @@ export class AuthService {
       });
 
       if (claimed.count === 0) {
-        // Lost the race, already consumed, or expired
+        this.emitOtpRejected({
+          action: AuditEventEnum.OTP_VERIFIED,
+          reason: 'otp_claim_conflict',
+          outcome: AuditOutcome.FAILURE,
+          severity: AuditSeverity.WARNING,
+          otp: otpAudit,
+          user: userAudit,
+          roles,
+        });
         throw new BadRequestException('invalid_or_expired_otp');
       }
 
@@ -348,14 +483,19 @@ export class AuthService {
       });
     });
 
-    // Audit successful verification
     this.emitAudit({
       userId: otpRecord.user.id,
       actorType: resolveActorType(roles),
       action: AuditEventEnum.OTP_VERIFIED,
       entity: 'UserOtp',
       entityId: otpRecord.id,
-      diff: { purpose: 'phone_verification', result: 'success' },
+      entityLabel: `${otpRecord.purpose} OTP`,
+      diff: {
+        result: 'success',
+        previousIsPhoneVerified: otpRecord.user.isPhoneVerified,
+        currentIsPhoneVerified: true,
+      },
+      metadata: { purpose: otpRecord.purpose },
     });
 
     return this.tokenUtil.issueTokens(
@@ -365,8 +505,6 @@ export class AuthService {
       permissions,
     );
   }
-
-  // RESEND SIGNUP OTP
 
   async resendSignupOtp(verificationId: string): Promise<{ verificationId: string }> {
     const oldOtp = await this.prisma.userOtp.findUnique({
@@ -391,8 +529,6 @@ export class AuthService {
 
     return { verificationId: newVerificationId };
   }
-
-  // LOGIN — requires isPhoneVerified + the USER role; a pure admin account is rejected here.
 
   async login(data: LoginDto): Promise<LoginResult> {
     const phone = this.normalizePhoneOrThrow(data.phone);
@@ -419,9 +555,16 @@ export class AuthService {
           user ? user.userRoles.map((userRole) => userRole.role.name) : [],
         ),
         action: AuditEventEnum.LOGIN_FAILED,
+        outcome: AuditOutcome.FAILURE,
+        severity: AuditSeverity.WARNING,
         entity: 'User',
         entityId: user?.id ?? null,
-        diff: { method: 'password', result: 'failed' },
+        entityLabel: user?.name ?? undefined,
+        diff: { result: 'failed', reason: user ? 'no_password_set' : 'unknown_account' },
+        metadata: {
+          method: 'password',
+          ...(user ? {} : { attemptedPhone: this.maskPhone(phone) }),
+        },
       });
 
       throw new UnauthorizedException('invalid_credentials');
@@ -430,7 +573,7 @@ export class AuthService {
     const roles = user.userRoles.map((userRole) => userRole.role.name);
     const permissions = this.derivePermissions(user.userRoles);
 
-    // Password checked before any account-state gate, so failure reasons stay indistinguishable.
+    // Password is verified before any account-state check so failures stay indistinguishable.
     const validPassword = await bcrypt.compare(data.password, user.passwordHash);
 
     if (!validPassword) {
@@ -440,33 +583,38 @@ export class AuthService {
         userId: user.id,
         actorType: resolveActorType(roles),
         action: AuditEventEnum.LOGIN_FAILED,
+        outcome: AuditOutcome.FAILURE,
+        severity: AuditSeverity.WARNING,
         entity: 'User',
         entityId: user.id,
-        diff: { method: 'password', result: 'failed' },
+        entityLabel: user.name ?? undefined,
+        diff: { result: 'failed', reason: 'wrong_password' },
+        metadata: { method: 'password' },
       });
 
       throw new UnauthorizedException('invalid_credentials');
     }
 
-    // Roles are additive; only accounts that never held USER at all are blocked here.
     if (!roles.includes(RolesEnum.USER)) {
       this.emitAudit({
         userId: user.id,
         actorType: resolveActorType(roles),
         action: AuditEventEnum.LOGIN_FAILED,
+        outcome: AuditOutcome.DENIED,
+        severity: AuditSeverity.WARNING,
         entity: 'User',
         entityId: user.id,
+        entityLabel: user.name ?? undefined,
         diff: {
-          method: 'password',
           result: 'failed',
           reason: 'no_user_role_use_admin_login',
         },
+        metadata: { method: 'password' },
       });
 
       throw new UnauthorizedException('use_admin_login');
     }
 
-    // Lock check runs only after password verification, so it can't be used as an oracle.
     try {
       this.lockoutUtil.assertNotLocked(user);
     } catch (err) {
@@ -474,18 +622,20 @@ export class AuthService {
         userId: user.id,
         actorType: resolveActorType(roles),
         action: AuditEventEnum.LOGIN_FAILED,
+        outcome: AuditOutcome.DENIED,
+        severity: AuditSeverity.WARNING,
         entity: 'User',
         entityId: user.id,
+        entityLabel: user.name ?? undefined,
         diff: {
-          method: 'password',
           result: 'failed',
           reason: 'account_locked',
         },
+        metadata: { method: 'password' },
       });
       throw err;
     }
 
-    // Correct password clears any prior failure count/lock
     await this.lockoutUtil.resetLoginAttempts(user);
 
     if (!user.isActive) {
@@ -493,20 +643,22 @@ export class AuthService {
         userId: user.id,
         actorType: resolveActorType(roles),
         action: AuditEventEnum.LOGIN_FAILED,
+        outcome: AuditOutcome.DENIED,
+        severity: AuditSeverity.WARNING,
         entity: 'User',
         entityId: user.id,
+        entityLabel: user.name ?? undefined,
         diff: {
-          method: 'password',
           result: 'failed',
           reason: 'account_inactive',
         },
+        metadata: { method: 'password' },
       });
 
       throw new UnauthorizedException('account_inactive');
     }
 
     if (!user.isPhoneVerified) {
-      // Password was correct — route to verification instead of dead-ending, not a failure.
       const { verificationId } = await this.otpUtil.issueAndSendOtp(
         user.id,
         this.requirePhone(user.phone),
@@ -527,7 +679,9 @@ export class AuthService {
       action: AuditEventEnum.LOGIN_SUCCESS,
       entity: 'User',
       entityId: user.id,
-      diff: { method: 'password', result: 'success' },
+      entityLabel: user.name ?? undefined,
+      diff: { result: 'success' },
+      metadata: { method: 'password' },
     });
 
     return this.tokenUtil.issueTokens(
@@ -538,8 +692,6 @@ export class AuthService {
     );
   }
 
-  // FORGOT PASSWORD — masks "no account", "inactive", and "holds an admin role" identically.
-
   async forgotPassword(data: ForgotPasswordDto): Promise<ForgotPasswordResult> {
     const phone = this.normalizePhoneOrThrow(data.phone);
 
@@ -547,6 +699,7 @@ export class AuthService {
       where: { phone },
       select: {
         id: true,
+        name: true,
         phone: true,
         isPhoneVerified: true,
         isActive: true,
@@ -556,10 +709,30 @@ export class AuthService {
 
     const roles = user?.userRoles.map((userRole) => userRole.role.name) ?? [];
 
-    // Masks "no account", "inactive", and "admin role" identically (shared password risk).
-    // Admins never go through this phone-based flow — they use
-    // AdminAuthController's /admin/auth/forgot-password (email-based) instead.
     if (!user || !user.isActive || this.hasAdminRole(roles)) {
+      this.emitAudit({
+        userId: user?.id ?? null,
+        actorType: resolveActorType(roles),
+        action: AuditEventEnum.PASSWORD_RESET,
+        outcome: AuditOutcome.DENIED,
+        severity: AuditSeverity.WARNING,
+        entity: 'User',
+        entityId: user?.id ?? null,
+        entityLabel: user?.name ?? undefined,
+        diff: {
+          result: 'denied',
+          reason: !user
+            ? 'unknown_account'
+            : !user.isActive
+              ? 'account_inactive'
+              : 'admin_role_use_admin_flow',
+        },
+        metadata: {
+          stage: 'forgot_password_request',
+          ...(user ? {} : { attemptedPhone: this.maskPhone(phone) }),
+        },
+      });
+
       return { verificationId: '' };
     }
 
@@ -584,8 +757,6 @@ export class AuthService {
     return { verificationId, purpose: 'password_reset' };
   }
 
-  // RESET PASSWORD
-
   async resetPassword(data: ResetPasswordDto): Promise<{ message: string }> {
     const otpRecord = await this.prisma.userOtp.findUnique({
       where: { id: data.verificationId },
@@ -593,37 +764,77 @@ export class AuthService {
         user: {
           select: {
             id: true,
+            name: true,
             userRoles: { include: { role: true } },
           },
         },
       },
     });
 
-    if (
-      !otpRecord ||
-      otpRecord.purpose !== UserOtpPurposeEnum.password_reset ||
-      otpRecord.usedAt ||
-      otpRecord.expiresAt < new Date()
-    ) {
+    if (!otpRecord) {
+      this.emitOtpRejected({
+        action: AuditEventEnum.PASSWORD_RESET,
+        reason: 'otp_not_found',
+        outcome: AuditOutcome.DENIED,
+        severity: AuditSeverity.WARNING,
+        metadata: { attemptedVerificationId: data.verificationId },
+      });
       throw new BadRequestException('invalid_or_expired_otp');
     }
 
     const roles = otpRecord.user.userRoles.map((userRole) => userRole.role.name);
 
+    const otpAudit: OtpAuditRecord = {
+      id: otpRecord.id,
+      purpose: otpRecord.purpose,
+      attempts: otpRecord.attempts,
+    };
+    const userAudit: OtpAuditUser = { id: otpRecord.user.id, name: otpRecord.user.name };
+
+    if (otpRecord.purpose !== UserOtpPurposeEnum.password_reset) {
+      this.emitOtpRejected({
+        action: AuditEventEnum.PASSWORD_RESET,
+        reason: 'otp_purpose_mismatch',
+        outcome: AuditOutcome.DENIED,
+        severity: AuditSeverity.WARNING,
+        otp: otpAudit,
+        user: userAudit,
+        roles,
+        metadata: { expectedPurpose: UserOtpPurposeEnum.password_reset },
+      });
+      throw new BadRequestException('invalid_or_expired_otp');
+    }
+
+    if (otpRecord.usedAt) {
+      this.emitOtpRejected({
+        action: AuditEventEnum.PASSWORD_RESET,
+        reason: 'otp_already_used',
+        outcome: AuditOutcome.DENIED,
+        severity: AuditSeverity.WARNING,
+        otp: otpAudit,
+        user: userAudit,
+        roles,
+      });
+      throw new BadRequestException('invalid_or_expired_otp');
+    }
+
+    if (otpRecord.expiresAt < new Date()) {
+      this.emitOtpRejected({
+        action: AuditEventEnum.PASSWORD_RESET,
+        reason: 'otp_expired',
+        outcome: AuditOutcome.DENIED,
+        severity: AuditSeverity.INFO,
+        otp: otpAudit,
+        user: userAudit,
+        roles,
+      });
+      throw new BadRequestException('invalid_or_expired_otp');
+    }
+
     if (otpRecord.attempts >= 5) {
       await this.lockoutUtil.lockAccountForOtpAbuse(otpRecord.user.id);
 
-      this.emitAudit({
-        userId: otpRecord.user.id,
-        actorType: resolveActorType(roles),
-        action: AuditEventEnum.SECURITY_ALERT,
-        entity: 'UserOtp',
-        entityId: otpRecord.id,
-        diff: {
-          reason: 'too_many_otp_attempts',
-          purpose: 'password_reset',
-        },
-      });
+      this.emitOtpLockout(otpAudit, userAudit);
 
       throw new BadRequestException('too_many_otp_attempts');
     }
@@ -640,16 +851,16 @@ export class AuthService {
       if (updatedOtp.attempts >= 5) {
         await this.lockoutUtil.lockAccountForOtpAbuse(otpRecord.user.id);
 
-        this.emitAudit({
-          userId: otpRecord.user.id,
-          actorType: resolveActorType(roles),
-          action: AuditEventEnum.SECURITY_ALERT,
-          entity: 'UserOtp',
-          entityId: otpRecord.id,
-          diff: {
-            reason: 'too_many_otp_attempts',
-            purpose: 'password_reset',
-          },
+        this.emitOtpLockout({ ...otpAudit, attempts: updatedOtp.attempts }, userAudit);
+      } else {
+        this.emitOtpRejected({
+          action: AuditEventEnum.PASSWORD_RESET,
+          reason: 'invalid_otp',
+          outcome: AuditOutcome.FAILURE,
+          severity: AuditSeverity.WARNING,
+          otp: { ...otpAudit, attempts: updatedOtp.attempts },
+          user: userAudit,
+          roles,
         });
       }
 
@@ -658,7 +869,8 @@ export class AuthService {
 
     const hashedPassword = await bcrypt.hash(data.newPassword, 10);
 
-    // Same atomic-claim pattern as verifySignupOtp()
+    let sessionsRevoked = 0;
+
     await this.prisma.$transaction(async (tx) => {
       const claimed = await tx.userOtp.updateMany({
         where: {
@@ -671,6 +883,15 @@ export class AuthService {
       });
 
       if (claimed.count === 0) {
+        this.emitOtpRejected({
+          action: AuditEventEnum.PASSWORD_RESET,
+          reason: 'otp_claim_conflict',
+          outcome: AuditOutcome.FAILURE,
+          severity: AuditSeverity.WARNING,
+          otp: otpAudit,
+          user: userAudit,
+          roles,
+        });
         throw new BadRequestException('invalid_or_expired_otp');
       }
 
@@ -679,30 +900,28 @@ export class AuthService {
         data: { passwordHash: hashedPassword },
       });
 
-      // Invalidate every existing session
-      await tx.session.deleteMany({
+      const revoked = await tx.session.deleteMany({
         where: { userId: otpRecord.user.id },
       });
+      sessionsRevoked = revoked.count;
     });
 
-    // Audit after successful transaction
     this.emitAudit({
       userId: otpRecord.user.id,
       actorType: resolveActorType(roles),
       action: AuditEventEnum.PASSWORD_RESET,
       entity: 'User',
       entityId: otpRecord.user.id,
-      diff: { method: 'otp', result: 'success' },
+      entityLabel: otpRecord.user.name ?? undefined,
+      diff: { result: 'success' },
+      metadata: { method: 'otp', sessionsRevoked },
     });
 
-    // Notify after successful transaction
     const resetEvent: PasswordResetEvent = { userId: otpRecord.user.id };
     this.eventEmitter.emit(NotificationEventEnum.PASSWORD_RESET, resetEvent);
 
     return { message: 'password_reset_successful' };
   }
-
-  // REFRESH TOKEN — soft-revokes (not deletes) so a replayed rotated token is detectable.
 
   async refresh(data: RefreshTokenDto): Promise<TokenPair> {
     let payload: {
@@ -712,7 +931,6 @@ export class AuthService {
       type: string;
     };
 
-    // Verify with dedicated refresh secret, falling back to access-token secret.
     const refreshSecret =
       this.configService.get<string>('jwt.refreshSecret') ??
       this.configService.getOrThrow<string>('jwt.secret');
@@ -726,12 +944,22 @@ export class AuthService {
     }
 
     if (payload.type !== 'refresh') {
+      this.emitAudit({
+        userId: payload.sub,
+        actorType: resolveActorType(payload.roles ?? []),
+        action: AuditEventEnum.SECURITY_ALERT,
+        outcome: AuditOutcome.DENIED,
+        severity: AuditSeverity.WARNING,
+        entity: 'User',
+        entityId: payload.sub,
+        diff: { result: 'denied', reason: 'wrong_token_type' },
+        metadata: { method: 'refresh_token', presentedTokenType: payload.type ?? null },
+      });
       throw new UnauthorizedException('invalid_refresh_token');
     }
 
     const refreshTokenHash = this.tokenUtil.hashOpaqueToken(data.refreshToken, 'refresh');
 
-    // Look up by hash alone so we can distinguish "never existed" from "already used".
     const session = await this.prisma.session.findFirst({
       where: {
         userId: payload.sub,
@@ -744,19 +972,26 @@ export class AuthService {
     }
 
     if (session.revokedAt) {
-      // This token was already rotated once — reuse means it was stolen; wipe all sessions.
-      await this.prisma.session.updateMany({
+      // Reuse of a rotated refresh token means it was stolen, so every session is revoked.
+      const wiped = await this.prisma.session.updateMany({
         where: { userId: payload.sub, revokedAt: null },
         data: { revokedAt: new Date() },
       });
 
       this.emitAudit({
-        userId: payload.sub,
-        actorType: resolveActorType(payload.roles ?? []),
+        targetUserId: payload.sub,
+        actorType: SYSTEM_ACTOR,
         action: AuditEventEnum.SECURITY_ALERT,
+        outcome: AuditOutcome.DENIED,
+        severity: AuditSeverity.CRITICAL,
         entity: 'Session',
         entityId: session.id,
-        diff: { reason: 'refresh_token_reuse_detected' },
+        diff: {
+          result: 'denied',
+          reason: 'refresh_token_reuse_detected',
+          sessionsRevoked: wiped.count,
+        },
+        metadata: { reusedTokenRevokedAt: session.revokedAt.toISOString() },
       });
 
       throw new UnauthorizedException('session_expired_or_invalid');
@@ -782,13 +1017,24 @@ export class AuthService {
     });
 
     if (!user || !user.isActive) {
+      this.emitAudit({
+        userId: payload.sub,
+        actorType: resolveActorType(payload.roles ?? []),
+        action: AuditEventEnum.LOGIN_FAILED,
+        outcome: AuditOutcome.DENIED,
+        severity: AuditSeverity.WARNING,
+        entity: 'User',
+        entityId: payload.sub,
+        entityLabel: user?.name ?? undefined,
+        diff: { result: 'failed', reason: user ? 'account_inactive' : 'user_not_found' },
+        metadata: { method: 'refresh_token', sessionId: session.id },
+      });
       throw new UnauthorizedException('user_inactive');
     }
 
     const roles = user.userRoles.map((userRole) => userRole.role.name);
     const permissions = this.derivePermissions(user.userRoles);
 
-    // Soft-revoke the old session, then mint a new one, in one transaction.
     return this.prisma.$transaction(async (tx) => {
       const rotated = await tx.session.updateMany({
         where: { id: session.id, revokedAt: null },
@@ -796,7 +1042,18 @@ export class AuthService {
       });
 
       if (rotated.count === 0) {
-        // Lost a race with a concurrent refresh using the same token
+        this.emitAudit({
+          userId: user.id,
+          actorType: resolveActorType(roles),
+          action: AuditEventEnum.LOGIN_FAILED,
+          outcome: AuditOutcome.FAILURE,
+          severity: AuditSeverity.WARNING,
+          entity: 'User',
+          entityId: user.id,
+          entityLabel: user.name ?? undefined,
+          diff: { result: 'failed', reason: 'refresh_rotation_conflict' },
+          metadata: { method: 'refresh_token', sessionId: session.id },
+        });
         throw new UnauthorizedException('session_expired_or_invalid');
       }
 
@@ -809,8 +1066,6 @@ export class AuthService {
       );
     });
   }
-
-  // CURRENT USER
 
   async me(currentUser: CurrentUserDto) {
     const user = await this.prisma.user.findUnique({
@@ -843,13 +1098,6 @@ export class AuthService {
     return { ...userData, roles };
   }
 
-  // CHANGE PASSWORD (STEP 1) — USER accounts only. Any account holding an admin role
-  // is rejected here and must use the dedicated admin flow instead: AdminAuthController's
-  // POST /admin/auth/change-password/initiate + /verify (current-password check + an
-  // OTP EMAILED to the admin). This USER flow is the phone-first counterpart: current
-  // password is checked here, then an OTP is TEXTED to the user's own registered phone
-  // number, and the actual change only happens once that OTP is verified in step 2.
-
   async changePasswordInitiate(
     user: CurrentUserDto,
     data: ChangePasswordInitiateDto,
@@ -862,29 +1110,72 @@ export class AuthService {
     });
 
     if (!dbUser) {
+      this.emitAudit({
+        userId: user.id,
+        actorType: resolveActorType(user.roles ?? []),
+        action: AuditEventEnum.PASSWORD_CHANGED,
+        outcome: AuditOutcome.FAILURE,
+        severity: AuditSeverity.WARNING,
+        entity: 'User',
+        entityId: user.id,
+        diff: { result: 'failure', reason: 'user_not_found' },
+        metadata: { stage: 'initiate' },
+      });
       throw new NotFoundException('user_not_found');
     }
 
     const roles = dbUser.userRoles.map((userRole) => userRole.role.name);
 
     if (this.hasAdminRole(roles)) {
+      this.emitAudit({
+        userId: dbUser.id,
+        actorType: resolveActorType(roles),
+        action: AuditEventEnum.PASSWORD_CHANGED,
+        outcome: AuditOutcome.DENIED,
+        severity: AuditSeverity.WARNING,
+        entity: 'User',
+        entityId: dbUser.id,
+        entityLabel: dbUser.name ?? undefined,
+        diff: { result: 'denied', reason: 'use_admin_change_password' },
+        metadata: { stage: 'initiate' },
+      });
       throw new UnauthorizedException('use_admin_change_password');
     }
 
     if (!dbUser.passwordHash) {
+      this.emitAudit({
+        userId: dbUser.id,
+        actorType: resolveActorType(roles),
+        action: AuditEventEnum.PASSWORD_CHANGED,
+        outcome: AuditOutcome.FAILURE,
+        severity: AuditSeverity.WARNING,
+        entity: 'User',
+        entityId: dbUser.id,
+        entityLabel: dbUser.name ?? undefined,
+        diff: { result: 'failure', reason: 'password_not_set' },
+        metadata: { stage: 'initiate' },
+      });
       throw new BadRequestException('password_not_set');
     }
 
     const validPassword = await bcrypt.compare(data.currentPassword, dbUser.passwordHash);
 
     if (!validPassword) {
+      this.emitAudit({
+        userId: dbUser.id,
+        actorType: resolveActorType(roles),
+        action: AuditEventEnum.PASSWORD_CHANGED,
+        outcome: AuditOutcome.FAILURE,
+        severity: AuditSeverity.WARNING,
+        entity: 'User',
+        entityId: dbUser.id,
+        entityLabel: dbUser.name ?? undefined,
+        diff: { result: 'failure', reason: 'wrong_current_password' },
+        metadata: { stage: 'initiate' },
+      });
       throw new BadRequestException('wrong_current_password');
     }
 
-    // Dedicated password_change purpose (distinct from password_reset, which stays
-    // scoped to forgotPassword()/resetPassword()) — same SMS channel and proof-of-phone
-    // pattern, just reached only after the current-password check above, and no longer
-    // redeemable via the forgot-password /verify endpoint or vice versa.
     const { verificationId } = await this.otpUtil.issueAndSendOtp(
       dbUser.id,
       this.requirePhone(dbUser.phone),
@@ -895,11 +1186,6 @@ export class AuthService {
     return { verificationId };
   }
 
-  // CHANGE PASSWORD (STEP 2) — possessing the texted OTP proves phone control.
-  // Mirrors resetPassword()'s OTP-claim pattern; kept as a separate method (rather than
-  // calling resetPassword() directly) so the two flows — "forgot it entirely" vs.
-  // "know it, want to change it" — stay independently auditable.
-
   async changePasswordVerify(data: ResetPasswordDto): Promise<{ message: string }> {
     const otpRecord = await this.prisma.userOtp.findUnique({
       where: { id: data.verificationId },
@@ -907,37 +1193,79 @@ export class AuthService {
         user: {
           select: {
             id: true,
+            name: true,
             userRoles: { include: { role: true } },
           },
         },
       },
     });
 
-    if (
-      !otpRecord ||
-      otpRecord.purpose !== UserOtpPurposeEnum.password_change ||
-      otpRecord.usedAt ||
-      otpRecord.expiresAt < new Date()
-    ) {
+    if (!otpRecord) {
+      this.emitOtpRejected({
+        action: AuditEventEnum.PASSWORD_CHANGED,
+        reason: 'otp_not_found',
+        outcome: AuditOutcome.DENIED,
+        severity: AuditSeverity.WARNING,
+        metadata: { attemptedVerificationId: data.verificationId, stage: 'verify' },
+      });
       throw new BadRequestException('invalid_or_expired_otp');
     }
 
     const roles = otpRecord.user.userRoles.map((userRole) => userRole.role.name);
 
+    const otpAudit: OtpAuditRecord = {
+      id: otpRecord.id,
+      purpose: otpRecord.purpose,
+      attempts: otpRecord.attempts,
+    };
+    const userAudit: OtpAuditUser = { id: otpRecord.user.id, name: otpRecord.user.name };
+
+    if (otpRecord.purpose !== UserOtpPurposeEnum.password_change) {
+      this.emitOtpRejected({
+        action: AuditEventEnum.PASSWORD_CHANGED,
+        reason: 'otp_purpose_mismatch',
+        outcome: AuditOutcome.DENIED,
+        severity: AuditSeverity.WARNING,
+        otp: otpAudit,
+        user: userAudit,
+        roles,
+        metadata: { expectedPurpose: UserOtpPurposeEnum.password_change, stage: 'verify' },
+      });
+      throw new BadRequestException('invalid_or_expired_otp');
+    }
+
+    if (otpRecord.usedAt) {
+      this.emitOtpRejected({
+        action: AuditEventEnum.PASSWORD_CHANGED,
+        reason: 'otp_already_used',
+        outcome: AuditOutcome.DENIED,
+        severity: AuditSeverity.WARNING,
+        otp: otpAudit,
+        user: userAudit,
+        roles,
+        metadata: { stage: 'verify' },
+      });
+      throw new BadRequestException('invalid_or_expired_otp');
+    }
+
+    if (otpRecord.expiresAt < new Date()) {
+      this.emitOtpRejected({
+        action: AuditEventEnum.PASSWORD_CHANGED,
+        reason: 'otp_expired',
+        outcome: AuditOutcome.DENIED,
+        severity: AuditSeverity.INFO,
+        otp: otpAudit,
+        user: userAudit,
+        roles,
+        metadata: { stage: 'verify' },
+      });
+      throw new BadRequestException('invalid_or_expired_otp');
+    }
+
     if (otpRecord.attempts >= 5) {
       await this.lockoutUtil.lockAccountForOtpAbuse(otpRecord.user.id);
 
-      this.emitAudit({
-        userId: otpRecord.user.id,
-        actorType: resolveActorType(roles),
-        action: AuditEventEnum.SECURITY_ALERT,
-        entity: 'UserOtp',
-        entityId: otpRecord.id,
-        diff: {
-          reason: 'too_many_otp_attempts',
-          purpose: 'change_password',
-        },
-      });
+      this.emitOtpLockout(otpAudit, userAudit);
 
       throw new BadRequestException('too_many_otp_attempts');
     }
@@ -954,16 +1282,17 @@ export class AuthService {
       if (updatedOtp.attempts >= 5) {
         await this.lockoutUtil.lockAccountForOtpAbuse(otpRecord.user.id);
 
-        this.emitAudit({
-          userId: otpRecord.user.id,
-          actorType: resolveActorType(roles),
-          action: AuditEventEnum.SECURITY_ALERT,
-          entity: 'UserOtp',
-          entityId: otpRecord.id,
-          diff: {
-            reason: 'too_many_otp_attempts',
-            purpose: 'change_password',
-          },
+        this.emitOtpLockout({ ...otpAudit, attempts: updatedOtp.attempts }, userAudit);
+      } else {
+        this.emitOtpRejected({
+          action: AuditEventEnum.PASSWORD_CHANGED,
+          reason: 'invalid_otp',
+          outcome: AuditOutcome.FAILURE,
+          severity: AuditSeverity.WARNING,
+          otp: { ...otpAudit, attempts: updatedOtp.attempts },
+          user: userAudit,
+          roles,
+          metadata: { stage: 'verify' },
         });
       }
 
@@ -971,6 +1300,8 @@ export class AuthService {
     }
 
     const hashedPassword = await bcrypt.hash(data.newPassword, 10);
+
+    let sessionsRevoked = 0;
 
     await this.prisma.$transaction(async (tx) => {
       const claimed = await tx.userOtp.updateMany({
@@ -984,6 +1315,16 @@ export class AuthService {
       });
 
       if (claimed.count === 0) {
+        this.emitOtpRejected({
+          action: AuditEventEnum.PASSWORD_CHANGED,
+          reason: 'otp_claim_conflict',
+          outcome: AuditOutcome.FAILURE,
+          severity: AuditSeverity.WARNING,
+          otp: otpAudit,
+          user: userAudit,
+          roles,
+          metadata: { stage: 'verify' },
+        });
         throw new BadRequestException('invalid_or_expired_otp');
       }
 
@@ -992,48 +1333,49 @@ export class AuthService {
         data: { passwordHash: hashedPassword },
       });
 
-      // Invalidate every existing session, including the one used to call step 1.
-      await tx.session.deleteMany({
+      const revoked = await tx.session.deleteMany({
         where: { userId: otpRecord.user.id },
       });
+      sessionsRevoked = revoked.count;
     });
 
-    // Audit after successful transaction
     this.emitAudit({
       userId: otpRecord.user.id,
       actorType: resolveActorType(roles),
       action: AuditEventEnum.PASSWORD_CHANGED,
       entity: 'User',
       entityId: otpRecord.user.id,
-      diff: { method: 'otp', result: 'success', context: 'change_password_completed' },
+      entityLabel: otpRecord.user.name ?? undefined,
+      diff: { result: 'success' },
+      metadata: { method: 'otp', stage: 'verify', sessionsRevoked },
     });
 
-    // Notify after successful transaction
     const changedEvent: PasswordChangedEvent = { userId: otpRecord.user.id };
     this.eventEmitter.emit(NotificationEventEnum.PASSWORD_CHANGED, changedEvent);
 
     return { message: 'password_changed' };
   }
 
-  // LOGOUT
-
   async logout(user: CurrentUserDto, req: any): Promise<{ message: string }> {
     const refreshToken = req?.body?.refreshToken || req?.headers?.['x-refresh-token'];
 
+    let sessionsRevoked: number;
+
     if (refreshToken) {
-      await this.prisma.session.deleteMany({
+      const deleted = await this.prisma.session.deleteMany({
         where: {
           userId: user.id,
           refreshToken: this.tokenUtil.hashOpaqueToken(refreshToken, 'refresh'),
         },
       });
+      sessionsRevoked = deleted.count;
     } else {
-      await this.prisma.session.deleteMany({
+      const deleted = await this.prisma.session.deleteMany({
         where: { userId: user.id },
       });
+      sessionsRevoked = deleted.count;
     }
 
-    // Roles come straight from JWT payload via CurrentUserDto
     const roles = user.roles ?? [];
 
     this.emitAudit({
@@ -1043,12 +1385,15 @@ export class AuthService {
       entity: 'User',
       entityId: user.id,
       diff: { result: 'success' },
+      metadata: {
+        scope: refreshToken ? 'single_session' : 'all_sessions',
+        sessionsRevoked,
+      },
     });
 
     return { message: 'logout_successful' };
   }
 
-  // Wraps normalizePhoneNumber() so malformed input yields a clean 400, not a raw 500.
   private normalizePhoneOrThrow(phone: string): string {
     try {
       return normalizePhoneNumber(phone);

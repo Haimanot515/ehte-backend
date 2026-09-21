@@ -55,6 +55,18 @@ import { TokenUtil } from 'src/common/utils/token.util';
     TokenUtil,
   ],
 
-  exports: [AuthService, AdminAuthService, RoleService, PermissionService],
+  // FIX: OtpUtil and LockoutUtil are now exported too, not just the
+  // services — CoreModule's UserService needs both (change-phone flow
+  // uses OtpUtil; deactivate/reactivate/discreet-mode paths use
+  // LockoutUtil-adjacent checks). TokenUtil stays unexported until
+  // something outside this module actually needs it.
+  exports: [
+    AuthService,
+    AdminAuthService,
+    RoleService,
+    PermissionService,
+    OtpUtil,
+    LockoutUtil,
+  ],
 })
 export class AuthModule {}

@@ -1,7 +1,7 @@
 model Report {
-  id            String   @id @default(uuid())
+  id            String         @id @default(uuid())
   userId        String
-  caseReference String   @unique
+  caseReference String         @unique
   description   String
   location      String?
   incidentAt    DateTime?
@@ -11,9 +11,9 @@ model Report {
   pdf           String[]
   document      String[]
   other         String[]
-  status        ReportStatus @default(PENDING)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  status        ReportStatus   @default(PENDING)
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
   assignedToId  String?
   category      ReportCategory
 
