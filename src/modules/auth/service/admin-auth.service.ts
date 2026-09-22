@@ -30,7 +30,7 @@ import { OtpUtil } from 'src/common/utils/otp.util';
 import { LockoutUtil } from 'src/common/utils/lockout.util';
 import { TokenUtil } from 'src/common/utils/token.util';
 
-import { sendEmail } from 'src/services/email/email.service';
+import { EmailService } from 'src/services/email/email.service';
 import {
   renderEmailChangeVerificationSubject,
   renderEmailChangeVerificationHtml,
@@ -101,6 +101,7 @@ export class AdminAuthService {
     private readonly otpUtil: OtpUtil,
     private readonly lockoutUtil: LockoutUtil,
     private readonly tokenUtil: TokenUtil,
+    private readonly emailService: EmailService,
   ) {}
 
   private emitAudit(payload: AuditEventPayload): void {
@@ -220,7 +221,7 @@ export class AdminAuthService {
     const registrationExpiresInHours = Math.round(REGISTRATION_TOKEN_EXPIRES_MINUTES / 60);
 
     try {
-      await sendEmail(
+      await this.emailService.sendEmail(
         email,
         renderAdminRegistrationEmailSubject(),
         renderAdminRegistrationEmailHtml({
@@ -727,7 +728,7 @@ export class AdminAuthService {
     const expiresInHours = Math.round(PROMOTION_TOKEN_EXPIRES_MINUTES / 60);
 
     try {
-      await sendEmail(
+      await this.emailService.sendEmail(
         email,
         renderPromotionEmailSubject(),
         renderPromotionEmailHtml({ promotionLink, expiresInHours }),
@@ -853,7 +854,7 @@ export class AdminAuthService {
     const expiresInHours = Math.round(PROMOTION_TOKEN_EXPIRES_MINUTES / 60);
 
     try {
-      await sendEmail(
+      await this.emailService.sendEmail(
         user.email,
         renderPromotionEmailSubject(),
         renderPromotionEmailHtml({ promotionLink, expiresInHours }),
@@ -1729,7 +1730,7 @@ export class AdminAuthService {
     const expiresInHours = Math.round(EMAIL_CHANGE_TOKEN_EXPIRES_MINUTES / 60) || 1;
 
     try {
-      await sendEmail(
+      await this.emailService.sendEmail(
         newEmail,
         renderEmailChangeVerificationSubject(),
         renderEmailChangeVerificationHtml({

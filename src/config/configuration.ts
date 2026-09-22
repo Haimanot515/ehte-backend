@@ -4,29 +4,18 @@ export default () => ({
     env: process.env.NODE_ENV || 'development',
     port: Number(process.env.PORT) || 3000,
 
-    // Public URL of this deployment (e.g. https://ehte-api.onrender.com).
-    // Same value main.ts reads directly via configService.get('APP_URL')
-    // for Swagger's server list. Mapped here too so namespaced lookups
-    // like configService.get('app.url') — used in EmailTemplateService
-    // for building admin invite links — resolve to the real domain
-    // instead of always falling back to their hardcoded default.
+    // Public URL of this API deployment (Swagger, EmailTemplateService links).
+    // Falls back to localhost when APP_URL is unset.
     url: process.env.APP_URL || `http://localhost:${Number(process.env.PORT) || 3000}`,
 
-    // Public URL of the ADMIN-facing web client (e.g. https://admin.ehte.org),
-    // as opposed to `url` above which is this API's own deployment / the main
-    // user-facing app. Used by AuthService.adminInvite() / adminInviteResend()
-    // / promoteUserInitiate() / promoteUserResend() to build invite and
-    // promotion links that land on the admin site's /admin/invite and
-    // /admin/promote/verify routes, not the main app. Falls back to `url` so
-    // this is non-breaking if ADMIN_APP_URL is never set (e.g. single-client
-    // deployments where the admin panel and main app share one domain).
+    // Public URL of the admin web client, used for invite and promotion links.
+    // Falls back to APP_URL, then localhost.
     adminUrl:
       process.env.ADMIN_APP_URL ||
       process.env.APP_URL ||
       `http://localhost:${Number(process.env.PORT) || 3000}`,
 
-    // Gates dev-only OTP console logging in AuthService. MUST be false
-    // in production — leaving it true prints real OTPs to server logs.
+    // Enables dev-only OTP console logging. MUST be false in production.
     debug: process.env.APP_DEBUG === 'true',
   },
 
@@ -38,20 +27,22 @@ export default () => ({
       identifierId: process.env.AFROMESSAGE_IDENTIFIER_ID,
     },
 
-    // ADDED: SendET provider config, read by SendetService via
-    // configService.get('sms.sendet.apiUrl') / .token / .senderName /
-    // .timeoutMs. Kept alongside afroMessage (not replacing it) until
-    // the cutover is explicit — both blocks currently coexist in .env.
-    // SendetService.sendSms() itself still throws unconditionally until
-    // the real SendET API contract (endpoint path, method, auth header
-    // format, request/response fields) is confirmed — see the TODO block
-    // at the top of sendet.service.ts.
+    // SendET provider config, read by SendetService. Coexists with afroMessage
+    // until cutover; sendSms() still throws until the API contract is confirmed.
     sendet: {
       apiUrl: process.env.SENDET_URL,
       token: process.env.SENDET_TOKEN,
       senderName: process.env.SENDET_SENDER_NAME || 'PITRON TECH',
       timeoutMs: parseInt(process.env.SENDET_TIMEOUT_MS ?? '10000', 10),
     },
+  },
+
+  // Read by FirebaseService via ConfigService, not process.env directly.
+  // All three optional — PUSH delivery just stays disabled when unset.
+  firebase: {
+    projectId: process.env.FIREBASE_PROJECT_ID,
+    clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+    privateKey: process.env.FIREBASE_PRIVATE_KEY,
   },
 
   database: {
@@ -62,9 +53,7 @@ export default () => ({
     secret: process.env.JWT_SECRET,
     expiresIn: process.env.JWT_EXPIRES_IN || '1d',
 
-    // FIX: was previously unmapped — every refreshSecret lookup in
-    // AuthService silently fell back to jwt.secret regardless of
-    // whether JWT_REFRESH_SECRET was set in the environment.
+    // Without this mapping, refresh lookups silently fell back to jwt.secret.
     refreshSecret: process.env.JWT_REFRESH_SECRET,
 
     refreshExpiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '7d',
@@ -75,9 +64,7 @@ export default () => ({
     credentials: process.env.CORS_CREDENTIALS === 'true',
   },
 
-  // Swagger is OFF by default.
-  // Enable explicitly with:
-  // SWAGGER_ENABLED=true
+  // Swagger is off by default; enable with SWAGGER_ENABLED=true.
   swagger: {
     enabled: process.env.SWAGGER_ENABLED === 'true',
   },
@@ -90,50 +77,41 @@ export default () => ({
   otp: {
     expiresInMinutes: parseInt(process.env.OTP_EXPIRES_IN_MINUTES ?? '10', 10),
 
-    // Minimum time between OTP resends for the same purpose/user,
-    // enforced in AuthService.issueAndSendOtp().
+    // Minimum gap between OTP resends, enforced in AuthService.issueAndSendOtp().
     resendCooldownSeconds: parseInt(process.env.OTP_RESEND_COOLDOWN_SECONDS ?? '60', 10),
   },
 
   minio: {
-    // Production (Render -> Cloudflare R2 / Backblaze B2): the provider's
-    // S3-compatible endpoint. Local (Docker Compose -> MinIO): minio
+    // Production: the S3-compatible provider endpoint. Local: minio.
     endpoint: process.env.MINIO_ENDPOINT || 'localhost',
 
-    // Production: 443 (HTTPS). Local: 9000 (MinIO's default).
+    // Production: 443. Local: 9000.
     port: Number(process.env.MINIO_PORT || 9000),
 
     accessKey: process.env.MINIO_ACCESS_KEY,
 
     secretKey: process.env.MINIO_SECRET_KEY,
 
-    // FIX: default was 'ehte', but the actual bucket — both the local MinIO
-    // bucket and the one already created with the storage provider — is
-    // 'ehte-media'. This only matters when MINIO_BUCKET_NAME is unset, but
-    // it was wrong and would silently point at a bucket that doesn't exist.
+    // Default matches the real bucket name, 'ehte-media'.
     bucketName: process.env.MINIO_BUCKET_NAME || 'ehte-media',
 
-    // Production: true (HTTPS required). Local: false (plain MinIO).
+    // Production: true (HTTPS). Local: false.
     useSSL: process.env.MINIO_USE_SSL === 'true',
 
-    // ADDED: was missing entirely, so MinioService's own fallback
-    // ('us-east-1') was always used regardless of what MINIO_REGION was
-    // set to. Some S3-compatible providers require this to be set
-    // explicitly (e.g. 'auto' for Cloudflare R2) rather than relying on
-    // an alias, matching every official SDK example (boto3, aws-sdk,
-    // etc.), which always pass region explicitly.
+    // Some providers need an explicit region (e.g. 'auto' for Cloudflare R2).
     region: process.env.MINIO_REGION || 'us-east-1',
 
-    // FIX: previously read directly off process.env in MinioService,
-    // bypassing ConfigService/Joi entirely — a non-numeric value would
-    // silently become NaN instead of failing fast at boot. Centralized
-    // here like every other config value; MinioService now reads
-    // configService.get<number>('minio.presignDurationSeconds').
-    // Default lowered from 120s to 600s (10 min) — long enough for a
-    // real upload/download, short enough that a leaked presigned URL
-    // (e.g. for victim or missing-person media) doesn't stay exploitable
-    // for long.
+    // Presigned URL lifetime; short so a leaked URL stops working quickly.
     presignDurationSeconds: parseInt(process.env.DURATION_OF_PRE_SIGNED_DOCUMENT ?? '600', 10),
+  },
+
+  // Mirrors the REDIS_* vars RedisService reads. REDIS_URL wins over host/port.
+  redis: {
+    url: process.env.REDIS_URL,
+    host: process.env.REDIS_HOST || 'localhost',
+    port: parseInt(process.env.REDIS_PORT ?? '6379', 10),
+    password: process.env.REDIS_PASSWORD,
+    db: parseInt(process.env.REDIS_DB ?? '0', 10),
   },
 
   security: {
@@ -141,21 +119,13 @@ export default () => ({
 
     encryptionIv: process.env.ENCRYPTION_IV,
 
-    // Login lockout, enforced in AuthService.recordFailedLogin() /
-    // assertNotLocked() — used by both login() and adminLogin().
+    // Login lockout, enforced in AuthService for login() and adminLogin().
     maxLoginAttempts: parseInt(process.env.MAX_LOGIN_ATTEMPTS ?? '5', 10),
 
     lockoutDurationMinutes: parseInt(process.env.LOCKOUT_DURATION_MINUTES ?? '15', 10),
   },
 
-  // FIX: both fallbacks below were out of sync with the values actually
-  // used elsewhere (app.module.ts's Joi defaults, and PostService's own
-  // MEDIA_MAX_FILE_SIZE / MEDIA_ALLOWED_MIME_TYPES reads). They only
-  // apply when the env vars are completely unset, but a stale fallback
-  // here is still a real bug: it silently disagreed with the size cap
-  // recommended in .env and left `application/pdf` off the allowed list,
-  // meaning a post with pdf/document media would fail validation even
-  // though CreatePostDto/UpdatePostDto both accept those fields.
+  // Fallbacks kept in sync with the Joi defaults in app.module.ts.
   media: {
     maxFileSize: parseInt(process.env.MEDIA_MAX_FILE_SIZE ?? '52428800', 10),
 
@@ -164,24 +134,8 @@ export default () => ({
       'image/jpeg,image/png,image/webp,video/mp4,video/quicktime,audio/mpeg,audio/wav,audio/mp4,application/pdf',
   },
 
-  // NOTE: content.* is deliberately NOT namespaced here the way media/minio
-  // are. PostService reads CONTENT_MAX_PENDING_PER_USER,
-  // CONTENT_CREATE_RATE_LIMIT_WINDOW_SECONDS, CONTENT_DRAFT_TTL_DAYS,
-  // CONTENT_REJECTED_RETENTION_DAYS, CONTENT_STALE_PENDING_HOURS (and their
-  // optional POST_* overrides) directly via configService.get('RAW_ENV_NAME'),
-  // the same way it reads MEDIA_MAX_FILE_SIZE directly rather than through
-  // media.maxFileSize. @nestjs/config's ConfigService falls through to
-  // process.env for keys not present in the loaded config object, so this
-  // works without an entry here — but if Reports/MissingPerson/Profile
-  // services end up wanting a namespaced `content.*` lookup instead of the
-  // raw env-var pattern, add it here rather than duplicating parseInt logic
-  // across every module's service file.
-  //
-  // Reports/MissingPerson/Profile follow this exact same raw-env-var
-  // pattern (REPORT_*, MISSING_PERSON_*, PROFILE_* falling back to the
-  // shared CONTENT_* defaults above) — see app.module.ts's Joi schema for
-  // where those keys are declared and validated. Nothing to add here
-  // unless one of those modules later wants a namespaced lookup instead.
+  // content.* is not namespaced: services read CONTENT_*, POST_*, REPORT_*,
+  // MISSING_PERSON_* and PROFILE_* env vars directly (declared in app.module.ts).
 
   support: {
     currency: process.env.SUPPORT_CURRENCY || 'ETB',

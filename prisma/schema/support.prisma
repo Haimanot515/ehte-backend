@@ -13,6 +13,13 @@ model Support {
   createdAt          DateTime             @default(now())
   updatedAt          DateTime             @updatedAt
   transferReference  String?
+
+  // Added for Chapa billing: which agreement/version computed the split above,
+  // and the exact allocation snapshot shown to the payer before they paid.
+  agreementId        String?
+  agreementVersion   Int?
+  allocationSnapshot Json?
+
   user               User?                @relation(fields: [userId], references: [id])
   victimProfile      VictimProfile        @relation(fields: [victimProfileId], references: [id], onDelete: Cascade)
 

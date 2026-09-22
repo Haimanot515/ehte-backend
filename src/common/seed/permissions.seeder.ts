@@ -64,7 +64,7 @@ export class PermissionsSeeder implements OnApplicationBootstrap {
       this.prisma.role.findUnique({ where: { name: RolesEnum.ADMIN } }),
     );
 
-    const superAdminRole = await this.withRetry('Look up SUPER_ADMIN role', () =>
+    const superAdminRole = await this.withRetry('Look up SUPER_ADMIN role', ()=>
       this.prisma.role.findUnique({ where: { name: RolesEnum.SUPER_ADMIN } }),
     );
 
@@ -86,7 +86,7 @@ export class PermissionsSeeder implements OnApplicationBootstrap {
 
     if (!systemRole) {
       throw new Error(
-        `Required role "${RolesEnum.SYSTEM}" was not found. Ensure RolesSeeder runs before PermissionsSeeder.`,
+        `Required role "${RolesEnum.SYSTEM}" was not found. Ensure RolesSeederruns before PermissionsSeeder.`,
       );
     }
 
@@ -150,6 +150,8 @@ export class PermissionsSeeder implements OnApplicationBootstrap {
 
       PermissionsEnum.MEDIA_UPLOAD,
       PermissionsEnum.MEDIA_DELETE,
+
+      PermissionsEnum.APP_ACCESS_QR_READ,
     ];
 
     // Deliberately empty — no automated/service use case defined yet; add when there's a real one.

@@ -45,10 +45,8 @@ import {
   SecurityAlertEvent,
 } from '../events/notification.events';
 
-/**
- * ASSUMPTION: these are the frontend routes. Change them here, in one place.
- * actionUrl is navigation only; the backend still authorizes every request.
- */
+// ASSUMPTION: these are the frontend routes. Change them here, in one place.
+// actionUrl is navigation only; the backend still authorizes every request.
 const URLS = {
   report: (id: string) => `/reports/${id}`,
   post: (id: string) => `/posts/${id}`,
@@ -59,18 +57,8 @@ const URLS = {
   security: () => `/security/sessions`,
 };
 
-/**
- * Turns domain events into notifications.
- *
- * Rules:
- *  - Bodies stay generic. Free-text notes written by admins (review notes,
- *    change requests) are NOT copied into the notification; the user opens
- *    the linked page, where normal authorization applies.
- *  - dedupeKey is set only when the event has a unique occurrence id.
- *  - A failing notification must never break the business action that
- *    emitted the event, so every handler is wrapped and only logs
- *    identifiers (never the payload).
- */
+// Turns domain events into notifications. Bodies stay generic — free-text
+// notes and financial specifics are never copied in; open the linked page.
 @Injectable()
 export class NotificationListener {
   private readonly logger = new Logger(NotificationListener.name);
@@ -92,7 +80,7 @@ export class NotificationListener {
     }
   }
 
-  /** Personal notification. Skips quietly when the recipient is unknown. */
+  // Personal notification. Skips quietly when the recipient is unknown.
   private async toUser(
     handler: string,
     userId: string | null | undefined,
@@ -108,7 +96,7 @@ export class NotificationListener {
     );
   }
 
-  /** Admin-queue notification: one row per active admin. */
+  // Admin-queue notification: one row per active admin.
   private async toAdmins(
     handler: string,
     content: NotificationContent,
@@ -443,6 +431,9 @@ export class NotificationListener {
     );
   }
 
+  // Amount is deliberately left out of the body — financial specifics never
+  // go into a notification (same rule as admin review notes above). Open
+  // My Support / the linked page to see the confirmed amount.
   @OnEvent(NotificationEventEnum.SUPPORT_PAYMENT_CONFIRMED)
   async handleSupportPaymentConfirmed(event: SupportPaymentConfirmedEvent) {
     await this.toUser(
@@ -451,10 +442,7 @@ export class NotificationListener {
       {
         type: NotificationType.SUPPORT_PAYMENT_CONFIRMED,
         title: 'Support Payment Confirmed',
-        body:
-          event.amount !== undefined
-            ? `Your support payment of ${event.amount} ETB has been confirmed.`
-            : 'Your support payment has been confirmed.',
+        body: 'Your support payment has been confirmed.',
         entity: 'Support',
         entityId: event.supportId,
         actionUrl: URLS.support(event.supportId),

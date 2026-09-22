@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
 
@@ -31,6 +31,8 @@ import { TokenUtil } from 'src/common/utils/token.util';
     PassportModule,
 
     JwtModule.registerAsync({
+      imports: [ConfigModule],
+
       inject: [ConfigService],
 
       useFactory: (config: ConfigService) => ({
@@ -55,11 +57,6 @@ import { TokenUtil } from 'src/common/utils/token.util';
     TokenUtil,
   ],
 
-  // FIX: OtpUtil and LockoutUtil are now exported too, not just the
-  // services — CoreModule's UserService needs both (change-phone flow
-  // uses OtpUtil; deactivate/reactivate/discreet-mode paths use
-  // LockoutUtil-adjacent checks). TokenUtil stays unexported until
-  // something outside this module actually needs it.
   exports: [
     AuthService,
     AdminAuthService,

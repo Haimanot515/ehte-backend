@@ -1,0 +1,85 @@
+// prisma/schema/payment.prisma
+// Money: Decimal(14,2), ETB only in v1. External FKs (User, VictimProfile) are plain strings;
+// add @relation lines to match your models if you want them.
+
+enum PaymentType {
+  SUPPORT
+  MISSING_PERSON_REWARD
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+  EXPIRED
+  REVIEW_REQUIRED // Chapa said "success" but amount/currency did not match
+  REFUNDED
+}
+
+enum PartyType {
+  RECIPIENT // always the remainder, never a rule
+  RESPONSIBLE_ORGANIZATION
+  PLATFORM // Pitron
+  REWARD_BENEFICIARY
+}
+
+enum SettlementStatus {
+  PENDING
+  PAID_OUT
+  CANCELLED
+}
+
+model Payment {
+  id                 String        @id @default(uuid())
+  type               PaymentType
+  status             PaymentStatus @default(PENDING)
+  amount             Decimal       @db.Decimal(14, 2)
+  currency           String        @default("ETB")
+
+  // Opaque random reference sent to Chapa. Never contains user/profile ids.
+  txRef              String        @unique
+  chapaReference     String?
+  chapaFee           Decimal?      @db.Decimal(14, 2)
+
+  payerUserId        String
+  victimProfileId    String?
+  supportId          String?       // existing Support row this payment settles
+  missingPersonId    String?       // MissingPerson this reward payment funds (rewardOffered/rewardApproved live there)
+
+  agreementId        String?
+  agreement          Agreement?    @relation(fields: [agreementId], references: [id])
+  agreementVersion   Int?
+  // Exact breakdown the payer saw before paying.
+  allocationSnapshot Json
+  previewShownAt     DateTime
+
+  paidAt             DateTime?
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+
+  allocations PaymentAllocation[]
+
+  @@index([status, createdAt])
+  @@index([victimProfileId])
+  @@index([supportId])
+  @@index([missingPersonId])
+  @@map("payments")
+}
+
+// Created only when a payment becomes PAID. Append-only apart from settlementStatus.
+model PaymentAllocation {
+  id               String           @id @default(uuid())
+  paymentId        String
+  payment          Payment          @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  partyType        PartyType
+  institutionId    String?
+  amount           Decimal          @db.Decimal(14, 2)
+  ruleId           String?
+  settlementStatus SettlementStatus @default(PENDING)
+  createdAt        DateTime         @default(now())
+
+  disbursements Disbursement[]
+
+  @@index([paymentId])
+  @@map("payment_allocations")
+}

@@ -9,7 +9,7 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { sendSms } from 'src/services/sms/sendet.service';
 import { renderOtpSms } from 'src/services/sms/templates/sms-otp.template';
 
-import { sendEmail } from 'src/services/email/email.service';
+import { EmailService } from 'src/services/email/email.service';
 import {
   renderOtpEmailSubject,
   renderOtpEmailHtml,
@@ -24,6 +24,7 @@ export class OtpUtil {
   constructor(
     private readonly prisma: PrismaService,
     private readonly configService: ConfigService,
+    private readonly emailService: EmailService,
   ) {}
 
   async issueAndSendOtp(
@@ -84,7 +85,7 @@ export class OtpUtil {
 
     if (channel === OtpChannelEnum.email) {
       try {
-        await sendEmail(
+        await this.emailService.sendEmail(
           contact,
           renderOtpEmailSubject(),
           renderOtpEmailHtml({ otp, expiresInMinutes: otpExpiresInMinutes }),

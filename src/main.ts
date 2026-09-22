@@ -51,11 +51,12 @@ async function bootstrap() {
 
   const corsCredentials = configService.getOrThrow<boolean>('cors.credentials');
 
-  app.set('trust proxy', 1);
+  // Was hardcoded to 1; now reads TRUST_PROXY_HOPS (defaults to 0, no proxy trusted).
+  app.set('trust proxy', configService.get<number>('app.trustProxyHops', 0));
 
   if (corsCredentials && corsOrigin.includes('*')) {
     throw new Error(
-      '[EHTE] CORS_ORIGIN cannot include "*" while CORS_CREDENTIALS is true. ' +
+      '[EHTE] CORS_ORIGIN cannot include "*" while CORS_CREDENTIALS is true. '+
         'List explicit allowed origins instead.',
     );
   }

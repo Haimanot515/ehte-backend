@@ -108,4 +108,7 @@ export enum PermissionsEnum {
   // Media
   MEDIA_UPLOAD = 'MEDIA_UPLOAD',
   MEDIA_DELETE = 'MEDIA_DELETE',
+
+  // App Access (QR / smart redirect)
+  APP_ACCESS_QR_READ = 'APP_ACCESS_QR_READ',
 }
