@@ -15,7 +15,7 @@ import { NotificationService } from './service/notification.service';
 import { AUDIT_ARCHIVE_STORAGE } from './service/audit-archive.storage';
 import { MinioAuditArchiveStorage } from './service/minio-audit-archive.storage';
 import { NOTIFICATION_CHANNEL_PROVIDERS } from './service/notification-channel.provider';
-import { FirebasePushProvider } from './service/firebase-push.provider';
+import { FirebasePushProvider } from '../../services/firebase/firebase-push.provider';
 import { EmailNotificationProvider } from './service/email-notification.provider';
 import { SmsNotificationProvider } from './service/sms-notification.provider';
 

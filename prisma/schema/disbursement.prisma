@@ -1,0 +1,37 @@
+// prisma/schema/disbursement.prisma
+
+enum DisbursementMethod {
+  MANUAL_BANK
+  CHAPA_TRANSFER
+}
+
+enum DisbursementStatus {
+  PENDING_APPROVAL
+  APPROVED
+  PROCESSING
+  PAID_OUT
+  FAILED
+  CANCELLED
+}
+
+// Money leaving Ehte. Bank account details are NOT stored here.
+model Disbursement {
+  id                String             @id @default(uuid())
+  allocationId      String
+  allocation        PaymentAllocation  @relation(fields: [allocationId], references: [id], onDelete: Restrict)
+  method            DisbursementMethod
+  status            DisbursementStatus @default(PENDING_APPROVAL)
+  amount            Decimal            @db.Decimal(14, 2)
+  reference         String             @unique // opaque, sent to Chapa
+  externalReference String?            // bank slip / manual reference
+  createdById       String
+  approvedById      String?
+  executedById      String?
+  executedAt        DateTime?
+  failureReason     String?
+  createdAt         DateTime           @default(now())
+
+  @@index([status])
+  @@map("disbursements")
+}
+

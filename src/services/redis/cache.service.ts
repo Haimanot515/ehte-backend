@@ -211,6 +211,14 @@ export class CacheService {
     return this.redis.delByPattern(CacheKeys.patterns.postLists());
   }
 
+  // Call on approve, reject, edit, unpublish or takedown.
+  async invalidatePostEverywhere(postId: string): Promise<void> {
+    await Promise.all([
+      this.invalidatePost(postId),
+      this.invalidatePostLists(),
+    ]);
+  }
+
   getMyPosts<T>(userId: string, page = 1) {
     return this.read<T>(CacheKeys.myPosts(userId, page));
   }
@@ -292,6 +300,30 @@ export class CacheService {
       this.invalidateMissingPerson(id),
       this.invalidateMissingPersonCaches(),
     ]);
+  }
+
+  // ───────────────────────────────────────────
+  // INFORMATION SUBMISSION
+  // Lists are scoped per missing-person case, not global — invalidation
+  // only clears that case's cached lists, not every submission list.
+  // ───────────────────────────────────────────
+
+  wrapInformationSubmissionList<T>(
+    missingPersonId: string,
+    query: Record<string, unknown>,
+    factory: () => Promise<T>,
+  ): Promise<T> {
+    return this.wrap(
+      CacheKeys.informationSubmissionList(missingPersonId, this.hashQuery(query)),
+      factory,
+      TTL.INFORMATION_SUBMISSION_LIST,
+    );
+  }
+
+  invalidateInformationSubmissionList(missingPersonId: string) {
+    return this.redis.delByPattern(
+      CacheKeys.patterns.informationSubmissionLists(missingPersonId),
+    );
   }
 
   getVictimProfile<T>(id: string) {

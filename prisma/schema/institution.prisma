@@ -1,0 +1,27 @@
+// prisma/schema/institution.prisma
+//
+// PRD section 7.2: an organization must not be described as an official partner
+// until a formal agreement is signed. Only AGREEMENT_SIGNED institutions may be
+// shown as partners or appear as RESPONSIBLE_ORGANIZATION in allocation rules.
+
+enum InstitutionStatus {
+  PROSPECT
+  AGREEMENT_SIGNED
+  SUSPENDED
+}
+
+model Institution {
+  id        String            @id @default(uuid())
+  name      String
+  status    InstitutionStatus @default(PROSPECT)
+  signedAt  DateTime?
+  createdAt DateTime          @default(now())
+  updatedAt DateTime          @updatedAt
+
+  agreements Agreement[]
+
+  @@map("institutions")
+}
+
+// ── Add to your existing victim-profile.prisma (VictimProfile model): ──────────
+//   agreementId String?   // the specific agreement VERSION governing support for this profile

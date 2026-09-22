@@ -22,6 +22,7 @@ import { AuditEventPayload } from 'src/modules/misc/events/audit.events';
 import { NotificationEventEnum } from 'src/common/enums/shared/notification-events.enum';
 
 import { MinioService } from 'src/services/minio/minio.service';
+import { CacheService } from 'src/services/redis/cache.service';
 
 import {
   CreateVictimProfileDto,
@@ -81,6 +82,7 @@ export class VictimProfileService {
     private readonly eventEmitter: EventEmitter2,
     private readonly minioService: MinioService,
     private readonly configService: ConfigService,
+    private readonly cache: CacheService,
   ) {}
 
   // ─── AUDIT HELPERS ───
@@ -668,6 +670,8 @@ export class VictimProfileService {
 
   // ─── GET ONE (admin) ───
   // Full row including bank details, currently un-audited — needs a VICTIM_PROFILE_OPENED event.
+  // Deliberately NOT cached: CacheService's victim-profile cache is documented as public/approved
+  // data only, and this response includes bank details.
 
   async findOne(id: string) {
     const profile = await this.prisma.victimProfile.findUnique({
@@ -731,6 +735,13 @@ export class VictimProfileService {
   // ─── PUBLIC PROFILES — LIST ───
 
   async findPublic(query: FindPublicVictimProfilesQueryDto) {
+    return this.cache.wrapVictimProfileList(
+      query as unknown as Record<string, unknown>,
+      () => this.findPublicUncached(query),
+    );
+  }
+
+  private async findPublicUncached(query: FindPublicVictimProfilesQueryDto) {
     const page = query.page && query.page > 0 ? query.page : 1;
     const limit = query.limit && query.limit > 0 ? query.limit : 20;
 
@@ -801,6 +812,11 @@ export class VictimProfileService {
   // ─── PUBLIC PROFILES — SINGLE ───
 
   async findOnePublic(id: string) {
+    const cached = await this.cache.getVictimProfile<ReturnType<typeof this.serializePublicProfile>>(
+      id,
+    );
+    if (cached !== null) return cached;
+
     const profile = await this.prisma.victimProfile.findFirst({
       where: {
         id,
@@ -836,7 +852,9 @@ export class VictimProfileService {
       throw new NotFoundException('victim_profile_not_found');
     }
 
-    return this.serializePublicProfile(profile);
+    const serialized = this.serializePublicProfile(profile);
+    await this.cache.setVictimProfile(id, serialized);
+    return serialized;
   }
 
   private serializePublicProfile(profile: {
@@ -973,6 +991,7 @@ export class VictimProfileService {
     );
 
     await this.deleteMediaFiles(removed);
+    await this.cache.invalidateVictimProfileEverywhere(id);
 
     this.emitAudit({
       userId: admin.id,
@@ -1035,6 +1054,7 @@ export class VictimProfileService {
 
     const mediaKeys = this.collectMediaFields(profile);
     await this.deleteMediaFiles(mediaKeys);
+    await this.cache.invalidateVictimProfileEverywhere(id);
 
     this.emitAudit({
       userId: admin.id,
@@ -1135,6 +1155,10 @@ export class VictimProfileService {
 
   // ─── ADMIN — DASHBOARD STATISTICS ───
 
+  // NOTE: not wrapped in cache.wrapAdminDashboardStats() — that key
+  // ('ehte:admin:dashboard-stats') is a single shared slot. If other services'
+  // stats endpoints use it too, they'll silently overwrite each other's cached
+  // data. Give this its own CacheKeys entry before caching it.
   async getStats() {
     const [total, grouped, raised] = await this.prisma.$transaction([
       this.prisma.victimProfile.count(),
@@ -1377,6 +1401,8 @@ export class VictimProfileService {
       { admin, action: AuditEventEnum.VICTIM_PROFILE_GATES_UPDATED, profile },
     );
 
+    await this.cache.invalidateVictimProfileEverywhere(id);
+
     this.emitAudit({
       userId: admin.id,
       ...this.targetUserFor(admin, profile),
@@ -1454,6 +1480,8 @@ export class VictimProfileService {
 
     if (data.isChildSafetyReviewed) {
       if (!profile.childSafetyFirstConfirmedByUserId) {
+        // First confirmation only records who/when — status and isPublished are untouched,
+        // so nothing public-facing changes and no cache invalidation is needed here.
         const updated = await this.conditionalUpdate(
           id,
           profile.updatedAt,
@@ -1518,6 +1546,8 @@ export class VictimProfileService {
         { admin, action: AuditEventEnum.VICTIM_PROFILE_CHILD_SAFETY_REVIEWED, profile },
       );
 
+      await this.cache.invalidateVictimProfileEverywhere(id);
+
       this.emitAudit({
         userId: admin.id,
         ...this.targetUserFor(admin, profile),
@@ -1570,6 +1600,8 @@ export class VictimProfileService {
       },
       { admin, action: AuditEventEnum.VICTIM_PROFILE_CHILD_SAFETY_REVIEW_REVERSED, profile },
     );
+
+    await this.cache.invalidateVictimProfileEverywhere(id);
 
     this.emitAudit({
       userId: admin.id,
@@ -1646,6 +1678,8 @@ export class VictimProfileService {
       { admin, action: AuditEventEnum.VICTIM_PROFILE_CONSENT_REVOKED, profile },
     );
 
+    await this.cache.invalidateVictimProfileEverywhere(id);
+
     this.emitAudit({
       userId: admin.id,
       ...this.targetUserFor(admin, profile),
@@ -1719,6 +1753,8 @@ export class VictimProfileService {
       },
       { admin, action: AuditEventEnum.VICTIM_PROFILE_BANK_DETAILS_UPDATED, profile },
     );
+
+    await this.cache.invalidateVictimProfileEverywhere(id);
 
     this.emitAudit({
       userId: admin.id,
@@ -1813,6 +1849,8 @@ export class VictimProfileService {
       { admin, action: AuditEventEnum.VICTIM_PROFILE_PUBLISHED, profile },
     );
 
+    await this.cache.invalidateVictimProfileEverywhere(id);
+
     this.emitAudit({
       userId: admin.id,
       ...this.targetUserFor(admin, profile),
@@ -1870,6 +1908,8 @@ export class VictimProfileService {
       { admin, action: AuditEventEnum.VICTIM_PROFILE_UNPUBLISHED, profile },
     );
 
+    await this.cache.invalidateVictimProfileEverywhere(id);
+
     this.emitAudit({
       userId: admin.id,
       ...this.targetUserFor(admin, profile),
@@ -1926,6 +1966,8 @@ export class VictimProfileService {
       },
       { admin, action: AuditEventEnum.VICTIM_PROFILE_REJECTED, profile },
     );
+
+    await this.cache.invalidateVictimProfileEverywhere(id);
 
     this.emitAudit({
       userId: admin.id,
@@ -1994,6 +2036,8 @@ export class VictimProfileService {
       { admin, action: AuditEventEnum.VICTIM_PROFILE_RESUBMITTED, profile },
     );
 
+    await this.cache.invalidateVictimProfileEverywhere(id);
+
     this.emitAudit({
       userId: admin.id,
       ...this.targetUserFor(admin, profile),
@@ -2049,6 +2093,8 @@ export class VictimProfileService {
         { admin, action: AuditEventEnum.VICTIM_PROFILE_TOTAL_RECONCILED, profile },
       );
       corrected = true;
+      // totalRaised is shown on the public detail/list views — invalidate on any actual correction.
+      await this.cache.invalidateVictimProfileEverywhere(id);
     }
 
     if (mismatch) {

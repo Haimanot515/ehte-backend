@@ -83,3 +83,4 @@ model PaymentAllocation {
   @@index([paymentId])
   @@map("payment_allocations")
 }
+

@@ -1,6 +1,7 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import * as admin from 'firebase-admin';
+import { cert, getApps, initializeApp } from 'firebase-admin/app';
+import { getMessaging } from 'firebase-admin/messaging';
 
 export interface FcmSendResult {
   success: number;
@@ -18,7 +19,7 @@ export class FirebaseService implements OnModuleInit {
   constructor(private readonly config: ConfigService) {}
 
   onModuleInit() {
-    if (this.initialized || admin.apps.length) {
+    if (this.initialized || getApps().length) {
       this.initialized = true;
       return;
     }
@@ -37,8 +38,8 @@ export class FirebaseService implements OnModuleInit {
     }
 
     try {
-      admin.initializeApp({
-        credential: admin.credential.cert({
+      initializeApp({
+        credential: cert({
           projectId,
           clientEmail,
           // Already unescaped in configuration.ts — used as-is here.
@@ -82,7 +83,7 @@ export class FirebaseService implements OnModuleInit {
 
     for (const chunk of chunks) {
       try {
-        const response = await admin.messaging().sendEachForMulticast({
+        const response = await getMessaging().sendEachForMulticast({
           notification: { title, body },
           tokens: chunk,
           data,
@@ -127,7 +128,7 @@ export class FirebaseService implements OnModuleInit {
     }
 
     try {
-      const messageId = await admin.messaging().send({
+      const messageId = await getMessaging().send({
         notification: { title, body },
         topic,
         data,

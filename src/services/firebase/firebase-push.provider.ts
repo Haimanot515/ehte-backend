@@ -7,7 +7,7 @@ import {
   NotificationChannelMessage,
   NotificationChannelProvider,
   NotificationOutboundChannel,
-} from './notification-channel.provider';
+} from '../../modules/misc/service/notification-channel.provider';
 
 // Converts a NotificationDelivery send request into an FCM multicast call.
 // Title/body arrive already discreet-transformed by dispatchOne.

@@ -19,6 +19,7 @@ import { AuditEventPayload } from 'src/modules/misc/events/audit.events';
 import { NotificationEventEnum } from 'src/common/enums/shared/notification-events.enum';
 
 import { MinioService } from 'src/services/minio/minio.service';
+import { CacheService } from 'src/services/redis/cache.service';
 
 import {
   CreateInformationSubmissionDto,
@@ -49,6 +50,14 @@ type MediaBearingDto = Partial<Record<MediaFieldName, string[] | undefined>>;
 // unrelated action name — reusing e.g. INFORMATION_SUBMITTED for an
 // edit would make "who submitted this" and "who edited this" show up
 // as the same action in a history view.
+//
+// ⚠️ ASSUMPTION ON THE CACHE SERVICE
+//
+// Same convention as MissingPersonService/PostService: getX/setX for
+// a single cached row, wrapXList for a paginated/filterable list, and
+// invalidateXList (rather than invalidateXEverywhere) since — unlike
+// Post/MissingPerson — no single-submission public read exists here
+// to invalidate, only the list.
 
 @Injectable()
 export class InformationSubmissionService {
@@ -57,6 +66,7 @@ export class InformationSubmissionService {
     private readonly eventEmitter: EventEmitter2,
     private readonly minioService: MinioService,
     private readonly configService: ConfigService,
+    private readonly cache: CacheService,
   ) {}
 
   // ─────────────────────────────────────────────
@@ -66,6 +76,15 @@ export class InformationSubmissionService {
   //   UNDER_REVIEW → REVIEWED|REJECTED (review — terminal)
   //   REVIEWED → (final)
   //   REJECTED → (final)
+  //
+  // Both REVIEWED and REJECTED are terminal — there is no transition
+  // back out of either. That matters for caching below: since
+  // REVIEWED is the only status findForMissingPerson() ever serves,
+  // and nothing can ever leave REVIEWED once it gets there, a
+  // submission can only ever enter the cached public list once and
+  // never has to be invalidated OUT of it — unlike Post (PUBLISHED
+  // <-> UNPUBLISHED) or MissingPerson, which both need bidirectional
+  // invalidation.
   // ─────────────────────────────────────────────
 
   private readonly ALLOWED_STATUS_TRANSITIONS: Record<InformationStatus, InformationStatus[]> = {
@@ -362,6 +381,11 @@ export class InformationSubmissionService {
   // Media on a submission is only reachable once it has been
   // REVIEWED. A submission that exists but isn't reviewed yet
   // 404s here, not a different error shape.
+  //
+  // Deliberately NOT read through the cache: like
+  // Post.getPublicMediaDownloadUrl, this is a narrow per-key lookup
+  // rather than the whole public row, and MinIO presigned URLs are
+  // already short-lived and cheap to mint.
   // ─────────────────────────────────────────────
 
   async getPublicMediaDownloadUrl(id: string, key: string): Promise<{ url: string }> {
@@ -397,6 +421,10 @@ export class InformationSubmissionService {
   // CREATE INFORMATION
   // Only allowed against APPROVED (publicly visible) cases, and
   // not by the person who filed the missing-person report itself.
+  //
+  // A freshly created submission is always PENDING — never REVIEWED,
+  // the only status the public cache holds — so there's nothing to
+  // invalidate here.
   //
   // FIX (item #1): per-user cooldown between submissions, plus a
   // cap on how many of a user's submissions can sit in
@@ -613,6 +641,7 @@ export class InformationSubmissionService {
 
   // ─────────────────────────────────────────────
   // GET MY SUBMISSIONS (paginated)
+  // Owner-scoped, not public — no cache.
   // ─────────────────────────────────────────────
 
   async findMine(userId: string, query: ListInformationSubmissionsQueryDto) {
@@ -641,9 +670,33 @@ export class InformationSubmissionService {
 
   // ─────────────────────────────────────────────
   // GET SUBMISSIONS FOR MISSING PERSON (public, paginated)
+  //
+  // The one genuinely public, anonymous-callable read in this file —
+  // no CurrentUserDto, already status-gated to REVIEWED, and the
+  // select already excludes userId/reviewNote/idempotencyKey/etc., so
+  // there's nothing internal left in the cached shape to leak. Same
+  // read-through pattern as MissingPersonService.findAll/findAllUncached
+  // and PostService.findPublishedPosts/findPublishedPostsUncached: the
+  // cache key is derived from (missingPersonId, query), and the DB path
+  // only runs on a miss.
+  //
+  // Invalidated from review() below, and ONLY there — see the
+  // ALLOWED_STATUS_TRANSITIONS comment above for why entering REVIEWED
+  // is the only transition that can ever change what this returns.
   // ─────────────────────────────────────────────
 
   async findForMissingPerson(missingPersonId: string, query: ListInformationSubmissionsQueryDto) {
+    return this.cache.wrapInformationSubmissionList(
+      missingPersonId,
+      query as unknown as Record<string, unknown>,
+      () => this.findForMissingPersonUncached(missingPersonId, query),
+    );
+  }
+
+  private async findForMissingPersonUncached(
+    missingPersonId: string,
+    query: ListInformationSubmissionsQueryDto,
+  ) {
     const missingPerson = await this.prisma.missingPerson.findUnique({
       where: { id: missingPersonId },
     });
@@ -690,7 +743,8 @@ export class InformationSubmissionService {
   // GET MY SUBMISSIONS FOR ONE MISSING PERSON
   // Lets the frontend check "did I already submit on this case"
   // before showing the submit form, instead of relying on the
-  // self-submission/duplicate error at create time.
+  // self-submission/duplicate error at create time. Owner-scoped,
+  // not public — no cache.
   // ─────────────────────────────────────────────
 
   async findMineForMissingPerson(userId: string, missingPersonId: string) {
@@ -727,7 +781,8 @@ export class InformationSubmissionService {
 
   // ─────────────────────────────────────────────
   // UPDATE — OWNER
-  // Only while PENDING. Empty patches are rejected.
+  // Only while PENDING — never the REVIEWED status the public cache
+  // holds — so no invalidation needed here.
   //
   // Media handling: diffs each media field present in the request
   // against what's currently on the row. Newly-added filepaths are
@@ -917,10 +972,13 @@ export class InformationSubmissionService {
 
   // ─────────────────────────────────────────────
   // DELETE — OWNER
-  // Only while PENDING. Deletes the DB row, then removes every
-  // attached media object from MinIO — once the row referencing
-  // them is gone, an orphaned object in the bucket serves no
-  // purpose. Same ordering as PostService.deleteMyPost.
+  // Only while PENDING — never REVIEWED — so no cache invalidation
+  // needed here either, same reasoning as update() above.
+  //
+  // Deletes the DB row, then removes every attached media object
+  // from MinIO — once the row referencing them is gone, an orphaned
+  // object in the bucket serves no purpose. Same ordering as
+  // PostService.deleteMyPost.
   //
   // FIX (audit review, item #1): both guards (not_authorized,
   // only_pending_submissions_can_be_deleted) threw with no row. Now
@@ -1007,6 +1065,9 @@ export class InformationSubmissionService {
 
   // ─────────────────────────────────────────────
   // ADMIN — GET ALL (paginated, lightweight — no nested detail)
+  // Admin-only — deliberately left uncached, same as
+  // MissingPersonService.findAllForAdmin / PostService.findAll, so an
+  // admin never acts on stale data.
   // ─────────────────────────────────────────────
 
   async findAllForAdmin(query: ListInformationSubmissionsQueryDto) {
@@ -1116,8 +1177,8 @@ export class InformationSubmissionService {
 
   // ─────────────────────────────────────────────
   // ADMIN — UPDATE STATUS
-  // Only moves PENDING → UNDER_REVIEW. Terminal decisions
-  // (REVIEWED / REJECTED) must go through review().
+  // Only moves PENDING → UNDER_REVIEW — never REVIEWED — so no cache
+  // invalidation needed here.
   //
   // FIX (audit review, item #1): the invalid-transition guard threw
   // with no row. Now emits FAILURE first.
@@ -1195,6 +1256,16 @@ export class InformationSubmissionService {
   // ─────────────────────────────────────────────
   // ADMIN — REVIEW (terminal decision)
   // Only valid from UNDER_REVIEW. reviewNote required on REJECTED.
+  //
+  // Cache: this is the ONLY method in the file that can move a
+  // submission into REVIEWED — the sole status the public
+  // findForMissingPerson() cache ever serves — so it's the only
+  // place that needs to invalidate that cache. It's a plain
+  // invalidation (not conditional on `status === REVIEWED`) purely
+  // for readability, since REJECTED never appeared in the cache to
+  // begin with; invalidating an entry that was never cached is a
+  // cheap no-op, same reasoning MissingPersonService.updateStatus
+  // gives for invalidating unconditionally on every transition.
   //
   // FIX (audit review, item #2): submissionOwnerId was buried inside
   // `diff`, which should describe the change to the submission's
@@ -1302,6 +1373,8 @@ export class InformationSubmissionService {
         ...(reviewNote !== undefined ? { reviewNote } : {}),
       },
     });
+
+    await this.cache.invalidateInformationSubmissionList(submission.missingPersonId);
 
     this.emitAudit({
       userId: reviewer.id,

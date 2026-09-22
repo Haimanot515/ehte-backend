@@ -23,6 +23,7 @@ import {
 } from 'src/modules/misc/events/notification.events';
 
 import { MinioService } from 'src/services/minio/minio.service';
+import { CacheService } from 'src/services/redis/cache.service';
 
 import {
   CreatePostDto,
@@ -83,6 +84,21 @@ const ALLOWED_STATUS_TRANSITIONS: Record<PostStatus, PostStatus[]> = {
   [PostStatus.REJECTED]: [],
 };
 
+// Only these two transitions actually flip a post's public
+// visibility (PostStatus.PUBLISHED is the only status
+// findPublishedPost/findPublishedPosts ever serve). Every other
+// transition (DRAFT<->PENDING, PENDING->APPROVED/REJECTED/
+// CHANGES_REQUESTED, etc.) never touches a cached public row, so
+// approve()/reject()/requestChanges() intentionally do NOT
+// invalidate the cache — mirrors the reasoning in
+// MissingPersonService, just split across Post's separate
+// publish()/unpublish()/updateStatus() methods instead of one
+// funnel method.
+const STATUSES_THAT_CHANGE_PUBLIC_VISIBILITY: PostStatus[] = [
+  PostStatus.PUBLISHED,
+  PostStatus.UNPUBLISHED,
+];
+
 // Fields that must never leave the process on a PUBLIC route.
 // userId would deanonymize the poster (item #7); reviewNote,
 // claim and dual-confirmation fields are internal review
@@ -99,6 +115,8 @@ const PUBLIC_POST_OMIT_FIELDS = [
   'ownerSuspendedAt',
 ] as const;
 
+type PublicPost = ReturnType<PostService['toPublicPost']>;
+
 @Injectable()
 export class PostService {
   constructor(
@@ -106,6 +124,7 @@ export class PostService {
     private readonly eventEmitter: EventEmitter2,
     private readonly minioService: MinioService,
     private readonly configService: ConfigService,
+    private readonly cache: CacheService,
   ) {}
 
   private emitAudit(payload: AuditEventPayload): void {
@@ -590,6 +609,10 @@ export class PostService {
   // by the user is timestamped via ownerSuspendedAt so admin
   // tooling can filter/flag them.
   //
+  // No cache touch needed: PENDING/DRAFT/CHANGES_REQUESTED are
+  // never public statuses, so nothing this handler moves a post
+  // into or out of can be sitting in the published-post cache.
+  //
   // FIX (audit coverage): this is a bulk system action about the
   // user, not about one specific post. userId (the actor) is no
   // longer set to the suspended user, since there is no human
@@ -725,6 +748,11 @@ export class PostService {
   // getPubliclyVisibleMediaKeys() would actually expose — so a
   // child-involving post's media stays unreachable here, even
   // though the key technically still exists in the DB row.
+  //
+  // Deliberately NOT read through the Post cache: it's a narrow,
+  // per-key lookup rather than the whole public row, and MinIO
+  // presigned URLs are already short-lived and cheap to mint, so
+  // there's nothing worth caching here.
   // ─────────────────────────────────────────────
 
   async getPublicMediaDownloadUrl(postId: string, key: string): Promise<{ url: string }> {
@@ -778,6 +806,9 @@ export class PostService {
   // validateMediaFilesExist()'s returned sizes and persisted as
   // mediaTotalBytes so future updates don't need to re-stat
   // already-attached files just to know the running total.
+  //
+  // A freshly created post is always DRAFT, a non-public status,
+  // so there's nothing to invalidate in the Post cache here.
   //
   // FIX (audit coverage): the success row now carries entityLabel
   // and metadata (post type, attachment count and size, whether the
@@ -889,6 +920,11 @@ export class PostService {
   //
   // NOTE: the dual-control rule (#16) intentionally does
   // NOT apply here — see the comment on AdminCreatePostDto.
+  //
+  // This endpoint only ever lands a post on DRAFT-equivalent
+  // PENDING or on APPROVED — never PUBLISHED (an admin still has
+  // to call publish() separately) — so, same as create(), there's
+  // no public row to invalidate here.
   //
   // FIX (item #13): same attachment-count/total-size guard
   // as create(), for consistency — official posts shouldn't
@@ -1019,6 +1055,12 @@ export class PostService {
   // before the write; filepaths dropped from the new
   // array are deleted from MinIO after the write commits.
   //
+  // OWNER_EDITABLE_STATUSES is DRAFT/CHANGES_REQUESTED only —
+  // neither is ever public (findPublishedPost/findPublishedPosts
+  // require PUBLISHED), so nothing this method touches can
+  // already be sitting in the Post cache — no invalidation
+  // needed here, same reasoning as MissingPersonService.update().
+  //
   // FIX (item #13): attachment counts are checked against the
   // fully-merged post-update media shape (existing fields not
   // present in the request are carried over unchanged) before
@@ -1122,7 +1164,8 @@ export class PostService {
 
   // ─────────────────────────────────────────────
   // SUBMIT MY POST
-  // Moves DRAFT or CHANGES_REQUESTED → PENDING.
+  // Moves DRAFT or CHANGES_REQUESTED → PENDING. Not a public
+  // status either direction, so no cache touch needed.
   //
   // FIX (item #1): enforces a max-pending-per-user cap —
   // a user can only have so many posts sitting in the
@@ -1199,7 +1242,8 @@ export class PostService {
 
   // ─────────────────────────────────────────────
   // CANCEL / WITHDRAW MY POST
-  // PENDING → DRAFT.
+  // PENDING → DRAFT. Neither status is ever public, so no
+  // cache touch needed.
   //
   // FIX (audit coverage): 'withdrawn_by_owner' moved out of diff
   // into the top-level reason column, and the row now carries
@@ -1250,10 +1294,11 @@ export class PostService {
 
   // ─────────────────────────────────────────────
   // DELETE MY POST
-  // Scoped to DRAFT only. Deletes the DB row, then
-  // removes every attached media object from MinIO —
-  // once the row referencing them is gone, an orphaned
-  // object in the bucket serves no purpose.
+  // Scoped to DRAFT only — never a public status, so no cache
+  // touch needed here either. Deletes the DB row, then removes
+  // every attached media object from MinIO — once the row
+  // referencing them is gone, an orphaned object in the bucket
+  // serves no purpose.
   //
   // FIX (audit coverage): the row is gone after this call, so the
   // audit entry is the only place a reader can still see WHICH post
@@ -1303,12 +1348,23 @@ export class PostService {
   // ─────────────────────────────────────────────
   // PUBLIC — GET PUBLISHED POSTS
   //
+  // Read-through cache, same shape as
+  // MissingPersonService.findAll()/findAllUncached(): the cache
+  // key is derived from the query params, and the DB path only
+  // runs on a miss.
+  //
   // FIX (item #7): responses are now mapped through
   // toPublicPost() so userId (and other internal-only
   // fields) never reach an anonymous caller.
   // ─────────────────────────────────────────────
 
   async findPublishedPosts(query: PublishedPostsQueryDto) {
+    return this.cache.wrapPostList(query as unknown as Record<string, unknown>, () =>
+      this.findPublishedPostsUncached(query),
+    );
+  }
+
+  private async findPublishedPostsUncached(query: PublishedPostsQueryDto) {
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
 
@@ -1341,11 +1397,22 @@ export class PostService {
   // ─────────────────────────────────────────────
   // PUBLIC — GET ONE PUBLISHED POST
   //
+  // Read-through cache, same shape as
+  // MissingPersonService.findOne(): serve the cached public row
+  // on a hit; on a miss, re-derive it from Prisma, cache it, and
+  // return it. Cached under the already-public shape (toPublicPost
+  // output), so a cache hit never risks re-leaking an internal
+  // field — there's nothing internal left in the cached value to
+  // leak.
+  //
   // FIX (item #7): same public-field stripping as
   // findPublishedPosts().
   // ─────────────────────────────────────────────
 
   async findPublishedPost(postId: string) {
+    const cached = await this.cache.getPost<PublicPost>(postId);
+    if (cached !== null) return cached;
+
     const post = await this.prisma.post.findFirst({
       where: { id: postId, status: PostStatus.PUBLISHED },
     });
@@ -1354,7 +1421,9 @@ export class PostService {
       throw new NotFoundException('post_not_found');
     }
 
-    return this.toPublicPost(post);
+    const publicPost = this.toPublicPost(post);
+    await this.cache.setPost(postId, publicPost);
+    return publicPost;
   }
 
   // ─────────────────────────────────────────────
@@ -1440,6 +1509,11 @@ export class PostService {
   // reject() endpoints and their dual-control gate (#16).
   // Each id's outcome is reported independently so a
   // failure on one post never blocks the rest.
+  //
+  // Neither approve() nor reject() ever reaches PUBLISHED
+  // (see STATUSES_THAT_CHANGE_PUBLIC_VISIBILITY above), so
+  // bulk-approving/rejecting never needs a cache invalidation
+  // either — same as the single-post calls they wrap.
   //
   // FIX (audit coverage): skipping a child-involving post is a
   // blocked attempt, so it now writes a DENIED row (severity INFO,
@@ -1564,6 +1638,14 @@ export class PostService {
   // and uses a conditional update to avoid racing
   // another concurrent transition.
   //
+  // This is a generic transition endpoint, so — unlike
+  // approve()/reject()/requestChanges(), which only ever move a
+  // post between non-public statuses — it CAN be the thing that
+  // takes a post into or out of PUBLISHED (APPROVED->PUBLISHED,
+  // PUBLISHED->UNPUBLISHED, UNPUBLISHED->PUBLISHED are all legal
+  // here per ALLOWED_STATUS_TRANSITIONS). Invalidate whenever the
+  // destination status is one that changes public visibility.
+  //
   // FIX (audit coverage): invalid transitions, claim denials,
   // child-safety gate rejections and lost-race conflicts now each
   // write a FAILURE/DENIED row (severity WARNING) before throwing.
@@ -1619,6 +1701,10 @@ export class PostService {
 
     const updated = await this.prisma.post.findUniqueOrThrow({ where: { id: postId } });
 
+    if (STATUSES_THAT_CHANGE_PUBLIC_VISIBILITY.includes(status)) {
+      await this.cache.invalidatePostEverywhere(postId);
+    }
+
     this.emitAudit({
       userId: user.id,
       targetUserId: this.auditTarget(existing, user.id),
@@ -1648,6 +1734,10 @@ export class PostService {
   // the first time; the status only actually flips to
   // APPROVED once a second, different admin also confirms.
   // FIX (item #17): blocked if claimed by a different admin.
+  //
+  // APPROVED is not a public status (only PUBLISHED is), so
+  // this never touches the Post cache — the post still needs an
+  // explicit publish() before it's visible on GET /posts/published.
   //
   // FIX (notifications): POST_APPROVED now includes title,
   // matching PostRejectedEvent's shape below — previously
@@ -1750,6 +1840,9 @@ export class PostService {
   // notification payload, so GET /posts/me/:id shows
   // the owner why without relying on the notification.
   //
+  // CHANGES_REQUESTED is not a public status, so no cache
+  // invalidation is needed here.
+  //
   // FIX (item #17): blocked if claimed by a different
   // admin; claim is released once changes are requested
   // since the case is handed back to the owner.
@@ -1828,6 +1921,11 @@ export class PostService {
   // ─────────────────────────────────────────────
   // ADMIN — PUBLISH POST
   //
+  // The one place (besides updateStatus()) that puts a post INTO
+  // PUBLISHED — invalidate on success so a stale cached miss
+  // (or, if pre-warmed some other way, a stale cached absence)
+  // never outlives the row actually going public.
+  //
   // FIX (audit coverage): an invalid transition or a lost race
   // now writes a FAILURE row before throwing. Success row carries
   // targetUserId, entityLabel and metadata. (No claim check here
@@ -1858,6 +1956,8 @@ export class PostService {
 
     const updated = await this.prisma.post.findUniqueOrThrow({ where: { id: postId } });
 
+    await this.cache.invalidatePostEverywhere(postId);
+
     this.emitAudit({
       userId: user.id,
       targetUserId: this.auditTarget(post, user.id),
@@ -1885,6 +1985,10 @@ export class PostService {
   // real-world workflow (take something down before
   // formally rejecting it). Reason is persisted on
   // the Post row (reviewNote).
+  //
+  // Because of that ordering, reject() only ever runs against a
+  // PENDING or APPROVED post and only ever lands on REJECTED —
+  // never PUBLISHED — so it never needs to touch the cache.
   //
   // FIX (item #17): blocked if claimed by a different
   // admin; claim is released once the post is rejected.
@@ -1980,6 +2084,10 @@ export class PostService {
   // Notifies the post owner, matching
   // approve/reject/request-changes.
   //
+  // The one place (besides updateStatus()) that takes a post OUT
+  // of PUBLISHED — invalidate on success so a cached public row
+  // doesn't keep serving after it's been pulled.
+  //
   // FIX (audit coverage): an invalid transition or a lost race
   // now writes a FAILURE row before throwing. Success row carries
   // targetUserId, entityLabel and metadata.
@@ -2013,6 +2121,8 @@ export class PostService {
     }
 
     const updated = await this.prisma.post.findUniqueOrThrow({ where: { id: postId } });
+
+    await this.cache.invalidatePostEverywhere(postId);
 
     this.emitAudit({
       userId: user.id,

@@ -1,0 +1,49 @@
+// prisma/schema/agreement.prisma
+
+enum AgreementStatus {
+  DRAFT
+  ACTIVE
+  RETIRED
+}
+
+enum RuleMode {
+  PERCENT_BPS // basis points: 500 = 5%
+  FLAT
+}
+
+// An agreement row is immutable once ACTIVE. To change terms, create version + 1
+// and re-point the profile. Old payments keep their snapshot.
+model Agreement {
+  id            String          @id @default(uuid())
+  type          SupportAgreementType // existing enum (also used by Support.agreementType)
+  institutionId String?
+  institution   Institution?    @relation(fields: [institutionId], references: [id])
+  version       Int             @default(1)
+  status        AgreementStatus @default(DRAFT)
+  effectiveFrom DateTime
+  effectiveTo   DateTime?
+  approvedById  String?
+  createdAt     DateTime        @default(now())
+
+  rules    AllocationRule[]
+  payments Payment[]
+
+  @@map("agreements")
+}
+
+// RECIPIENT is never stored as a rule: recipient = total - sum(rules).
+model AllocationRule {
+  id            String      @id @default(uuid())
+  agreementId   String
+  agreement     Agreement   @relation(fields: [agreementId], references: [id], onDelete: Restrict)
+  paymentType   PaymentType
+  partyType     PartyType
+  institutionId String?
+  mode          RuleMode
+  valueBps      Int?
+  flatAmount    Decimal?    @db.Decimal(14, 2)
+
+  @@index([agreementId, paymentType])
+  @@map("allocation_rules")
+}
+

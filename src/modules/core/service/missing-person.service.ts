@@ -27,6 +27,7 @@ import { AuditEventPayload } from 'src/modules/misc/events/audit.events';
 import { NotificationEventEnum } from 'src/common/enums/shared/notification-events.enum';
 
 import { MinioService } from 'src/services/minio/minio.service';
+import { CacheService } from 'src/services/redis/cache.service';
 
 import {
   AdminCreateMissingPersonDto,
@@ -74,6 +75,7 @@ export class MissingPersonService {
     private readonly eventEmitter: EventEmitter2,
     private readonly minioService: MinioService,
     private readonly configService: ConfigService,
+    private readonly cache: CacheService,
   ) {}
 
   private readonly EDITABLE_STATUSES: MissingPersonStatus[] = [
@@ -762,6 +764,11 @@ export class MissingPersonService {
       idempotencyKey,
     );
 
+    // A non-CHILD admin-created case is born APPROVED — it's immediately public.
+    if (status === MissingPersonStatus.APPROVED) {
+      await this.cache.invalidateMissingPersonCaches();
+    }
+
     this.emitAudit({
       userId: admin.id,
       actorType: resolveActorType(admin.roles ?? []),
@@ -848,6 +855,11 @@ export class MissingPersonService {
   }
 
   async findOne(id: string) {
+    type PublicMissingPerson = Prisma.MissingPersonGetPayload<{ select: typeof this.publicSelect }>;
+
+    const cached = await this.cache.getMissingPerson<PublicMissingPerson>(id);
+    if (cached !== null) return cached;
+
     const missingPerson = await this.prisma.missingPerson.findUnique({
       where: { id },
       select: this.publicSelect,
@@ -857,10 +869,19 @@ export class MissingPersonService {
       throw new NotFoundException('missing_person_not_found');
     }
 
-    return this.maskUnapprovedReward(missingPerson);
+    const masked = this.maskUnapprovedReward(missingPerson);
+    await this.cache.setMissingPerson(id, masked);
+    return masked;
   }
 
   async findAll(query: ListMissingPersonsQueryDto) {
+    return this.cache.wrapMissingPersonList(
+      query as unknown as Record<string, unknown>,
+      () => this.findAllUncached(query),
+    );
+  }
+
+  private async findAllUncached(query: ListMissingPersonsQueryDto) {
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
 
@@ -931,6 +952,9 @@ export class MissingPersonService {
     }));
   }
 
+  // Only PENDING / MORE_INFORMATION_REQUESTED cases are editable (EDITABLE_STATUSES),
+  // and neither is ever public (findOne/findAll require APPROVED), so nothing this
+  // method touches can already be in the public cache — no invalidation needed here.
   async update(user: CurrentUserDto, id: string, data: UpdateMissingPersonDto) {
     const existing = await this.prisma.missingPerson.findUnique({ where: { id } });
 
@@ -1088,6 +1112,7 @@ export class MissingPersonService {
     return updated;
   }
 
+  // Only PENDING cases can be deleted, and PENDING is never public — no invalidation needed.
   async remove(user: CurrentUserDto, id: string) {
     const existing = await this.prisma.missingPerson.findUnique({ where: { id } });
 
@@ -1237,6 +1262,7 @@ export class MissingPersonService {
     if (isChildApproval) {
       const safety = await this.ensureChildSafetySatisfied(existing, admin, childSafetyConfirmed);
       if (safety === 'first_confirmation_recorded') {
+        // Not yet APPROVED — nothing public changes, so no cache invalidation here.
         const partial = await this.prisma.missingPerson.findUniqueOrThrow({ where: { id } });
         this.emitAudit({
           userId: admin.id,
@@ -1275,6 +1301,11 @@ export class MissingPersonService {
     }
 
     const updated = await this.prisma.missingPerson.findUniqueOrThrow({ where: { id } });
+
+    // Only transitions into or out of APPROVED change public visibility, but every
+    // transition that reaches here has already passed ALLOWED_TRANSITIONS, so
+    // invalidating unconditionally is simple and cheap (short TTLs, no-op if unused).
+    await this.cache.invalidateMissingPersonEverywhere(id);
 
     this.emitAudit({
       userId: admin.id,
@@ -1388,6 +1419,10 @@ export class MissingPersonService {
         rewardDetails: finalDetails,
       },
     });
+
+    // rewardApproved/rewardAmount/rewardDetails feed maskUnapprovedReward() on the
+    // public detail/list views, so any change here can change what's shown publicly.
+    await this.cache.invalidateMissingPersonEverywhere(id);
 
     this.emitAudit({
       userId: admin.id,

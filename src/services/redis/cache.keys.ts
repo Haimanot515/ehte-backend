@@ -22,6 +22,11 @@ export const CacheKeys = {
     `ehte:missing-person:list:${queryHash}`,
   approvedMissingPersons: (page = 1) => `ehte:missing-person:approved:${page}`,
 
+  // Scoped per missing-person case: each case's submissions are cached and
+  // invalidated independently of every other case's list.
+  informationSubmissionList: (missingPersonId: string, queryHash: string) =>
+    `ehte:information-submission:list:${missingPersonId}:${queryHash}`,
+
   victimProfile: (id: string) => `ehte:victim-profile:${id}`,
   victimProfileList: (queryHash: string) =>
     `ehte:victim-profile:list:${queryHash}`,
@@ -47,6 +52,8 @@ export const CacheKeys = {
     postLists: () => 'ehte:post:list:*',
     missingPersonLists: () => 'ehte:missing-person:list:*',
     approvedMissingPersons: () => 'ehte:missing-person:approved:*',
+    informationSubmissionLists: (missingPersonId: string) =>
+      `ehte:information-submission:list:${missingPersonId}:*`,
     victimProfileLists: () => 'ehte:victim-profile:list:*',
     approvedVictimProfiles: () => 'ehte:victim-profile:approved:*',
   },
@@ -68,6 +75,8 @@ export const TTL = {
   MISSING_PERSON_DETAIL: 300,
   MISSING_PERSON_LIST: 120,
   APPROVED_MISSING_PERSONS: 120,
+
+  INFORMATION_SUBMISSION_LIST: 120,
 
   VICTIM_PROFILE_DETAIL: 300,
   VICTIM_PROFILE_LIST: 120,
