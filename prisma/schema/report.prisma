@@ -1,19 +1,20 @@
 model Report {
-  id            String         @id @default(uuid())
-  userId        String
-  caseReference String         @unique
+  id            String            @id @default(uuid())
+  userId        String?
+  caseReference String            @unique
   description   String
   location      String?
   incidentAt    DateTime?
+  channel       SubmissionChannel @default(APP)
   photo         String[]
   video         String[]
   audio         String[]
   pdf           String[]
   document      String[]
   other         String[]
-  status        ReportStatus   @default(PENDING)
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime       @updatedAt
+  status        ReportStatus      @default(PENDING)
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
   assignedToId  String?
   category      ReportCategory
 
@@ -26,7 +27,7 @@ model Report {
   ownerSuspendedAt DateTime?
 
   assignedTo          User?                      @relation("ReportAssignee", fields: [assignedToId], references: [id])
-  user                User                       @relation("ReportReporter", fields: [userId], references: [id], onDelete: Cascade)
+  user                User?                      @relation("ReportReporter", fields: [userId], references: [id], onDelete: Cascade)
   informationRequests ReportInformationRequest[]
 
   @@unique([userId, idempotencyKey])
@@ -35,6 +36,7 @@ model Report {
   @@index([assignedToId])
   @@index([caseReference])
   @@index([category])
+  @@index([channel])
   @@index([status, createdAt])
   @@map("report")
 }

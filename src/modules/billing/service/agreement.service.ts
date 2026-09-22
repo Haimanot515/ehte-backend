@@ -11,6 +11,11 @@ import { PartyType, Prisma } from '@prisma/client';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { CreateAgreementDto } from '../dto/agreement.dto';
 import { BillingEventsService } from './billing-events.service';
+import { AuditEventEnum } from '../../../common/enums/shared/audit-events.enum';
+
+// How many times to retry version assignment on a unique constraint collision
+// before giving up. Mirrors CASE_REFERENCE_MAX_ATTEMPTS in ReportService.
+const AGREEMENT_VERSION_MAX_ATTEMPTS = 5;
 
 @Injectable()
 export class AgreementService {
@@ -31,7 +36,7 @@ export class AgreementService {
       data: { status: 'AGREEMENT_SIGNED', signedAt: new Date() },
     });
     if (count === 0) throw new BadRequestException('Institution is not a prospect');
-    await this.events.log({ actorId: adminId, action: 'INSTITUTION_SIGNED', entityType: 'Institution', entityId: id });
+    await this.events.log({ actorId: adminId, action: AuditEventEnum.INSTITUTION_SIGNED, entityType: 'Institution', entityId: id });
   }
 
   // ── Agreements ────────────────────────────────────────────────────────────
@@ -62,33 +67,8 @@ export class AgreementService {
       throw new BadRequestException('Percentage rules must total less than 100%');
     }
 
-    const last = await this.prisma.agreement.findFirst({
-      where: { type: dto.type, institutionId: dto.institutionId ?? null },
-      orderBy: { version: 'desc' },
-      select: { version: true },
-    });
-
-    const agreement = await this.prisma.agreement.create({
-      data: {
-        type: dto.type,
-        institutionId: dto.institutionId,
-        version: (last?.version ?? 0) + 1,
-        effectiveFrom: dto.effectiveFrom,
-        effectiveTo: dto.effectiveTo,
-        rules: {
-          create: dto.rules.map((r) => ({
-            paymentType: r.paymentType,
-            partyType: r.partyType,
-            institutionId: r.institutionId,
-            mode: r.mode,
-            valueBps: r.valueBps,
-            flatAmount: r.flatAmount ? new Prisma.Decimal(r.flatAmount) : null,
-          })),
-        },
-      },
-      include: { rules: true },
-    });
-    await this.events.log({ actorId: adminId, action: 'AGREEMENT_CREATED', entityType: 'Agreement', entityId: agreement.id });
+    const agreement = await this.createAgreementWithUniqueVersion(dto);
+    await this.events.log({ actorId: adminId, action: AuditEventEnum.AGREEMENT_CREATED, entityType: 'Agreement', entityId: agreement.id });
     return agreement;
   }
 
@@ -103,7 +83,7 @@ export class AgreementService {
       data: { status: 'ACTIVE', approvedById: adminId },
     });
     if (count === 0) throw new BadRequestException('Only drafts can be activated');
-    await this.events.log({ actorId: adminId, action: 'AGREEMENT_ACTIVATED', entityType: 'Agreement', entityId: id });
+    await this.events.log({ actorId: adminId, action: AuditEventEnum.AGREEMENT_ACTIVATED, entityType: 'Agreement', entityId: id });
   }
 
   async retire(adminId: string, id: string) {
@@ -112,7 +92,7 @@ export class AgreementService {
       data: { status: 'RETIRED', effectiveTo: new Date() },
     });
     if (count === 0) throw new BadRequestException('Only active agreements can be retired');
-    await this.events.log({ actorId: adminId, action: 'AGREEMENT_RETIRED', entityType: 'Agreement', entityId: id });
+    await this.events.log({ actorId: adminId, action: AuditEventEnum.AGREEMENT_RETIRED, entityType: 'Agreement', entityId: id });
   }
 
   /**
@@ -142,7 +122,7 @@ export class AgreementService {
 
     await this.events.log({
       actorId: adminId,
-      action: 'VICTIM_PROFILE_AGREEMENT_ASSIGNED',
+      action: AuditEventEnum.VICTIM_PROFILE_AGREEMENT_ASSIGNED,
       entityType: 'VictimProfile',
       entityId: profileId,
       // Same rule as VictimProfileService.profileLabel: a child's name never lands in the audit table.
@@ -166,5 +146,66 @@ export class AgreementService {
     if (inst?.status !== 'AGREEMENT_SIGNED') {
       throw new BadRequestException('Institution has no signed agreement');
     }
+  }
+
+  // FIX: createDraft() used to read the latest version (findFirst orderBy
+  // version desc) and create with `version + 1` as two separate steps — two
+  // concurrent createDraft calls for the same (type, institutionId) could read
+  // the same `last.version` and either both succeed with a duplicate version
+  // number (if no DB constraint existed) or the loser would throw an uncaught
+  // P2002. Same race class ReportService.createReportWithUniqueCaseReference
+  // already guards against for caseReference collisions.
+  //
+  // Requires @@unique([type, institutionId, version]) on Agreement (see
+  // agreement.prisma) — without that constraint at the DB level, this retry
+  // loop has nothing to actually catch and two racing requests could still
+  // both succeed with the same version number.
+  private async createAgreementWithUniqueVersion(dto: CreateAgreementDto) {
+    for (let attempt = 1; attempt <= AGREEMENT_VERSION_MAX_ATTEMPTS; attempt++) {
+      const last = await this.prisma.agreement.findFirst({
+        where: { type: dto.type, institutionId: dto.institutionId ?? null },
+        orderBy: { version: 'desc' },
+        select: { version: true },
+      });
+      const nextVersion = (last?.version ?? 0) + 1;
+
+      try {
+        return await this.prisma.agreement.create({
+          data: {
+            type: dto.type,
+            institutionId: dto.institutionId,
+            version: nextVersion,
+            effectiveFrom: dto.effectiveFrom,
+            effectiveTo: dto.effectiveTo,
+            rules: {
+              create: dto.rules.map((r) => ({
+                paymentType: r.paymentType,
+                partyType: r.partyType,
+                institutionId: r.institutionId,
+                mode: r.mode,
+                valueBps: r.valueBps,
+                flatAmount: r.flatAmount ? new Prisma.Decimal(r.flatAmount) : null,
+              })),
+            },
+          },
+          include: { rules: true },
+        });
+      } catch (err) {
+        const lostVersionRace =
+          err instanceof Prisma.PrismaClientKnownRequestError &&
+          err.code === 'P2002' &&
+          (err.meta?.target as string[] | undefined)?.some((t) =>
+            ['type', 'institutionId', 'version'].includes(t),
+          );
+
+        if (!lostVersionRace || attempt === AGREEMENT_VERSION_MAX_ATTEMPTS) {
+          throw err;
+        }
+        // Someone else's draft won this version number — loop and recompute
+        // against the now-current latest version.
+      }
+    }
+    // Unreachable: the loop always returns or throws.
+    throw new Error('failed_to_generate_unique_agreement_version');
   }
 }

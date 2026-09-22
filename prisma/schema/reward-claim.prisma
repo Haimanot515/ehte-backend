@@ -8,23 +8,23 @@
 // that missing piece; it does not duplicate anything already on MissingPerson.
 
 enum RewardClaimStatus {
-  PENDING     // reward funded, no claim decided yet
-  APPROVED    // admin verified informationSubmissionId led to the outcome
+  PENDING // reward funded, no claim decided yet
+  APPROVED // admin verified informationSubmissionId led to the outcome
   PAID_OUT
-  REFUND_DUE  // funded, case closed, no valid claim — money owed back to requester
+  REFUND_DUE // funded, case closed, no valid claim — money owed back to requester
   REFUNDED
 }
 
 model RewardClaim {
-  id                   String            @id @default(uuid())
-  missingPersonId      String            @unique // one active claim per case
-  informationSubmissionId String?        // set only once an admin approves a specific tip
-  status               RewardClaimStatus @default(PENDING)
-  approvedById         String?
-  approvedAt           DateTime?
-  closedReason         String?
-  createdAt            DateTime          @default(now())
-  updatedAt            DateTime          @updatedAt
+  id                      String            @id @default(uuid())
+  missingPersonId         String            @unique // one active claim per case
+  informationSubmissionId String? // set only once an admin approves a specific tip
+  status                  RewardClaimStatus @default(PENDING)
+  approvedById            String?
+  approvedAt              DateTime?
+  closedReason            String?
+  createdAt               DateTime          @default(now())
+  updatedAt               DateTime          @updatedAt
 
   @@map("reward_claims")
 }

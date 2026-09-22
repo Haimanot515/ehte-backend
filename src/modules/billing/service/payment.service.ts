@@ -21,6 +21,7 @@ import { PrismaService } from '../../../prisma/prisma.service';
 import { ChapaService } from '../../../services/chapa/chapa.service';
 import { BillingEventsService } from './billing-events.service';
 import { AllocationPreview, AllocationService } from './allocation.service';
+import { AuditEventEnum } from '../../../common/enums/shared/audit-events.enum';
 
 // Only what Chapa needs. Real names are never sent to Chapa.
 export type Payer = { id: string; email?: string | null };
@@ -250,7 +251,7 @@ export class PaymentService {
       this.logger.error(`Amount/currency mismatch on payment ${payment.id}`);
       await this.events.log({
         actorId: null,
-        action: 'PAYMENT_MISMATCH',
+        action: AuditEventEnum.PAYMENT_MISMATCH,
         entityType: 'Payment',
         entityId: payment.id,
       });
@@ -298,7 +299,7 @@ export class PaymentService {
     if (won) {
       await this.events.log({
         actorId: payment.payerUserId,
-        action: 'PAYMENT_PAID',
+        action: AuditEventEnum.PAYMENT_PAID,
         entityType: 'Payment',
         entityId: payment.id,
         metadata: { type: payment.type },

@@ -1,7 +1,9 @@
 model MissingPerson {
   id            String              @id @default(uuid())
-  userId        String
+  userId        String?
+  contactPhone  String?
   personType    MissingPersonType
+  channel       SubmissionChannel   @default(APP)
   name          String?
   description   String
   dateLastSeen  DateTime
@@ -37,7 +39,7 @@ model MissingPerson {
   childSafetyFirstConfirmedAt       DateTime?
 
   informationSubmissions InformationSubmission[]
-  user                   User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user                   User?                   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, idempotencyKey])
   @@index([userId])

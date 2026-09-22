@@ -23,7 +23,7 @@ model Disbursement {
   status            DisbursementStatus @default(PENDING_APPROVAL)
   amount            Decimal            @db.Decimal(14, 2)
   reference         String             @unique // opaque, sent to Chapa
-  externalReference String?            // bank slip / manual reference
+  externalReference String? // bank slip / manual reference
   createdById       String
   approvedById      String?
   executedById      String?
@@ -34,4 +34,3 @@ model Disbursement {
   @@index([status])
   @@map("disbursements")
 }
-

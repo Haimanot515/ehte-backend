@@ -3,6 +3,7 @@ enum ActorType {
   ADMIN
   SUPER_ADMIN
   SYSTEM
+  ANONYMOUS
 }
 
 enum AuditOutcome {

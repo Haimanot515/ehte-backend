@@ -19,9 +19,9 @@ import { VictimProfileService } from './service/victim-profile.service';
 import { SupportService } from './service/support.service';
 
 @Module({
-  // FIX: AuthModule imported so UserService can inject OtpUtil and
-  // LockoutUtil, both exported from AuthModule (see auth.module.ts).
-  // No circular dependency — AuthModule does not import CoreModule.
+  // AuthModule imported so UserService can inject OtpUtil and LockoutUtil,
+  // both exported from AuthModule (see auth.module.ts). No circular
+  // dependency — AuthModule does not import CoreModule.
   imports: [AuthModule],
 
   controllers: [

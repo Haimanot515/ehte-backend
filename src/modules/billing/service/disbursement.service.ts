@@ -21,6 +21,7 @@ import { DisbursementMethod, Prisma } from '@prisma/client';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { ChapaService } from '../../../services/chapa/chapa.service';
 import { BillingEventsService } from './billing-events.service';
+import { AuditEventEnum } from '../../../common/enums/shared/audit-events.enum';
 
 export type ExecuteInput = {
   // CHAPA_TRANSFER
@@ -73,7 +74,7 @@ export class DisbursementService {
         createdById: adminId,
       },
     });
-    await this.events.log({ actorId: adminId, action: 'DISBURSEMENT_CREATED', entityType: 'Disbursement', entityId: d.id });
+    await this.events.log({ actorId: adminId, action: AuditEventEnum.DISBURSEMENT_CREATED, entityType: 'Disbursement', entityId: d.id });
     return d;
   }
 
@@ -87,7 +88,7 @@ export class DisbursementService {
       data: { status: 'APPROVED', approvedById: adminId },
     });
     if (count === 0) throw new BadRequestException('Not awaiting approval');
-    await this.events.log({ actorId: adminId, action: 'DISBURSEMENT_APPROVED', entityType: 'Disbursement', entityId: id });
+    await this.events.log({ actorId: adminId, action: AuditEventEnum.DISBURSEMENT_APPROVED, entityType: 'Disbursement', entityId: id });
   }
 
   /** Banks and their Chapa codes, for the admin to pick from at payout time. */
@@ -146,14 +147,14 @@ export class DisbursementService {
         where: { id },
         data: { status: 'FAILED', failureReason: String((err as Error).message).slice(0, 200) },
       });
-      await this.events.log({ actorId: adminId, action: 'DISBURSEMENT_FAILED', entityType: 'Disbursement', entityId: id });
+      await this.events.log({ actorId: adminId, action: AuditEventEnum.DISBURSEMENT_FAILED, entityType: 'Disbursement', entityId: id });
       throw err;
     }
 
     // Audit policy: bank details are never written to audit rows, not even the last digits.
     await this.events.log({
       actorId: adminId,
-      action: 'DISBURSEMENT_EXECUTED',
+      action: AuditEventEnum.DISBURSEMENT_EXECUTED,
       entityType: 'Disbursement',
       entityId: id,
       metadata: {

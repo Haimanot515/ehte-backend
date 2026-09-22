@@ -21,6 +21,7 @@ import {
 import { OnEvent } from '@nestjs/event-emitter';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { BILLING_PAYMENT_PAID, BillingEventsService, BillingPaymentPaid } from './billing-events.service';
+import { AuditEventEnum } from '../../../common/enums/shared/audit-events.enum';
 
 @Injectable()
 export class RewardService {
@@ -46,7 +47,7 @@ export class RewardService {
     });
     await this.events.log({
       actorId: adminId,
-      action: 'REWARD_APPROVED',
+      action: AuditEventEnum.REWARD_APPROVED,
       entityType: 'MissingPerson',
       entityId: missingPersonId,
     });
@@ -68,7 +69,7 @@ export class RewardService {
     });
     await this.events.log({
       actorId: adminId,
-      action: 'REWARD_REJECTED',
+      action: AuditEventEnum.REWARD_REJECTED,
       entityType: 'MissingPerson',
       entityId: missingPersonId,
       reason,
@@ -100,7 +101,7 @@ export class RewardService {
     });
     await this.events.log({
       actorId: adminId,
-      action: 'REWARD_CLAIM_APPROVED',
+      action: AuditEventEnum.REWARD_CLAIM_APPROVED,
       entityType: 'RewardClaim',
       entityId: claim.id,
       metadata: { missingPersonId, informationSubmissionId },
@@ -119,7 +120,7 @@ export class RewardService {
     });
     await this.events.log({
       actorId: adminId,
-      action: 'REWARD_CLOSED',
+      action: AuditEventEnum.REWARD_CLOSED,
       entityType: 'RewardClaim',
       entityId: claim.id,
       reason,
@@ -146,7 +147,7 @@ export class RewardService {
     if (!existed) {
       await this.events.log({
         actorId: null, // system: triggered by a settled Chapa payment, not an admin action
-        action: 'REWARD_FUNDED',
+        action: AuditEventEnum.REWARD_FUNDED,
         entityType: 'MissingPerson',
         entityId: e.missingPersonId,
         metadata: { paymentId: e.paymentId },

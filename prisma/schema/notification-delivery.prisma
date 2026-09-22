@@ -1,7 +1,7 @@
 // Notification model needs the matching relation fields (broadcastId, broadcast, deliveries)
 
 model NotificationPreference {
-  id              String   @id @default(uuid())
+  id              String           @id @default(uuid())
   userId          String
   type            NotificationType
   email           Boolean?
@@ -10,8 +10,8 @@ model NotificationPreference {
   quietHoursStart String?
   quietHoursEnd   String?
   timezone        String?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @default(now()) @updatedAt
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @default(now()) @updatedAt
 
   @@unique([userId, type])
   @@index([userId])
@@ -20,17 +20,17 @@ model NotificationPreference {
 
 // Statuses are plain strings so the queue claim can use simple raw SQL
 model NotificationDelivery {
-  id             String   @id @default(uuid())
+  id             String    @id @default(uuid())
   notificationId String
   userId         String
   channel        String
-  status         String   @default("PENDING")
-  attempts       Int      @default(0)
-  nextAttemptAt  DateTime @default(now())
+  status         String    @default("PENDING")
+  attempts       Int       @default(0)
+  nextAttemptAt  DateTime  @default(now())
   lastError      String?
   sentAt         DateTime?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @default(now()) @updatedAt
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @default(now()) @updatedAt
 
   notification Notification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
 
@@ -54,7 +54,7 @@ model DeviceToken {
 }
 
 model NotificationBroadcast {
-  id             String   @id @default(uuid())
+  id             String               @id @default(uuid())
   createdById    String?
   audience       String
   type           NotificationType
@@ -62,15 +62,15 @@ model NotificationBroadcast {
   body           String
   priority       NotificationPriority @default(NORMAL)
   templateId     String?
-  status         String   @default("SCHEDULED")
-  scheduledAt    DateTime @default(now())
+  status         String               @default("SCHEDULED")
+  scheduledAt    DateTime             @default(now())
   startedAt      DateTime?
   finishedAt     DateTime?
-  recipientCount Int      @default(0)
-  attempts       Int      @default(0)
+  recipientCount Int                  @default(0)
+  attempts       Int                  @default(0)
   error          String?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @default(now()) @updatedAt
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @default(now()) @updatedAt
 
   notifications Notification[]
 
@@ -80,15 +80,15 @@ model NotificationBroadcast {
 }
 
 model NotificationTemplate {
-  id          String   @id @default(uuid())
+  id          String           @id @default(uuid())
   type        NotificationType
   language    String
   title       String
   body        String
-  isActive    Boolean  @default(true)
+  isActive    Boolean          @default(true)
   createdById String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @default(now()) @updatedAt
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @default(now()) @updatedAt
 
   @@unique([type, language])
   @@map("notification_template")

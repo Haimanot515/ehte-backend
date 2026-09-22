@@ -1139,7 +1139,7 @@ export class ReportService {
 
     this.emitAudit({
       userId: admin.id,
-      targetUserId: report.user.id,
+      targetUserId: report.user?.id,
       actorType,
       action: AuditEventEnum.REPORTER_INFORMATION_OPENED,
       entity: 'Report',
@@ -1283,7 +1283,7 @@ export class ReportService {
       status: report.status,
     });
 
-    if (data.status === ReportStatus.REJECTED) {
+    if (data.status === ReportStatus.REJECTED && report.userId) {
       await this.maybeFlagUserForRejections(report.userId);
     }
 

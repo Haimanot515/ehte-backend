@@ -30,6 +30,13 @@ import { MediaModule } from './modules/media/media.module';
 
 import { MiscModule } from './modules/misc/misc.module';
 
+import { AppAccessModule } from './modules/app-access/app-access.module';
+
+import { BillingModule } from './modules/billing/billing.module';
+
+// FIX: was never wired into AppModule despite existing in the tree.
+import { UssdModule } from './modules/ussd/ussd.module';
+
 import { AuthModule } from './modules/auth/auth.module';
 
 import { JwtStrategy } from './common/guards/jwt.strategy';
@@ -47,6 +54,7 @@ import { AdminSeeder } from './common/seed/admin.seeder';
 import { UserSeeder } from './common/seed/user.seeder';
 import { RolesSeeder } from './common/seed/roles.seeder';
 import { PermissionsSeeder } from './common/seed/permissions.seeder';
+import { SeedOrchestratorService } from './common/seed/seed-orchestrator.service';
 
 @Module({
   imports: [
@@ -243,9 +251,15 @@ import { PermissionsSeeder } from './common/seed/permissions.seeder';
 
     CoreModule,
 
+    BillingModule,
+
     MediaModule,
 
     MiscModule,
+
+    AppAccessModule,
+
+    UssdModule,
   ],
 
   controllers: [],
@@ -267,6 +281,7 @@ import { PermissionsSeeder } from './common/seed/permissions.seeder';
     PermissionsSeeder,
     AdminSeeder,
     UserSeeder,
+    SeedOrchestratorService,
   ],
 })
 export class AppModule {}

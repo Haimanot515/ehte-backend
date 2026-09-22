@@ -45,8 +45,6 @@ import { NotificationListener } from './listeners/notification.listener';
     EmailNotificationProvider,
     SmsNotificationProvider,
 
-    // Fan-in point for every outside channel. A channel missing from this
-    // array is simply never planned (see notification-channel.provider.ts).
     {
       provide: NOTIFICATION_CHANNEL_PROVIDERS,
       useFactory: (

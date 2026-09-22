@@ -30,32 +30,32 @@ enum SettlementStatus {
 }
 
 model Payment {
-  id                 String        @id @default(uuid())
-  type               PaymentType
-  status             PaymentStatus @default(PENDING)
-  amount             Decimal       @db.Decimal(14, 2)
-  currency           String        @default("ETB")
+  id       String        @id @default(uuid())
+  type     PaymentType
+  status   PaymentStatus @default(PENDING)
+  amount   Decimal       @db.Decimal(14, 2)
+  currency String        @default("ETB")
 
   // Opaque random reference sent to Chapa. Never contains user/profile ids.
-  txRef              String        @unique
-  chapaReference     String?
-  chapaFee           Decimal?      @db.Decimal(14, 2)
+  txRef          String   @unique
+  chapaReference String?
+  chapaFee       Decimal? @db.Decimal(14, 2)
 
-  payerUserId        String
-  victimProfileId    String?
-  supportId          String?       // existing Support row this payment settles
-  missingPersonId    String?       // MissingPerson this reward payment funds (rewardOffered/rewardApproved live there)
+  payerUserId     String
+  victimProfileId String?
+  supportId       String? // existing Support row this payment settles
+  missingPersonId String? // MissingPerson this reward payment funds (rewardOffered/rewardApproved live there)
 
   agreementId        String?
-  agreement          Agreement?    @relation(fields: [agreementId], references: [id])
+  agreement          Agreement? @relation(fields: [agreementId], references: [id])
   agreementVersion   Int?
   // Exact breakdown the payer saw before paying.
   allocationSnapshot Json
   previewShownAt     DateTime
 
-  paidAt             DateTime?
-  createdAt          DateTime      @default(now())
-  updatedAt          DateTime      @updatedAt
+  paidAt    DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
 
   allocations PaymentAllocation[]
 
@@ -83,4 +83,3 @@ model PaymentAllocation {
   @@index([paymentId])
   @@map("payment_allocations")
 }
-

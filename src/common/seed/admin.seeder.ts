@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcrypt';
 
@@ -9,9 +9,12 @@ import { RolesEnum } from '../enums/roles.enum';
 // AuthService.adminLoginByEmail(), the only admin login path. Phone-based
 // admin seeding/login has been removed; this seeder no longer touches
 // phone at all. Configure via ADMIN_EMAIL / ADMIN_NAME / ADMIN_PASSWORD.
+//
+// NOTE: role lookup now happens BEFORE user creation, so a missing
+// SUPER_ADMIN role fails fast instead of leaving a roleless user behind.
 
 @Injectable()
-export class AdminSeeder implements OnApplicationBootstrap {
+export class AdminSeeder {
   private readonly logger = new Logger(AdminSeeder.name);
 
   constructor(
@@ -19,7 +22,7 @@ export class AdminSeeder implements OnApplicationBootstrap {
     private readonly config: ConfigService,
   ) {}
 
-  async onApplicationBootstrap(): Promise<void> {
+  async run(): Promise<void> {
     const rawEmail = this.config.get<string>('ADMIN_EMAIL', 'admin@ehte.com');
 
     // Normalize the same way AuthService does (trim + lowercase), so the
@@ -38,6 +41,18 @@ export class AdminSeeder implements OnApplicationBootstrap {
       return;
     }
 
+    const role = await this.prisma.role.findUnique({
+      where: {
+        name: RolesEnum.SUPER_ADMIN,
+      },
+    });
+
+    if (!role) {
+      throw new Error(
+        `Required role "${RolesEnum.SUPER_ADMIN}" was not found. Ensure RolesSeeder runs before AdminSeeder.`,
+      );
+    }
+
     const hashedPassword = await bcrypt.hash(password, 10);
 
     const user = await this.prisma.user.create({
@@ -51,18 +66,6 @@ export class AdminSeeder implements OnApplicationBootstrap {
         isEmailVerified: true,
       },
     });
-
-    const role = await this.prisma.role.findUnique({
-      where: {
-        name: RolesEnum.SUPER_ADMIN,
-      },
-    });
-
-    if (!role) {
-      throw new Error(
-        `Required role "${RolesEnum.SUPER_ADMIN}" was not found. Ensure RolesSeeder runs before AdminSeeder.`,
-      );
-    }
 
     await this.prisma.userRole.create({
       data: {

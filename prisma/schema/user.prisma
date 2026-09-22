@@ -1,41 +1,41 @@
 // Holds a not-yet-verified new phone during the change-phone flow
 model User {
-  id                       String                     @id @default(uuid())
+  id                       String    @id @default(uuid())
   name                     String?
-  phone                    String?                    @unique
-  isActive                 Boolean                    @default(true)
-  discreetModeEnabled      Boolean                    @default(false)
+  phone                    String?   @unique
+  isActive                 Boolean   @default(true)
+  discreetModeEnabled      Boolean   @default(false)
   discreetModeUpdatedAt    DateTime?
-  createdAt                DateTime                   @default(now())
-  updatedAt                DateTime                   @updatedAt
-  isPhoneVerified          Boolean                    @default(false)
-  failedLoginAttempts      Int                        @default(0)
+  createdAt                DateTime  @default(now())
+  updatedAt                DateTime  @updatedAt
+  isPhoneVerified          Boolean   @default(false)
+  failedLoginAttempts      Int       @default(0)
   lockedUntil              DateTime?
   discreetModePasscodeHash String?
   passwordHash             String?
-  email                    String?                    @unique
+  email                    String?   @unique
   inviteTokenExpiresAt     DateTime?
-  inviteTokenHash          String?                    @unique
-  isEmailVerified          Boolean                    @default(false)
+  inviteTokenHash          String?   @unique
+  isEmailVerified          Boolean   @default(false)
 
-  pendingPhone             String?
+  pendingPhone String?
 
-  auditLogs                AuditLog[]
-  informationReports       InformationSubmission[]
-  missingPersons           MissingPerson[]
-  notifications            Notification[]
-  posts                    Post[]
-  assignedReports          Report[]                   @relation("ReportAssignee")
-  reports                  Report[]                   @relation("ReportReporter")
-  requestedInformation     ReportInformationRequest[] @relation("InfoRequestRequestedBy")
-  sessions                 Session[]
-  supports                 Support[]
-  otps                     UserOtp[]
-  userRoles                UserRole[]
-  assignedRoles            UserRole[]                 @relation("UserRoleAssignedBy")
+  auditLogs            AuditLog[]
+  informationReports   InformationSubmission[]
+  missingPersons       MissingPerson[]
+  notifications        Notification[]
+  posts                Post[]
+  assignedReports      Report[]                   @relation("ReportAssignee")
+  reports              Report[]                   @relation("ReportReporter")
+  requestedInformation ReportInformationRequest[] @relation("InfoRequestRequestedBy")
+  sessions             Session[]
+  supports             Support[]
+  otps                 UserOtp[]
+  userRoles            UserRole[]
+  assignedRoles        UserRole[]                 @relation("UserRoleAssignedBy")
 
   // One-to-one, created lazily on first profile edit
-  profile                  UserProfile?
+  profile UserProfile?
 
   @@map("user")
 }

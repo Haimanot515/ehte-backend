@@ -7,6 +7,7 @@
 import { Injectable } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { ActorType } from '@prisma/client';
+import { AuditEventEnum } from 'src/common/enums/shared/audit-events.enum';
 import { AuditEventPayload } from '../../misc/events/audit.events';
 
 /** Internal (non-audit) event: Support/Reward modules react to a settled payment. */
@@ -20,7 +21,15 @@ export type BillingPaymentPaid = {
 
 export type BillingAuditInput = {
   actorId: string | null; // null = system (webhook / cron)
-  action: string; // must exist in AuditEventEnum and have a listener handler
+  // FIX: was `action: string`. AuditLogListener only fires for event names
+  // that exist as AuditEventEnum values (@OnEvent(Object.values(AuditEventEnum))),
+  // so a plain string let every billing call site emit action names
+  // (AGREEMENT_CREATED, DISBURSEMENT_EXECUTED, REWARD_FUNDED, etc.) that had
+  // no matching enum member — the listener never subscribed to them, and the
+  // events were silently dropped with no compiler error and no runtime
+  // warning. Typing this as AuditEventEnum makes a missing/misspelled action
+  // a compile-time error instead of a silent audit gap.
+  action: AuditEventEnum;
   entityType: string;
   entityId: string;
   entityLabel?: string | null;

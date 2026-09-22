@@ -13,21 +13,36 @@ enum RuleMode {
 
 // An agreement row is immutable once ACTIVE. To change terms, create version + 1
 // and re-point the profile. Old payments keep their snapshot.
+//
+// FIX: added @@unique([type, institutionId, version]) below. Without a DB-level
+// constraint, AgreementService.createDraft()'s read-latest-version-then-create
+// step was only an application-level check — two concurrent createDraft calls
+// for the same (type, institutionId) could read the same `last.version` and
+// both succeed with a duplicate version number, silently corrupting the
+// version history. The constraint turns that race into a P2002 that
+// AgreementService.createAgreementWithUniqueVersion() now catches and retries
+// against, the same pattern ReportService uses for caseReference collisions.
+//
+// NOTE: on Postgres, NULL is distinct in unique constraints, so multiple
+// DIRECT agreements (institutionId: null) do not collide with each other on
+// institutionId alone — version is still what disambiguates them within that
+// group, and this constraint enforces that correctly.
 model Agreement {
-  id            String          @id @default(uuid())
+  id            String               @id @default(uuid())
   type          SupportAgreementType // existing enum (also used by Support.agreementType)
   institutionId String?
-  institution   Institution?    @relation(fields: [institutionId], references: [id])
-  version       Int             @default(1)
-  status        AgreementStatus @default(DRAFT)
+  institution   Institution?         @relation(fields: [institutionId], references: [id])
+  version       Int                  @default(1)
+  status        AgreementStatus      @default(DRAFT)
   effectiveFrom DateTime
   effectiveTo   DateTime?
   approvedById  String?
-  createdAt     DateTime        @default(now())
+  createdAt     DateTime             @default(now())
 
   rules    AllocationRule[]
   payments Payment[]
 
+  @@unique([type, institutionId, version])
   @@map("agreements")
 }
 
@@ -46,4 +61,3 @@ model AllocationRule {
   @@index([agreementId, paymentType])
   @@map("allocation_rules")
 }
-

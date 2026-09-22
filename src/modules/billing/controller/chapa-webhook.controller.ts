@@ -4,6 +4,7 @@
 // The webhook body is never trusted: reconcile() re-verifies with Chapa.
 
 import {
+  BadRequestException,
   Controller,
   Headers,
   HttpCode,
@@ -40,7 +41,16 @@ export class ChapaWebhookController {
     if (!raw || !this.chapa.verifyWebhookSignature(raw, sigA ?? sigB)) {
       throw new UnauthorizedException('Invalid signature');
     }
-    const body = JSON.parse(raw.toString('utf8')) as { tx_ref?: string };
+
+    // Body is signature-verified but still attacker-shaped JSON: a malformed
+    // or unexpectedly-encoded payload must not become an uncaught 500.
+    let body: { tx_ref?: string };
+    try {
+      body = JSON.parse(raw.toString('utf8'));
+    } catch {
+      throw new BadRequestException('invalid_payload');
+    }
+
     if (body.tx_ref) await this.payments.reconcile(body.tx_ref);
     return { received: true };
   }

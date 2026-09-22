@@ -541,7 +541,7 @@ export class MissingPersonService {
         'not_case_owner',
         {
           outcome: AuditOutcome.DENIED,
-          targetUserId: missingPerson.userId,
+          targetUserId: missingPerson.userId ?? undefined,
           metadata: { requestedKey: key },
         },
       );
@@ -968,7 +968,7 @@ export class MissingPersonService {
         AuditEventEnum.MISSING_PERSON_UPDATED,
         existing,
         'not_authorized_to_update',
-        { outcome: AuditOutcome.DENIED, targetUserId: existing.userId },
+        { outcome: AuditOutcome.DENIED, targetUserId: existing.userId ?? undefined },
       );
       throw new ForbiddenException('not_authorized_to_update');
     }
@@ -1126,7 +1126,7 @@ export class MissingPersonService {
         AuditEventEnum.MISSING_PERSON_DELETED,
         existing,
         'not_authorized_to_delete',
-        { outcome: AuditOutcome.DENIED, targetUserId: existing.userId },
+        { outcome: AuditOutcome.DENIED, targetUserId: existing.userId ?? undefined },
       );
       throw new ForbiddenException('not_authorized_to_delete');
     }
@@ -1365,7 +1365,7 @@ export class MissingPersonService {
       reviewNote,
     });
 
-    if (status === MissingPersonStatus.REJECTED) {
+    if (status === MissingPersonStatus.REJECTED && existing.userId) {
       await this.maybeFlagUserForRejections(existing.userId);
     }
 

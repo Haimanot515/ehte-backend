@@ -20,8 +20,8 @@ model Support {
   agreementVersion   Int?
   allocationSnapshot Json?
 
-  user               User?                @relation(fields: [userId], references: [id])
-  victimProfile      VictimProfile        @relation(fields: [victimProfileId], references: [id], onDelete: Cascade)
+  user          User?         @relation(fields: [userId], references: [id])
+  victimProfile VictimProfile @relation(fields: [victimProfileId], references: [id], onDelete: Cascade)
 
   @@index([victimProfileId])
   @@index([userId])

@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 
 import { PrismaService } from 'src/prisma/prisma.service';
 
@@ -44,12 +44,12 @@ const ROLE_DEFS: SeedRoleDef[] = [
 ];
 
 @Injectable()
-export class RolesSeeder implements OnApplicationBootstrap {
+export class RolesSeeder {
   private readonly logger = new Logger(RolesSeeder.name);
 
   constructor(private readonly prisma: PrismaService) {}
 
-  async onApplicationBootstrap(): Promise<void> {
+  async run(): Promise<void> {
     for (const def of ROLE_DEFS) {
       await this.upsertWithRetry(def);
     }

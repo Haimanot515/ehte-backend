@@ -104,6 +104,11 @@ export enum AuditEventEnum {
   VICTIM_PROFILE_RESUBMITTED = 'VICTIM_PROFILE_RESUBMITTED',
   // Logged when reconcileProfileTotal() auto-corrects a drifted cached total.
   VICTIM_PROFILE_TOTAL_RECONCILED = 'VICTIM_PROFILE_TOTAL_RECONCILED',
+  // FIX: was emitted by AgreementService.assignToProfile() as a raw string with
+  // no matching enum member — AuditLogListener's @OnEvent(Object.values(...))
+  // only subscribes to registered enum values, so every one of these events
+  // was silently dropped before this fix.
+  VICTIM_PROFILE_AGREEMENT_ASSIGNED = 'VICTIM_PROFILE_AGREEMENT_ASSIGNED',
 
   // SUPPORT
   SUPPORT_CREATED = 'SUPPORT_CREATED',
@@ -148,4 +153,36 @@ export enum AuditEventEnum {
 
   // SECURITY
   SECURITY_ALERT = 'SECURITY_ALERT',
+
+  // BILLING — AGREEMENTS / INSTITUTIONS
+  //
+  // FIX: all sixteen billing actions below were previously emitted by
+  // BillingEventsService.log() as raw strings (e.g. 'AGREEMENT_CREATED')
+  // with no corresponding AuditEventEnum member. AuditLogListener subscribes
+  // via @OnEvent(Object.values(AuditEventEnum)), which only registers on
+  // values that exist in this enum — so every billing audit event was
+  // silently dropped before reaching handleAuditEvent() at all, despite
+  // AgreementService/DisbursementService/RewardService/PaymentService
+  // comments claiming "every step is audited".
+  INSTITUTION_SIGNED = 'INSTITUTION_SIGNED',
+  AGREEMENT_CREATED = 'AGREEMENT_CREATED',
+  AGREEMENT_ACTIVATED = 'AGREEMENT_ACTIVATED',
+  AGREEMENT_RETIRED = 'AGREEMENT_RETIRED',
+
+  // BILLING — DISBURSEMENTS
+  DISBURSEMENT_CREATED = 'DISBURSEMENT_CREATED',
+  DISBURSEMENT_APPROVED = 'DISBURSEMENT_APPROVED',
+  DISBURSEMENT_FAILED = 'DISBURSEMENT_FAILED',
+  DISBURSEMENT_EXECUTED = 'DISBURSEMENT_EXECUTED',
+
+  // BILLING — REWARDS
+  REWARD_APPROVED = 'REWARD_APPROVED',
+  REWARD_REJECTED = 'REWARD_REJECTED',
+  REWARD_CLAIM_APPROVED = 'REWARD_CLAIM_APPROVED',
+  REWARD_CLOSED = 'REWARD_CLOSED',
+  REWARD_FUNDED = 'REWARD_FUNDED',
+
+  // BILLING — PAYMENTS
+  PAYMENT_PAID = 'PAYMENT_PAID',
+  PAYMENT_MISMATCH = 'PAYMENT_MISMATCH',
 }
