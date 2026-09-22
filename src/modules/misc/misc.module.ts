@@ -23,14 +23,7 @@ import { AuditLogListener } from './listeners/audit-log.listener';
 import { NotificationListener } from './listeners/notification.listener';
 
 @Module({
-  imports: [
-    PrismaModule,
-    EventEmitterModule,
-    MinioModule,
-    FirebaseModule,
-    EmailModule,
-    SmsModule,
-  ],
+  imports: [PrismaModule, EventEmitterModule, MinioModule, FirebaseModule, EmailModule, SmsModule],
 
   controllers: [AuditLogController, NotificationController],
 

@@ -646,7 +646,7 @@ export class PostService {
       // ASSUMPTION: resolveActorType only knows about role-bearing
       // actors; cast until AuditEventPayload's actorType union is
       // extended with a SYSTEM variant.
-      actorType: 'SYSTEM' as unknown as ReturnType<typeof resolveActorType>,
+      actorType: 'SYSTEM',
       action: AuditEventEnum.POST_UPDATED,
       entity: 'User',
       entityId: payload.userId,
@@ -697,7 +697,7 @@ export class PostService {
     if (recentRejections >= threshold) {
       this.emitAudit({
         targetUserId: userId,
-        actorType: 'SYSTEM' as unknown as ReturnType<typeof resolveActorType>,
+        actorType: 'SYSTEM',
         action: AuditEventEnum.USER_AUTO_FLAGGED,
         entity: 'User',
         entityId: userId,

@@ -57,13 +57,6 @@ import { TokenUtil } from 'src/common/utils/token.util';
     TokenUtil,
   ],
 
-  exports: [
-    AuthService,
-    AdminAuthService,
-    RoleService,
-    PermissionService,
-    OtpUtil,
-    LockoutUtil,
-  ],
+  exports: [AuthService, AdminAuthService, RoleService, PermissionService, OtpUtil, LockoutUtil],
 })
 export class AuthModule {}

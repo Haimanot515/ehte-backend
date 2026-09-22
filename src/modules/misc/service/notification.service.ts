@@ -334,7 +334,10 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     const { excludeUserId, ...rest } = input;
 
     const admins = await this.prisma.user.findMany({
-      where: { ...this.audienceWhere('ADMINS'), ...(excludeUserId && { id: { not: excludeUserId } }) },
+      where: {
+        ...this.audienceWhere('ADMINS'),
+        ...(excludeUserId && { id: { not: excludeUserId } }),
+      },
       select: { id: true },
     });
 
@@ -1071,7 +1074,10 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     // Recipient names, looked up separately so only id and name are ever exposed.
     const ids = [...new Set(result.data.map((n) => n.userId))];
     const users = ids.length
-      ? await this.prisma.user.findMany({ where: { id: { in: ids } }, select: { id: true, name: true } })
+      ? await this.prisma.user.findMany({
+          where: { id: { in: ids } },
+          select: { id: true, name: true },
+        })
       : [];
     const names = new Map(users.map((u) => [u.id, u.name]));
 
@@ -1149,7 +1155,10 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
 
     const ids = [...new Set(rows.map((r) => r.userId))];
     const users = ids.length
-      ? await this.prisma.user.findMany({ where: { id: { in: ids } }, select: { id: true, name: true } })
+      ? await this.prisma.user.findMany({
+          where: { id: { in: ids } },
+          select: { id: true, name: true },
+        })
       : [];
     const names = new Map(users.map((u) => [u.id, u.name]));
 
@@ -1251,7 +1260,10 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
 
   /** Everything held about one user's notifications. Push tokens are masked. Audited (fails closed). */
   async exportForUser(userId: string, admin: CurrentUserDto) {
-    const exists = await this.prisma.user.findUnique({ where: { id: userId }, select: { id: true } });
+    const exists = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true },
+    });
     if (!exists) throw new NotFoundException('User not found');
 
     const [rows, preferences, devices] = await Promise.all([
@@ -1300,7 +1312,10 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
    * but lose the actor's name and role (the id stays as an opaque pseudonym).
    */
   async eraseForUser(userId: string, admin: CurrentUserDto) {
-    const exists = await this.prisma.user.findUnique({ where: { id: userId }, select: { id: true } });
+    const exists = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true },
+    });
     if (!exists) throw new NotFoundException('User not found');
 
     const [notifications, preferences, devices, keys, anonymizedActorRows] =
@@ -1413,7 +1428,8 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
               : hasToken.has(row.userId);
         if (!reachable) continue;
 
-        const explicit = channel === 'EMAIL' ? pref?.email : channel === 'SMS' ? pref?.sms : pref?.push;
+        const explicit =
+          channel === 'EMAIL' ? pref?.email : channel === 'SMS' ? pref?.sms : pref?.push;
         const enabled = locked ? true : (explicit ?? this.defaultEnabled(channel, row));
         if (!enabled) continue;
 
@@ -1449,7 +1465,9 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     try {
       await this.planDeliveries(rows);
     } catch (err) {
-      this.logger.error(`Delivery planning failed for ${rows.length} notification(s): ${this.safeError(err)}`);
+      this.logger.error(
+        `Delivery planning failed for ${rows.length} notification(s): ${this.safeError(err)}`,
+      );
     }
   }
 
@@ -1639,7 +1657,9 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
       });
 
       if (giveUp) {
-        this.logger.warn(`Delivery ${id} (${channel}) failed after ${delivery.attempts} attempts: ${message}`);
+        this.logger.warn(
+          `Delivery ${id} (${channel}) failed after ${delivery.attempts} attempts: ${message}`,
+        );
       }
     }
   }
@@ -1702,7 +1722,8 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     if (!rawKey) return run();
 
     const key = rawKey.trim();
-    if (key.length === 0 || key.length > 200) throw new BadRequestException('invalid_idempotency_key');
+    if (key.length === 0 || key.length > 200)
+      throw new BadRequestException('invalid_idempotency_key');
 
     try {
       await this.prisma.notificationIdempotencyKey.create({ data: { actorId, key } });
@@ -1721,7 +1742,7 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
       const result = await run();
       await this.prisma.notificationIdempotencyKey.update({
         where: { actorId_key: { actorId, key } },
-        data: { result: result as unknown as Prisma.InputJsonValue },
+        data: { result: result },
       });
       return result;
     } catch (err) {
@@ -1799,7 +1820,9 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
         metadata: p.metadata,
       });
     } catch (err) {
-      this.logger.error(`AUDIT FOR NOTIFICATION ACTION FAILED ${String(p.action)}: ${this.safeError(err)}`);
+      this.logger.error(
+        `AUDIT FOR NOTIFICATION ACTION FAILED ${String(p.action)}: ${this.safeError(err)}`,
+      );
       if (strict) throw err;
     }
   }
@@ -1865,7 +1888,13 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     > = {};
 
     for (const g of groups) {
-      const entry = (out[g.channel] ??= { sent: 0, failed: 0, pending: 0, skipped: 0, successRate: null });
+      const entry = (out[g.channel] ??= {
+        sent: 0,
+        failed: 0,
+        pending: 0,
+        skipped: 0,
+        successRate: null,
+      });
       const n = g._count._all;
       if (g.status === STATUS.SENT) entry.sent += n;
       else if (g.status === STATUS.FAILED) entry.failed += n;
@@ -1941,7 +1970,12 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     if (!dto.cursor && dto.page !== undefined) {
       const page = dto.page;
       const [data, total] = await this.prisma.$transaction([
-        this.prisma.notification.findMany({ where, orderBy, skip: (page - 1) * limit, take: limit }),
+        this.prisma.notification.findMany({
+          where,
+          orderBy,
+          skip: (page - 1) * limit,
+          take: limit,
+        }),
         this.prisma.notification.count({ where }),
       ]);
       return { data, meta: this.offsetMeta(page, limit, total, data.length) };

@@ -36,19 +36,31 @@ export class DisbursementController {
 
   @RequirePermissions(P.REWARDS_APPROVE)
   @Post('missing-persons/:missingPersonId/reward/reject')
-  rejectReward(@CurrentUser() a: CurrentUserDto, @Param('missingPersonId') id: string, @Body() dto: ReasonDto) {
+  rejectReward(
+    @CurrentUser() a: CurrentUserDto,
+    @Param('missingPersonId') id: string,
+    @Body() dto: ReasonDto,
+  ) {
     return this.rewards.rejectOffer(a.id, id, dto.reason);
   }
 
   @RequirePermissions(P.REWARDS_VERIFY_CLAIM)
   @Post('missing-persons/:missingPersonId/reward/approve-claim')
-  approveClaim(@CurrentUser() a: CurrentUserDto, @Param('missingPersonId') id: string, @Body() dto: ApproveClaimDto) {
+  approveClaim(
+    @CurrentUser() a: CurrentUserDto,
+    @Param('missingPersonId') id: string,
+    @Body() dto: ApproveClaimDto,
+  ) {
     return this.rewards.approveClaim(a.id, id, dto.submissionId);
   }
 
   @RequirePermissions(P.REWARDS_APPROVE)
   @Post('missing-persons/:missingPersonId/reward/close')
-  closeReward(@CurrentUser() a: CurrentUserDto, @Param('missingPersonId') id: string, @Body() dto: ReasonDto) {
+  closeReward(
+    @CurrentUser() a: CurrentUserDto,
+    @Param('missingPersonId') id: string,
+    @Body() dto: ReasonDto,
+  ) {
     return this.rewards.closeWithoutPayout(a.id, id, dto.reason);
   }
 
@@ -62,7 +74,11 @@ export class DisbursementController {
 
   @RequirePermissions(P.DISBURSEMENTS_CREATE)
   @Post('allocations/:id/disbursements')
-  create(@CurrentUser() a: CurrentUserDto, @Param('id') id: string, @Body() dto: CreateDisbursementDto) {
+  create(
+    @CurrentUser() a: CurrentUserDto,
+    @Param('id') id: string,
+    @Body() dto: CreateDisbursementDto,
+  ) {
     return this.disbursements.create(a.id, id, dto.method);
   }
 
@@ -74,7 +90,11 @@ export class DisbursementController {
 
   @RequirePermissions(P.DISBURSEMENTS_EXECUTE)
   @Post('disbursements/:id/execute')
-  execute(@CurrentUser() a: CurrentUserDto, @Param('id') id: string, @Body() dto: ExecuteDisbursementDto) {
+  execute(
+    @CurrentUser() a: CurrentUserDto,
+    @Param('id') id: string,
+    @Body() dto: ExecuteDisbursementDto,
+  ) {
     return this.disbursements.execute(a.id, id, dto);
   }
 }

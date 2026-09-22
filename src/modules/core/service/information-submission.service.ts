@@ -8,7 +8,12 @@ import {
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { ConfigService } from '@nestjs/config';
 
-import { AuditOutcome, AuditSeverity, InformationStatus, MissingPersonStatus } from '@prisma/client';
+import {
+  AuditOutcome,
+  AuditSeverity,
+  InformationStatus,
+  MissingPersonStatus,
+} from '@prisma/client';
 
 import { PrismaService } from 'src/prisma/prisma.service';
 import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
@@ -480,9 +485,7 @@ export class InformationSubmissionService {
 
   private async enforceCreateRateLimit(userId: string): Promise<void> {
     const cooldownSeconds = Number(
-      this.configService.get<string>(
-        'INFORMATION_SUBMISSION_CREATE_RATE_LIMIT_WINDOW_SECONDS',
-      ) ??
+      this.configService.get<string>('INFORMATION_SUBMISSION_CREATE_RATE_LIMIT_WINDOW_SECONDS') ??
         this.configService.get<string>('CONTENT_CREATE_RATE_LIMIT_WINDOW_SECONDS') ??
         60,
     );

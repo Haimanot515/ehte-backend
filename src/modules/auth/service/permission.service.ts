@@ -13,7 +13,11 @@ import { AuditEventEnum } from 'src/common/enums/shared/audit-events.enum';
 import { AuditEventPayload } from 'src/modules/misc/events/audit.events';
 import { PermissionsEnum } from 'src/common/enums/permissions.enum';
 
-import { AssignPermissionsDto, RevokePermissionsDto, SetPermissionsDto } from '../dto/permission.dto';
+import {
+  AssignPermissionsDto,
+  RevokePermissionsDto,
+  SetPermissionsDto,
+} from '../dto/permission.dto';
 
 // Permission table is seeded 1:1 from PermissionsEnum; rolePermission is the
 // (roleId, permissionId) join table. Requires the AuditEventEnum additions.

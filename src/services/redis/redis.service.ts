@@ -1,11 +1,6 @@
 // src/services/redis/redis.service.ts
 
-import {
-  Injectable,
-  Logger,
-  OnModuleDestroy,
-  OnModuleInit,
-} from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis, { RedisOptions } from 'ioredis';
 
@@ -43,9 +38,7 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
       });
     }
 
-    this.client.on('error', (err: Error) =>
-      this.logger.warn(`Redis error: ${err.message}`),
-    );
+    this.client.on('error', (err: Error) => this.logger.warn(`Redis error: ${err.message}`));
     this.client.on('connect', () => this.logger.log('Redis connected'));
     this.client.on('close', () => this.logger.warn('Redis connection closed'));
   }
@@ -53,9 +46,7 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
   async onModuleInit() {
     await this.client
       .connect()
-      .catch((err: Error) =>
-        this.logger.warn(`Redis unavailable at startup: ${err.message}`),
-      );
+      .catch((err: Error) => this.logger.warn(`Redis unavailable at startup: ${err.message}`));
   }
 
   async onModuleDestroy() {
@@ -91,9 +82,7 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     try {
       await this.client.del(...keys);
     } catch (err) {
-      this.logger.warn(
-        `Cache del failed [${keys.join(', ')}]: ${(err as Error).message}`,
-      );
+      this.logger.warn(`Cache del failed [${keys.join(', ')}]: ${(err as Error).message}`);
     }
   }
 
@@ -101,20 +90,12 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     try {
       let cursor = '0';
       do {
-        const [next, keys] = await this.client.scan(
-          cursor,
-          'MATCH',
-          pattern,
-          'COUNT',
-          200,
-        );
+        const [next, keys] = await this.client.scan(cursor, 'MATCH', pattern, 'COUNT', 200);
         cursor = next;
         if (keys.length) await this.client.del(...keys);
       } while (cursor !== '0');
     } catch (err) {
-      this.logger.warn(
-        `Cache delByPattern failed [${pattern}]: ${(err as Error).message}`,
-      );
+      this.logger.warn(`Cache delByPattern failed [${pattern}]: ${(err as Error).message}`);
     }
   }
 
@@ -150,10 +131,7 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  async incrementWithTtl(
-    key: string,
-    ttlSeconds: number,
-  ): Promise<number | null> {
+  async incrementWithTtl(key: string, ttlSeconds: number): Promise<number | null> {
     try {
       const value = await this.client.incr(key);
       if (value === 1 || (await this.client.ttl(key)) === -1) {

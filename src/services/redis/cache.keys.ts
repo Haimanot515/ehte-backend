@@ -4,13 +4,11 @@
 export const CacheKeys = {
   profile: (userId: string) => `ehte:user:${userId}:profile`,
   session: (userId: string) => `ehte:user:${userId}:session`,
-  failedLoginAttempts: (identifier: string) =>
-    `ehte:auth:failed-attempts:${identifier}`,
+  failedLoginAttempts: (identifier: string) => `ehte:auth:failed-attempts:${identifier}`,
   passwordReset: (token: string) => `ehte:auth:pwd-reset:${token}`,
 
   reportStatus: (reportId: string) => `ehte:report:${reportId}:status`,
-  myReports: (userId: string, page = 1) =>
-    `ehte:user:${userId}:reports:${page}`,
+  myReports: (userId: string, page = 1) => `ehte:user:${userId}:reports:${page}`,
 
   post: (postId: string) => `ehte:post:${postId}`,
   postList: (queryHash: string) => `ehte:post:list:${queryHash}`,
@@ -18,8 +16,7 @@ export const CacheKeys = {
   pendingPostsCount: () => 'ehte:posts:pending-count',
 
   missingPerson: (id: string) => `ehte:missing-person:${id}`,
-  missingPersonList: (queryHash: string) =>
-    `ehte:missing-person:list:${queryHash}`,
+  missingPersonList: (queryHash: string) => `ehte:missing-person:list:${queryHash}`,
   approvedMissingPersons: (page = 1) => `ehte:missing-person:approved:${page}`,
 
   // Scoped per missing-person case: each case's submissions are cached and
@@ -28,15 +25,11 @@ export const CacheKeys = {
     `ehte:information-submission:list:${missingPersonId}:${queryHash}`,
 
   victimProfile: (id: string) => `ehte:victim-profile:${id}`,
-  victimProfileList: (queryHash: string) =>
-    `ehte:victim-profile:list:${queryHash}`,
-  approvedVictimProfiles: (page = 1) =>
-    `ehte:victim-profile:approved:${page}`,
+  victimProfileList: (queryHash: string) => `ehte:victim-profile:list:${queryHash}`,
+  approvedVictimProfiles: (page = 1) => `ehte:victim-profile:approved:${page}`,
 
-  notifications: (userId: string, page = 1) =>
-    `ehte:user:${userId}:notifications:${page}`,
-  unreadNotificationCount: (userId: string) =>
-    `ehte:user:${userId}:notifications:unread-count`,
+  notifications: (userId: string, page = 1) => `ehte:user:${userId}:notifications:${page}`,
+  unreadNotificationCount: (userId: string) => `ehte:user:${userId}:notifications:unread-count`,
 
   incidentCategories: () => 'ehte:taxonomy:incident-categories',
   supportCategories: () => 'ehte:taxonomy:support-categories',
@@ -47,8 +40,7 @@ export const CacheKeys = {
     userAll: (userId: string) => `ehte:user:${userId}:*`,
     userReports: (userId: string) => `ehte:user:${userId}:reports:*`,
     userPosts: (userId: string) => `ehte:user:${userId}:posts:*`,
-    userNotifications: (userId: string) =>
-      `ehte:user:${userId}:notifications:*`,
+    userNotifications: (userId: string) => `ehte:user:${userId}:notifications:*`,
     postLists: () => 'ehte:post:list:*',
     missingPersonLists: () => 'ehte:missing-person:list:*',
     approvedMissingPersons: () => 'ehte:missing-person:approved:*',

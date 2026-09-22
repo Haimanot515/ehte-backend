@@ -36,7 +36,12 @@ export class AgreementService {
       data: { status: 'AGREEMENT_SIGNED', signedAt: new Date() },
     });
     if (count === 0) throw new BadRequestException('Institution is not a prospect');
-    await this.events.log({ actorId: adminId, action: AuditEventEnum.INSTITUTION_SIGNED, entityType: 'Institution', entityId: id });
+    await this.events.log({
+      actorId: adminId,
+      action: AuditEventEnum.INSTITUTION_SIGNED,
+      entityType: 'Institution',
+      entityId: id,
+    });
   }
 
   // ── Agreements ────────────────────────────────────────────────────────────
@@ -59,7 +64,8 @@ export class AgreementService {
         throw new BadRequestException('flatAmount is required for FLAT');
       }
       if (r.partyType === PartyType.RESPONSIBLE_ORGANIZATION) {
-        if (!r.institutionId) throw new BadRequestException('Organization rules need institutionId');
+        if (!r.institutionId)
+          throw new BadRequestException('Organization rules need institutionId');
         await this.assertSigned(r.institutionId);
       }
     }
@@ -68,7 +74,12 @@ export class AgreementService {
     }
 
     const agreement = await this.createAgreementWithUniqueVersion(dto);
-    await this.events.log({ actorId: adminId, action: AuditEventEnum.AGREEMENT_CREATED, entityType: 'Agreement', entityId: agreement.id });
+    await this.events.log({
+      actorId: adminId,
+      action: AuditEventEnum.AGREEMENT_CREATED,
+      entityType: 'Agreement',
+      entityId: agreement.id,
+    });
     return agreement;
   }
 
@@ -83,7 +94,12 @@ export class AgreementService {
       data: { status: 'ACTIVE', approvedById: adminId },
     });
     if (count === 0) throw new BadRequestException('Only drafts can be activated');
-    await this.events.log({ actorId: adminId, action: AuditEventEnum.AGREEMENT_ACTIVATED, entityType: 'Agreement', entityId: id });
+    await this.events.log({
+      actorId: adminId,
+      action: AuditEventEnum.AGREEMENT_ACTIVATED,
+      entityType: 'Agreement',
+      entityId: id,
+    });
   }
 
   async retire(adminId: string, id: string) {
@@ -92,7 +108,12 @@ export class AgreementService {
       data: { status: 'RETIRED', effectiveTo: new Date() },
     });
     if (count === 0) throw new BadRequestException('Only active agreements can be retired');
-    await this.events.log({ actorId: adminId, action: AuditEventEnum.AGREEMENT_RETIRED, entityType: 'Agreement', entityId: id });
+    await this.events.log({
+      actorId: adminId,
+      action: AuditEventEnum.AGREEMENT_RETIRED,
+      entityType: 'Agreement',
+      entityId: id,
+    });
   }
 
   /**
@@ -112,7 +133,8 @@ export class AgreementService {
       select: { id: true, name: true, involvesChild: true, isPublished: true, agreementId: true },
     });
     if (!profile) throw new NotFoundException('victim_profile_not_found');
-    if (profile.isPublished) throw new BadRequestException('unpublish_profile_before_changing_agreement');
+    if (profile.isPublished)
+      throw new BadRequestException('unpublish_profile_before_changing_agreement');
 
     const { count } = await this.prisma.victimProfile.updateMany({
       where: { id: profileId, isPublished: false },
@@ -126,7 +148,9 @@ export class AgreementService {
       entityType: 'VictimProfile',
       entityId: profileId,
       // Same rule as VictimProfileService.profileLabel: a child's name never lands in the audit table.
-      entityLabel: profile.involvesChild ? `Child profile ${profile.id.slice(0, 8)}` : (profile.name ?? null),
+      entityLabel: profile.involvesChild
+        ? `Child profile ${profile.id.slice(0, 8)}`
+        : (profile.name ?? null),
       metadata: { previousAgreementId: profile.agreementId, agreementId },
     });
   }

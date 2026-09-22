@@ -54,7 +54,14 @@ export class AllocationService {
     return this.build(
       PaymentType.MISSING_PERSON_REWARD,
       totalMinor,
-      [{ partyType: PartyType.REWARD_BENEFICIARY, institutionId: null, minor: totalMinor, ruleId: null }],
+      [
+        {
+          partyType: PartyType.REWARD_BENEFICIARY,
+          institutionId: null,
+          minor: totalMinor,
+          ruleId: null,
+        },
+      ],
       null,
       null,
       null,
@@ -162,10 +169,7 @@ export class AllocationService {
       agreementVersion,
       agreementType,
     };
-    const hash = crypto
-      .createHash('sha256')
-      .update(JSON.stringify(body))
-      .digest('hex');
+    const hash = crypto.createHash('sha256').update(JSON.stringify(body)).digest('hex');
     return { ...body, hash };
   }
 

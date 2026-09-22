@@ -13,14 +13,14 @@
 // two fields directly via Prisma so the flow is complete; reconcile with
 // MissingPersonService before merging so two places don't write the same columns.
 
-import {
-  BadRequestException,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 import { PrismaService } from '../../../prisma/prisma.service';
-import { BILLING_PAYMENT_PAID, BillingEventsService, BillingPaymentPaid } from './billing-events.service';
+import {
+  BILLING_PAYMENT_PAID,
+  BillingEventsService,
+  BillingPaymentPaid,
+} from './billing-events.service';
 import { AuditEventEnum } from '../../../common/enums/shared/audit-events.enum';
 
 @Injectable()

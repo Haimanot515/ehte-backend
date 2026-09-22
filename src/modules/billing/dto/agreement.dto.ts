@@ -30,7 +30,10 @@ export class CreateAgreementDto {
   @IsOptional() @IsUUID() institutionId?: string;
   @Type(() => Date) @IsDate() effectiveFrom!: Date;
   @IsOptional() @Type(() => Date) @IsDate() effectiveTo?: Date;
-  @IsArray() @ArrayMaxSize(10) @ValidateNested({ each: true }) @Type(() => AllocationRuleDto)
+  @IsArray()
+  @ArrayMaxSize(10)
+  @ValidateNested({ each: true })
+  @Type(() => AllocationRuleDto)
   rules!: AllocationRuleDto[];
 }
 

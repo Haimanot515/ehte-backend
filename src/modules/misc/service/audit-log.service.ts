@@ -126,10 +126,12 @@ const FULL_SELECT = {
 } as const;
 
 type FullAuditRow = Prisma.AuditLogGetPayload<{ select: typeof FULL_SELECT }>;
-type RedactedKey = 'ipAddress' | 'userAgent' | 'metadata' | 'legalHold' | 'seq' | 'hash' | 'prevHash';
+type RedactedKey =
+  'ipAddress' | 'userAgent' | 'metadata' | 'legalHold' | 'seq' | 'hash' | 'prevHash';
 
 /** ADMIN rows simply do not carry the redacted keys, so they are optional in the type. */
-export type AuditLogView = Omit<FullAuditRow, RedactedKey> & Partial<Pick<FullAuditRow, RedactedKey>>;
+export type AuditLogView = Omit<FullAuditRow, RedactedKey> &
+  Partial<Pick<FullAuditRow, RedactedKey>>;
 
 // ─────────────────────────────────────────────
 // TYPES
@@ -600,8 +602,14 @@ export class AuditLogService {
 
   async getHealth() {
     const [newest, oldest, legalHoldCount, unchainedRows, table] = await Promise.all([
-      this.prisma.auditLog.findFirst({ orderBy: { createdAt: 'desc' }, select: { createdAt: true } }),
-      this.prisma.auditLog.findFirst({ orderBy: { createdAt: 'asc' }, select: { createdAt: true } }),
+      this.prisma.auditLog.findFirst({
+        orderBy: { createdAt: 'desc' },
+        select: { createdAt: true },
+      }),
+      this.prisma.auditLog.findFirst({
+        orderBy: { createdAt: 'asc' },
+        select: { createdAt: true },
+      }),
       this.prisma.auditLog.count({ where: { legalHold: true } }),
       this.prisma.auditLog.count({ where: { seq: null } }),
       this.tableStats(),
@@ -732,7 +740,7 @@ export class AuditLogService {
     await this.prisma.auditExport.create({
       data: {
         exportedById: viewer.id,
-        filter: storedFilter as unknown as Prisma.InputJsonValue,
+        filter: storedFilter,
         rowCount: logs.length,
         truncated,
       },
@@ -772,7 +780,13 @@ export class AuditLogService {
         ...r,
         exportedByName: r.exportedById ? (names.get(r.exportedById) ?? null) : null,
       })),
-      meta: { page, limit, total, totalPages: Math.ceil(total / limit), hasMore: page * limit < total },
+      meta: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+        hasMore: page * limit < total,
+      },
     };
   }
 
@@ -924,9 +938,7 @@ export class AuditLogService {
     }
 
     const range: Prisma.AuditLogWhereInput =
-      from || to
-        ? { createdAt: { ...(from && { gte: from }), ...(to && { lte: to }) } }
-        : {};
+      from || to ? { createdAt: { ...(from && { gte: from }), ...(to && { lte: to }) } } : {};
 
     const purged = await this.purgedSeqRanges();
     const explainedByPurge = (lo: number, hi: number) =>
@@ -1009,19 +1021,24 @@ export class AuditLogService {
               break scan;
             }
           } else if (!explainedByPurge(prev.seq + 1, seq - 1)) {
-            fail('rows_missing', `seq ${prev.seq + 1}..${seq - 1} are missing and no purge run explains it.`);
+            fail(
+              'rows_missing',
+              `seq ${prev.seq + 1}..${seq - 1} are missing and no purge run explains it.`,
+            );
             break scan;
           }
         }
 
-        prev = { seq, hash: row.hash as string };
+        prev = { seq, hash: row.hash };
         checked += 1;
       }
 
-      lastSeq = rows[rows.length - 1].seq as number;
+      lastSeq = rows[rows.length - 1].seq;
     }
 
-    const unchainedRows = await this.prisma.auditLog.count({ where: { AND: [range, { seq: null }] } });
+    const unchainedRows = await this.prisma.auditLog.count({
+      where: { AND: [range, { seq: null }] },
+    });
 
     const report: IntegrityReport = {
       ok: firstBreak === null,
@@ -1152,7 +1169,9 @@ export class AuditLogService {
       writer = await this.archive.open({ runId: run.id, cutoff: cutoff.toISOString() });
     } catch (err) {
       await this.failRun(run.id, `archive_open: ${this.errMsg(err)}`);
-      this.logger.error(`Purge ${run.id} could not open archive, nothing deleted: ${this.errMsg(err)}`);
+      this.logger.error(
+        `Purge ${run.id} could not open archive, nothing deleted: ${this.errMsg(err)}`,
+      );
       throw new ServiceUnavailableException('audit_archive_unavailable_nothing_deleted');
     }
 
@@ -1219,7 +1238,9 @@ export class AuditLogService {
         where: { id: run.id },
         data: { status: 'FAILED', deletedCount, error: `delete: ${this.errMsg(err)}` },
       });
-      this.logger.error(`Purge ${run.id} delete failed after ${deletedCount} rows: ${this.errMsg(err)}`);
+      this.logger.error(
+        `Purge ${run.id} delete failed after ${deletedCount} rows: ${this.errMsg(err)}`,
+      );
       throw new ServiceUnavailableException(`purge_partially_failed_see_run_${run.id}`);
     }
 
@@ -1493,7 +1514,10 @@ export class AuditLogService {
   ): Promise<AuditPage> {
     const limit = dto.limit ?? DEFAULT_LIMIT;
     const select = this.selectFor(viewer) as typeof FULL_SELECT;
-    const orderBy: Prisma.AuditLogOrderByWithRelationInput[] = [{ createdAt: order }, { id: order }];
+    const orderBy: Prisma.AuditLogOrderByWithRelationInput[] = [
+      { createdAt: order },
+      { id: order },
+    ];
 
     if (!dto.cursor && dto.page !== undefined) {
       const page = dto.page;

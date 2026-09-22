@@ -22,9 +22,7 @@ const toPayer = (u: CurrentUserDto): Payer => ({
 @ApiBearerAuth('access-token')
 @Controller('billing') // JWT, Reauth, Roles, Permissions guards are global (AppModule)
 export class PaymentController {
-  constructor(
-    private readonly payments: PaymentService,
-  ) {}
+  constructor(private readonly payments: PaymentService) {}
 
   // ── Support a victim/survivor ─────────────────────────────────────────────
 
@@ -35,8 +33,12 @@ export class PaymentController {
 
   // Step 1 is the existing POST /support (creates a PENDING Support with a server-computed split).
   // Step 2: pay for it with Chapa.
+  //
+  // Uses the named 'checkout' throttler profile (PAYMENT_CHECKOUT_RATE_LIMIT /
+  // PAYMENT_CHECKOUT_RATE_LIMIT_TTL_SECONDS, wired in AppModule's
+  // ThrottlerModule.forRootAsync) instead of an inline hardcoded limit.
   @Post('support/:supportId/checkout')
-  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @Throttle({ checkout: {} })
   checkout(@CurrentUser() user: CurrentUserDto, @Param('supportId') supportId: string) {
     return this.payments.initiateSupportCheckout(toPayer(user), supportId);
   }
@@ -46,7 +48,12 @@ export class PaymentController {
 
   // NOTE: reward proposal (rewardOffered/rewardAmount/rewardDetails) is set when a user
   // creates or updates a MissingPerson request, via MissingPersonController — not here.
+  //
+  // FIX: previously unthrottled despite calling the same PaymentService method
+  // family (initiateRewardFunding mirrors initiateSupportCheckout, including the
+  // shared duplicate-window check) — now shares the 'checkout' throttler profile.
   @RequireReauthentication()
+  @Throttle({ checkout: {} })
   @Post('missing-persons/:missingPersonId/fund-reward')
   fund(@CurrentUser() user: CurrentUserDto, @Param('missingPersonId') missingPersonId: string) {
     return this.payments.initiateRewardFunding(toPayer(user), missingPersonId);

@@ -1,4 +1,3 @@
-
 import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { RolesSeeder } from './roles.seeder';
 import { PermissionsSeeder } from './permissions.seeder';

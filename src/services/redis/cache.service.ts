@@ -16,7 +16,7 @@ function stableStringify(value: unknown): string {
     if (v instanceof Date) return v.toISOString();
     if (Array.isArray(v)) return v.map((x) => normalize(x) ?? null);
     if (typeof v === 'object') {
-      return Object.keys(v as object)
+      return Object.keys(v)
         .sort()
         .reduce<Record<string, unknown>>((acc, k) => {
           const n = normalize((v as Record<string, unknown>)[k]);
@@ -64,11 +64,7 @@ export class CacheService {
     return this.redis.get<T>(key);
   }
 
-  private async write(
-    key: string,
-    value: unknown,
-    ttlSeconds: number,
-  ): Promise<void> {
+  private async write(key: string, value: unknown, ttlSeconds: number): Promise<void> {
     if (!(await this.canUseCache())) return;
     await this.redis.set(key, value, ttlSeconds);
   }
@@ -78,20 +74,12 @@ export class CacheService {
     return this.redis.getRaw(key);
   }
 
-  private async writeRaw(
-    key: string,
-    value: string,
-    ttlSeconds: number,
-  ): Promise<void> {
+  private async writeRaw(key: string, value: string, ttlSeconds: number): Promise<void> {
     if (!(await this.canUseCache())) return;
     await this.redis.setRaw(key, value, ttlSeconds);
   }
 
-  async wrap<T>(
-    key: string,
-    factory: () => Promise<T>,
-    ttlSeconds: number,
-  ): Promise<T> {
+  async wrap<T>(key: string, factory: () => Promise<T>, ttlSeconds: number): Promise<T> {
     const cached = await this.read<T>(key);
     if (cached !== null) return cached;
     const value = await factory();
@@ -102,16 +90,11 @@ export class CacheService {
   }
 
   private hashQuery(query: Record<string, unknown>): string {
-    return createHash('sha256')
-      .update(stableStringify(query))
-      .digest('hex')
-      .slice(0, 32);
+    return createHash('sha256').update(stableStringify(query)).digest('hex').slice(0, 32);
   }
 
   private hashIdentifier(identifier: string): string {
-    return createHash('sha256')
-      .update(identifier.trim().toLowerCase())
-      .digest('hex');
+    return createHash('sha256').update(identifier.trim().toLowerCase()).digest('hex');
   }
 
   getSession<T>(userId: string) {
@@ -143,9 +126,7 @@ export class CacheService {
   }
 
   resetFailedLoginAttempts(identifier: string) {
-    return this.redis.del(
-      CacheKeys.failedLoginAttempts(this.hashIdentifier(identifier)),
-    );
+    return this.redis.del(CacheKeys.failedLoginAttempts(this.hashIdentifier(identifier)));
   }
 
   purgeUserCache(userId: string) {
@@ -157,11 +138,7 @@ export class CacheService {
   }
 
   setReportStatus(reportId: string, data: unknown) {
-    return this.write(
-      CacheKeys.reportStatus(reportId),
-      data,
-      TTL.REPORT_STATUS,
-    );
+    return this.write(CacheKeys.reportStatus(reportId), data, TTL.REPORT_STATUS);
   }
 
   invalidateReportStatus(reportId: string) {
@@ -173,11 +150,7 @@ export class CacheService {
   }
 
   setMyReports(userId: string, data: unknown, page = 1) {
-    return this.write(
-      CacheKeys.myReports(userId, page),
-      data,
-      TTL.MY_REPORTS,
-    );
+    return this.write(CacheKeys.myReports(userId, page), data, TTL.MY_REPORTS);
   }
 
   invalidateMyReports(userId: string) {
@@ -196,15 +169,8 @@ export class CacheService {
     return this.redis.del(CacheKeys.post(postId));
   }
 
-  wrapPostList<T>(
-    query: Record<string, unknown>,
-    factory: () => Promise<T>,
-  ): Promise<T> {
-    return this.wrap(
-      CacheKeys.postList(this.hashQuery(query)),
-      factory,
-      TTL.POST_LIST,
-    );
+  wrapPostList<T>(query: Record<string, unknown>, factory: () => Promise<T>): Promise<T> {
+    return this.wrap(CacheKeys.postList(this.hashQuery(query)), factory, TTL.POST_LIST);
   }
 
   invalidatePostLists() {
@@ -213,10 +179,7 @@ export class CacheService {
 
   // Call on approve, reject, edit, unpublish or takedown.
   async invalidatePostEverywhere(postId: string): Promise<void> {
-    await Promise.all([
-      this.invalidatePost(postId),
-      this.invalidatePostLists(),
-    ]);
+    await Promise.all([this.invalidatePost(postId), this.invalidatePostLists()]);
   }
 
   getMyPosts<T>(userId: string, page = 1) {
@@ -237,11 +200,7 @@ export class CacheService {
   }
 
   setPendingPostsCount(count: number) {
-    return this.writeRaw(
-      CacheKeys.pendingPostsCount(),
-      String(count),
-      TTL.PENDING_POSTS_COUNT,
-    );
+    return this.writeRaw(CacheKeys.pendingPostsCount(), String(count), TTL.PENDING_POSTS_COUNT);
   }
 
   invalidatePendingPostsCount() {
@@ -253,21 +212,14 @@ export class CacheService {
   }
 
   setMissingPerson(id: string, data: unknown) {
-    return this.write(
-      CacheKeys.missingPerson(id),
-      data,
-      TTL.MISSING_PERSON_DETAIL,
-    );
+    return this.write(CacheKeys.missingPerson(id), data, TTL.MISSING_PERSON_DETAIL);
   }
 
   invalidateMissingPerson(id: string) {
     return this.redis.del(CacheKeys.missingPerson(id));
   }
 
-  wrapMissingPersonList<T>(
-    query: Record<string, unknown>,
-    factory: () => Promise<T>,
-  ): Promise<T> {
+  wrapMissingPersonList<T>(query: Record<string, unknown>, factory: () => Promise<T>): Promise<T> {
     return this.wrap(
       CacheKeys.missingPersonList(this.hashQuery(query)),
       factory,
@@ -280,11 +232,7 @@ export class CacheService {
   }
 
   setApprovedMissingPersons(data: unknown, page = 1) {
-    return this.write(
-      CacheKeys.approvedMissingPersons(page),
-      data,
-      TTL.APPROVED_MISSING_PERSONS,
-    );
+    return this.write(CacheKeys.approvedMissingPersons(page), data, TTL.APPROVED_MISSING_PERSONS);
   }
 
   invalidateMissingPersonCaches() {
@@ -296,10 +244,7 @@ export class CacheService {
 
   // Call on approve, reject, edit, unpublish or takedown.
   async invalidateMissingPersonEverywhere(id: string): Promise<void> {
-    await Promise.all([
-      this.invalidateMissingPerson(id),
-      this.invalidateMissingPersonCaches(),
-    ]);
+    await Promise.all([this.invalidateMissingPerson(id), this.invalidateMissingPersonCaches()]);
   }
 
   // ───────────────────────────────────────────
@@ -321,9 +266,7 @@ export class CacheService {
   }
 
   invalidateInformationSubmissionList(missingPersonId: string) {
-    return this.redis.delByPattern(
-      CacheKeys.patterns.informationSubmissionLists(missingPersonId),
-    );
+    return this.redis.delByPattern(CacheKeys.patterns.informationSubmissionLists(missingPersonId));
   }
 
   getVictimProfile<T>(id: string) {
@@ -331,21 +274,14 @@ export class CacheService {
   }
 
   setVictimProfile(id: string, data: unknown) {
-    return this.write(
-      CacheKeys.victimProfile(id),
-      data,
-      TTL.VICTIM_PROFILE_DETAIL,
-    );
+    return this.write(CacheKeys.victimProfile(id), data, TTL.VICTIM_PROFILE_DETAIL);
   }
 
   invalidateVictimProfile(id: string) {
     return this.redis.del(CacheKeys.victimProfile(id));
   }
 
-  wrapVictimProfileList<T>(
-    query: Record<string, unknown>,
-    factory: () => Promise<T>,
-  ): Promise<T> {
+  wrapVictimProfileList<T>(query: Record<string, unknown>, factory: () => Promise<T>): Promise<T> {
     return this.wrap(
       CacheKeys.victimProfileList(this.hashQuery(query)),
       factory,
@@ -358,11 +294,7 @@ export class CacheService {
   }
 
   setApprovedVictimProfiles(data: unknown, page = 1) {
-    return this.write(
-      CacheKeys.approvedVictimProfiles(page),
-      data,
-      TTL.APPROVED_VICTIM_PROFILES,
-    );
+    return this.write(CacheKeys.approvedVictimProfiles(page), data, TTL.APPROVED_VICTIM_PROFILES);
   }
 
   invalidateApprovedVictimProfiles() {
@@ -374,10 +306,7 @@ export class CacheService {
 
   // Call on approve, reject, edit, unpublish or takedown.
   async invalidateVictimProfileEverywhere(id: string): Promise<void> {
-    await Promise.all([
-      this.invalidateVictimProfile(id),
-      this.invalidateApprovedVictimProfiles(),
-    ]);
+    await Promise.all([this.invalidateVictimProfile(id), this.invalidateApprovedVictimProfiles()]);
   }
 
   getNotifications<T>(userId: string, page = 1) {
@@ -385,17 +314,11 @@ export class CacheService {
   }
 
   setNotifications(userId: string, data: unknown, page = 1) {
-    return this.write(
-      CacheKeys.notifications(userId, page),
-      data,
-      TTL.NOTIFICATIONS,
-    );
+    return this.write(CacheKeys.notifications(userId, page), data, TTL.NOTIFICATIONS);
   }
 
   invalidateNotifications(userId: string) {
-    return this.redis.delByPattern(
-      CacheKeys.patterns.userNotifications(userId),
-    );
+    return this.redis.delByPattern(CacheKeys.patterns.userNotifications(userId));
   }
 
   async getUnreadNotificationCount(userId: string): Promise<number | null> {
@@ -440,11 +363,7 @@ export class CacheService {
   }
 
   wrapAdminDashboardStats<T>(factory: () => Promise<T>): Promise<T> {
-    return this.wrap(
-      CacheKeys.adminDashboardStats(),
-      factory,
-      TTL.ADMIN_DASHBOARD_STATS,
-    );
+    return this.wrap(CacheKeys.adminDashboardStats(), factory, TTL.ADMIN_DASHBOARD_STATS);
   }
 
   invalidateAdminDashboardStats() {

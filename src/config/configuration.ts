@@ -79,6 +79,10 @@ export default () => ({
 
     // Minimum gap between OTP resends, enforced in AuthService.issueAndSendOtp().
     resendCooldownSeconds: parseInt(process.env.OTP_RESEND_COOLDOWN_SECONDS ?? '60', 10),
+
+    // Max failed verify attempts before lockout, enforced in AuthService
+    // (verifySignupOtp, resetPassword, changePasswordVerify).
+    maxAttempts: parseInt(process.env.OTP_MAX_ATTEMPTS ?? '5', 10),
   },
 
   minio: {
@@ -115,14 +119,16 @@ export default () => ({
   },
 
   security: {
-    encryptionKey: process.env.ENCRYPTION_KEY,
-
-    encryptionIv: process.env.ENCRYPTION_IV,
-
     // Login lockout, enforced in AuthService for login() and adminLogin().
     maxLoginAttempts: parseInt(process.env.MAX_LOGIN_ATTEMPTS ?? '5', 10),
 
     lockoutDurationMinutes: parseInt(process.env.LOCKOUT_DURATION_MINUTES ?? '15', 10),
+
+    // Password hashing cost. OTP hashing uses its own, higher-cost setting below.
+    bcryptSaltRounds: parseInt(process.env.BCRYPT_SALT_ROUNDS ?? '10', 10),
+
+    // OTP hashing cost, used only in AuthService.signup() when hashing the OTP.
+    bcryptOtpSaltRounds: parseInt(process.env.BCRYPT_OTP_SALT_ROUNDS ?? '12', 10),
   },
 
   // Fallbacks kept in sync with the Joi defaults in app.module.ts.
@@ -149,5 +155,64 @@ export default () => ({
 
   victimSupport: {
     enabled: process.env.VICTIM_SUPPORT_ENABLED !== 'false',
+  },
+
+  payments: {
+    enabled: process.env.PAYMENTS_ENABLED === 'true',
+    rewardsEnabled: process.env.PAYMENTS_REWARDS_ENABLED === 'true',
+    returnUrl: process.env.PAYMENTS_RETURN_URL || '',
+    minSupportEtb: process.env.PAYMENTS_MIN_SUPPORT_ETB || '10',
+
+    // Window within which a repeat checkout/funding attempt on the same
+    // target is treated as a duplicate, in PaymentService.initiateSupportCheckout()
+    // and initiateRewardFunding().
+    duplicateWindowMinutes: parseInt(process.env.PAYMENT_DUPLICATE_WINDOW_MINUTES ?? '30', 10),
+
+    // Age past which a still-PENDING payment is considered stale by
+    // PaymentService.reconcileStale().
+    staleAfterMinutes: parseInt(process.env.PAYMENT_STALE_AFTER_MINUTES ?? '15', 10),
+
+    // Age past which a stale payment is treated as expired (also
+    // reconcileStale()).
+    expiryHours: parseInt(process.env.PAYMENT_EXPIRY_HOURS ?? '24', 10),
+
+    // Age band PaymentService.repairUnconfirmedSupports() operates within:
+    // only attempts a repair once a paidAt is at least minAgeMinutes old,
+    // and gives up once it's older than maxAgeDays.
+    repair: {
+      minAgeMinutes: parseInt(process.env.PAYMENT_REPAIR_MIN_AGE_MINUTES ?? '2', 10),
+      maxAgeDays: parseInt(process.env.PAYMENT_REPAIR_MAX_AGE_DAYS ?? '7', 10),
+    },
+
+    // Intended cadence for both reconcileStale() and repairUnconfirmedSupports().
+    // Both are currently static @Cron(CronExpression.EVERY_10_MINUTES) decorators,
+    // so this value is not yet actually read by the schedule — it documents the
+    // intended interval pending a SchedulerRegistry.addCronJob() refactor.
+    reconcileIntervalMinutes: parseInt(
+      process.env.PAYMENT_RECONCILE_INTERVAL_MINUTES ?? '10',
+      10,
+    ),
+  },
+
+  // How long a Chapa transfer disbursement may sit in PROCESSING before
+  // DisbursementService.syncProcessing() flags it via a SECURITY_ALERT
+  // audit event. Does not cancel or retry anything by itself.
+  disbursement: {
+    processingTimeoutMinutes: parseInt(
+      process.env.DISBURSEMENT_PROCESSING_TIMEOUT_MINUTES ?? '60',
+      10,
+    ),
+  },
+
+  chapa: {
+    secretKey: process.env.CHAPA_SECRET_KEY,
+    webhookSecret: process.env.CHAPA_WEBHOOK_SECRET,
+    baseUrl: process.env.CHAPA_BASE_URL || 'https://api.chapa.co/v1',
+    fallbackEmail: process.env.CHAPA_FALLBACK_EMAIL,
+
+    // Request timeout and checkout field length caps, read by ChapaService.
+    timeoutMs: parseInt(process.env.CHAPA_TIMEOUT_MS ?? '15000', 10),
+    titleMaxLength: parseInt(process.env.CHAPA_TITLE_MAX_LENGTH ?? '16', 10),
+    descriptionMaxLength: parseInt(process.env.CHAPA_DESCRIPTION_MAX_LENGTH ?? '50', 10),
   },
 });

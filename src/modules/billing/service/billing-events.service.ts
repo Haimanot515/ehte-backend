@@ -69,7 +69,14 @@ export class BillingEventsService {
   // NotificationService with genuine content and Discreet Mode is handled for free.
   // TODO: swap this stub for the actual NotificationService injection once its
   // public create() signature is confirmed (only the private internals were seen).
-  async notify(userId: string, type: string, title: string, body: string, entity?: string, entityId?: string): Promise<void> {
+  async notify(
+    userId: string,
+    type: string,
+    title: string,
+    body: string,
+    entity?: string,
+    entityId?: string,
+  ): Promise<void> {
     this.emitter.emit('notification.create', { userId, type, title, body, entity, entityId });
   }
 }

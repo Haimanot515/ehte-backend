@@ -56,7 +56,7 @@ async function bootstrap() {
 
   if (corsCredentials && corsOrigin.includes('*')) {
     throw new Error(
-      '[EHTE] CORS_ORIGIN cannot include "*" while CORS_CREDENTIALS is true. '+
+      '[EHTE] CORS_ORIGIN cannot include "*" while CORS_CREDENTIALS is true. ' +
         'List explicit allowed origins instead.',
     );
   }

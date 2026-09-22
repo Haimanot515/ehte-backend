@@ -52,11 +52,7 @@ export class PaymentService {
 
   /** Step 1: show the payer where the money goes. */
   previewSupport(profileId: string, amount: string) {
-    return this.allocation.preview(
-      PaymentType.SUPPORT,
-      this.parseAmount(amount),
-      profileId,
-    );
+    return this.allocation.preview(PaymentType.SUPPORT, this.parseAmount(amount), profileId);
   }
 
   /**
@@ -69,7 +65,13 @@ export class PaymentService {
 
     const support = await this.prisma.support.findFirst({
       where: { id: supportId, userId: payer.id, status: 'PENDING' },
-      select: { id: true, type: true, victimProfileId: true, amount: true, allocationSnapshot: true },
+      select: {
+        id: true,
+        type: true,
+        victimProfileId: true,
+        amount: true,
+        allocationSnapshot: true,
+      },
     });
     if (support && support.type !== 'FINANCIAL') {
       throw new BadRequestException('Only financial support can be paid online');
@@ -141,7 +143,9 @@ export class PaymentService {
     });
     if (already) {
       throw new ConflictException(
-        already.status === 'PAID' ? 'This reward is already funded' : 'A payment for this reward is already in progress',
+        already.status === 'PAID'
+          ? 'This reward is already funded'
+          : 'A payment for this reward is already in progress',
       );
     }
 
@@ -186,7 +190,7 @@ export class PaymentService {
         missingPersonId: args.missingPersonId,
         agreementId: args.preview.agreementId,
         agreementVersion: args.preview.agreementVersion,
-        allocationSnapshot: args.preview as unknown as Prisma.InputJsonValue,
+        allocationSnapshot: args.preview,
         previewShownAt: new Date(),
       },
     });
@@ -329,7 +333,13 @@ export class PaymentService {
       where: { txRef },
       select: { type: true, amount: true, currency: true, allocationSnapshot: true },
     });
-    return { status, type: p.type, amount: p.amount, currency: p.currency, allocation: p.allocationSnapshot };
+    return {
+      status,
+      type: p.type,
+      amount: p.amount,
+      currency: p.currency,
+      allocation: p.allocationSnapshot,
+    };
   }
 
   // ── Cron: catch missed webhooks, expire abandoned checkouts ───────────────
@@ -369,7 +379,10 @@ export class PaymentService {
       where: {
         status: 'PAID',
         supportId: { not: null },
-        paidAt: { lt: new Date(Date.now() - 2 * 60_000), gt: new Date(Date.now() - 7 * 86_400_000) },
+        paidAt: {
+          lt: new Date(Date.now() - 2 * 60_000),
+          gt: new Date(Date.now() - 7 * 86_400_000),
+        },
       },
       select: { id: true, supportId: true },
       take: 200,
@@ -383,7 +396,11 @@ export class PaymentService {
     const pendingIds = new Set(pending.map((s) => s.id));
     for (const p of paid) {
       if (p.supportId && pendingIds.has(p.supportId)) {
-        await this.events.paymentPaid({ paymentId: p.id, supportId: p.supportId, missingPersonId: null });
+        await this.events.paymentPaid({
+          paymentId: p.id,
+          supportId: p.supportId,
+          missingPersonId: null,
+        });
       }
     }
   }

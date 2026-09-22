@@ -74,7 +74,7 @@ export class UssdReportService {
     // triggered event) and is worth a real ANONYMOUS enum variant
     // whenever that enum is next touched.
     this.emitAudit({
-      actorType: 'SYSTEM' as unknown as AuditEventPayload['actorType'],
+      actorType: 'SYSTEM',
       action: AuditEventEnum.REPORT_CREATED,
       entity: 'Report',
       entityId: report.id,
@@ -106,9 +106,7 @@ export class UssdReportService {
    * shared "if you have it, you can check status" credential
    * regardless of how the report was originally filed.
    */
-  async findStatusByCaseReferencePublic(
-    caseReference: string,
-  ): Promise<PublicReportStatus | null> {
+  async findStatusByCaseReferencePublic(caseReference: string): Promise<PublicReportStatus | null> {
     const report = await this.prisma.report.findUnique({
       where: { caseReference },
       select: { caseReference: true, status: true },
@@ -120,9 +118,7 @@ export class UssdReportService {
   // Mirrors ReportService.createReportWithUniqueCaseReference, minus
   // the idempotencyKey race-handling branch (not applicable here —
   // see the class-level note on deferred idempotency work).
-  private async createWithUniqueCaseReference(
-    input: CreateAnonymousReportInput,
-  ): Promise<Report> {
+  private async createWithUniqueCaseReference(input: CreateAnonymousReportInput): Promise<Report> {
     for (let attempt = 1; attempt <= CASE_REFERENCE_MAX_ATTEMPTS; attempt++) {
       try {
         return await this.prisma.report.create({

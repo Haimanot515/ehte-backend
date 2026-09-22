@@ -94,10 +94,7 @@ export class UserController {
 
   @Post('me/change-phone/verify')
   @ApiOperation({ summary: 'Step 2: verify the OTP and complete the phone number change' })
-  async changePhoneVerify(
-    @CurrentUser() user: CurrentUserDto,
-    @Body() data: ChangePhoneVerifyDto,
-  ) {
+  async changePhoneVerify(@CurrentUser() user: CurrentUserDto, @Body() data: ChangePhoneVerifyDto) {
     return this.userService.changePhoneVerify(user, data);
   }
 

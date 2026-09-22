@@ -53,7 +53,11 @@ export class AgreementController {
   @RequirePermissions(P.AGREEMENTS_MANAGE)
   @RequireReauthentication()
   @Patch('profiles/:profileId/agreement')
-  assign(@CurrentUser() a: CurrentUserDto, @Param('profileId') profileId: string, @Body() dto: AssignAgreementDto) {
+  assign(
+    @CurrentUser() a: CurrentUserDto,
+    @Param('profileId') profileId: string,
+    @Body() dto: AssignAgreementDto,
+  ) {
     return this.agreements.assignToProfile(a.id, profileId, dto.agreementId);
   }
 

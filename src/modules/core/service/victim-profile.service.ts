@@ -1,4 +1,9 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { ConfigService } from '@nestjs/config';
@@ -138,8 +143,8 @@ export class VictimProfileService {
         result: outcome === AuditOutcome.DENIED ? 'denied' : 'failure',
         reason,
         ...(opts.diff ?? {}),
-      } as AuditEventPayload['diff'],
-      ...(opts.metadata ? { metadata: opts.metadata as AuditEventPayload['metadata'] } : {}),
+      },
+      ...(opts.metadata ? { metadata: opts.metadata } : {}),
     });
   }
 
@@ -471,7 +476,11 @@ export class VictimProfileService {
   // ─── ADMIN — GET MEDIA DOWNLOAD URL ───
   // A key not actually attached to the profile is a DENIED event, not a silent 404.
 
-  async getMediaDownloadUrl(admin: CurrentUserDto, id: string, key: string): Promise<{ url: string }> {
+  async getMediaDownloadUrl(
+    admin: CurrentUserDto,
+    id: string,
+    key: string,
+  ): Promise<{ url: string }> {
     const profile = await this.prisma.victimProfile.findUnique({
       where: { id },
     });
@@ -735,9 +744,8 @@ export class VictimProfileService {
   // ─── PUBLIC PROFILES — LIST ───
 
   async findPublic(query: FindPublicVictimProfilesQueryDto) {
-    return this.cache.wrapVictimProfileList(
-      query as unknown as Record<string, unknown>,
-      () => this.findPublicUncached(query),
+    return this.cache.wrapVictimProfileList(query as unknown as Record<string, unknown>, () =>
+      this.findPublicUncached(query),
     );
   }
 
@@ -812,9 +820,8 @@ export class VictimProfileService {
   // ─── PUBLIC PROFILES — SINGLE ───
 
   async findOnePublic(id: string) {
-    const cached = await this.cache.getVictimProfile<ReturnType<typeof this.serializePublicProfile>>(
-      id,
-    );
+    const cached =
+      await this.cache.getVictimProfile<ReturnType<typeof this.serializePublicProfile>>(id);
     if (cached !== null) return cached;
 
     const profile = await this.prisma.victimProfile.findFirst({

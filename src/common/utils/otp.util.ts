@@ -137,7 +137,9 @@ export class OtpUtil {
     });
 
     const active =
-      !!latest && !latest.usedAt && Date.now() - latest.createdAt.getTime() < cooldownSeconds * 1000;
+      !!latest &&
+      !latest.usedAt &&
+      Date.now() - latest.createdAt.getTime() < cooldownSeconds * 1000;
 
     return active ? latest : null;
   }

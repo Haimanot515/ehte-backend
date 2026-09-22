@@ -170,8 +170,8 @@ export class MissingPersonService {
         result: outcome === AuditOutcome.DENIED ? 'denied' : 'failure',
         reason,
         ...(opts.diff ?? {}),
-      } as AuditEventPayload['diff'],
-      ...(opts.metadata ? { metadata: opts.metadata as AuditEventPayload['metadata'] } : {}),
+      },
+      ...(opts.metadata ? { metadata: opts.metadata } : {}),
     });
   }
 
@@ -311,7 +311,11 @@ export class MissingPersonService {
   // Reward amount and details are stored only while rewardOffered is true.
   private buildRewardProposalUpdate(
     incoming: { rewardOffered?: boolean; rewardAmount?: number; rewardDetails?: string },
-    existing?: { rewardOffered: boolean; rewardAmount: number | null; rewardDetails: string | null },
+    existing?: {
+      rewardOffered: boolean;
+      rewardAmount: number | null;
+      rewardDetails: string | null;
+    },
   ): { rewardOffered: boolean; rewardAmount: number | null; rewardDetails: string | null } | null {
     const touched =
       incoming.rewardOffered !== undefined ||
@@ -323,15 +327,23 @@ export class MissingPersonService {
     const base = existing ?? { rewardOffered: false, rewardAmount: null, rewardDetails: null };
 
     const rewardOffered = incoming.rewardOffered ?? base.rewardOffered;
-    const rewardAmount = rewardOffered ? incoming.rewardAmount ?? base.rewardAmount ?? null : null;
-    const rewardDetails = rewardOffered ? incoming.rewardDetails ?? base.rewardDetails ?? null : null;
+    const rewardAmount = rewardOffered
+      ? (incoming.rewardAmount ?? base.rewardAmount ?? null)
+      : null;
+    const rewardDetails = rewardOffered
+      ? (incoming.rewardDetails ?? base.rewardDetails ?? null)
+      : null;
 
     return { rewardOffered, rewardAmount, rewardDetails };
   }
 
   // Hides reward amount and details publicly until an admin approves.
   private maskUnapprovedReward<
-    T extends { rewardApproved: boolean; rewardAmount: number | null; rewardDetails: string | null },
+    T extends {
+      rewardApproved: boolean;
+      rewardAmount: number | null;
+      rewardDetails: string | null;
+    },
   >(record: T): T {
     if (record.rewardApproved) return record;
     return { ...record, rewardAmount: null, rewardDetails: null };
@@ -471,7 +483,7 @@ export class MissingPersonService {
 
     this.emitAudit({
       targetUserId: payload.userId,
-      actorType: 'SYSTEM' as unknown as ReturnType<typeof resolveActorType>,
+      actorType: 'SYSTEM',
       action: AuditEventEnum.MISSING_PERSON_UPDATED,
       entity: 'User',
       entityId: payload.userId,
@@ -507,7 +519,7 @@ export class MissingPersonService {
 
       this.emitAudit({
         targetUserId: userId,
-        actorType: 'SYSTEM' as unknown as ReturnType<typeof resolveActorType>,
+        actorType: 'SYSTEM',
         action: AuditEventEnum.USER_AUTO_FLAGGED,
         entity: 'User',
         entityId: userId,
@@ -806,7 +818,11 @@ export class MissingPersonService {
     data: CreateMissingPersonDto,
     merged: MediaBearing,
     totalBytes: number,
-    rewardProposal: { rewardOffered: boolean; rewardAmount: number | null; rewardDetails: string | null },
+    rewardProposal: {
+      rewardOffered: boolean;
+      rewardAmount: number | null;
+      rewardDetails: string | null;
+    },
     initial: { status: MissingPersonStatus; rewardApproved: boolean },
     idempotencyKey?: string,
   ) {
@@ -875,9 +891,8 @@ export class MissingPersonService {
   }
 
   async findAll(query: ListMissingPersonsQueryDto) {
-    return this.cache.wrapMissingPersonList(
-      query as unknown as Record<string, unknown>,
-      () => this.findAllUncached(query),
+    return this.cache.wrapMissingPersonList(query as unknown as Record<string, unknown>, () =>
+      this.findAllUncached(query),
     );
   }
 
@@ -1443,7 +1458,8 @@ export class MissingPersonService {
       },
       metadata: {
         operation: 'reward_review',
-        amountOverriddenByAdmin: rewardAmount !== undefined && rewardAmount !== existing.rewardAmount,
+        amountOverriddenByAdmin:
+          rewardAmount !== undefined && rewardAmount !== existing.rewardAmount,
         detailsOverriddenByAdmin:
           rewardDetails !== undefined && rewardDetails !== existing.rewardDetails,
       },

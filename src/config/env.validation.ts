@@ -13,9 +13,7 @@ const prodRequired = <T extends Joi.Schema>(schema: T): T =>
 
 // Per-domain upload/moderation knobs: <PREFIX>_<KEY>, all optional overrides.
 const overrides = (prefix: string, keys: string[]) =>
-  Object.fromEntries(
-    keys.map((k) => [`${prefix}_${k}`, Joi.number().integer().min(0).optional()]),
-  );
+  Object.fromEntries(keys.map((k) => [`${prefix}_${k}`, Joi.number().integer().min(0).optional()]));
 
 const COMMON_KEYS = [
   'MAX_PENDING_PER_USER',
@@ -69,9 +67,7 @@ export const envValidationSchema = Joi.object({
   JWT_SECRET: Joi.string().min(32).required(),
   JWT_EXPIRES_IN: Joi.string().default('15m'),
   // Required in production and must differ from JWT_SECRET.
-  JWT_REFRESH_SECRET: prodRequired(
-    Joi.string().min(32).invalid(Joi.ref('JWT_SECRET')),
-  ),
+  JWT_REFRESH_SECRET: prodRequired(Joi.string().min(32).invalid(Joi.ref('JWT_SECRET'))),
   JWT_REFRESH_EXPIRES_IN: Joi.string().default('7d'),
 
   OTP_EXPIRES_IN_MINUTES: Joi.number().default(10),
@@ -80,9 +76,7 @@ export const envValidationSchema = Joi.object({
   MAX_LOGIN_ATTEMPTS: Joi.number().default(5),
   LOCKOUT_DURATION_MINUTES: Joi.number().default(15),
 
-  ENCRYPTION_KEY: prodRequired(Joi.string().min(32)),
   // Deprecated static-IV scheme; kept only to read old data.
-  ENCRYPTION_IV: Joi.string().optional(),
 
   APP_DEBUG: Joi.boolean()
     .default(false)
@@ -96,15 +90,17 @@ export const envValidationSchema = Joi.object({
   THROTTLE_LIMIT: Joi.number().integer().min(1).default(20),
 
   // Production needs one working SMS provider: AfroMessage unless SendET is fully set.
-  AFROMESSAGE_URL: Joi.string().uri().when('NODE_ENV', {
-    is: 'production',
-    then: Joi.string().uri().when('SENDET_URL', {
-      is: Joi.exist(),
-      then: Joi.optional(),
-      otherwise: Joi.required(),
+  AFROMESSAGE_URL: Joi.string()
+    .uri()
+    .when('NODE_ENV', {
+      is: 'production',
+      then: Joi.string().uri().when('SENDET_URL', {
+        is: Joi.exist(),
+        then: Joi.optional(),
+        otherwise: Joi.required(),
+      }),
+      otherwise: Joi.optional(),
     }),
-    otherwise: Joi.optional(),
-  }),
   AFROMESSAGE_TOKEN: Joi.string().when('NODE_ENV', {
     is: 'production',
     then: Joi.string().when('SENDET_TOKEN', {
@@ -179,5 +175,4 @@ export const envValidationSchema = Joi.object({
 
   ANDROID_STORE_URL: prodRequired(Joi.string().uri()),
   IOS_STORE_URL: prodRequired(Joi.string().uri()),
-})
-  .and('FIREBASE_PROJECT_ID', 'FIREBASE_CLIENT_EMAIL', 'FIREBASE_PRIVATE_KEY');
+}).and('FIREBASE_PROJECT_ID', 'FIREBASE_CLIENT_EMAIL', 'FIREBASE_PRIVATE_KEY');

@@ -1,14 +1,4 @@
-import {
-  Body,
-  Controller,
-  Delete,
-  Get,
-  Headers,
-  Param,
-  Patch,
-  Post,
-  Query,
-} from '@nestjs/common';
+import { Body, Controller, Delete, Get, Headers, Param, Patch, Post, Query } from '@nestjs/common';
 
 import { ApiBearerAuth, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 
@@ -75,12 +65,7 @@ export class InformationSubmissionController {
     @Body() data: CreateInformationSubmissionDto,
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
-    return this.informationSubmissionService.create(
-      user,
-      missingPersonId,
-      data,
-      idempotencyKey,
-    );
+    return this.informationSubmissionService.create(user, missingPersonId, data, idempotencyKey);
   }
 
   // ─────────────────────────────────────────────

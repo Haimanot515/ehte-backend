@@ -396,8 +396,7 @@ export class SupportService {
     // Only set when the actor is someone other than the supporter —
     // a supporter cancelling their own pledge is a self-action, not
     // an action taken against another user.
-    const targetUserFields =
-      actor.id === support.userId ? {} : { targetUserId: support.userId };
+    const targetUserFields = actor.id === support.userId ? {} : { targetUserId: support.userId };
 
     if (previousStatus === status) {
       this.emitAudit({

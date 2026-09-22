@@ -61,7 +61,11 @@ export class UssdMissingPersonService {
 
   // Redacts CHILD case names in audit logs, same rule as
   // MissingPersonService.caseLabel.
-  private caseLabel(missingPerson: { id: string; name: string | null; personType: MissingPersonType }): string | undefined {
+  private caseLabel(missingPerson: {
+    id: string;
+    name: string | null;
+    personType: MissingPersonType;
+  }): string | undefined {
     if (missingPerson.personType === MissingPersonType.CHILD) {
       return `Child case ${missingPerson.id.slice(0, 8)}`;
     }
@@ -88,12 +92,16 @@ export class UssdMissingPersonService {
     // ASSUMPTION: same 'SYSTEM' actor-type cast as
     // UssdReportService.createAnonymous — see that method's comment.
     this.emitAudit({
-      actorType: 'SYSTEM' as unknown as AuditEventPayload['actorType'],
+      actorType: 'SYSTEM',
       action: AuditEventEnum.MISSING_PERSON_CREATED,
       entity: 'MissingPerson',
       entityId: missingPerson.id,
       entityLabel: this.caseLabel(missingPerson),
-      diff: { personType: missingPerson.personType, status: missingPerson.status, result: 'success' },
+      diff: {
+        personType: missingPerson.personType,
+        status: missingPerson.status,
+        result: 'success',
+      },
       metadata: { channel: SubmissionChannel.USSD },
     });
 

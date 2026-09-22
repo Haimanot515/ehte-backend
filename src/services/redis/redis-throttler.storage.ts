@@ -51,12 +51,10 @@ export class RedisThrottlerStorage implements ThrottlerStorage {
         };
       }
 
-      const [totalHits, pttl] = (await client.eval(
-        INCR_SCRIPT,
-        1,
-        hitKey,
-        ttl,
-      )) as [number, number];
+      const [totalHits, pttl] = (await client.eval(INCR_SCRIPT, 1, hitKey, ttl)) as [
+        number,
+        number,
+      ];
 
       const isBlocked = totalHits > limit;
       let timeToBlockExpire = 0;

@@ -292,7 +292,11 @@ export class NotificationPreferenceItemDto {
   @IsBoolean()
   push?: boolean | null;
 
-  @ApiPropertyOptional({ example: '22:00', nullable: true, description: 'null clears quiet hours.' })
+  @ApiPropertyOptional({
+    example: '22:00',
+    nullable: true,
+    description: 'null clears quiet hours.',
+  })
   @IsOptional()
   @Matches(HH_MM, { message: 'quietHoursStart must be HH:mm (24h)' })
   quietHoursStart?: string | null;

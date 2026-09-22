@@ -16,6 +16,7 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { DisbursementMethod, Prisma } from '@prisma/client';
 import { PrismaService } from '../../../prisma/prisma.service';
@@ -40,7 +41,19 @@ export class DisbursementService {
     private readonly prisma: PrismaService,
     private readonly chapa: ChapaService,
     private readonly events: BillingEventsService,
+    private readonly configService: ConfigService,
   ) {}
+
+  /**
+   * How long a disbursement may sit in PROCESSING before syncProcessing()
+   * flags it instead of silently retrying forever. NOT a retry count — no
+   * automatic retry exists yet (see DISBURSEMENT_MAX_RETRY_ATTEMPTS note
+   * below, still unimplemented pending an idempotency check on
+   * ChapaService.transfer()).
+   */
+  private get processingTimeoutMinutes(): number {
+    return this.configService.get<number>('disbursement.processingTimeoutMinutes', 60);
+  }
 
   async create(adminId: string, allocationId: string, method: DisbursementMethod) {
     const allocation = await this.prisma.paymentAllocation.findUnique({
@@ -48,8 +61,10 @@ export class DisbursementService {
       include: { payment: true, disbursements: true },
     });
     if (!allocation) throw new NotFoundException('Allocation not found');
-    if (allocation.payment.status !== 'PAID') throw new BadRequestException('Payment is not settled');
-    if (allocation.settlementStatus !== 'PENDING') throw new BadRequestException('Allocation is not pending');
+    if (allocation.payment.status !== 'PAID')
+      throw new BadRequestException('Payment is not settled');
+    if (allocation.settlementStatus !== 'PENDING')
+      throw new BadRequestException('Allocation is not pending');
     if (allocation.disbursements.some((d) => !['FAILED', 'CANCELLED'].includes(d.status))) {
       throw new BadRequestException('A disbursement already exists for this allocation');
     }
@@ -74,7 +89,12 @@ export class DisbursementService {
         createdById: adminId,
       },
     });
-    await this.events.log({ actorId: adminId, action: AuditEventEnum.DISBURSEMENT_CREATED, entityType: 'Disbursement', entityId: d.id });
+    await this.events.log({
+      actorId: adminId,
+      action: AuditEventEnum.DISBURSEMENT_CREATED,
+      entityType: 'Disbursement',
+      entityId: d.id,
+    });
     return d;
   }
 
@@ -88,7 +108,12 @@ export class DisbursementService {
       data: { status: 'APPROVED', approvedById: adminId },
     });
     if (count === 0) throw new BadRequestException('Not awaiting approval');
-    await this.events.log({ actorId: adminId, action: AuditEventEnum.DISBURSEMENT_APPROVED, entityType: 'Disbursement', entityId: id });
+    await this.events.log({
+      actorId: adminId,
+      action: AuditEventEnum.DISBURSEMENT_APPROVED,
+      entityType: 'Disbursement',
+      entityId: id,
+    });
   }
 
   /** Banks and their Chapa codes, for the admin to pick from at payout time. */
@@ -108,7 +133,10 @@ export class DisbursementService {
     if (d.allocation.partyType === 'RECIPIENT') {
       // The destination is the bank account on the approved profile, never something typed in the request.
       const p = await this.loadPayableRecipient(d.allocation.payment.victimProfileId);
-      account = { accountName: p.bankAccountName as string, accountNumber: p.bankAccountNumber as string };
+      account = {
+        accountName: p.bankAccountName as string,
+        accountNumber: p.bankAccountNumber as string,
+      };
     } else if (input.accountName && input.accountNumber) {
       account = { accountName: input.accountName, accountNumber: input.accountNumber };
     }
@@ -138,7 +166,10 @@ export class DisbursementService {
         // Stays PROCESSING until syncProcessing() sees it succeed.
       } else {
         await this.prisma.$transaction(async (tx) => {
-          await tx.disbursement.update({ where: { id }, data: { externalReference: input.externalReference } });
+          await tx.disbursement.update({
+            where: { id },
+            data: { externalReference: input.externalReference },
+          });
           await this.markPaidOut(tx, id);
         });
       }
@@ -147,7 +178,12 @@ export class DisbursementService {
         where: { id },
         data: { status: 'FAILED', failureReason: String((err as Error).message).slice(0, 200) },
       });
-      await this.events.log({ actorId: adminId, action: AuditEventEnum.DISBURSEMENT_FAILED, entityType: 'Disbursement', entityId: id });
+      await this.events.log({
+        actorId: adminId,
+        action: AuditEventEnum.DISBURSEMENT_FAILED,
+        entityType: 'Disbursement',
+        entityId: id,
+      });
       throw err;
     }
 
@@ -160,7 +196,8 @@ export class DisbursementService {
       metadata: {
         method: d.method,
         partyType: d.allocation.partyType,
-        destination: d.allocation.partyType === 'RECIPIENT' ? 'profile_bank_details' : 'admin_supplied',
+        destination:
+          d.allocation.partyType === 'RECIPIENT' ? 'profile_bank_details' : 'admin_supplied',
       },
     });
   }
@@ -212,24 +249,75 @@ export class DisbursementService {
   async syncProcessing(): Promise<void> {
     const pending = await this.prisma.disbursement.findMany({
       where: { status: 'PROCESSING', method: 'CHAPA_TRANSFER' },
-      select: { id: true, reference: true },
+      select: { id: true, reference: true, executedAt: true, createdById: true },
       take: 50,
     });
+
+    const timeoutMs = this.processingTimeoutMinutes * 60 * 1000;
+    const now = Date.now();
+
     for (const d of pending) {
       try {
         const remote = await this.chapa.verifyTransfer(d.reference);
         if (remote.status === 'success') {
           await this.prisma.$transaction((tx) => this.markPaidOut(tx, d.id));
-        } else if (remote.status === 'failed') {
+          continue;
+        }
+        if (remote.status === 'failed') {
           await this.prisma.disbursement.updateMany({
             where: { id: d.id, status: 'PROCESSING' },
             data: { status: 'FAILED', failureReason: 'Transfer failed at Chapa' },
           });
+          continue;
         }
+
+        // Still pending at Chapa (or an unrecognized status string). Not a
+        // failure by itself, but flag it once it's been stuck too long so an
+        // admin can look rather than it sitting PROCESSING indefinitely.
+        this.flagIfStale(d, timeoutMs, now, remote.status);
       } catch (err) {
         this.logger.warn(`Transfer sync failed for ${d.id}: ${String(err)}`);
+        // A failed *check* also counts toward staleness — an unreachable
+        // Chapa endpoint shouldn't quietly hide a stuck disbursement.
+        this.flagIfStale(d, timeoutMs, now, 'sync_error');
       }
     }
+  }
+
+  /**
+   * Emits a SECURITY_ALERT audit event the first time a PROCESSING
+   * disbursement crosses processingTimeoutMinutes. Does NOT change the
+   * disbursement's status (no STALLED/TIMED_OUT state exists in the schema
+   * yet) and does NOT retry or cancel anything — this is visibility only.
+   * Runs every cron tick past the threshold, so downstream alerting should
+   * dedupe on entityId if repeat notifications aren't wanted.
+   */
+  private flagIfStale(
+    d: { id: string; executedAt: Date | null; createdById: string },
+    timeoutMs: number,
+    now: number,
+    remoteStatus: string,
+  ): void {
+    if (!d.executedAt) return;
+    const ageMs = now - d.executedAt.getTime();
+    if (ageMs < timeoutMs) return;
+
+    this.logger.warn(
+      `Disbursement ${d.id} has been PROCESSING for over ${this.processingTimeoutMinutes}m ` +
+        `(remote status: ${remoteStatus})`,
+    );
+    void this.events.log({
+      actorId: d.createdById,
+      action: AuditEventEnum.SECURITY_ALERT,
+      entityType: 'Disbursement',
+      entityId: d.id,
+      metadata: {
+        reason: 'disbursement_processing_timeout',
+        ageMinutes: Math.floor(ageMs / 60000),
+        thresholdMinutes: this.processingTimeoutMinutes,
+        remoteStatus,
+      },
+    });
   }
 
   // ── Shared completion, always inside a transaction ────────────────────────

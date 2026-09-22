@@ -147,11 +147,17 @@ export class UssdMenuService {
   // REPORT AN INCIDENT
   // ═══════════════════════════════════════════
 
-  private async fromReportCategory(state: UssdSessionState, input: string): Promise<UssdOutboundResult> {
+  private async fromReportCategory(
+    state: UssdSessionState,
+    input: string,
+  ): Promise<UssdOutboundResult> {
     const idx = Number(input) - 1;
     const category = REPORT_CATEGORIES[idx];
     if (!category) {
-      return { continueSession: true, text: 'Invalid category. Please enter a number from the list.' };
+      return {
+        continueSession: true,
+        text: 'Invalid category. Please enter a number from the list.',
+      };
     }
     await this.sessions.setStep(state, 'REPORT_DESCRIPTION', {
       category: category.value,
@@ -160,7 +166,10 @@ export class UssdMenuService {
     return { continueSession: true, text: 'Briefly describe what happened:' };
   }
 
-  private async fromReportDescription(state: UssdSessionState, input: string): Promise<UssdOutboundResult> {
+  private async fromReportDescription(
+    state: UssdSessionState,
+    input: string,
+  ): Promise<UssdOutboundResult> {
     if (!input?.trim()) {
       return { continueSession: true, text: 'Please enter a short description, or 0 to cancel.' };
     }
@@ -171,7 +180,10 @@ export class UssdMenuService {
     };
   }
 
-  private async fromReportConfirm(state: UssdSessionState, input: string): Promise<UssdOutboundResult> {
+  private async fromReportConfirm(
+    state: UssdSessionState,
+    input: string,
+  ): Promise<UssdOutboundResult> {
     if (input === '1') {
       const report = await this.ussdReportService.createAnonymous({
         category: state.data.category as ReportCategory,
@@ -191,7 +203,10 @@ export class UssdMenuService {
   // CHECK REPORT STATUS
   // ═══════════════════════════════════════════
 
-  private async fromStatusInputRef(state: UssdSessionState, input: string): Promise<UssdOutboundResult> {
+  private async fromStatusInputRef(
+    state: UssdSessionState,
+    input: string,
+  ): Promise<UssdOutboundResult> {
     await this.sessions.end(state.sessionId);
 
     const reference = input?.trim();
@@ -221,8 +236,12 @@ export class UssdMenuService {
   // REPORT A MISSING PERSON
   // ═══════════════════════════════════════════
 
-  private async fromMissingPersonType(state: UssdSessionState, input: string): Promise<UssdOutboundResult> {
-    const personType = input === '1' ? MissingPersonType.WOMAN : input === '2' ? MissingPersonType.CHILD : null;
+  private async fromMissingPersonType(
+    state: UssdSessionState,
+    input: string,
+  ): Promise<UssdOutboundResult> {
+    const personType =
+      input === '1' ? MissingPersonType.WOMAN : input === '2' ? MissingPersonType.CHILD : null;
     if (!personType) {
       return { continueSession: true, text: 'Invalid choice.\n1. Woman\n2. Child' };
     }
@@ -230,7 +249,10 @@ export class UssdMenuService {
     return { continueSession: true, text: 'Enter their name, or 0 to skip:' };
   }
 
-  private async fromMissingPersonName(state: UssdSessionState, input: string): Promise<UssdOutboundResult> {
+  private async fromMissingPersonName(
+    state: UssdSessionState,
+    input: string,
+  ): Promise<UssdOutboundResult> {
     const name = input?.trim() === '0' ? '' : (input ?? '').trim();
     await this.sessions.setStep(state, 'MISSING_PERSON_DESCRIPTION', { name });
     return { continueSession: true, text: 'Briefly describe them (appearance, clothing, etc.):' };
@@ -243,7 +265,9 @@ export class UssdMenuService {
     if (!input?.trim()) {
       return { continueSession: true, text: 'Please enter a short description.' };
     }
-    await this.sessions.setStep(state, 'MISSING_PERSON_DATE_LAST_SEEN', { description: input.trim() });
+    await this.sessions.setStep(state, 'MISSING_PERSON_DATE_LAST_SEEN', {
+      description: input.trim(),
+    });
     return { continueSession: true, text: 'Date last seen? Enter as DD/MM/YYYY:' };
   }
 
@@ -253,7 +277,10 @@ export class UssdMenuService {
   ): Promise<UssdOutboundResult> {
     const iso = this.parseDdMmYyyy(input?.trim());
     if (!iso) {
-      return { continueSession: true, text: 'Invalid date. Please enter as DD/MM/YYYY, e.g. 15/09/2026:' };
+      return {
+        continueSession: true,
+        text: 'Invalid date. Please enter as DD/MM/YYYY, e.g. 15/09/2026:',
+      };
     }
     await this.sessions.setStep(state, 'MISSING_PERSON_LAST_AREA', { dateLastSeen: iso });
     return { continueSession: true, text: 'Last known area (town/neighborhood):' };
@@ -323,7 +350,10 @@ export class UssdMenuService {
     return { continueSession: true, text: 'What information do you have?' };
   }
 
-  private async fromInfoDescription(state: UssdSessionState, input: string): Promise<UssdOutboundResult> {
+  private async fromInfoDescription(
+    state: UssdSessionState,
+    input: string,
+  ): Promise<UssdOutboundResult> {
     if (!input?.trim()) {
       return { continueSession: true, text: 'Please enter your information, or 0 to cancel.' };
     }
@@ -331,7 +361,10 @@ export class UssdMenuService {
     return { continueSession: true, text: 'Submit this information?\n1. Yes\n2. No, cancel' };
   }
 
-  private async fromInfoConfirm(state: UssdSessionState, input: string): Promise<UssdOutboundResult> {
+  private async fromInfoConfirm(
+    state: UssdSessionState,
+    input: string,
+  ): Promise<UssdOutboundResult> {
     if (input === '1') {
       const withinLimit = await this.checkAndIncrementThrottle(
         TIP_SUBMIT_THROTTLE_KEY_PREFIX + state.phoneNumber,
@@ -347,7 +380,10 @@ export class UssdMenuService {
         missingPersonId: state.data.missingPersonId,
         information: state.data.information,
       });
-      return { continueSession: false, text: 'Thank you. Your information has been submitted for review.' };
+      return {
+        continueSession: false,
+        text: 'Thank you. Your information has been submitted for review.',
+      };
     }
     await this.sessions.end(state.sessionId);
     return { continueSession: false, text: 'Cancelled.' };
@@ -379,7 +415,9 @@ export class UssdMenuService {
     const date = new Date(Date.UTC(year, month - 1, day));
 
     const isRealDate =
-      date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+      date.getUTCFullYear() === year &&
+      date.getUTCMonth() === month - 1 &&
+      date.getUTCDate() === day;
     if (!isRealDate || date.getTime() > Date.now()) return null;
 
     return date.toISOString();

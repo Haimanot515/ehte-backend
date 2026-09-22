@@ -87,12 +87,17 @@ import { SeedOrchestratorService } from './common/seed/seed-orchestrator.service
 
         OTP_EXPIRES_IN_MINUTES: Joi.number().default(10),
         OTP_RESEND_COOLDOWN_SECONDS: Joi.number().default(60),
+        OTP_MAX_ATTEMPTS: Joi.number().default(5),
 
         MAX_LOGIN_ATTEMPTS: Joi.number().default(5),
         LOCKOUT_DURATION_MINUTES: Joi.number().default(15),
 
-        ENCRYPTION_KEY: Joi.string().optional(),
-        ENCRYPTION_IV: Joi.string().optional(),
+        // Password hashing cost (signup, resetPassword, changePasswordVerify
+        // in AuthService). OTP hashing uses its own, separate cost below.
+        BCRYPT_SALT_ROUNDS: Joi.number().integer().min(4).max(15).default(10),
+
+        // OTP hashing cost, used only in AuthService.signup().
+        BCRYPT_OTP_SALT_ROUNDS: Joi.number().integer().min(4).max(15).default(12),
 
         APP_DEBUG: Joi.boolean()
           .default(false)
@@ -134,6 +139,55 @@ import { SeedOrchestratorService } from './common/seed/seed-orchestrator.service
         MEDIA_ALLOWED_MIME_TYPES: Joi.string().default(
           'image/jpeg,image/png,image/webp,video/mp4,video/quicktime,audio/mpeg,audio/wav,audio/mp4,application/pdf',
         ),
+
+        // Payments (Chapa). Secrets and the return URL are only required
+        // once PAYMENTS_ENABLED=true, so payments can stay off elsewhere
+        // without needing dummy values.
+        PAYMENTS_ENABLED: Joi.boolean().default(false),
+        PAYMENTS_REWARDS_ENABLED: Joi.boolean().default(false),
+        PAYMENTS_RETURN_URL: Joi.string().uri().when('PAYMENTS_ENABLED', {
+          is: true,
+          then: Joi.required(),
+          otherwise: Joi.optional().allow(''),
+        }),
+        PAYMENTS_MIN_SUPPORT_ETB: Joi.number().default(10),
+
+        CHAPA_SECRET_KEY: Joi.string().when('PAYMENTS_ENABLED', {
+          is: true,
+          then: Joi.required(),
+          otherwise: Joi.optional(),
+        }),
+        CHAPA_WEBHOOK_SECRET: Joi.string().when('PAYMENTS_ENABLED', {
+          is: true,
+          then: Joi.required(),
+          otherwise: Joi.optional(),
+        }),
+        CHAPA_BASE_URL: Joi.string().uri().default('https://api.chapa.co/v1'),
+        CHAPA_FALLBACK_EMAIL: Joi.string().email().optional(),
+        CHAPA_TIMEOUT_MS: Joi.number().default(15000),
+        CHAPA_TITLE_MAX_LENGTH: Joi.number().default(16),
+        CHAPA_DESCRIPTION_MAX_LENGTH: Joi.number().default(50),
+
+        // Payment lifecycle timing (PaymentService: duplicate-submission window,
+        // staleness/expiry sweep, and the repair-unconfirmed-supports age band).
+        PAYMENT_DUPLICATE_WINDOW_MINUTES: Joi.number().default(30),
+        PAYMENT_STALE_AFTER_MINUTES: Joi.number().default(15),
+        PAYMENT_EXPIRY_HOURS: Joi.number().default(24),
+        PAYMENT_REPAIR_MIN_AGE_MINUTES: Joi.number().default(2),
+        PAYMENT_REPAIR_MAX_AGE_DAYS: Joi.number().default(7),
+
+        // Drives both reconcileStale() and repairUnconfirmedSupports() cron
+        // cadences (currently still static @Cron decorators — see PaymentService
+        // notes; this key makes the interval *readable* pending a
+        // SchedulerRegistry.addCronJob() refactor for true dynamic scheduling).
+        PAYMENT_RECONCILE_INTERVAL_MINUTES: Joi.number().default(10),
+
+        // Named 'checkout' throttler profile (PaymentController: support checkout
+        // + reward funding), separate from the global THROTTLE_* default.
+        PAYMENT_CHECKOUT_RATE_LIMIT: Joi.number().default(5),
+        PAYMENT_CHECKOUT_RATE_LIMIT_TTL_SECONDS: Joi.number().default(60),
+
+        DISBURSEMENT_PROCESSING_TIMEOUT_MINUTES: Joi.number().default(60),
 
         CONTENT_MAX_PENDING_PER_USER: Joi.number().default(5),
         CONTENT_CREATE_RATE_LIMIT_WINDOW_SECONDS: Joi.number().default(60),
@@ -220,6 +274,13 @@ import { SeedOrchestratorService } from './common/seed/seed-orchestrator.service
           {
             ttl: config.get<number>('THROTTLE_TTL_SECONDS', 60) * 1000,
             limit: config.get<number>('THROTTLE_LIMIT', 20),
+          },
+          {
+            // Named profile for payment-initiating routes (checkout, reward
+            // funding). Activated on a route via @Throttle({ checkout: {} }).
+            name: 'checkout',
+            ttl: config.get<number>('PAYMENT_CHECKOUT_RATE_LIMIT_TTL_SECONDS', 60) * 1000,
+            limit: config.get<number>('PAYMENT_CHECKOUT_RATE_LIMIT', 5),
           },
         ],
       }),

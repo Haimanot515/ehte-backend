@@ -1,9 +1,4 @@
-import {
-  ApiProperty,
-  ApiPropertyOptional,
-  IntersectionType,
-  PartialType,
-} from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional, IntersectionType, PartialType } from '@nestjs/swagger';
 import { Transform, Type } from 'class-transformer';
 import {
   IsBoolean,
@@ -41,7 +36,9 @@ const trim = ({ value }: { value: unknown }) => (typeof value === 'string' ? val
  * If both are sent, `cursor` wins.
  */
 export class AuditPagingDto {
-  @ApiPropertyOptional({ description: 'Cursor from the previous page (meta.nextCursor). Preferred.' })
+  @ApiPropertyOptional({
+    description: 'Cursor from the previous page (meta.nextCursor). Preferred.',
+  })
   @IsOptional()
   @IsString()
   @MaxLength(100)
@@ -135,7 +132,7 @@ export class AuditLogFiltersDto {
   @ApiPropertyOptional({ enum: HTTP_METHODS })
   @IsOptional()
   @Transform(({ value }) => (typeof value === 'string' ? value.toUpperCase() : value))
-  @IsIn(HTTP_METHODS as unknown as string[])
+  @IsIn(HTTP_METHODS)
   method?: string;
 
   @ApiPropertyOptional({ example: '/api/v1/reports', description: 'Substring match.' })
@@ -170,7 +167,8 @@ export class AuditLogFiltersDto {
 
   @ApiPropertyOptional({
     example: '203.0.113.7',
-    description: 'SUPER_ADMIN only. ADMIN gets 403 (ADMIN cannot see IPs, so it cannot filter by them).',
+    description:
+      'SUPER_ADMIN only. ADMIN gets 403 (ADMIN cannot see IPs, so it cannot filter by them).',
   })
   @IsOptional()
   @IsIP()
@@ -216,7 +214,11 @@ export class AuditUserScopeQueryDto extends AuditPagingDto {
 // ─────────────────────────────────────────────
 
 export class TimelineQueryDto {
-  @ApiPropertyOptional({ example: 30, default: 30, description: 'Number of days, including today (UTC).' })
+  @ApiPropertyOptional({
+    example: 30,
+    default: 30,
+    description: 'Number of days, including today (UTC).',
+  })
   @IsOptional()
   @Type(() => Number)
   @IsInt()
@@ -313,7 +315,11 @@ export class CreateAuditAlertDto {
   @Max(10_080)
   windowMinutes!: number;
 
-  @ApiPropertyOptional({ example: 60, default: 60, description: 'Minimum minutes between firings.' })
+  @ApiPropertyOptional({
+    example: 60,
+    default: 60,
+    description: 'Minimum minutes between firings.',
+  })
   @IsOptional()
   @IsInt()
   @Min(0)
@@ -344,7 +350,10 @@ export class IntegrityVerifyQueryDto {
 // ─────────────────────────────────────────────
 
 export class PurgePreviewQueryDto {
-  @ApiProperty({ example: '2025-01-01T00:00:00.000Z', description: 'ISO date, must be in the past.' })
+  @ApiProperty({
+    example: '2025-01-01T00:00:00.000Z',
+    description: 'ISO date, must be in the past.',
+  })
   @IsDateString()
   olderThan!: string;
 }

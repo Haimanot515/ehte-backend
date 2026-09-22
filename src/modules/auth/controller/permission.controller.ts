@@ -13,7 +13,11 @@ import { RolesEnum } from 'src/common/enums/roles.enum';
 import { RequirePermissions } from 'src/common/decorators/require-permissions.decorator';
 import { PermissionsEnum } from 'src/common/enums/permissions.enum';
 
-import { AssignPermissionsDto, RevokePermissionsDto, SetPermissionsDto } from '../dto/permission.dto';
+import {
+  AssignPermissionsDto,
+  RevokePermissionsDto,
+  SetPermissionsDto,
+} from '../dto/permission.dto';
 
 // Every route here is admin-only by design — no self-service "/my-permissions" route exists.
 
@@ -44,7 +48,9 @@ export class PermissionController {
   @Get('users/:userId/effective')
   @Roles(RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.PERMISSION_READ)
-  @ApiOperation({ summary: "List a user's effective permissions, aggregated across all their roles" })
+  @ApiOperation({
+    summary: "List a user's effective permissions, aggregated across all their roles",
+  })
   @ApiParam({ name: 'userId', type: 'string' })
   async getEffectivePermissionsForUser(@Param('userId') userId: string) {
     return this.service.getEffectivePermissionsForUser(userId);

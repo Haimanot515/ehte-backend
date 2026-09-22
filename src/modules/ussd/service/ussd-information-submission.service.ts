@@ -68,7 +68,7 @@ export class UssdInformationSubmissionService {
     // ASSUMPTION: same 'SYSTEM' actor-type cast pattern as the other
     // two USSD-only services.
     this.emitAudit({
-      actorType: 'SYSTEM' as unknown as AuditEventPayload['actorType'],
+      actorType: 'SYSTEM',
       // ASSUMPTION: guessing at this enum member's name by analogy
       // with REPORT_CREATED / MISSING_PERSON_CREATED — confirm
       // INFORMATION_SUBMISSION_CREATED actually exists in

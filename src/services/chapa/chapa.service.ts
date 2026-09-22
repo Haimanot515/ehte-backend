@@ -66,12 +66,30 @@ export class ChapaService {
   private readonly webhookSecret: string;
   private readonly baseUrl: string;
 
+  // Single source of truth for the settlement currency. Was hardcoded as
+  // 'ETB' independently in initialize() and transfer() — now read once here
+  // from the same SUPPORT_CURRENCY config the rest of billing uses, so the
+  // two call sites can't drift out of sync with each other again.
+  private readonly currency: string;
+
+  // Request timeout, checkout title/description length caps. Were literals
+  // (15_000 / 16 / 50) inline at each call site; now config-driven so they
+  // can be tuned per environment without a code change.
+  private readonly requestTimeoutMs: number;
+  private readonly titleMaxLength: number;
+  private readonly descriptionMaxLength: number;
+
   constructor(config: ConfigService) {
     this.secretKey = config.get<string>('chapa.secretKey', '');
     this.webhookSecret = config.get<string>('chapa.webhookSecret', '');
     this.baseUrl = config
       .get<string>('chapa.baseUrl', 'https://api.chapa.co/v1')
       .replace(/\/+$/, '');
+
+    this.currency = config.get<string>('support.currency', 'ETB');
+    this.requestTimeoutMs = config.get<number>('chapa.timeoutMs', 15_000);
+    this.titleMaxLength = config.get<number>('chapa.titleMaxLength', 16);
+    this.descriptionMaxLength = config.get<number>('chapa.descriptionMaxLength', 50);
   }
 
   // ── Low-level request ─────────────────────────────────────────────────────
@@ -92,7 +110,7 @@ export class ChapaService {
         'Content-Type': 'application/json',
       },
       body: body ? JSON.stringify(body) : undefined,
-      signal: AbortSignal.timeout(15_000),
+      signal: AbortSignal.timeout(this.requestTimeoutMs),
     });
 
     const raw = await res.text();
@@ -124,25 +142,25 @@ export class ChapaService {
 
   // ── Collection ────────────────────────────────────────────────────────────
 
-  async initialize(
-    input: ChapaInitInput,
-  ): Promise<{ checkoutUrl: string; txRef: string }> {
-    const res = await this.request<
-      ChapaEnvelope & { data: { checkout_url: string } }
-    >('POST', '/transaction/initialize', {
-      amount: input.amount.toFixed(2),
-      currency: 'ETB',
-      email: input.email.trim(),
-      first_name: (input.firstName || 'Supporter').trim(),
-      last_name: (input.lastName || 'Ehte').trim(),
-      tx_ref: input.txRef,
-      return_url: input.returnUrl,
-      callback_url: input.callbackUrl,
-      customization: {
-        title: this.sanitize(input.title, 16),
-        description: this.sanitize(input.description, 50),
+  async initialize(input: ChapaInitInput): Promise<{ checkoutUrl: string; txRef: string }> {
+    const res = await this.request<ChapaEnvelope & { data: { checkout_url: string } }>(
+      'POST',
+      '/transaction/initialize',
+      {
+        amount: input.amount.toFixed(2),
+        currency: this.currency,
+        email: input.email.trim(),
+        first_name: (input.firstName || 'Supporter').trim(),
+        last_name: (input.lastName || 'Ehte').trim(),
+        tx_ref: input.txRef,
+        return_url: input.returnUrl,
+        callback_url: input.callbackUrl,
+        customization: {
+          title: this.sanitize(input.title, this.titleMaxLength),
+          description: this.sanitize(input.description, this.descriptionMaxLength),
+        },
       },
-    });
+    );
 
     this.logger.log(`[Chapa] initialized tx_ref=${input.txRef}`);
     return { checkoutUrl: res.data.checkout_url, txRef: input.txRef };
@@ -176,20 +194,17 @@ export class ChapaService {
 
   verifyWebhookSignature(rawBody: Buffer, signature?: string): boolean {
     if (!this.webhookSecret || !signature) return false;
-    const expected = crypto
-      .createHmac('sha256', this.webhookSecret)
-      .update(rawBody)
-      .digest();
+    const expected = crypto.createHmac('sha256', this.webhookSecret).update(rawBody).digest();
     const received = Buffer.from(signature, 'hex');
-    return (
-      received.length === expected.length &&
-      crypto.timingSafeEqual(received, expected)
-    );
+    return received.length === expected.length && crypto.timingSafeEqual(received, expected);
   }
 
   // ── Payouts ───────────────────────────────────────────────────────────────
   // Chapa transfers may sit in a validation/approval step before they are
-  // queued, so a successful call means "accepted", not "paid".
+  // queued, so a successful call means "accepted", not "paid". Not safe to
+  // retry blindly on failure — confirm with Chapa's docs whether a repeated
+  // call with the same `reference` is rejected as a duplicate before adding
+  // any automatic retry logic around this method.
 
   async transfer(input: ChapaTransferInput): Promise<void> {
     await this.request('POST', '/transfers', {
@@ -197,7 +212,7 @@ export class ChapaService {
       account_number: input.accountNumber,
       bank_code: input.bankCode,
       amount: input.amount.toFixed(2),
-      currency: 'ETB',
+      currency: this.currency,
       reference: input.reference,
     });
     this.logger.log(`[Chapa] transfer accepted reference=${input.reference}`);
@@ -216,9 +231,7 @@ export class ChapaService {
   }
 
   /** Check the exact verify-transfer endpoint in Chapa's docs before shipping. */
-  async verifyTransfer(
-    reference: string,
-  ): Promise<{ status: string }> {
+  async verifyTransfer(reference: string): Promise<{ status: string }> {
     const res = await this.request<ChapaEnvelope & { data: { status: string } }>(
       'GET',
       `/transfers/verify/${encodeURIComponent(reference)}`,

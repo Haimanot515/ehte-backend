@@ -5,7 +5,13 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 
-import { AuditOutcome, AuditSeverity, InformationRequestStatus, Prisma, ReportStatus } from '@prisma/client';
+import {
+  AuditOutcome,
+  AuditSeverity,
+  InformationRequestStatus,
+  Prisma,
+  ReportStatus,
+} from '@prisma/client';
 
 import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { ConfigService } from '@nestjs/config';
@@ -474,7 +480,7 @@ export class ReportService {
       // ASSUMPTION: resolveActorType only knows about role-bearing
       // actors; cast until AuditEventPayload's actorType union is
       // extended with a SYSTEM variant. Same cast PostService uses.
-      actorType: 'SYSTEM' as unknown as ReturnType<typeof resolveActorType>,
+      actorType: 'SYSTEM',
       action: AuditEventEnum.REPORT_UPDATED,
       entity: 'User',
       entityId: payload.userId,
@@ -527,7 +533,7 @@ export class ReportService {
 
       this.emitAudit({
         targetUserId: userId,
-        actorType: 'SYSTEM' as unknown as ReturnType<typeof resolveActorType>,
+        actorType: 'SYSTEM',
         action: AuditEventEnum.USER_AUTO_FLAGGED,
         entity: 'User',
         entityId: userId,
@@ -1254,7 +1260,11 @@ export class ReportService {
         entity: 'Report',
         entityId: reportId,
         entityLabel: existing.caseReference,
-        diff: { result: 'failure', reason: 'report_transition_conflict', attemptedStatus: data.status },
+        diff: {
+          result: 'failure',
+          reason: 'report_transition_conflict',
+          attemptedStatus: data.status,
+        },
       });
       throw new BadRequestException('report_transition_conflict');
     }

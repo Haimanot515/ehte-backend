@@ -5,7 +5,13 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { AuditOutcome, AuditSeverity, OtpChannelEnum, Prisma, UserOtpPurposeEnum } from '@prisma/client';
+import {
+  AuditOutcome,
+  AuditSeverity,
+  OtpChannelEnum,
+  Prisma,
+  UserOtpPurposeEnum,
+} from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -80,7 +86,7 @@ export class UserService {
   }
 
   private isSuperAdmin(roleNames: string[]): boolean {
-    return roleNames.includes(RolesEnum.SUPER_ADMIN as string);
+    return roleNames.includes(RolesEnum.SUPER_ADMIN);
   }
 
   // Profile fields now live on the related UserProfile table (one row per
@@ -257,7 +263,14 @@ export class UserService {
 
     const user = await this.prisma.user.findUnique({
       where: { id: currentUser.id },
-      select: { id: true, name: true, phone: true, email: true, isActive: true, discreetModeEnabled: true },
+      select: {
+        id: true,
+        name: true,
+        phone: true,
+        email: true,
+        isActive: true,
+        discreetModeEnabled: true,
+      },
     });
 
     if (!user) {
@@ -282,7 +295,11 @@ export class UserService {
     if (!data.enabled) {
       const updatedUser = await this.prisma.user.update({
         where: { id: currentUser.id },
-        data: { discreetModeEnabled: false, discreetModePasscodeHash: null, discreetModeUpdatedAt: new Date() },
+        data: {
+          discreetModeEnabled: false,
+          discreetModePasscodeHash: null,
+          discreetModeUpdatedAt: new Date(),
+        },
         select: { id: true, discreetModeEnabled: true, discreetModeUpdatedAt: true },
       });
 
@@ -293,8 +310,15 @@ export class UserService {
         entity: 'User',
         entityId: currentUser.id,
         entityLabel: this.buildUserLabel(user),
-        diff: { result: 'success', previousEnabled: user.discreetModeEnabled, currentEnabled: false },
-        metadata: { passcodeCleared: true, discreetModeUpdatedAt: updatedUser.discreetModeUpdatedAt },
+        diff: {
+          result: 'success',
+          previousEnabled: user.discreetModeEnabled,
+          currentEnabled: false,
+        },
+        metadata: {
+          passcodeCleared: true,
+          discreetModeUpdatedAt: updatedUser.discreetModeUpdatedAt,
+        },
       });
 
       return {
@@ -325,7 +349,11 @@ export class UserService {
 
     const updatedUser = await this.prisma.user.update({
       where: { id: currentUser.id },
-      data: { discreetModeEnabled: true, discreetModePasscodeHash, discreetModeUpdatedAt: new Date() },
+      data: {
+        discreetModeEnabled: true,
+        discreetModePasscodeHash,
+        discreetModeUpdatedAt: new Date(),
+      },
       select: { id: true, discreetModeEnabled: true, discreetModeUpdatedAt: true },
     });
 
@@ -339,7 +367,10 @@ export class UserService {
       entityId: currentUser.id,
       entityLabel: this.buildUserLabel(user),
       diff: { result: 'success', previousEnabled: wasAlreadyEnabled, currentEnabled: true },
-      metadata: { passcodeRotation: wasAlreadyEnabled, discreetModeUpdatedAt: updatedUser.discreetModeUpdatedAt },
+      metadata: {
+        passcodeRotation: wasAlreadyEnabled,
+        discreetModeUpdatedAt: updatedUser.discreetModeUpdatedAt,
+      },
     });
 
     return {
@@ -362,7 +393,14 @@ export class UserService {
 
     const targetUser = await this.prisma.user.findUnique({
       where: { id: targetUserId },
-      select: { id: true, name: true, phone: true, email: true, isActive: true, discreetModeEnabled: true },
+      select: {
+        id: true,
+        name: true,
+        phone: true,
+        email: true,
+        isActive: true,
+        discreetModeEnabled: true,
+      },
     });
 
     if (!targetUser) {
@@ -403,7 +441,11 @@ export class UserService {
     if (!data.enabled) {
       const updatedUser = await this.prisma.user.update({
         where: { id: targetUserId },
-        data: { discreetModeEnabled: false, discreetModePasscodeHash: null, discreetModeUpdatedAt: new Date() },
+        data: {
+          discreetModeEnabled: false,
+          discreetModePasscodeHash: null,
+          discreetModeUpdatedAt: new Date(),
+        },
         select: { id: true, discreetModeEnabled: true, discreetModeUpdatedAt: true },
       });
 
@@ -417,8 +459,16 @@ export class UserService {
         entityId: targetUserId,
         entityLabel: targetLabel,
         reason: reason ?? null,
-        diff: { result: 'success', previousEnabled: targetUser.discreetModeEnabled, currentEnabled: false },
-        metadata: { passcodeCleared: true, triggeredByAdmin: true, discreetModeUpdatedAt: updatedUser.discreetModeUpdatedAt },
+        diff: {
+          result: 'success',
+          previousEnabled: targetUser.discreetModeEnabled,
+          currentEnabled: false,
+        },
+        metadata: {
+          passcodeCleared: true,
+          triggeredByAdmin: true,
+          discreetModeUpdatedAt: updatedUser.discreetModeUpdatedAt,
+        },
       });
 
       return {
@@ -450,7 +500,11 @@ export class UserService {
 
     const updatedUser = await this.prisma.user.update({
       where: { id: targetUserId },
-      data: { discreetModeEnabled: true, discreetModePasscodeHash, discreetModeUpdatedAt: new Date() },
+      data: {
+        discreetModeEnabled: true,
+        discreetModePasscodeHash,
+        discreetModeUpdatedAt: new Date(),
+      },
       select: { id: true, discreetModeEnabled: true, discreetModeUpdatedAt: true },
     });
 
@@ -467,7 +521,11 @@ export class UserService {
       entityLabel: targetLabel,
       reason: reason ?? null,
       diff: { result: 'success', previousEnabled: wasAlreadyEnabled, currentEnabled: true },
-      metadata: { passcodeRotation: wasAlreadyEnabled, triggeredByAdmin: true, discreetModeUpdatedAt: updatedUser.discreetModeUpdatedAt },
+      metadata: {
+        passcodeRotation: wasAlreadyEnabled,
+        triggeredByAdmin: true,
+        discreetModeUpdatedAt: updatedUser.discreetModeUpdatedAt,
+      },
     });
 
     return {
@@ -775,7 +833,11 @@ export class UserService {
 
   // ── ADMIN — FORCE LOGOUT (all sessions) ──
 
-  async forceLogout(actor: CurrentUserDto, targetUserId: string, reason?: string): Promise<{ message: string }> {
+  async forceLogout(
+    actor: CurrentUserDto,
+    targetUserId: string,
+    reason?: string,
+  ): Promise<{ message: string }> {
     const actorType = resolveActorType(this.getRoles(actor));
 
     const targetUser = await this.prisma.user.findUnique({
@@ -796,7 +858,9 @@ export class UserService {
       });
       throw new NotFoundException('user_not_found');
     }
-    const revokedSessions = await this.prisma.session.deleteMany({ where: { userId: targetUserId } });
+    const revokedSessions = await this.prisma.session.deleteMany({
+      where: { userId: targetUserId },
+    });
 
     this.emitAudit({
       userId: actor.id,
@@ -826,7 +890,11 @@ export class UserService {
     });
   }
 
-  async revokeSession(actor: CurrentUserDto, targetUserId: string, sessionId: string): Promise<{ message: string }> {
+  async revokeSession(
+    actor: CurrentUserDto,
+    targetUserId: string,
+    sessionId: string,
+  ): Promise<{ message: string }> {
     const actorType = resolveActorType(this.getRoles(actor));
     const isSelfService = actor.id === targetUserId;
 
@@ -870,7 +938,10 @@ export class UserService {
   // New phone held in `pendingPhone` until verified, so login on the
   // old number keeps working mid-flow.
 
-  async changePhoneInitiate(user: CurrentUserDto, data: ChangePhoneInitiateDto): Promise<{ verificationId: string }> {
+  async changePhoneInitiate(
+    user: CurrentUserDto,
+    data: ChangePhoneInitiateDto,
+  ): Promise<{ verificationId: string }> {
     const actorType = resolveActorType(this.getRoles(user));
     const newPhone = this.normalizePhoneOrThrow(data.newPhone);
 
@@ -905,7 +976,11 @@ export class UserService {
         entity: 'User',
         entityId: user.id,
         entityLabel: this.buildUserLabel(dbUser),
-        diff: { result: 'failure', reason: 'phone_already_registered', context: 'change_phone_initiated' },
+        diff: {
+          result: 'failure',
+          reason: 'phone_already_registered',
+          context: 'change_phone_initiated',
+        },
         metadata: { attemptedPhone: this.maskPhone(newPhone) },
       });
       throw new BadRequestException('phone_already_registered');
@@ -924,7 +999,11 @@ export class UserService {
           entity: 'User',
           entityId: user.id,
           entityLabel: this.buildUserLabel(dbUser),
-          diff: { result: 'failure', reason: 'phone_already_registered', context: 'change_phone_initiated' },
+          diff: {
+            result: 'failure',
+            reason: 'phone_already_registered',
+            context: 'change_phone_initiated',
+          },
           metadata: { attemptedPhone: this.maskPhone(newPhone), detectedBy: 'unique_constraint' },
         });
         throw new BadRequestException('phone_already_registered');
@@ -957,7 +1036,10 @@ export class UserService {
     return { verificationId };
   }
 
-  async changePhoneVerify(user: CurrentUserDto, data: ChangePhoneVerifyDto): Promise<{ message: string }> {
+  async changePhoneVerify(
+    user: CurrentUserDto,
+    data: ChangePhoneVerifyDto,
+  ): Promise<{ message: string }> {
     const actorType = resolveActorType(this.getRoles(user));
 
     const otpRecord = await this.prisma.userOtp.findUnique({
@@ -1017,7 +1099,7 @@ export class UserService {
       await this.lockoutUtil.lockAccountForOtpAbuse(user.id);
       this.emitAudit({
         targetUserId: user.id,
-        actorType: 'SYSTEM' as unknown as ReturnType<typeof resolveActorType>,
+        actorType: 'SYSTEM',
         action: AuditEventEnum.SECURITY_ALERT,
         outcome: AuditOutcome.DENIED,
         severity: AuditSeverity.WARNING,
@@ -1043,7 +1125,7 @@ export class UserService {
         await this.lockoutUtil.lockAccountForOtpAbuse(user.id);
         this.emitAudit({
           targetUserId: user.id,
-          actorType: 'SYSTEM' as unknown as ReturnType<typeof resolveActorType>,
+          actorType: 'SYSTEM',
           action: AuditEventEnum.SECURITY_ALERT,
           outcome: AuditOutcome.DENIED,
           severity: AuditSeverity.WARNING,
@@ -1075,7 +1157,12 @@ export class UserService {
     try {
       await this.prisma.$transaction(async (tx) => {
         const claimed = await tx.userOtp.updateMany({
-          where: { id: data.verificationId, usedAt: null, attempts: { lt: 5 }, expiresAt: { gt: new Date() } },
+          where: {
+            id: data.verificationId,
+            usedAt: null,
+            attempts: { lt: 5 },
+            expiresAt: { gt: new Date() },
+          },
           data: { usedAt: new Date() },
         });
         if (claimed.count === 0) {
@@ -1098,7 +1185,11 @@ export class UserService {
           entity: 'UserOtp',
           entityId: otpRecord.id,
           entityLabel: 'phone_change OTP',
-          diff: { purpose: 'phone_change', result: 'failure', reason: 'phone_claimed_by_another_account' },
+          diff: {
+            purpose: 'phone_change',
+            result: 'failure',
+            reason: 'phone_claimed_by_another_account',
+          },
         });
         throw new BadRequestException('phone_already_registered');
       }
@@ -1270,7 +1361,12 @@ export class UserService {
   // assignRole is a plain upsert (atomic already). revokeRole gets the
   // same transaction treatment as deactivateUser (last-super-admin race).
 
-  async assignRole(actor: CurrentUserDto, targetUserId: string, data: AssignUserRoleDto, reason?: string) {
+  async assignRole(
+    actor: CurrentUserDto,
+    targetUserId: string,
+    data: AssignUserRoleDto,
+    reason?: string,
+  ) {
     const actorType = resolveActorType(this.getRoles(actor));
 
     const targetUser = await this.prisma.user.findUnique({
@@ -1469,7 +1565,14 @@ export class UserService {
 
     const targetUser = await this.prisma.user.findUnique({
       where: { id: targetUserId },
-      select: { id: true, name: true, phone: true, email: true, lockedUntil: true, failedLoginAttempts: true },
+      select: {
+        id: true,
+        name: true,
+        phone: true,
+        email: true,
+        lockedUntil: true,
+        failedLoginAttempts: true,
+      },
     });
     if (!targetUser) {
       this.emitAudit({
@@ -1523,7 +1626,11 @@ export class UserService {
         previousLockedUntil: targetUser.lockedUntil,
         currentLockedUntil: null,
       },
-      metadata: { wasStillLocked: targetUser.lockedUntil ? targetUser.lockedUntil.getTime() > Date.now() : false },
+      metadata: {
+        wasStillLocked: targetUser.lockedUntil
+          ? targetUser.lockedUntil.getTime() > Date.now()
+          : false,
+      },
     });
 
     return this.getUserById(targetUserId);
@@ -1544,7 +1651,8 @@ export class UserService {
       ];
     }
     if (query.isActive !== undefined) where.isActive = query.isActive;
-    if (query.discreetModeEnabled !== undefined) where.discreetModeEnabled = query.discreetModeEnabled;
+    if (query.discreetModeEnabled !== undefined)
+      where.discreetModeEnabled = query.discreetModeEnabled;
     if (query.roleId) where.userRoles = { some: { roleId: query.roleId } };
     if (query.registrationStatus === 'pending') where.passwordHash = null;
     else if (query.registrationStatus === 'completed') where.passwordHash = { not: null };
@@ -1626,7 +1734,9 @@ export class UserService {
         where: { userRoles: { some: { role: { name: RolesEnum.ADMIN } } } },
       }),
       this.prisma.user.count({
-        where: { userRoles: { none: { role: { name: { in: [RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN] } } } } },
+        where: {
+          userRoles: { none: { role: { name: { in: [RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN] } } } },
+        },
       }),
     ]);
 

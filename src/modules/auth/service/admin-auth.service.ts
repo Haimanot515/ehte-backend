@@ -362,7 +362,11 @@ export class AdminAuthService {
           entityId: null,
           entityLabel: data.name,
           diff: { result: 'failure', reason: 'email_already_registered' },
-          metadata: { attemptedEmail: email, attemptedRoles: data.roles, detectedBy: 'unique_constraint' },
+          metadata: {
+            attemptedEmail: email,
+            attemptedRoles: data.roles,
+            detectedBy: 'unique_constraint',
+          },
         });
         throw new BadRequestException('email_already_registered');
       }
@@ -1523,7 +1527,12 @@ export class AdminAuthService {
     if (otpRecord.attempts >= 5) {
       await this.lockoutUtil.lockAccountForOtpAbuse(otpRecord.user.id);
 
-      this.emitOtpAbuseAlert(otpRecord.id, otpRecord.user.id, 'password_change', otpRecord.attempts);
+      this.emitOtpAbuseAlert(
+        otpRecord.id,
+        otpRecord.user.id,
+        'password_change',
+        otpRecord.attempts,
+      );
 
       throw new BadRequestException('too_many_otp_attempts');
     }

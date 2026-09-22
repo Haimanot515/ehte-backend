@@ -181,6 +181,17 @@ export class AuthService {
     return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002';
   }
 
+  /** Password hashing cost. Read once per call site rather than cached, so a
+   * changed env value takes effect on the next request without a restart. */
+  private get bcryptSaltRounds(): number {
+    return this.configService.get<number>('security.bcryptSaltRounds', 10);
+  }
+
+  /** OTP hashing cost, intentionally separate from password hashing cost. */
+  private get bcryptOtpSaltRounds(): number {
+    return this.configService.get<number>('security.bcryptOtpSaltRounds', 12);
+  }
+
   async signup(data: SignupDto): Promise<{ verificationId: string }> {
     const phone = this.normalizePhoneOrThrow(data.phone);
 
@@ -232,7 +243,7 @@ export class AuthService {
       throw new BadRequestException('user_role_not_configured');
     }
 
-    const hashedPassword = await bcrypt.hash(data.password, 10);
+    const hashedPassword = await bcrypt.hash(data.password, this.bcryptSaltRounds);
 
     let result: { verificationId: string; otp: string; phone: string | null; userId: string };
 
@@ -250,7 +261,7 @@ export class AuthService {
         });
 
         const otp = this.otpUtil.generateOtp();
-        const otpHash = await bcrypt.hash(otp, 12);
+        const otpHash = await bcrypt.hash(otp, this.bcryptOtpSaltRounds);
 
         const otpExpiresInMinutes = this.configService.get<number>('otp.expiresInMinutes', 10);
 
@@ -322,6 +333,7 @@ export class AuthService {
 
   async verifySignupOtp(data: SignupVerifyDto): Promise<TokenPair> {
     const phone = this.normalizePhoneOrThrow(data.phone);
+    const otpMaxAttempts = this.configService.get<number>('otp.maxAttempts', 5);
 
     const otpRecord = await this.prisma.userOtp.findUnique({
       where: { id: data.verificationId },
@@ -417,7 +429,7 @@ export class AuthService {
       throw new BadRequestException('invalid_or_expired_otp');
     }
 
-    if (otpRecord.attempts >= 5) {
+    if (otpRecord.attempts >= otpMaxAttempts) {
       await this.lockoutUtil.lockAccountForOtpAbuse(otpRecord.user.id);
 
       this.emitOtpLockout(otpAudit, userAudit);
@@ -434,7 +446,7 @@ export class AuthService {
         select: { attempts: true },
       });
 
-      if (updatedOtp.attempts >= 5) {
+      if (updatedOtp.attempts >= otpMaxAttempts) {
         await this.lockoutUtil.lockAccountForOtpAbuse(otpRecord.user.id);
 
         this.emitOtpLockout({ ...otpAudit, attempts: updatedOtp.attempts }, userAudit);
@@ -458,7 +470,7 @@ export class AuthService {
         where: {
           id: otpRecord.id,
           usedAt: null,
-          attempts: { lt: 5 },
+          attempts: { lt: otpMaxAttempts },
           expiresAt: { gt: new Date() },
         },
         data: { usedAt: new Date() },
@@ -758,6 +770,8 @@ export class AuthService {
   }
 
   async resetPassword(data: ResetPasswordDto): Promise<{ message: string }> {
+    const otpMaxAttempts = this.configService.get<number>('otp.maxAttempts', 5);
+
     const otpRecord = await this.prisma.userOtp.findUnique({
       where: { id: data.verificationId },
       include: {
@@ -831,7 +845,7 @@ export class AuthService {
       throw new BadRequestException('invalid_or_expired_otp');
     }
 
-    if (otpRecord.attempts >= 5) {
+    if (otpRecord.attempts >= otpMaxAttempts) {
       await this.lockoutUtil.lockAccountForOtpAbuse(otpRecord.user.id);
 
       this.emitOtpLockout(otpAudit, userAudit);
@@ -848,7 +862,7 @@ export class AuthService {
         select: { attempts: true },
       });
 
-      if (updatedOtp.attempts >= 5) {
+      if (updatedOtp.attempts >= otpMaxAttempts) {
         await this.lockoutUtil.lockAccountForOtpAbuse(otpRecord.user.id);
 
         this.emitOtpLockout({ ...otpAudit, attempts: updatedOtp.attempts }, userAudit);
@@ -867,7 +881,7 @@ export class AuthService {
       throw new BadRequestException('invalid_or_expired_otp');
     }
 
-    const hashedPassword = await bcrypt.hash(data.newPassword, 10);
+    const hashedPassword = await bcrypt.hash(data.newPassword, this.bcryptSaltRounds);
 
     let sessionsRevoked = 0;
 
@@ -876,7 +890,7 @@ export class AuthService {
         where: {
           id: data.verificationId,
           usedAt: null,
-          attempts: { lt: 5 },
+          attempts: { lt: otpMaxAttempts },
           expiresAt: { gt: new Date() },
         },
         data: { usedAt: new Date() },
@@ -1187,6 +1201,8 @@ export class AuthService {
   }
 
   async changePasswordVerify(data: ResetPasswordDto): Promise<{ message: string }> {
+    const otpMaxAttempts = this.configService.get<number>('otp.maxAttempts', 5);
+
     const otpRecord = await this.prisma.userOtp.findUnique({
       where: { id: data.verificationId },
       include: {
@@ -1262,7 +1278,7 @@ export class AuthService {
       throw new BadRequestException('invalid_or_expired_otp');
     }
 
-    if (otpRecord.attempts >= 5) {
+    if (otpRecord.attempts >= otpMaxAttempts) {
       await this.lockoutUtil.lockAccountForOtpAbuse(otpRecord.user.id);
 
       this.emitOtpLockout(otpAudit, userAudit);
@@ -1279,7 +1295,7 @@ export class AuthService {
         select: { attempts: true },
       });
 
-      if (updatedOtp.attempts >= 5) {
+      if (updatedOtp.attempts >= otpMaxAttempts) {
         await this.lockoutUtil.lockAccountForOtpAbuse(otpRecord.user.id);
 
         this.emitOtpLockout({ ...otpAudit, attempts: updatedOtp.attempts }, userAudit);
@@ -1299,7 +1315,7 @@ export class AuthService {
       throw new BadRequestException('invalid_or_expired_otp');
     }
 
-    const hashedPassword = await bcrypt.hash(data.newPassword, 10);
+    const hashedPassword = await bcrypt.hash(data.newPassword, this.bcryptSaltRounds);
 
     let sessionsRevoked = 0;
 
@@ -1308,7 +1324,7 @@ export class AuthService {
         where: {
           id: data.verificationId,
           usedAt: null,
-          attempts: { lt: 5 },
+          attempts: { lt: otpMaxAttempts },
           expiresAt: { gt: new Date() },
         },
         data: { usedAt: new Date() },

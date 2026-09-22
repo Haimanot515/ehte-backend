@@ -155,7 +155,8 @@ export class AuthController {
   @Throttle({ default: { limit: 5, ttl: 60000 } })
   @Post('change-password/verify')
   @ApiOperation({
-    summary: 'Step 2 of self-service password change: verify the texted OTP and set the new password',
+    summary:
+      'Step 2 of self-service password change: verify the texted OTP and set the new password',
   })
   async changePasswordVerify(@Body() data: ResetPasswordDto) {
     return this.authService.changePasswordVerify(data);

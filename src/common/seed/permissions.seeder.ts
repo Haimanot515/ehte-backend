@@ -64,7 +64,7 @@ export class PermissionsSeeder {
       this.prisma.role.findUnique({ where: { name: RolesEnum.ADMIN } }),
     );
 
-    const superAdminRole = await this.withRetry('Look up SUPER_ADMIN role', ()=>
+    const superAdminRole = await this.withRetry('Look up SUPER_ADMIN role', () =>
       this.prisma.role.findUnique({ where: { name: RolesEnum.SUPER_ADMIN } }),
     );
 
