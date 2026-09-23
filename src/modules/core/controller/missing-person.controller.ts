@@ -52,6 +52,23 @@ export class MissingPersonController {
     return this.missingPersonService.create(user, data, idempotencyKey);
   }
 
+  // ─────────────────────────────────────────────
+// ADMIN — DASHBOARD STATISTICS
+// GET /missing-persons/admin/stats
+//
+// Declared before 'admin/:id' so Nest doesn't treat "stats" as a
+// missing person id — same route-order reasoning as 'admin/stale'
+// below.
+// ─────────────────────────────────────────────
+@Get('admin/stats')
+@ApiBearerAuth('access-token')
+@Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+@RequirePermissions(PermissionsEnum.DASHBOARD_READ)
+@ApiOperation({ summary: 'Admin: get missing person statistics for the dashboard' })
+async getStats() {
+  return this.missingPersonService.getStats();
+}
+
   // Admin creates a case directly. CHILD cases still need two-admin approval.
   @Post('admin')
   @ApiBearerAuth('access-token')

@@ -738,6 +738,142 @@ export class MissingPersonService {
     return missingPerson;
   }
 
+  // ─────────────────────────────────────────────
+// ADMIN — DASHBOARD STATISTICS
+// GET /missing-persons/stats
+//
+// Same "advanced stats" shape as Report/Post: counts by status and
+// personType, reward metrics, claimed cases, pending child-safety
+// dual-control confirmations, resolution rate (FOUND / total),
+// average time PENDING->APPROVED and APPROVED->FOUND, tip volume
+// from InformationSubmission (since tips are user-submitted against
+// these cases), and a 30-day daily creation trend for charting.
+// Uses $queryRaw for the aggregates Prisma's query builder can't
+// express (date_trunc grouping, EPOCH-based duration averages) —
+// same Postgres assumption as the rest of the schema.
+// ─────────────────────────────────────────────
+
+async getStats() {
+  const [
+    total,
+    statusGrouped,
+    typeGrouped,
+    claimedCount,
+    rewardOfferedCount,
+    rewardApprovedCount,
+    pendingChildSafetyConfirmation,
+    totalInformationSubmissions,
+    pendingToApprovedAgg,
+    approvedToFoundAgg,
+    dailyTrend,
+  ] = await this.prisma.$transaction([
+    this.prisma.missingPerson.count(),
+
+    this.prisma.missingPerson.groupBy({
+      by: ['status'],
+      _count: { status: true },
+      orderBy: { status: 'asc' },
+    }),
+
+    this.prisma.missingPerson.groupBy({
+      by: ['personType'],
+      _count: { personType: true },
+      orderBy: { personType: 'asc' },
+    }),
+
+    this.prisma.missingPerson.count({ where: { claimedByUserId: { not: null } } }),
+    this.prisma.missingPerson.count({ where: { rewardOffered: true } }),
+    this.prisma.missingPerson.count({ where: { rewardApproved: true } }),
+
+    this.prisma.missingPerson.count({
+      where: {
+        personType: MissingPersonType.CHILD,
+        childSafetyFirstConfirmedByUserId: { not: null },
+        status: MissingPersonStatus.UNDER_REVIEW,
+      },
+    }),
+
+    this.prisma.informationSubmission.count(),
+
+    this.prisma.$queryRaw<{ avg_hours: number | null }[]>`
+      SELECT AVG(EXTRACT(EPOCH FROM ("updatedAt" - "createdAt")) / 3600) AS avg_hours
+      FROM "MissingPerson"
+      WHERE status = 'APPROVED'
+    `,
+
+    this.prisma.$queryRaw<{ avg_hours: number | null }[]>`
+      SELECT AVG(EXTRACT(EPOCH FROM ("updatedAt" - "createdAt")) / 3600) AS avg_hours
+      FROM "MissingPerson"
+      WHERE status = 'FOUND'
+    `,
+
+    this.prisma.$queryRaw<{ day: Date; count: bigint }[]>`
+      SELECT date_trunc('day', "createdAt") AS day, COUNT(*)::bigint AS count
+      FROM "MissingPerson"
+      WHERE "createdAt" >= NOW() - INTERVAL '30 days'
+      GROUP BY day
+      ORDER BY day ASC
+    `,
+  ]);
+
+  const byStatus = Object.fromEntries(
+    Object.values(MissingPersonStatus).map((status) => [status, 0]),
+  ) as Record<MissingPersonStatus, number>;
+
+  for (const row of statusGrouped) {
+    const c = row._count as { status?: number } | undefined;
+    byStatus[row.status] = c?.status ?? 0;
+  }
+
+  const byPersonType = Object.fromEntries(
+    Object.values(MissingPersonType).map((type) => [type, 0]),
+  ) as Record<MissingPersonType, number>;
+
+  for (const row of typeGrouped) {
+    const c = row._count as { personType?: number } | undefined;
+    byPersonType[row.personType] = c?.personType ?? 0;
+  }
+
+  const rejected = byStatus[MissingPersonStatus.REJECTED] ?? 0;
+  const found = byStatus[MissingPersonStatus.FOUND] ?? 0;
+
+  return {
+    total,
+    byStatus,
+    byPersonType,
+
+    claimedCount,
+    pendingChildSafetyConfirmation,
+
+    reward: {
+      offeredCount: rewardOfferedCount,
+      approvedCount: rewardApprovedCount,
+    },
+
+    rejectionRate: total > 0 ? Number((rejected / total).toFixed(4)) : 0,
+    resolutionRate: total > 0 ? Number((found / total).toFixed(4)) : 0,
+
+    avgApprovalHours:
+      pendingToApprovedAgg[0]?.avg_hours != null
+        ? Number(Number(pendingToApprovedAgg[0].avg_hours).toFixed(2))
+        : null,
+    avgTimeToFoundHours:
+      approvedToFoundAgg[0]?.avg_hours != null
+        ? Number(Number(approvedToFoundAgg[0].avg_hours).toFixed(2))
+        : null,
+
+    informationSubmissions: {
+      total: totalInformationSubmissions,
+      avgPerCase: total > 0 ? Number((totalInformationSubmissions / total).toFixed(2)) : 0,
+    },
+
+    dailyTrend: dailyTrend.map((row) => ({
+      date: row.day.toISOString().slice(0, 10),
+      count: Number(row.count),
+    })),
+  };
+}
+
   // Admin-created case. Owner is the admin; skips cooldown and pending cap.
   // CHILD cases start UNDER_REVIEW so the two-admin approval still applies.
   async createByAdmin(

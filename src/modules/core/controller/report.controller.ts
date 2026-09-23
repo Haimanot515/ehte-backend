@@ -73,6 +73,23 @@ export class ReportController {
     return this.reportService.findMyReports(user);
   }
 
+
+
+
+// ─────────────────────────────────────────────
+// ADMIN — DASHBOARD STATISTICS
+// GET /reports/stats
+//
+// Declared before the bare GET / and before ':id' so "stats"
+// is never matched as a report id.
+// ─────────────────────────────────────────────
+@Get('stats')
+@Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+@RequirePermissions(PermissionsEnum.DASHBOARD_READ)
+@ApiOperation({ summary: 'Admin: get report statistics for the dashboard' })
+async getStats() {
+  return this.reportService.getStats();
+}
   // ─────────────────────────────────────────────
   // MY ASSIGNED REPORTS (ADMIN)
   // GET /reports/assigned-to-me

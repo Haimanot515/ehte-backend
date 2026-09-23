@@ -740,6 +740,112 @@ export class PostService {
   }
 
   // ─────────────────────────────────────────────
+// ADMIN — DASHBOARD STATISTICS
+// GET /posts/stats
+//
+// Same "advanced stats" shape as Report/VictimProfile: counts by
+// status and type, involvesChild breakdown, claimed/unclaimed split,
+// pending child-safety dual-control confirmations, average time
+// PENDING->APPROVED, and a 30-day daily creation trend for charting.
+// Uses $queryRaw for the two aggregates Prisma's query builder can't
+// express (date_trunc grouping, EPOCH-based duration average) —
+// same Postgres assumption as the rest of the schema.
+// ─────────────────────────────────────────────
+
+async getStats() {
+  const [
+    total,
+    statusGrouped,
+    typeGrouped,
+    involvesChildCount,
+    claimedCount,
+    pendingChildSafetyConfirmation,
+    resolutionAgg,
+    dailyTrend,
+  ] = await this.prisma.$transaction([
+    this.prisma.post.count(),
+
+    this.prisma.post.groupBy({
+      by: ['status'],
+      _count: { status: true },
+      orderBy: { status: 'asc' },
+    }),
+
+    this.prisma.post.groupBy({
+      by: ['type'],
+      _count: { type: true },
+      orderBy: { type: 'asc' },
+    }),
+
+    this.prisma.post.count({ where: { involvesChild: true } }),
+    this.prisma.post.count({ where: { claimedByUserId: { not: null } } }),
+    this.prisma.post.count({
+      where: {
+        involvesChild: true,
+        childSafetyFirstConfirmedByUserId: { not: null },
+        status: PostStatus.PENDING,
+      },
+    }),
+
+    this.prisma.$queryRaw<{ avg_hours: number | null }[]>`
+      SELECT AVG(EXTRACT(EPOCH FROM ("updatedAt" - "createdAt")) / 3600) AS avg_hours
+      FROM "Post"
+      WHERE status = 'APPROVED'
+    `,
+
+    this.prisma.$queryRaw<{ day: Date; count: bigint }[]>`
+      SELECT date_trunc('day', "createdAt") AS day, COUNT(*)::bigint AS count
+      FROM "Post"
+      WHERE "createdAt" >= NOW() - INTERVAL '30 days'
+      GROUP BY day
+      ORDER BY day ASC
+    `,
+  ]);
+
+  const byStatus = Object.fromEntries(
+    Object.values(PostStatus).map((status) => [status, 0]),
+  ) as Record<PostStatus, number>;
+
+  for (const row of statusGrouped) {
+    const c = row._count as { status?: number } | undefined;
+    byStatus[row.status] = c?.status ?? 0;
+  }
+
+  const byType = Object.fromEntries(
+    Object.values(PostType).map((type) => [type, 0]),
+  ) as Record<PostType, number>;
+
+  for (const row of typeGrouped) {
+    const c = row._count as { type?: number } | undefined;
+    byType[row.type] = c?.type ?? 0;
+  }
+
+  const rejected = byStatus[PostStatus.REJECTED] ?? 0;
+  const published = byStatus[PostStatus.PUBLISHED] ?? 0;
+
+  return {
+    total,
+    byStatus,
+    byType,
+
+    involvesChildCount,
+    claimedCount,
+    pendingChildSafetyConfirmation,
+
+    rejectionRate: total > 0 ? Number((rejected / total).toFixed(4)) : 0,
+    publishedRate: total > 0 ? Number((published / total).toFixed(4)) : 0,
+
+    avgApprovalHours:
+      resolutionAgg[0]?.avg_hours != null ? Number(Number(resolutionAgg[0].avg_hours).toFixed(2)) : null,
+
+    dailyTrend: dailyTrend.map((row) => ({
+      date: row.day.toISOString().slice(0, 10),
+      count: Number(row.count),
+    })),
+  };
+}
+
+  // ─────────────────────────────────────────────
   // PUBLIC — GET MEDIA DOWNLOAD URL
   // GET /posts/published/:id/media?key=...
   //

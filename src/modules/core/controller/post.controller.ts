@@ -78,6 +78,26 @@ export class PostController {
     return this.postService.create(user.id, data, idempotencyKey);
   }
 
+// ─────────────────────────────────────────────
+// ADMIN — DASHBOARD STATISTICS
+// GET /posts/stats
+//
+// Declared before ':id' so Nest doesn't treat "stats" as a
+// post id — same route-order reasoning as 'stale' below.
+//
+// ADMIN / SUPER_ADMIN
+// ─────────────────────────────────────────────
+@Get('stats')
+@ApiBearerAuth('access-token')
+@Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+@RequirePermissions(PermissionsEnum.DASHBOARD_READ)
+@ApiOperation({
+  summary: 'Admin: get post statistics for the dashboard',
+})
+async getStats() {
+  return this.postService.getStats();
+}
+
   // ─────────────────────────────────────────────
   // MY POSTS
   // GET /posts/me

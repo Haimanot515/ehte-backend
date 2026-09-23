@@ -687,6 +687,106 @@ export class ReportService {
   }
 
   // ─────────────────────────────────────────────
+// ADMIN — DASHBOARD STATISTICS
+// GET /reports/stats
+//
+// Same "advanced stats" shape as the other modules: counts by
+// status/category, assignment split, escalation count, average
+// time-to-close for CLOSED reports, and a 30-day daily creation
+// trend for charting. Uses $queryRaw for the two aggregates Prisma's
+// query builder can't express (date_trunc grouping, EPOCH-based
+// duration average) — same DB assumptions (Postgres) as the rest of
+// the schema.
+// ─────────────────────────────────────────────
+
+async getStats() {
+  const [
+    total,
+    statusGrouped,
+    categoryGrouped,
+    assignedCount,
+    unassignedCount,
+    escalatedCount,
+    resolutionAgg,
+    dailyTrend,
+  ] = await this.prisma.$transaction([
+    this.prisma.report.count(),
+
+    this.prisma.report.groupBy({
+      by: ['status'],
+      _count: { status: true },
+      orderBy: { status: 'asc' },
+    }),
+
+    this.prisma.report.groupBy({
+      by: ['category'],
+      _count: { category: true },
+      orderBy: { category: 'asc' },
+    }),
+
+    this.prisma.report.count({ where: { assignedToId: { not: null } } }),
+    this.prisma.report.count({ where: { assignedToId: null } }),
+    this.prisma.report.count({ where: { status: ReportStatus.ESCALATED } }),
+
+    this.prisma.$queryRaw<{ avg_hours: number | null }[]>`
+      SELECT AVG(EXTRACT(EPOCH FROM ("updatedAt" - "createdAt")) / 3600) AS avg_hours
+      FROM "Report"
+      WHERE status = 'CLOSED'
+    `,
+
+    this.prisma.$queryRaw<{ day: Date; count: bigint }[]>`
+      SELECT date_trunc('day', "createdAt") AS day, COUNT(*)::bigint AS count
+      FROM "Report"
+      WHERE "createdAt" >= NOW() - INTERVAL '30 days'
+      GROUP BY day
+      ORDER BY day ASC
+    `,
+  ]);
+
+  const byStatus = Object.fromEntries(
+    Object.values(ReportStatus).map((status) => [status, 0]),
+  ) as Record<ReportStatus, number>;
+
+  for (const row of statusGrouped) {
+    const c = row._count as { status?: number } | undefined;
+    byStatus[row.status] = c?.status ?? 0;
+  }
+
+  const byCategory: Record<string, number> = {};
+  for (const row of categoryGrouped) {
+    const c = row._count as { category?: number } | undefined;
+    byCategory[String(row.category)] = c?.category ?? 0;
+  }
+
+  const rejected = byStatus[ReportStatus.REJECTED] ?? 0;
+  const closed = byStatus[ReportStatus.CLOSED] ?? 0;
+
+  return {
+    total,
+    byStatus,
+    byCategory,
+
+    assignment: {
+      assigned: assignedCount,
+      unassigned: unassignedCount,
+    },
+
+    escalatedCount,
+
+    rejectionRate: total > 0 ? Number((rejected / total).toFixed(4)) : 0,
+    closureRate: total > 0 ? Number((closed / total).toFixed(4)) : 0,
+
+    avgResolutionHours:
+      resolutionAgg[0]?.avg_hours != null ? Number(Number(resolutionAgg[0].avg_hours).toFixed(2)) : null,
+
+    dailyTrend: dailyTrend.map((row) => ({
+      date: row.day.toISOString().slice(0, 10),
+      count: Number(row.count),
+    })),
+  };
+}
+
+  // ─────────────────────────────────────────────
   // GET MY REPORTS
   // ─────────────────────────────────────────────
 
