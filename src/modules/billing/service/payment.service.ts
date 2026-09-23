@@ -1,10 +1,5 @@
-// src/modules/billing/services/payment.service.ts
-//
 // Collection side. Same shape as PurchaseService in the other project:
-//   initiate -> Chapa checkout -> webhook/confirm -> verify -> fulfil
-// with three changes: a real Payment row (no placeholder hack), a conditional
-// update as the double-processing gate, and allocations created in the same
-// transaction as the PAID transition.
+// initiate -> Chapa checkout -> webhook/confirm -> verify -> fulfil
 
 import {
   BadRequestException,
@@ -23,7 +18,6 @@ import { BillingEventsService } from './billing-events.service';
 import { AllocationPreview, AllocationService } from './allocation.service';
 import { AuditEventEnum } from '../../../common/enums/shared/audit-events.enum';
 
-// Only what Chapa needs. Real names are never sent to Chapa.
 export type Payer = { id: string; email?: string | null };
 
 @Injectable()
@@ -44,22 +38,15 @@ export class PaymentService {
     this.appUrl = config.get<string>('app.url', '');
     this.returnUrl = config.get<string>('payments.returnUrl', '');
     this.minSupport = new Prisma.Decimal(config.get<string>('payments.minSupportEtb', '10'));
-    // Chapa requires an email. Used when the user has none on file.
     this.fallbackEmail = config.get<string>('chapa.fallbackEmail', '');
   }
 
-  // ── Flow A: support a victim/survivor ─────────────────────────────────────
-
-  /** Step 1: show the payer where the money goes. */
   previewSupport(profileId: string, amount: string) {
     return this.allocation.preview(PaymentType.SUPPORT, this.parseAmount(amount), profileId);
   }
 
-  /**
-   * Step 2: pay for a Support the user already created (POST /support).
-   * SupportService stored the split it showed the payer in
-   * Support.allocationSnapshot, so what they saw is exactly what is charged.
-   */
+  // SupportService stored the split it showed the payer in
+  // Support.allocationSnapshot, so what they saw is exactly what is charged.
   async initiateSupportCheckout(payer: Payer, supportId: string) {
     this.assertEnabled('payments.enabled');
 
@@ -115,14 +102,8 @@ export class PaymentService {
     });
   }
 
-  // ── Flow B: fund a missing-person reward (requester pays into escrow) ─────
-
-  /**
-   * missingPersonId, not a rewardId: there is no separate reward-escrow model.
-   * The reward offer, its amount and its approval all live on MissingPerson itself
-   * (rewardOffered/rewardAmount/rewardApproved). Only the requester who created the
-   * case can fund it (MissingPerson.userId).
-   */
+  // missingPersonId, not a rewardId: the reward offer, amount and approval
+  // all live on MissingPerson itself. Only the case requester can fund it.
   async initiateRewardFunding(payer: Payer, missingPersonId: string) {
     this.assertEnabled('payments.rewardsEnabled');
     const mp = await this.prisma.missingPerson.findFirst({
@@ -160,10 +141,8 @@ export class PaymentService {
     });
   }
 
-  // ── Shared: create row first, then call Chapa ─────────────────────────────
-  // The row exists before Chapa can ever call back, so a webhook never sees
-  // an unknown tx_ref.
-
+  // Row created before Chapa can ever call back, so a webhook never sees an
+  // unknown tx_ref.
   private async startCheckout(args: {
     type: PaymentType;
     amount: Prisma.Decimal;
@@ -173,7 +152,7 @@ export class PaymentService {
     supportId?: string;
     missingPersonId?: string;
   }) {
-    const email = args.payer.email ?? this.fallbackEmail; // Chapa requires one
+    const email = args.payer.email ?? this.fallbackEmail;
     if (!this.returnUrl || !this.appUrl || !email) {
       throw new ServiceUnavailableException('Payments are not configured');
     }
@@ -199,13 +178,13 @@ export class PaymentService {
       const { checkoutUrl } = await this.chapa.initialize({
         amount: args.amount,
         email,
-        firstName: 'Ehte', // generic on purpose
+        firstName: 'Ehte',
         lastName: 'Supporter',
         txRef,
         returnUrl: `${this.returnUrl}?tx_ref=${txRef}`,
         callbackUrl: `${this.appUrl}/billing/webhook/chapa`,
         title: 'Ehte',
-        description: 'Ehte payment', // generic on purpose
+        description: 'Ehte payment',
       });
       return { checkoutUrl, txRef, allocation: args.preview };
     } catch (err) {
@@ -216,8 +195,6 @@ export class PaymentService {
       throw err;
     }
   }
-
-  // ── Fulfilment (called by webhook, return URL, and cron) ──────────────────
 
   async reconcile(txRef: string): Promise<PaymentStatus | null> {
     const payment = await this.prisma.payment.findUnique({ where: { txRef } });
@@ -232,7 +209,7 @@ export class PaymentService {
       remote = await this.chapa.verify(txRef);
     } catch (err) {
       this.logger.warn(`Verify failed for ${txRef}: ${String(err)}`);
-      return 'PENDING'; // try again on next webhook/cron
+      return 'PENDING';
     }
 
     if (remote.status === 'failed') {
@@ -244,9 +221,7 @@ export class PaymentService {
     }
     if (remote.status !== 'success') return 'PENDING';
 
-    // Never trust the webhook: amount and currency must match what we stored.
-    // If Chapa is configured so the customer pays the fee on top, `amount` may
-    // differ. Adjust this check to your Chapa fee settings.
+    // Never trust the webhook: amount/currency must match what we stored.
     if (!this.chapa.paidAmountMatches(remote, payment)) {
       await this.prisma.payment.updateMany({
         where: { id: payment.id, status: 'PENDING' },
@@ -265,7 +240,6 @@ export class PaymentService {
     const snapshot = payment.allocationSnapshot as unknown as AllocationPreview;
 
     const won = await this.prisma.$transaction(async (tx) => {
-      // Gate: only one caller (webhook / confirm / cron) can flip PENDING -> PAID.
       const { count } = await tx.payment.updateMany({
         where: { id: payment.id, status: 'PENDING' },
         data: {
@@ -288,9 +262,8 @@ export class PaymentService {
       });
 
       if (payment.missingPersonId) {
-        // Creates the RewardClaim row (status PENDING) the first time a reward is funded.
-        // RewardService also listens on BILLING_PAYMENT_PAID and calls onFunded() itself,
-        // so this is belt-and-braces — upsert makes both paths idempotent together.
+        // RewardService also listens on BILLING_PAYMENT_PAID and calls
+        // onFunded() itself; upsert keeps both paths idempotent together.
         await tx.rewardClaim.upsert({
           where: { missingPersonId: payment.missingPersonId },
           create: { missingPersonId: payment.missingPersonId },
@@ -308,9 +281,6 @@ export class PaymentService {
         entityId: payment.id,
         metadata: { type: payment.type },
       });
-      // Support: SupportService listens for this and moves the Support to CONFIRMED
-      // (totalRaised, audit and SUPPORT_PAYMENT_CONFIRMED all run there).
-      // Reward: RewardService.onFunded() creates the RewardClaim row.
       await this.events.paymentPaid({
         paymentId: payment.id,
         supportId: payment.supportId,
@@ -320,7 +290,6 @@ export class PaymentService {
     return 'PAID';
   }
 
-  /** Return-URL / polling endpoint for the app. Only the payer can call it. */
   async getStatus(txRef: string, userId: string) {
     const owned = await this.prisma.payment.findFirst({
       where: { txRef, payerUserId: userId },
@@ -342,8 +311,6 @@ export class PaymentService {
     };
   }
 
-  // ── Cron: catch missed webhooks, expire abandoned checkouts ───────────────
-
   @Cron(CronExpression.EVERY_10_MINUTES)
   async reconcileStale(): Promise<void> {
     const stale = await this.prisma.payment.findMany({
@@ -362,17 +329,14 @@ export class PaymentService {
     }
   }
 
-  /** Feature flags: the PRD lists payments and reward payments as future features. */
   private assertEnabled(flag: 'payments.enabled' | 'payments.rewardsEnabled'): void {
     if (this.config.get<boolean>(flag) !== true) {
       throw new ServiceUnavailableException('This payment feature is not enabled yet');
     }
   }
 
-  /**
-   * Repair: a payment is PAID but its Support is still PENDING (event lost or
-   * handler failed). Re-emit until SupportService confirms it. Idempotent.
-   */
+  // Repair: a payment is PAID but its Support is still PENDING (event lost
+  // or handler failed). Re-emit until SupportService confirms it.
   @Cron(CronExpression.EVERY_10_MINUTES)
   async repairUnconfirmedSupports(): Promise<void> {
     const paid = await this.prisma.payment.findMany({
@@ -412,5 +376,114 @@ export class PaymentService {
     const amount = new Prisma.Decimal(raw);
     if (amount.lte(0)) throw new BadRequestException('Invalid amount');
     return amount;
+  }
+
+  // ADMIN — DASHBOARD STATISTICS. Counts/totals by status and type, Chapa
+  // fees taken, REVIEW_REQUIRED mismatches, allocation totals by party type,
+  // average time PENDING->PAID, and a 30-day daily volume trend.
+  async getStats() {
+    const [
+      total,
+      statusGrouped,
+      typeGrouped,
+      paidAgg,
+      reviewRequiredCount,
+      allocationGrouped,
+      avgPaidAgg,
+      dailyTrend,
+    ] = await this.prisma.$transaction([
+      this.prisma.payment.count(),
+
+      this.prisma.payment.groupBy({
+        by: ['status'],
+        _count: { status: true },
+        _sum: { amount: true },
+        orderBy: { status: 'asc' },
+      }),
+
+      this.prisma.payment.groupBy({
+        by: ['type'],
+        _count: { type: true },
+        _sum: { amount: true },
+        orderBy: { type: 'asc' },
+      }),
+
+      this.prisma.payment.aggregate({
+        where: { status: 'PAID' },
+        _sum: { amount: true, chapaFee: true },
+        _count: true,
+      }),
+
+      this.prisma.payment.count({ where: { status: 'REVIEW_REQUIRED' } }),
+
+      this.prisma.paymentAllocation.groupBy({
+        by: ['partyType'],
+        _sum: { amount: true },
+        orderBy: { partyType: 'asc' },
+      }),
+
+      this.prisma.$queryRaw<{ avg_minutes: number | null }[]>`
+        SELECT AVG(EXTRACT(EPOCH FROM ("paidAt" - "createdAt")) / 60) AS avg_minutes
+        FROM "Payment"
+        WHERE status = 'PAID' AND "paidAt" IS NOT NULL
+      `,
+
+      this.prisma.$queryRaw<{ day: Date; count: bigint; total: number | null }[]>`
+        SELECT date_trunc('day', "createdAt") AS day, COUNT(*)::bigint AS count, SUM(amount) AS total
+        FROM "Payment"
+        WHERE "createdAt" >= NOW() - INTERVAL '30 days'
+        GROUP BY day
+        ORDER BY day ASC
+      `,
+    ]);
+
+    const byStatus: Record<string, { count: number; amount: number }> = {};
+    for (const row of statusGrouped) {
+      const c = row._count as { status?: number } | undefined;
+      byStatus[String(row.status)] = {
+        count: c?.status ?? 0,
+        amount: Number(row._sum?.amount ?? 0),
+      };
+    }
+
+    const byType: Record<string, { count: number; amount: number }> = {};
+    for (const row of typeGrouped) {
+      const c = row._count as { type?: number } | undefined;
+      byType[String(row.type)] = {
+        count: c?.type ?? 0,
+        amount: Number(row._sum?.amount ?? 0),
+      };
+    }
+
+    const byPartyType: Record<string, number> = {};
+    for (const row of allocationGrouped) {
+      byPartyType[String(row.partyType)] = Number(row._sum?.amount ?? 0);
+    }
+
+    return {
+      total,
+      byStatus,
+      byType,
+      byPartyType,
+
+      paid: {
+        count: paidAgg._count,
+        totalAmount: Number(paidAgg._sum.amount ?? 0),
+        totalChapaFees: Number(paidAgg._sum.chapaFee ?? 0),
+      },
+
+      reviewRequiredCount,
+
+      avgTimeToPaidMinutes:
+        avgPaidAgg[0]?.avg_minutes != null
+          ? Number(Number(avgPaidAgg[0].avg_minutes).toFixed(2))
+          : null,
+
+      dailyTrend: dailyTrend.map((row) => ({
+        date: row.day.toISOString().slice(0, 10),
+        count: Number(row.count),
+        totalAmount: Number(row.total ?? 0),
+      })),
+    };
   }
 }

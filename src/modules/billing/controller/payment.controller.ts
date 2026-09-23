@@ -1,68 +1,64 @@
-// src/modules/billing/controller/payment.controller.ts
-//
-// User-facing. Adjust the three project-specific imports to your real exports:
-//   CurrentUser / CurrentUserDto / Reauth
-
 import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
-import { CurrentUser } from '../../../common/decorators/current-user.decorator';
-import { RequireReauthentication } from '../../../common/decorators/reauth.decorator';
-import { Throttle } from '@nestjs/throttler';
-import { CurrentUserDto } from '../../../common/dtos/current-user.dto';
-import { PaymentService, Payer } from '../service/payment.service';
-import { AllocationPreviewQueryDto } from '../dto/payment.dto';
 
-// The ONLY place that maps your user object to a payer. Names are never sent to Chapa.
-const toPayer = (u: CurrentUserDto): Payer => ({
-  id: u.id,
-  email: (u as { email?: string | null }).email ?? null,
-});
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 
-@ApiTags('Billing')
+import { PaymentService } from '../service/payment.service';
+import { CurrentUser } from 'src/common/decorators/current-user.decorator';
+import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
+import { Roles } from 'src/common/decorators/roles.decorator';
+import { RolesEnum } from 'src/common/enums/roles.enum';
+import { RequirePermissions } from 'src/common/decorators/require-permissions.decorator';
+import { PermissionsEnum } from 'src/common/enums/permissions.enum';
+
+// DRAFT: this controller was not provided, so it is written to match
+// SupportController's conventions. Verify base path, route names, and
+// param routes against the real file before merging.
+
+@ApiTags('Payments')
 @ApiBearerAuth('access-token')
-@Controller('billing') // JWT, Reauth, Roles, Permissions guards are global (AppModule)
+@Controller('payments')
 export class PaymentController {
-  constructor(private readonly payments: PaymentService) {}
+  constructor(private readonly paymentService: PaymentService) {}
 
-  // ── Support a victim/survivor ─────────────────────────────────────────────
-
-  @Get('support/:profileId/preview')
-  preview(@Param('profileId') profileId: string, @Query() q: AllocationPreviewQueryDto) {
-    return this.payments.previewSupport(profileId, q.amount);
+  // Declared before ':txRef' routes so "stats" is never matched as a param.
+  @Get('stats')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.DASHBOARD_READ)
+  @ApiOperation({ summary: 'Admin: get payment statistics for the dashboard' })
+  async getStats() {
+    return this.paymentService.getStats();
   }
 
-  // Step 1 is the existing POST /support (creates a PENDING Support with a server-computed split).
-  // Step 2: pay for it with Chapa.
-  //
-  // Uses the named 'checkout' throttler profile (PAYMENT_CHECKOUT_RATE_LIMIT /
-  // PAYMENT_CHECKOUT_RATE_LIMIT_TTL_SECONDS, wired in AppModule's
-  // ThrottlerModule.forRootAsync) instead of an inline hardcoded limit.
+  @Get('support/:supportId/preview')
+  @ApiOperation({ summary: 'Preview the allocation split for a support amount' })
+  async previewSupport(
+    @Param('supportId') supportId: string,
+    @Query('amount') amount: string,
+  ) {
+    return this.paymentService.previewSupport(supportId, amount);
+  }
+
   @Post('support/:supportId/checkout')
-  @Throttle({ checkout: {} })
-  checkout(@CurrentUser() user: CurrentUserDto, @Param('supportId') supportId: string) {
-    return this.payments.initiateSupportCheckout(toPayer(user), supportId);
+  @ApiOperation({ summary: 'Start a Chapa checkout for an existing support pledge' })
+  async initiateSupportCheckout(
+    @CurrentUser() user: CurrentUserDto,
+    @Param('supportId') supportId: string,
+  ) {
+    return this.paymentService.initiateSupportCheckout(user, supportId);
   }
 
-  // ── Missing-person reward (requester) ─────────────────────────────────────
-  // Password re-authentication: touches sensitive Missing Person information.
-
-  // NOTE: reward proposal (rewardOffered/rewardAmount/rewardDetails) is set when a user
-  // creates or updates a MissingPerson request, via MissingPersonController — not here.
-  //
-  // FIX: previously unthrottled despite calling the same PaymentService method
-  // family (initiateRewardFunding mirrors initiateSupportCheckout, including the
-  // shared duplicate-window check) — now shares the 'checkout' throttler profile.
-  @RequireReauthentication()
-  @Throttle({ checkout: {} })
-  @Post('missing-persons/:missingPersonId/fund-reward')
-  fund(@CurrentUser() user: CurrentUserDto, @Param('missingPersonId') missingPersonId: string) {
-    return this.payments.initiateRewardFunding(toPayer(user), missingPersonId);
+  @Post('missing-person/:missingPersonId/reward-checkout')
+  @ApiOperation({ summary: 'Start a Chapa checkout to fund an approved reward' })
+  async initiateRewardFunding(
+    @CurrentUser() user: CurrentUserDto,
+    @Param('missingPersonId') missingPersonId: string,
+  ) {
+    return this.paymentService.initiateRewardFunding(user, missingPersonId);
   }
 
-  // ── Status: the app polls this after Chapa redirects back ─────────────────
-
-  @Get('payments/:txRef')
-  status(@CurrentUser() user: CurrentUserDto, @Param('txRef') txRef: string) {
-    return this.payments.getStatus(txRef, user.id);
+  @Get(':txRef/status')
+  @ApiOperation({ summary: 'Get the status of a payment by tx_ref (payer only)' })
+  async getStatus(@Param('txRef') txRef: string, @CurrentUser() user: CurrentUserDto) {
+    return this.paymentService.getStatus(txRef, user.id);
   }
 }
