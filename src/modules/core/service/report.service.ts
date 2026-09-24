@@ -36,14 +36,7 @@ import {
   RespondToInformationRequestDto,
 } from '../dto/report.dto';
 
-// ─────────────────────────────────────────────
-// STATUS STATE MACHINE
-//
-// Adjust to match your actual PRD workflow — this is
-// a reasonable default based on the flow discussed,
-// not confirmed against your PRD.
-// ─────────────────────────────────────────────
-
+// Adjust to match your actual PRD workflow if it changes
 const ALLOWED_STATUS_TRANSITIONS: Record<ReportStatus, ReportStatus[]> = {
   [ReportStatus.PENDING]: [ReportStatus.RECEIVED, ReportStatus.REJECTED],
   [ReportStatus.RECEIVED]: [ReportStatus.UNDER_REVIEW, ReportStatus.REJECTED],
@@ -65,21 +58,15 @@ const ALLOWED_STATUS_TRANSITIONS: Record<ReportStatus, ReportStatus[]> = {
   [ReportStatus.REJECTED]: [],
 };
 
-// Terminal statuses — a report here is done, one way or another.
-// Used by findStalePending() (a terminal report can't be "stale")
-// and maybeFlagUserForRejections() (only REJECTED counts against
-// the user, not every terminal state).
+// Terminal statuses used by findStalePending() and maybeFlagUserForRejections()
 const TERMINAL_STATUSES: ReportStatus[] = [ReportStatus.CLOSED, ReportStatus.REJECTED];
 
 const ADMIN_ROLE_NAMES = [RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN];
 
-// How many times to retry case-reference generation on a unique
-// constraint collision before giving up.
+// Retry cap for case-reference generation on a unique constraint collision
 const CASE_REFERENCE_MAX_ATTEMPTS = 5;
 
-// The six media-array fields shared by CreateReportDto/UpdateReportDto
-// and the Report model itself. Mirrors PostService's MEDIA_FIELD_NAMES
-// so both modules stay in sync if a new media kind is ever added.
+// Six media-array fields shared by CreateReportDto/UpdateReportDto and Report
 const MEDIA_FIELD_NAMES = ['photo', 'video', 'audio', 'pdf', 'document', 'other'] as const;
 type MediaFieldName = (typeof MEDIA_FIELD_NAMES)[number];
 type MediaBearing = Record<MediaFieldName, string[]>;
@@ -98,22 +85,6 @@ export class ReportService {
     this.eventEmitter.emit(payload.action, payload);
   }
 
-  // ─────────────────────────────────────────────
-  // MEDIA HELPERS
-  //
-  // Mirrors PostService's media helpers. Report stores media as
-  // plain filepath strings in typed arrays (photo/video/audio/pdf/
-  // document/other), same as Post — kept in one place so every
-  // read/write of that shape stays consistent.
-  //
-  // NOTE: MinioService.objectExists()/statObject()/deleteFile() are
-  // bucket-less — the service holds a single configured bucket
-  // internally, so callers just pass the key. getMediaBucket() is
-  // unused by the methods below for that reason; left in place in
-  // case other code in this file still needs the bucket name for
-  // something else.
-  // ─────────────────────────────────────────────
-
   private getMediaBucket(): string {
     return this.configService.get<string>('minio.bucketName') ?? 'ehte-media';
   }
@@ -126,10 +97,7 @@ export class ReportService {
     return MEDIA_FIELD_NAMES.flatMap((field) => dto[field] ?? []);
   }
 
-  // Diffs each media field individually (not the flattened whole),
-  // so a client resending the same array doesn't get treated as
-  // "remove and re-add." Only fields present in the incoming DTO
-  // are considered — an omitted field means "leave this one alone."
+  // Diffs each media field individually; an omitted field means "leave alone"
   private diffMediaFields(
     before: MediaBearing,
     incoming: MediaBearingDto,
@@ -148,21 +116,8 @@ export class ReportService {
     return { added, removed };
   }
 
-  // FIX (item #3): confirms every filepath the client is attaching
-  // actually exists in the media bucket, AND now also enforces
-  // size/MIME-type limits — previously this only checked existence,
-  // unlike PostService.validateMediaFilesExist which already did
-  // all three. Brought to parity so a report can't reference an
-  // object that's oversized or of a disallowed type any more than
-  // a post can.
-  //
-  // FIX (item #13, partial): returns each validated file's size so
-  // callers can maintain a running mediaTotalBytes without
-  // re-statting already-attached files.
-  //
-  // NOTE (item #3, virus scanning) / NOTE (item #4, EXIF/GPS
-  // stripping): same as PostService — deliberately out of scope
-  // here, belongs in the media-upload module at upload time.
+  // Confirms every filepath exists, and enforces size/MIME limits
+  // Also returns each validated file's size for running byte totals
   private async validateMediaFilesExist(
     filepaths: string[],
   ): Promise<Array<{ filepath: string; size: number }>> {
@@ -207,10 +162,7 @@ export class ReportService {
     return checks.map((c) => ({ filepath: c.filepath, size: c.size }));
   }
 
-  // FIX (item #13): per-field attachment counts, mirroring
-  // PostService.assertAttachmentCounts exactly, but reading
-  // REPORT_*-prefixed overrides first. Checked BEFORE any MinIO
-  // calls so an over-attached request fails fast.
+  // Per-field attachment counts, checked before any MinIO calls
   private assertAttachmentCounts(media: MediaBearing): void {
     const maxPhotos = Number(
       this.configService.get<string>('REPORT_MAX_PHOTOS') ??
@@ -241,8 +193,7 @@ export class ReportService {
     }
   }
 
-  // FIX (item #13): total attached-media size cap per report,
-  // mirroring PostService.assertTotalBytes.
+  // Total attached-media size cap per report
   private assertTotalBytes(totalBytes: number): void {
     const maxTotalBytes = Number(
       this.configService.get<string>('REPORT_MAX_TOTAL_UPLOAD_BYTES') ??
@@ -254,27 +205,13 @@ export class ReportService {
     }
   }
 
-  // Best-effort delete against MinIO. A file that's already gone
-  // (or MinIO briefly unreachable) must never block the DB write
-  // that triggered the cleanup — failures are swallowed per-file
-  // via allSettled rather than surfaced to the caller.
+  // Best-effort MinIO delete; failures are swallowed per-file
   private async deleteMediaFiles(filepaths: string[]): Promise<void> {
     if (!filepaths.length) return;
     await Promise.allSettled(filepaths.map((fp) => this.minioService.deleteFile(fp)));
   }
 
-  // ─────────────────────────────────────────────
-  // GET MEDIA DOWNLOAD URL (REPORTER — OWN REPORT)
-  // GET /reports/:id/media?key=...
-  //
-  // Mirrors VictimProfileService/PostService's admin media-download
-  // method, but scoped the same way findOne()/update() already are:
-  // the reporter may only request a URL for a key actually attached
-  // to a report *they own*. There is no public equivalent here —
-  // unlike Post/VictimProfile, reports are never publicly visible,
-  // so only the reporter and admins (below) can ever reach this.
-  // ─────────────────────────────────────────────
-
+  // Reporter-facing media download, scoped to their own report
   async getMediaDownloadUrl(
     user: CurrentUserDto,
     reportId: string,
@@ -297,33 +234,8 @@ export class ReportService {
     return { url };
   }
 
-  // ─────────────────────────────────────────────
-  // GET MEDIA DOWNLOAD URL (ADMIN)
-  // GET /reports/:id/admin/media?key=...
-  //
-  // Viewing a report's media is open to any ADMIN or SUPER_ADMIN,
-  // matching findOneForAdmin()'s access rule — assignment
-  // (assertAdminCanAccessReport) only gates *acting* on a report
-  // (updateStatus, requestMoreInformation, escalate), not reading
-  // it. Same key-ownership check as the reporter-facing method
-  // above.
-  //
-  // FIX (audit review, item #1): a mismatched `key` (one that isn't
-  // actually attached to this report) is a meaningful "denied"
-  // event — it can indicate an admin fumbling a stale link, or
-  // someone probing for media on a report they don't otherwise have
-  // a reason to touch — and previously left no trace at all before
-  // throwing. Now emits a DENIED row before throwing.
-  //
-  // FIX (audit review, item #2): the reporter whose media is being
-  // viewed is recorded as targetUserId — this is an admin viewing
-  // another user's uploaded content, not a self-action.
-  //
-  // FIX (audit review, item #5): `key` moved out of `diff` (which
-  // should describe a state change) into `metadata` (contextual
-  // detail about the action) on the success row.
-  // ─────────────────────────────────────────────
-
+  // Admin media download, open to any ADMIN/SUPER_ADMIN
+  // Mismatched key is recorded as a DENIED audit row before throwing
   async getMediaDownloadUrlForAdmin(
     admin: CurrentUserDto,
     reportId: string,
@@ -372,33 +284,8 @@ export class ReportService {
     return { url };
   }
 
-  // ─────────────────────────────────────────────
-  // ACCESS CONTROL HELPER
-  //
-  // Shared by every admin-facing report operation.
-  // SUPER_ADMIN may act on any report. A plain ADMIN
-  // may only act on a report that is unassigned or
-  // assigned specifically to them. Previously only
-  // findOneForAdmin() enforced this; updateStatus(),
-  // requestMoreInformation(), and escalate() did not.
-  //
-  // FIX (audit coverage): a denied access attempt now writes an
-  // audit row (outcome: DENIED, severity: WARNING) before throwing,
-  // instead of leaving no trace at all. Callers pass the specific
-  // action being attempted so the DENIED row records what was
-  // actually blocked, not a generic "access" action.
-  //
-  // NOTE (item #17): this — combined with assign()/unassign()
-  // being SUPER_ADMIN-gated — already serves the same
-  // "prevent two admins working the same case" purpose Post's
-  // self-serve claim()/unclaim() does, just mediated by
-  // SUPER_ADMIN rather than self-service. Whether a plain ADMIN
-  // should be able to self-claim an *unassigned* report (the way
-  // Post allows) is a product decision, not implemented here —
-  // it would change who's currently allowed to act on unassigned
-  // reports.
-  // ─────────────────────────────────────────────
-
+  // SUPER_ADMIN may act on any report; plain ADMIN only unassigned/own
+  // Denied access attempts write a DENIED audit row before throwing
   private assertAdminCanAccessReport(
     admin: CurrentUserDto,
     report: { id: string; assignedToId: string | null; caseReference: string },
@@ -423,34 +310,7 @@ export class ReportService {
     }
   }
 
-  // ─────────────────────────────────────────────
-  // BANNED / SUSPENDED OWNER HANDLING (item #6)
-  //
-  // ASSUMPTION: same event contract as PostService.handleUserSuspended
-  // — the user module emits 'user.suspended' with a { userId } payload.
-  //
-  // Unlike Post, a Report has no safe intermediate "hidden" state to
-  // fall back to (no DRAFT), and the checklist is explicit that
-  // safety-related reports should be preserved/kept visible rather
-  // than hidden or auto-rejected just because the reporter's account
-  // was later suspended. So this handler ONLY stamps ownerSuspendedAt
-  // for admin filtering — it deliberately does NOT change status or
-  // pull anything out of the review queue.
-  //
-  // FIX (audit coverage): this is a bulk action across every one of the
-  // user's non-terminal reports, not one specific report — userId is
-  // now recorded as targetUserId (the user this action is ABOUT), not
-  // userId (the actor), since there is no human actor here. entity is
-  // now 'User' rather than a synthetic 'user:<id>' Report entityId.
-  //
-  // FIX (audit review, item #4): entityLabel was missing on this
-  // 'User' entity row (there's nothing else in an audit list to
-  // identify *which* user was suspended without joining back to the
-  // users table). Fetches the user's name for the label — an extra
-  // read, but this handler runs once per suspension event, not on a
-  // hot path.
-  // ─────────────────────────────────────────────
-
+  // Stamps ownerSuspendedAt for admin filtering; never changes status
   @OnEvent('user.suspended')
   async handleUserSuspended(payload: { userId: string }): Promise<void> {
     const now = new Date();
@@ -471,9 +331,6 @@ export class ReportService {
 
     this.emitAudit({
       targetUserId: payload.userId,
-      // ASSUMPTION: resolveActorType only knows about role-bearing
-      // actors; cast until AuditEventPayload's actorType union is
-      // extended with a SYSTEM variant. Same cast PostService uses.
       actorType: 'SYSTEM' as unknown as ReturnType<typeof resolveActorType>,
       action: AuditEventEnum.REPORT_UPDATED,
       entity: 'User',
@@ -483,25 +340,7 @@ export class ReportService {
     });
   }
 
-  // ─────────────────────────────────────────────
-  // AUTOMATIC FLAGS (item #21)
-  //
-  // Flag ≠ reject. Writes an audit-log entry an admin can see
-  // against the user; never blocks or auto-rejects anything, and
-  // never changes any Report's status. Mirrors
-  // PostService.maybeFlagUserForRejections, reading REPORT_*
-  // overrides first. Only called from updateStatus() on a
-  // transition TO REJECTED — not from withdraw(), since a reporter
-  // withdrawing their own report is not the same signal as an
-  // admin actually rejecting it.
-  //
-  // FIX (audit coverage): userId -> targetUserId — this row is about
-  // the flagged user, not acted on by them; there is no human actor.
-  //
-  // FIX (audit review, item #4): entityLabel was missing here too,
-  // same fix and same reasoning as handleUserSuspended above.
-  // ─────────────────────────────────────────────
-
+  // Flag != reject; only writes an audit row an admin can review
   private async maybeFlagUserForRejections(userId: string): Promise<void> {
     const threshold = Number(
       this.configService.get<string>('REPORT_AUTO_FLAG_REJECTION_COUNT') ??
@@ -541,40 +380,6 @@ export class ReportService {
       });
     }
   }
-
-  // ─────────────────────────────────────────────
-  // CREATE REPORT
-  //
-  // FIX (item #1): a per-user cooldown (REPORT_CREATE_RATE_LIMIT_WINDOW_SECONDS,
-  // falling back to the shared CONTENT_* default) blocks rapid-fire
-  // spam, and a max-pending-per-user cap (REPORT_MAX_PENDING_PER_USER
-  // / CONTENT_MAX_PENDING_PER_USER) is enforced here rather than at a
-  // separate "submit" step — Reports have no draft/submit split like
-  // Post does; a report is PENDING the moment it's created.
-  //
-  // FIX (item #5): optional Idempotency-Key (sent as a header by the
-  // controller) lets a client safely retry after a dropped response.
-  // A repeat with the same key returns the original report.
-  //
-  // FIX (item #13): attachment counts/total size are checked before
-  // any MinIO round trips, and the validated sizes are persisted as
-  // mediaTotalBytes.
-  //
-  // FIX (notifications): REPORT_RECEIVED and NEW_REPORT now include
-  // caseReference — previously omitted, which meant the listener's
-  // "Your report {caseReference} has been received" message rendered
-  // as "Your report undefined has been received."
-  //
-  // NOTE (audit review, item #1 — deliberately NOT fixed here): the
-  // rate-limit, max-pending, and media/attachment validation failures
-  // below all throw with no audit row. Unlike the other gaps fixed in
-  // this pass, there is no Report row yet at the point they throw, so
-  // there's no natural entityId to attach the row to. Closing this
-  // gap needs a schema/product decision first — e.g. allowing a null
-  // entityId for pre-creation events, or a synthetic "attempted
-  // report creation" entity — rather than a guess made here. Flagging
-  // this explicitly rather than silently leaving it.
-  // ─────────────────────────────────────────────
 
   private async enforceCreateRateLimit(userId: string): Promise<void> {
     const cooldownSeconds = Number(
@@ -616,8 +421,6 @@ export class ReportService {
         where: { userId: user.id, idempotencyKey },
       });
       if (existing) {
-        // Safe replay of a duplicate submission — return the
-        // original instead of creating a second report.
         return existing;
       }
     }
@@ -655,10 +458,6 @@ export class ReportService {
       entityId: report.id,
       entityLabel: report.caseReference,
       diff: { result: 'success', status: report.status },
-      // FIX (audit review, item #5): category and the resolved
-      // attachment footprint are useful investigative context that
-      // aren't a "diff" of anything — moved to metadata rather than
-      // left off entirely.
       metadata: {
         category: report.category,
         attachmentCount: this.collectMediaFields(merged).length,
@@ -680,20 +479,12 @@ export class ReportService {
     return report;
   }
 
-  // ─────────────────────────────────────────────
-  // GET MY REPORTS
-  // ─────────────────────────────────────────────
-
   async findMyReports(user: CurrentUserDto) {
     return this.prisma.report.findMany({
       where: { userId: user.id },
       orderBy: { createdAt: 'desc' },
     });
   }
-
-  // ─────────────────────────────────────────────
-  // GET ONE OF MY REPORTS
-  // ─────────────────────────────────────────────
 
   async findOne(user: CurrentUserDto, reportId: string) {
     const report = await this.prisma.report.findFirst({
@@ -706,33 +497,6 @@ export class ReportService {
 
     return report;
   }
-
-  // ─────────────────────────────────────────────
-  // UPDATE REPORT
-  //
-  // Media handling: diffs each media field present in the
-  // request against what's currently on the row. Newly-added
-  // filepaths are validated against MinIO before the write;
-  // filepaths dropped from the new array are deleted from
-  // MinIO after the write commits — same ordering discipline
-  // as PostService.updateMyPost.
-  //
-  // FIX (item #13): attachment counts are checked against the
-  // fully-merged post-update media shape before any MinIO calls,
-  // and mediaTotalBytes is recomputed from the previous total
-  // plus/minus the added/removed files' sizes — same approach as
-  // PostService.updateMyPost.
-  //
-  // FIX (notifications): REPORT_UPDATED now includes caseReference
-  // and status — previously omitted, so the listener's "Status: X"
-  // message rendered as "Status: undefined."
-  //
-  // FIX (audit review, item #1): the "only PENDING reports can be
-  // updated" guard and the attachment/size-limit validation guards
-  // both threw with no audit trail before. Unlike create(), there IS
-  // an existing report row here to attach the failure to, so both
-  // now emit a FAILURE row before throwing.
-  // ─────────────────────────────────────────────
 
   async update(user: CurrentUserDto, reportId: string, data: UpdateReportDto) {
     const existing = await this.prisma.report.findFirst({
@@ -783,11 +547,6 @@ export class ReportService {
       const validatedAdded = await this.validateMediaFilesExist(added);
       addedBytes = validatedAdded.reduce((sum, v) => sum + v.size, 0);
 
-      // Stat removed files before they're deleted, purely to back out
-      // their bytes from the running total — a stat failure here
-      // (already gone, MinIO hiccup) just means we can't credit that
-      // byte count back, so treat it as 0 rather than blocking the
-      // update.
       const removedStats = await Promise.allSettled(
         removed.map((fp) => this.minioService.statObject(fp)),
       );
@@ -834,8 +593,6 @@ export class ReportService {
       },
     });
 
-    // Only after the DB write commits — deleting first and having
-    // the write fail would strand the report pointing at nothing.
     await this.deleteMediaFiles(removed);
 
     this.emitAudit({
@@ -850,8 +607,6 @@ export class ReportService {
         previousStatus: existing.status,
         currentStatus: report.status,
       },
-      // FIX (audit review, item #5): media churn counts weren't
-      // captured anywhere before.
       metadata: {
         mediaAdded: added.length,
         mediaRemoved: removed.length,
@@ -869,38 +624,7 @@ export class ReportService {
     return report;
   }
 
-  // ─────────────────────────────────────────────
-  // WITHDRAW REPORT (USER)
-  //
-  // Lets a reporter withdraw their own report while it's
-  // still PENDING — the same window during which they can edit
-  // it. Reuses ReportStatus.REJECTED since there is no dedicated
-  // WITHDRAWN status in the schema. If you want to distinguish
-  // "reporter withdrew" from "admin rejected" later (e.g. for
-  // reporting/metrics), that needs a schema/enum change — the
-  // audit trail already records REPORT_WITHDRAWN separately so
-  // the distinction isn't lost even though status collapses the
-  // two together.
-  //
-  // Deliberately does NOT call maybeFlagUserForRejections — see
-  // that method's comment. A user withdrawing their own report is
-  // not the same signal as an admin rejecting it, and shouldn't
-  // count toward the auto-flag threshold.
-  //
-  // NOTE: the row (and its media) are kept, not deleted — unlike
-  // PostService.deleteMyPost, which only purges media on an actual
-  // row deletion. If withdrawn-report media should also be purged
-  // from MinIO, that's a deliberate policy decision to make
-  // explicitly, not something to infer from this pattern.
-  //
-  // FIX (notifications): REPORT_UPDATED now includes caseReference
-  // and status, same as update()/updateStatus().
-  //
-  // FIX (audit review, item #1): both guard clauses here (wrong
-  // status, and the race window between findFirst/updateMany) threw
-  // with no audit trail. Now both emit a FAILURE row first.
-  // ─────────────────────────────────────────────
-
+  // Reuses REJECTED — no dedicated WITHDRAWN status in the schema
   async withdraw(user: CurrentUserDto, reportId: string) {
     const existing = await this.prisma.report.findFirst({
       where: { id: reportId, userId: user.id },
@@ -929,8 +653,6 @@ export class ReportService {
       throw new BadRequestException('only_pending_reports_can_be_withdrawn');
     }
 
-    // Conditional update guards against a concurrent admin
-    // transition landing between findFirst and update.
     const result = await this.prisma.report.updateMany({
       where: { id: reportId, status: ReportStatus.PENDING },
       data: { status: ReportStatus.REJECTED },
@@ -977,20 +699,7 @@ export class ReportService {
     return report;
   }
 
-  // ─────────────────────────────────────────────
-  // GET ALL REPORTS (ADMIN)
-  //
-  // Intentionally unscoped by assignment: viewing the report list
-  // (and opening a report's full detail — see findOneForAdmin) is
-  // a read action available to any ADMIN or SUPER_ADMIN. Only
-  // *acting* on a report — changing its status, requesting more
-  // information, escalating it — is restricted to the report's
-  // assigned admin (or left open if unassigned); see
-  // assertAdminCanAccessReport() and its callers below for that
-  // rule. Do not add assignment scoping here without also revisiting
-  // findOneForAdmin(), since the two are meant to stay symmetric.
-  // ─────────────────────────────────────────────
-
+  // Unscoped by assignment; only acting on a report is assignment-gated
   async findAllForAdmin(query: AdminReportQueryDto) {
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
@@ -1024,13 +733,6 @@ export class ReportService {
     return { items, total, page, limit };
   }
 
-  // ─────────────────────────────────────────────
-  // GET REPORTS ASSIGNED TO ME (ADMIN)
-  //
-  // Paginated to match findAllForAdmin, and includes
-  // reporter summary fields for dashboard display.
-  // ─────────────────────────────────────────────
-
   async findAssignedToMe(admin: CurrentUserDto, query: { page?: number; limit?: number } = {}) {
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
@@ -1053,20 +755,7 @@ export class ReportService {
     return { items, total, page, limit };
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — STALE / UNASSIGNED-TOO-LONG REPORTS
-  // GET /reports/stale
-  // (item #15)
-  //
-  // Unlike PostService.findStalePending (which only checks status,
-  // since Post has no assignment concept), a Report is only truly
-  // "forgotten" if it's BOTH unassigned AND still non-terminal — an
-  // ASSIGNED or IN_PROGRESS report already has someone actively on
-  // it, so it's excluded even if it's been open a while. Purely
-  // informational, same as Post's version — nothing here changes
-  // status or ownership.
-  // ─────────────────────────────────────────────
-
+  // Only unassigned AND non-terminal reports count as stale
   async findStalePending() {
     const staleHours = Number(
       this.configService.get<string>('REPORT_STALE_PENDING_HOURS') ??
@@ -1090,23 +779,44 @@ export class ReportService {
     }));
   }
 
-  // ─────────────────────────────────────────────
-  // GET ONE REPORT — FULL DETAIL (ADMIN)
-  //
-  // Open to any ADMIN or SUPER_ADMIN — viewing is not gated by
-  // assignment (see the note on findAllForAdmin above). Assignment
-  // only gates the write-side admin actions further down
-  // (updateStatus, requestMoreInformation, escalate), via
-  // assertAdminCanAccessReport().
-  //
-  // FIX (audit review, item #2): REPORTER_INFORMATION_OPENED is
-  // specifically about an admin viewing the reporter's personal
-  // details (name/phone, via the `user` include below) — that's
-  // exactly the "admin acting on/viewing another user's data" case
-  // targetUserId exists for, so it's now recorded there instead of
-  // only being inferable via the Report entityId.
-  // ─────────────────────────────────────────────
+  // Dashboard stats: total + per-status breakdown + assignment split
+  async getStats() {
+    const [total, grouped, assignedCount] = await this.prisma.$transaction([
+      this.prisma.report.count(),
+      this.prisma.report.groupBy({
+        by: ['status'],
+        _count: { status: true },
+        orderBy: { status: 'asc' },
+      }),
+      this.prisma.report.count({ where: { assignedToId: { not: null } } }),
+    ]);
 
+    const counts = Object.fromEntries(
+      Object.values(ReportStatus).map((status) => [status, 0]),
+    ) as Record<ReportStatus, number>;
+
+    for (const row of grouped) {
+      const rowCount = row._count as { status?: number } | undefined;
+      counts[row.status] = rowCount?.status ?? 0;
+    }
+
+    return {
+      total,
+      pending: counts[ReportStatus.PENDING] ?? 0,
+      received: counts[ReportStatus.RECEIVED] ?? 0,
+      underReview: counts[ReportStatus.UNDER_REVIEW] ?? 0,
+      assigned: counts[ReportStatus.ASSIGNED] ?? 0,
+      inProgress: counts[ReportStatus.IN_PROGRESS] ?? 0,
+      escalated: counts[ReportStatus.ESCALATED] ?? 0,
+      unableToVerify: counts[ReportStatus.UNABLE_TO_VERIFY] ?? 0,
+      closed: counts[ReportStatus.CLOSED] ?? 0,
+      rejected: counts[ReportStatus.REJECTED] ?? 0,
+      assignedToAdmin: assignedCount,
+      unassigned: total - assignedCount,
+    };
+  }
+
+  // Open to any ADMIN/SUPER_ADMIN; assignment gates writes, not reads
   async findOneForAdmin(admin: CurrentUserDto, reportId: string) {
     const report = await this.prisma.report.findUnique({
       where: { id: reportId },
@@ -1151,16 +861,6 @@ export class ReportService {
     return report;
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — PER-REPORT HISTORY / TIMELINE
-  // GET /reports/:id/history
-  // (item #18)
-  //
-  // ASSUMPTION: same as PostService.getHistory — an `auditLog`
-  // Prisma model populated by a listener subscribed to the events
-  // emitAudit() already fires throughout this service.
-  // ─────────────────────────────────────────────
-
   async getHistory(reportId: string) {
     const existing = await this.prisma.report.findUnique({ where: { id: reportId } });
     if (!existing) {
@@ -1173,38 +873,7 @@ export class ReportService {
     });
   }
 
-  // ─────────────────────────────────────────────
-  // UPDATE STATUS (ADMIN)
-  //
-  // Transitions validated against ALLOWED_STATUS_TRANSITIONS.
-  //
-  // FIX (item #22/#26): converted the read-then-write into a
-  // conditional update (updateMany guarded on the status read a
-  // moment earlier), same pattern PostService uses throughout, so
-  // two admins racing to transition the same report can't silently
-  // clobber each other — the loser gets report_transition_conflict
-  // instead of an unvalidated write going through.
-  //
-  // FIX (item #21): on a transition TO REJECTED specifically, checks
-  // whether the reporter has crossed the auto-flag threshold for
-  // repeated rejections.
-  //
-  // FIX (notifications): REPORT_UPDATED now includes caseReference
-  // and status, same as update()/withdraw().
-  //
-  // FIX (audit coverage): an invalid-transition attempt now writes
-  // an audit row (outcome: FAILURE, severity: WARNING) before
-  // throwing. The success row now promotes the admin's note out of
-  // diff into the top-level reason column, and includes entityLabel.
-  //
-  // FIX (audit review, item #1): the *other* failure path here —
-  // losing the optimistic-concurrency race (report_transition_conflict)
-  // — still had no audit row at all. It's arguably more worth tracing
-  // than the invalid-transition case, since it means two admins
-  // collided on the same report. Now emits a FAILURE row before
-  // throwing, same as the invalid-transition branch above it.
-  // ─────────────────────────────────────────────
-
+  // Conditional update guards against a concurrent admin transition
   async updateStatus(admin: CurrentUserDto, reportId: string, data: UpdateReportStatusDto) {
     const existing = await this.prisma.report.findUnique({
       where: { id: reportId },
@@ -1290,32 +959,7 @@ export class ReportService {
     return report;
   }
 
-  // ─────────────────────────────────────────────
-  // REQUEST MORE INFORMATION (ADMIN)
-  //
-  // Persists a ReportInformationRequest row, which the
-  // user-response endpoint below reads and updates.
-  // Enforces the same admin-access rule as findOneForAdmin,
-  // and refuses to open a second request while one is
-  // still PENDING — otherwise requests could stack up
-  // with no way for the user to tell which is current.
-  //
-  // FIX (notifications): MORE_INFORMATION_REQUESTED now includes
-  // caseReference — previously omitted.
-  //
-  // FIX (audit review, item #1): the "already pending" guard threw
-  // with no audit row. Now emits a FAILURE row first.
-  //
-  // FIX (audit review, item #3): `data.message` is the admin's actual
-  // human-written reason for requesting more information from the
-  // reporter — it was nested inside `diff` instead of the top-level
-  // `reason` column. Promoted.
-  //
-  // FIX (audit review, item #5): `informationRequestId` isn't a diff
-  // of the report's state, it's a contextual reference — moved to
-  // metadata.
-  // ─────────────────────────────────────────────
-
+  // Refuses a second request while one is still PENDING
   async requestMoreInformation(
     admin: CurrentUserDto,
     reportId: string,
@@ -1387,16 +1031,6 @@ export class ReportService {
     return infoRequest;
   }
 
-  // ─────────────────────────────────────────────
-  // LIST INFORMATION REQUESTS
-  //
-  // Backs GET /reports/:id/information-requests. The reporter may
-  // list requests for their own report. An admin may list them for
-  // any report they're allowed to open (same rule as
-  // findOneForAdmin: SUPER_ADMIN sees any report, plain ADMIN only
-  // unassigned or assigned-to-them).
-  // ─────────────────────────────────────────────
-
   async findInformationRequests(user: CurrentUserDto, reportId: string) {
     const roles = this.getRoles(user);
     const isAdmin = roles.some((name) => ADMIN_ROLE_NAMES.includes(name as RolesEnum));
@@ -1409,8 +1043,6 @@ export class ReportService {
       throw new NotFoundException('report_not_found');
     }
 
-    // Viewing is open to any admin (see findOneForAdmin note); only the
-    // non-admin path stays ownership-restricted to the reporter themselves.
     if (!isAdmin && report.userId !== user.id) {
       throw new NotFoundException('report_not_found');
     }
@@ -1420,15 +1052,6 @@ export class ReportService {
       orderBy: { createdAt: 'desc' },
     });
   }
-
-  // ─────────────────────────────────────────────
-  // GET ONE INFORMATION REQUEST
-  //
-  // Backs GET /reports/:id/information-requests/:requestId. Same
-  // access rule as findInformationRequests: the reporter sees
-  // requests on their own report; an admin sees requests on any
-  // report they're allowed to open.
-  // ─────────────────────────────────────────────
 
   async findOneInformationRequest(user: CurrentUserDto, reportId: string, requestId: string) {
     const roles = this.getRoles(user);
@@ -1442,8 +1065,6 @@ export class ReportService {
       throw new NotFoundException('report_not_found');
     }
 
-    // Viewing is open to any admin (see findOneForAdmin note); only the
-    // non-admin path stays ownership-restricted to the reporter themselves.
     if (!isAdmin && report.userId !== user.id) {
       throw new NotFoundException('report_not_found');
     }
@@ -1458,27 +1079,6 @@ export class ReportService {
 
     return infoRequest;
   }
-
-  // ─────────────────────────────────────────────
-  // RESPOND TO INFORMATION REQUEST (USER)
-  //
-  // Backs POST /reports/:id/information-requests/:requestId/respond.
-  // Only the reporter who owns the report may respond, and only to
-  // a request still PENDING. responseFiles is validated against
-  // MinIO before being persisted, same as any other media field.
-  //
-  // FIX (notifications): INFORMATION_REQUEST_RESPONDED now includes
-  // caseReference, and now actually has a listener (previously the
-  // event was emitted but silently dropped — no @OnEvent handler
-  // existed for it).
-  //
-  // FIX (audit review, item #1): the "already responded" guard threw
-  // with no audit row. Now emits a FAILURE row first.
-  //
-  // FIX (audit review, item #5): informationRequestId moved to
-  // metadata; response file count added as useful context that
-  // wasn't captured anywhere before.
-  // ─────────────────────────────────────────────
 
   async respondToInformationRequest(
     user: CurrentUserDto,
@@ -1554,51 +1154,7 @@ export class ReportService {
     return updated;
   }
 
-  // ─────────────────────────────────────────────
-  // ASSIGN (ADMIN)
-  //
-  // Persists assignedToId and flips status to ASSIGNED
-  // when that transition is legal from the report's
-  // current status. Validates the target user actually
-  // holds an admin role.
-  //   ⚠️ ASSUMPTION: userRoles -> role.name shape.
-  //   Adjust to your real UserRole/Role schema.
-  //
-  // FIX (item #22/#26): the status-changing branch now uses a
-  // conditional update guarded on the status read a moment
-  // earlier, same reasoning as updateStatus() — prevents a race
-  // where the report's status changed between the read and the
-  // write. The assignedToId-only branch (no status change) has no
-  // such race to guard against, so it stays a plain update.
-  //
-  // NOTE: if the current status does not allow a direct
-  // transition to ASSIGNED (e.g. reassigning a report
-  // that is already IN_PROGRESS), assignedToId is still
-  // updated but status is left unchanged. Confirm this
-  // silent-no-status-change behavior is what you want for
-  // reassignment — otherwise consider throwing instead.
-  //
-  // FIX (notifications): REPORT_ASSIGNED now includes
-  // caseReference, and now actually has a listener (previously the
-  // event was emitted but silently dropped).
-  //
-  // FIX (audit review, item #1): both the "assignee isn't an admin"
-  // guard and the transition-conflict guard threw with no audit
-  // row. Both now emit a FAILURE row first.
-  //
-  // FIX (audit review, item #2): the assignee (the admin being
-  // assigned the case) is the user this action is actually about —
-  // it was previously smuggled into `diff.assignedToUserId` only.
-  // Now also recorded as top-level targetUserId.
-  //
-  // FIX (audit review, item #3): `data.note` is the admin's actual
-  // human-written rationale for the assignment — it was nested in
-  // `diff` instead of the top-level `reason` column. Promoted.
-  //
-  // FIX (audit review, item #5): the assignee's name is useful
-  // context for reading the log without a join — added to metadata.
-  // ─────────────────────────────────────────────
-
+  // Validates the target user actually holds an admin role
   async assign(admin: CurrentUserDto, reportId: string, data: AssignReportDto) {
     const existing = await this.prisma.report.findUnique({
       where: { id: reportId },
@@ -1701,23 +1257,7 @@ export class ReportService {
     return report;
   }
 
-  // ─────────────────────────────────────────────
-  // UNASSIGN (ADMIN)
-  //
-  // Clears assignedToId back to null. Restricted to
-  // SUPER_ADMIN at the controller level, mirroring assign()'s
-  // current role restriction. Status is left unchanged — same
-  // silent-no-status-change approach assign() already takes;
-  // revisit if you'd rather step status back to UNDER_REVIEW
-  // when a report becomes unassigned. No status change here, so
-  // no concurrency guard is needed beyond confirming the report
-  // still exists.
-  //
-  // FIX (audit review, item #2): the admin being unassigned is the
-  // user this action is about — recorded as targetUserId (when
-  // there was a previous assignee to unassign).
-  // ─────────────────────────────────────────────
-
+  // Status is left unchanged; no concurrency guard needed here
   async unassign(admin: CurrentUserDto, reportId: string) {
     const existing = await this.prisma.report.findUnique({
       where: { id: reportId },
@@ -1749,32 +1289,7 @@ export class ReportService {
     return report;
   }
 
-  // ─────────────────────────────────────────────
-  // ESCALATE (ADMIN)
-  //
-  // Checks ALLOWED_STATUS_TRANSITIONS directly instead of a
-  // separate terminal-state blocklist, so escalate() and
-  // updateStatus() enforce the same single rulebook. Also
-  // enforces the same admin-access rule as the other admin
-  // operations.
-  //
-  // FIX (item #22/#26): conditional update guarded on the status
-  // read a moment earlier, same as updateStatus()/assign().
-  //
-  // FIX (notifications): HIGH_PRIORITY_REPORT now includes
-  // caseReference and reason, and now actually has a listener
-  // (previously the event was emitted but silently dropped).
-  //
-  // FIX (audit coverage): an invalid-transition attempt now writes
-  // an audit row (outcome: FAILURE, severity: WARNING) before
-  // throwing. The success row now promotes reason out of diff into
-  // the top-level reason column, and includes entityLabel.
-  //
-  // FIX (audit review, item #1): same gap as updateStatus() — the
-  // transition-conflict branch (losing the optimistic-concurrency
-  // race) threw with no audit row. Now emits FAILURE first.
-  // ─────────────────────────────────────────────
-
+  // Checks ALLOWED_STATUS_TRANSITIONS directly, same rulebook as updateStatus
   async escalate(admin: CurrentUserDto, reportId: string, data: EscalateReportDto) {
     const existing = await this.prisma.report.findUnique({
       where: { id: reportId },
@@ -1850,30 +1365,13 @@ export class ReportService {
     return report;
   }
 
-  // ─────────────────────────────────────────────
-  // HELPERS
-  // ─────────────────────────────────────────────
-
   private generateCaseReference(): string {
     const year = new Date().getFullYear();
     const random = Math.random().toString(36).slice(2, 8).toUpperCase();
     return `EHT-${year}-${random}`;
   }
 
-  // FIX (item #5/#26): now also handles a race on the NEW
-  // (userId, idempotencyKey) unique constraint, not just the
-  // pre-existing caseReference collision. A fast-path findFirst
-  // already runs in create() before this is called, but that
-  // check-then-create is inherently racy under concurrent
-  // requests — two near-simultaneous retries with the same key can
-  // both pass the findFirst and race to insert. This catches that
-  // P2002 specifically (distinguished from a caseReference
-  // collision via err.meta.target) and returns the row that won
-  // the race instead of letting the raw Prisma error surface.
-  //
-  // Random 6-char case references aren't guaranteed unique either,
-  // and caseReference is @unique in the schema, so a collision on
-  // *that* constraint retries with a fresh reference instead.
+  // Handles both caseReference collisions and idempotencyKey races
   private async createReportWithUniqueCaseReference(
     user: CurrentUserDto,
     data: CreateReportDto,
@@ -1910,14 +1408,10 @@ export class ReportService {
             if (attempt === CASE_REFERENCE_MAX_ATTEMPTS) {
               throw err;
             }
-            // loop and try again with a new random reference
             continue;
           }
 
           if (idempotencyKey && target?.some((t) => t.includes('idempotencyKey'))) {
-            // Lost a race against a concurrent identical retry — the
-            // other request's insert won; return that row instead of
-            // creating (or failing to create) a duplicate.
             const winner = await this.prisma.report.findFirst({
               where: { userId: user.id, idempotencyKey },
             });
@@ -1930,7 +1424,6 @@ export class ReportService {
         throw err;
       }
     }
-    // Unreachable: the loop always returns or throws.
     throw new Error('failed_to_generate_unique_case_reference');
   }
 

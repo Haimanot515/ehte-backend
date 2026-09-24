@@ -931,6 +931,54 @@ export class MissingPersonService {
     }));
   }
 
+    // Admin dashboard stats: totals by status, person type, and reward state.
+  async getStats() {
+    const [total, byStatus, byType, rewardOffered, rewardApproved] = await this.prisma.$transaction([
+      this.prisma.missingPerson.count(),
+      this.prisma.missingPerson.groupBy({
+        by: ['status'],
+        _count: { status: true },
+        orderBy: { status: 'asc' },
+      }),
+      this.prisma.missingPerson.groupBy({
+        by: ['personType'],
+        _count: { personType: true },
+        orderBy: { personType: 'asc' },
+      }),
+      this.prisma.missingPerson.count({ where: { rewardOffered: true } }),
+      this.prisma.missingPerson.count({ where: { rewardApproved: true } }),
+    ]);
+
+    const statusCounts = Object.fromEntries(
+      Object.values(MissingPersonStatus).map((status) => [status, 0]),
+    ) as Record<MissingPersonStatus, number>;
+    for (const row of byStatus) {
+      const rowCount = row._count as { status?: number } | undefined;
+      statusCounts[row.status] = rowCount?.status ?? 0;
+    }
+
+    const typeCounts = Object.fromEntries(
+      Object.values(MissingPersonType).map((type) => [type, 0]),
+    ) as Record<MissingPersonType, number>;
+    for (const row of byType) {
+      const rowCount = row._count as { personType?: number } | undefined;
+      typeCounts[row.personType] = rowCount?.personType ?? 0;
+    }
+
+    return {
+      total,
+      pending: statusCounts[MissingPersonStatus.PENDING] ?? 0,
+      underReview: statusCounts[MissingPersonStatus.UNDER_REVIEW] ?? 0,
+      moreInformationRequested: statusCounts[MissingPersonStatus.MORE_INFORMATION_REQUESTED] ?? 0,
+      approved: statusCounts[MissingPersonStatus.APPROVED] ?? 0,
+      rejected: statusCounts[MissingPersonStatus.REJECTED] ?? 0,
+      found: statusCounts[MissingPersonStatus.FOUND] ?? 0,
+      byType: typeCounts,
+      rewardOfferedCount: rewardOffered,
+      rewardApprovedCount: rewardApproved,
+    };
+  }
+
   async update(user: CurrentUserDto, id: string, data: UpdateMissingPersonDto) {
     const existing = await this.prisma.missingPerson.findUnique({ where: { id } });
 
