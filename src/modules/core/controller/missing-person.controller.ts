@@ -121,6 +121,15 @@ export class MissingPersonController {
     return this.missingPersonService.findStalePending();
   }
 
+    @Get('admin/stats')
+  @ApiBearerAuth('access-token')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.DASHBOARD_READ)
+  @ApiOperation({ summary: 'Admin: get missing person counts by status and type' })
+  async getStats() {
+    return this.missingPersonService.getStats();
+  }
+
   @Get('admin/:id')
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)

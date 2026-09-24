@@ -7,8 +7,6 @@ import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { RolesEnum } from 'src/common/enums/roles.enum';
-// NOTE: adjust these two import paths to match your actual file locations —
-// same convention as Roles / RolesEnum above.
 import { RequirePermissions } from 'src/common/decorators/require-permissions.decorator';
 import { PermissionsEnum } from 'src/common/enums/permissions.enum';
 import { CreateSupportDto } from '../dto/support.dto';
@@ -19,22 +17,7 @@ import { CreateSupportDto } from '../dto/support.dto';
 export class SupportController {
   constructor(private readonly supportService: SupportService) {}
 
-  // ─────────────────────────────────────────────
-  // CREATE SUPPORT REQUEST
-  // POST /support
-  //
-  // ROLE:
-  // - Any authenticated USER
-  // - ADMIN
-  // - SUPER_ADMIN
-  //
-  // PAYMENT:
-  // - No payment gateway is integrated yet.
-  // - This endpoint only creates a support record.
-  // - Payment is handled off-platform.
-  // - New support starts with PENDING status.
-  // ─────────────────────────────────────────────
-
+  // POST /support — any authenticated user; payment is handled off-platform, starts PENDING.
   @Post()
   @ApiOperation({
     summary: 'Create a support request',
@@ -47,20 +30,7 @@ export class SupportController {
     return this.supportService.create(user, data);
   }
 
-  // ─────────────────────────────────────────────
-  // MY SUPPORT REQUESTS
   // GET /support/mine
-  //
-  // ROLE:
-  // - Authenticated USER
-  // - ADMIN
-  // - SUPER_ADMIN
-  //
-  // PURPOSE:
-  // Returns support requests created by the
-  // currently authenticated user.
-  // ─────────────────────────────────────────────
-
   @Get('mine')
   @ApiOperation({
     summary: 'Get my support requests',
@@ -72,25 +42,16 @@ export class SupportController {
     return this.supportService.findMine(user);
   }
 
-  // ─────────────────────────────────────────────
-  // SUPPORT FOR VICTIM PROFILE
-  // GET /support/victim/:victimProfileId
-  //
-  // ROLE:
-  // - Authenticated user
-  //
-  // PURPOSE:
-  // Returns support records associated with
-  // a specific victim profile.
-  //
-  // NOTE:
-  // No @Roles() restriction is currently applied
-  // to this endpoint, and per the reviewed permissions
-  // plan no @RequirePermissions() is added here either —
-  // this stays a service-level ownership/authorization
-  // concern, not an admin-permission gate.
-  // ─────────────────────────────────────────────
+  // GET /support/stats — declared before ':id' so "stats" isn't matched as an id.
+  @Get('stats')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.DASHBOARD_READ)
+  @ApiOperation({ summary: 'Admin: get support counts by status and total confirmed amount' })
+  async getStats() {
+    return this.supportService.getStats();
+  }
 
+  // GET /support/victim/:victimProfileId — no @Roles/@RequirePermissions; service-level concern.
   @Get('victim/:victimProfileId')
   @ApiOperation({
     summary: 'Get support for a victim profile',
@@ -102,22 +63,7 @@ export class SupportController {
     return this.supportService.findForVictimProfile(victimProfileId);
   }
 
-  // ─────────────────────────────────────────────
-  // GET ONE SUPPORT REQUEST
-  // GET /support/:id
-  //
-  // ROLE:
-  // - Authenticated user
-  //
-  // PURPOSE:
-  // Returns a support request by its ID.
-  //
-  // NOTE:
-  // No @Roles() restriction is currently applied
-  // to this endpoint, and no @RequirePermissions()
-  // is added here either — see note above.
-  // ─────────────────────────────────────────────
-
+  // GET /support/:id — no @Roles/@RequirePermissions; service-level concern.
   @Get(':id')
   @ApiOperation({
     summary: 'Get support by ID',
@@ -130,29 +76,7 @@ export class SupportController {
     return this.supportService.findOne(id);
   }
 
-  // ─────────────────────────────────────────────
-  // CONFIRM SUPPORT PAYMENT
-  // PATCH /support/:id/confirm
-  //
-  // ROLE:
-  // - ADMIN
-  // - SUPER_ADMIN
-  //
-  // PAYMENT:
-  // - Payment is handled off-platform.
-  // - Admin manually verifies that the transfer
-  //   was actually received.
-  // - Changes status to CONFIRMED.
-  //
-  // NOTE: SUPPORT_PAYMENT_MANAGE is currently not in
-  // adminPermissions, so an ordinary ADMIN will be denied
-  // on this route even with the decorator present — only
-  // SUPER_ADMIN gets it, by design (least privilege).
-  //
-  // FIX (compile): service.confirm now takes the acting admin
-  // so the audit row records who verified the transfer.
-  // ─────────────────────────────────────────────
-
+  // PATCH /support/:id/confirm — admin verifies the off-platform transfer arrived.
   @Patch(':id/confirm')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.SUPPORT_PAYMENT_MANAGE)
@@ -167,20 +91,7 @@ export class SupportController {
     return this.supportService.confirm(id, admin);
   }
 
-  // ─────────────────────────────────────────────
-  // COMPLETE SUPPORT
-  // PATCH /support/:id/complete
-  //
-  // ROLE:
-  // - ADMIN
-  // - SUPER_ADMIN
-  //
-  // PURPOSE:
-  // Marks a confirmed support request as completed.
-  //
-  // FIX (compile): service.complete now takes the acting admin.
-  // ─────────────────────────────────────────────
-
+  // PATCH /support/:id/complete — marks a confirmed support as completed.
   @Patch(':id/complete')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.SUPPORT_REVIEW)
@@ -195,25 +106,7 @@ export class SupportController {
     return this.supportService.complete(id, admin);
   }
 
-  // ─────────────────────────────────────────────
-  // CANCEL SUPPORT
-  // PATCH /support/:id/cancel
-  //
-  // ROLE:
-  // - Support creator can cancel their own support.
-  // - ADMIN can cancel support.
-  // - SUPER_ADMIN can cancel support.
-  //
-  // PURPOSE:
-  // Cancels the support request.
-  //
-  // NOTE:
-  // A normal user cannot cancel a support that has
-  // already been CONFIRMED. This is a mixed
-  // ownership/admin endpoint handled at the service
-  // level, so no @RequirePermissions() is added here.
-  // ─────────────────────────────────────────────
-
+  // PATCH /support/:id/cancel — owner or admin; a non-admin can't cancel a CONFIRMED support.
   @Patch(':id/cancel')
   @ApiOperation({
     summary: 'Cancel support',

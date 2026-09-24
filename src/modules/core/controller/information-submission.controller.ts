@@ -19,13 +19,8 @@ import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { RolesEnum } from 'src/common/enums/roles.enum';
-// NOTE: adjust these two import paths to match your actual file locations —
-// same convention as Roles / RolesEnum above.
 import { RequirePermissions } from 'src/common/decorators/require-permissions.decorator';
 import { PermissionsEnum } from 'src/common/enums/permissions.enum';
-
-// NOTE: adjust this path to wherever MediaModule actually lives —
-// same DTO used by VictimProfileController for its media routes.
 import { MediaKeyQueryDto } from 'src/modules/media/dto/media-key-query.dto';
 
 import { InformationSubmissionService } from '../service/information-submission.service';
@@ -38,35 +33,15 @@ import {
   UpdateInformationSubmissionStatusDto,
 } from '../dto/information-submission.dto';
 
-// ─────────────────────────────────────────────
-// Media download URLs are deliberately NOT served by a generic
-// media module — same reasoning as VictimProfileController.
-// Authorization for "can this caller download this specific
-// object" has to go through the same visibility rules findOne()/
-// findForMissingPerson()/findOneForAdmin() already enforce, so it
-// lives here, split into owner / public / admin variants.
-// ─────────────────────────────────────────────
-
+// Media download URLs live here (not a generic media module) since authorization
+// must go through the same visibility rules as findOne/findForMissingPerson/findOneForAdmin.
 @ApiTags('Information Submissions')
 @ApiBearerAuth('access-token')
 @Controller('information-submissions')
 export class InformationSubmissionController {
   constructor(private readonly informationSubmissionService: InformationSubmissionService) {}
 
-  // ─────────────────────────────────────────────
-  // CREATE
   // POST /information-submissions/missing-person/:missingPersonId
-  //
-  // FIX (item #5): accepts an optional Idempotency-Key header so a
-  // client retrying after a dropped response (double-tap on a
-  // flaky connection) doesn't end up creating two identical
-  // submissions — InformationSubmissionService.create returns the
-  // original submission on a repeat key instead.
-  //
-  // FIX (compile): service.create now takes the full CurrentUserDto
-  // (needed to resolve actorType), not user.id.
-  // ─────────────────────────────────────────────
-
   @Post('missing-person/:missingPersonId')
   @ApiOperation({ summary: 'Submit information about a missing person' })
   async create(
@@ -83,11 +58,7 @@ export class InformationSubmissionController {
     );
   }
 
-  // ─────────────────────────────────────────────
-  // MY SUBMISSIONS (paginated)
   // GET /information-submissions/mine
-  // ─────────────────────────────────────────────
-
   @Get('mine')
   @ApiOperation({ summary: 'Get my information submissions' })
   @ApiQuery({ name: 'status', required: false, enum: InformationStatus })
@@ -100,15 +71,7 @@ export class InformationSubmissionController {
     return this.informationSubmissionService.findMine(user.id, query);
   }
 
-  // ─────────────────────────────────────────────
-  // MY SUBMISSIONS FOR ONE MISSING PERSON
-  // GET /information-submissions/missing-person/:missingPersonId/mine
-  //
-  // Registered before the public
-  // 'missing-person/:missingPersonId' route so 'mine' is never
-  // swallowed as a missingPersonId value.
-  // ─────────────────────────────────────────────
-
+  // GET /information-submissions/missing-person/:missingPersonId/mine — before the public route below.
   @Get('missing-person/:missingPersonId/mine')
   @ApiOperation({ summary: 'Get my information submissions for one missing person' })
   async findMineForMissingPerson(
@@ -118,11 +81,7 @@ export class InformationSubmissionController {
     return this.informationSubmissionService.findMineForMissingPerson(user.id, missingPersonId);
   }
 
-  // ─────────────────────────────────────────────
-  // INFORMATION FOR MISSING PERSON (public, paginated)
-  // GET /information-submissions/missing-person/:missingPersonId
-  // ─────────────────────────────────────────────
-
+  // GET /information-submissions/missing-person/:missingPersonId — public.
   @Get('missing-person/:missingPersonId')
   @AllowAnonymous()
   @ApiOperation({ summary: 'Get reviewed information for a missing person' })
@@ -135,19 +94,7 @@ export class InformationSubmissionController {
     return this.informationSubmissionService.findForMissingPerson(missingPersonId, query);
   }
 
-  // ─────────────────────────────────────────────
-  // PUBLIC — MEDIA DOWNLOAD URL
-  // GET /information-submissions/public/:id/media?key=...
-  //
-  // Registered before the owner ':id' route below so 'public' is
-  // never swallowed as a submission id value.
-  //
-  // Returns a download URL only for media on a submission that has
-  // reached REVIEWED — same visibility contract as
-  // findForMissingPerson(). A submission that exists but isn't
-  // reviewed yet, or a key not actually attached to it, both 404.
-  // ─────────────────────────────────────────────
-
+  // GET /information-submissions/public/:id/media?key=... — only for REVIEWED submissions.
   @Get('public/:id/media')
   @AllowAnonymous()
   @ApiOperation({ summary: "Get a short-lived download URL for a reviewed submission's media" })
@@ -155,26 +102,14 @@ export class InformationSubmissionController {
     return this.informationSubmissionService.getPublicMediaDownloadUrl(id, query.key);
   }
 
-  // ─────────────────────────────────────────────
-  // GET ONE
   // GET /information-submissions/:id
-  // ─────────────────────────────────────────────
-
   @Get(':id')
   @ApiOperation({ summary: 'Get my information submission' })
   async findOne(@Param('id') id: string, @CurrentUser() user: CurrentUserDto) {
     return this.informationSubmissionService.findOne(id, user.id);
   }
 
-  // ─────────────────────────────────────────────
-  // MEDIA — DOWNLOAD URL (owner)
-  // GET /information-submissions/:id/media?key=...
-  //
-  // Owner can request a download URL for any media key actually
-  // attached to their own submission, regardless of status — same
-  // admin-style ownership check as findOne(), scoped to the caller.
-  // ─────────────────────────────────────────────
-
+  // GET /information-submissions/:id/media?key=... — owner only.
   @Get(':id/media')
   @ApiOperation({ summary: 'Get a short-lived download URL for my submission media' })
   async getMedia(
@@ -185,14 +120,7 @@ export class InformationSubmissionController {
     return this.informationSubmissionService.getMediaDownloadUrl(id, user.id, query.key);
   }
 
-  // ─────────────────────────────────────────────
-  // UPDATE MY SUBMISSION
-  // PATCH /information-submissions/:id
-  // Only while PENDING (enforced in service).
-  //
-  // FIX (compile): service.update now takes the full CurrentUserDto.
-  // ─────────────────────────────────────────────
-
+  // PATCH /information-submissions/:id — only while PENDING (enforced in service).
   @Patch(':id')
   @ApiOperation({ summary: 'Update my information submission' })
   async update(
@@ -203,26 +131,14 @@ export class InformationSubmissionController {
     return this.informationSubmissionService.update(id, user, data);
   }
 
-  // ─────────────────────────────────────────────
-  // DELETE MY SUBMISSION
-  // DELETE /information-submissions/:id
-  // Only while PENDING (enforced in service).
-  // ─────────────────────────────────────────────
-
+  // DELETE /information-submissions/:id — only while PENDING (enforced in service).
   @Delete(':id')
   @ApiOperation({ summary: 'Delete my information submission' })
   async remove(@Param('id') id: string, @CurrentUser() user: CurrentUserDto) {
     return this.informationSubmissionService.remove(id, user);
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — ALL (paginated, lightweight)
   // GET /information-submissions/admin/all
-  //
-  // Registered before ':id' so this literal route is never
-  // swallowed by the param route above.
-  // ─────────────────────────────────────────────
-
   @Get('admin/all')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.MISSING_PERSON_INFO_READ)
@@ -234,16 +150,16 @@ export class InformationSubmissionController {
     return this.informationSubmissionService.findAllForAdmin(query);
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — STALE / UNREVIEWED-TOO-LONG SUBMISSIONS
-  // GET /information-submissions/admin/stale
-  // (item #15)
-  //
-  // Declared BEFORE 'admin/:id' so Nest doesn't treat "stale" as a
-  // submission id — same route-order reasoning as elsewhere in
-  // this controller and PostController.
-  // ─────────────────────────────────────────────
+  // GET /information-submissions/admin/stats — declared before 'admin/:id'.
+  @Get('admin/stats')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.DASHBOARD_READ)
+  @ApiOperation({ summary: 'Admin: get information submission counts by status' })
+  async getStats() {
+    return this.informationSubmissionService.getStats();
+  }
 
+  // GET /information-submissions/admin/stale — declared before 'admin/:id'.
   @Get('admin/stale')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.MISSING_PERSON_INFO_READ)
@@ -254,15 +170,7 @@ export class InformationSubmissionController {
     return this.informationSubmissionService.findStalePending();
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — ONE (full detail)
   // GET /information-submissions/admin/:id
-  //
-  // Registered before the public ':id' route above would normally
-  // matter, but since 'admin' isn't a valid submission id shape
-  // this is purely for readability/consistency with Missing Person.
-  // ─────────────────────────────────────────────
-
   @Get('admin/:id')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.MISSING_PERSON_INFO_READ)
@@ -271,18 +179,7 @@ export class InformationSubmissionController {
     return this.informationSubmissionService.findOneForAdmin(id);
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — MEDIA DOWNLOAD URL
   // GET /information-submissions/admin/:id/media?key=...
-  //
-  // Admins can request a download URL for any media key actually
-  // attached to the submission, regardless of status — same
-  // admin-only, no-visibility-filtering access as findOneForAdmin().
-  //
-  // FIX (compile): service.getMediaDownloadUrlForAdmin now takes the
-  // acting admin as its FIRST argument so the download is audited.
-  // ─────────────────────────────────────────────
-
   @Get('admin/:id/media')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.MISSING_PERSON_INFO_READ)
@@ -295,12 +192,7 @@ export class InformationSubmissionController {
     return this.informationSubmissionService.getMediaDownloadUrlForAdmin(admin, id, query.key);
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — PER-SUBMISSION HISTORY / TIMELINE
   // GET /information-submissions/admin/:id/history
-  // (item #18)
-  // ─────────────────────────────────────────────
-
   @Get('admin/:id/history')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.MISSING_PERSON_INFO_READ)
@@ -309,12 +201,7 @@ export class InformationSubmissionController {
     return this.informationSubmissionService.getHistory(id);
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — STATUS
-  // PATCH /information-submissions/admin/:id/status
-  // Only moves PENDING → UNDER_REVIEW (enforced in service).
-  // ─────────────────────────────────────────────
-
+  // PATCH /information-submissions/admin/:id/status — only moves PENDING -> UNDER_REVIEW.
   @Patch('admin/:id/status')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.MISSING_PERSON_INFO_REVIEW)
@@ -327,13 +214,7 @@ export class InformationSubmissionController {
     return this.informationSubmissionService.updateStatus(admin, id, data.status);
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — REVIEW (terminal decision)
-  // PATCH /information-submissions/admin/:id/review
-  // Only valid from UNDER_REVIEW; reviewNote required on REJECTED
-  // (enforced in service).
-  // ─────────────────────────────────────────────
-
+  // PATCH /information-submissions/admin/:id/review — only from UNDER_REVIEW.
   @Patch('admin/:id/review')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.MISSING_PERSON_INFO_REVIEW)
