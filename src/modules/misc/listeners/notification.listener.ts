@@ -43,6 +43,17 @@ import {
   InformationSubmissionRejectedEvent,
   NewMissingPersonInformationEvent,
   SecurityAlertEvent,
+  // NEW — billing (see service/payment.service.ts, service/reward.service.ts,
+  // service/disbursement.service.ts). Add these three interfaces to
+  // notification.events.ts if they aren't there yet.
+  PaymentVerifiedEvent,
+  RewardClaimApprovedEvent,
+  DisbursementPaidOutEvent,
+  InstitutionSignedEvent,
+  AgreementCreatedEvent,
+  AgreementActivatedEvent,
+  AgreementRetiredEvent,
+  VictimProfileAgreementAssignedEvent,
 } from '../events/notification.events';
 
 // ASSUMPTION: these are the frontend routes. Change them here, in one place.
@@ -55,6 +66,12 @@ const URLS = {
   victimProfile: (id: string) => `/victim-profiles/${id}`,
   support: (id: string) => `/supports/${id}`,
   security: () => `/security/sessions`,
+  // NEW — billing
+  payment: (id: string) => `/payments/${id}`,
+  disbursement: (id: string) => `/disbursements/${id}`,
+  institution: (id: string) => `/admin/billing/institutions/${id}`,
+  agreement: (id: string) => `/admin/billing/agreements/${id}`,
+  victimProfileAgreement: (profileId: string) => `/admin/billing/profiles/${profileId}/agreement`,
 };
 
 // Turns domain events into notifications. Bodies stay generic — free-text
@@ -448,6 +465,169 @@ export class NotificationListener {
         actionUrl: URLS.support(event.supportId),
       },
       `SUPPORT_PAYMENT_CONFIRMED:${event.supportId}`,
+    );
+  }
+
+  // ───────────────────────────────────────────
+  // BILLING
+  //
+  // NEW — payment.service.ts (reconcile -> PAID), reward.service.ts
+  // (approveClaim), disbursement.service.ts (markPaidOut, both the
+  // MANUAL_BANK branch of execute() and the CHAPA_TRANSFER branch of
+  // syncProcessing()). Amount/fees are deliberately left out of every body
+  // below, same rule as SUPPORT_PAYMENT_CONFIRMED above — open the linked
+  // page for financial specifics.
+  //
+  // REQUIRES: NotificationType.PAYMENT_VERIFIED, .REWARD_CLAIM_APPROVED and
+  // .DISBURSEMENT_PAID_OUT added to the Prisma enum in notification.prisma
+  // (new migration) — this file only references them, it can't create them.
+  // ───────────────────────────────────────────
+
+  @OnEvent(NotificationEventEnum.PAYMENT_VERIFIED)
+  async handlePaymentVerified(event: PaymentVerifiedEvent) {
+    await this.toUser(
+      'PAYMENT_VERIFIED',
+      event.userId,
+      {
+        type: NotificationType.PAYMENT_VERIFIED,
+        title: 'Payment Verified',
+        body: 'Your payment has been verified.',
+        entity: 'Payment',
+        entityId: event.paymentId,
+        actionUrl: URLS.payment(event.paymentId),
+      },
+      `PAYMENT_VERIFIED:${event.paymentId}`,
+    );
+  }
+
+  @OnEvent(NotificationEventEnum.REWARD_CLAIM_APPROVED)
+  async handleRewardClaimApproved(event: RewardClaimApprovedEvent) {
+    await this.toUser(
+      'REWARD_CLAIM_APPROVED',
+      event.userId,
+      {
+        type: NotificationType.REWARD_CLAIM_APPROVED,
+        title: 'Reward Claim Approved',
+        body: 'Your reward claim has been approved. Payout is being processed.',
+        entity: 'MissingPerson',
+        entityId: event.missingPersonId,
+        actionUrl: URLS.missingPerson(event.missingPersonId),
+      },
+      `REWARD_CLAIM_APPROVED:${event.rewardClaimId}`,
+    );
+  }
+
+  @OnEvent(NotificationEventEnum.DISBURSEMENT_PAID_OUT)
+  async handleDisbursementPaidOut(event: DisbursementPaidOutEvent) {
+    await this.toUser(
+      'DISBURSEMENT_PAID_OUT',
+      event.userId,
+      {
+        type: NotificationType.DISBURSEMENT_PAID_OUT,
+        title: 'Payout Sent',
+        body: 'A payout has been sent to you.',
+        entity: 'Disbursement',
+        entityId: event.disbursementId,
+        actionUrl: URLS.disbursement(event.disbursementId),
+      },
+      `DISBURSEMENT_PAID_OUT:${event.disbursementId}`,
+    );
+  }
+
+  // ───────────────────────────────────────────
+  // AGREEMENTS / INSTITUTIONS
+  //
+  // Back-office actions — nobody outside the admin team is waiting on these,
+  // so they broadcast to admins (toAdmins) rather than targeting a userId,
+  // same pattern as NEW_REPORT/NEW_POST. excludeUserId keeps the admin who
+  // performed the action off their own notification feed.
+  //
+  // REQUIRES: NotificationType.INSTITUTION_SIGNED, .AGREEMENT_CREATED,
+  // .AGREEMENT_ACTIVATED, .AGREEMENT_RETIRED and
+  // .VICTIM_PROFILE_AGREEMENT_ASSIGNED added to the Prisma enum in
+  // notification.prisma (new migration) — this file only references them,
+  // it can't create them. Same for NotificationEventEnum.INSTITUTION_SIGNED
+  // etc. in notification-events.enum.ts.
+  // ───────────────────────────────────────────
+
+  @OnEvent(NotificationEventEnum.INSTITUTION_SIGNED)
+  async handleInstitutionSigned(event: InstitutionSignedEvent) {
+    await this.toAdmins(
+      'INSTITUTION_SIGNED',
+      {
+        type: NotificationType.INSTITUTION_SIGNED,
+        title: 'Institution Agreement Signed',
+        body: 'An institution has signed its billing agreement.',
+        entity: 'Institution',
+        entityId: event.institutionId,
+        actionUrl: URLS.institution(event.institutionId),
+      },
+      event.actorId,
+    );
+  }
+
+  @OnEvent(NotificationEventEnum.AGREEMENT_CREATED)
+  async handleAgreementCreated(event: AgreementCreatedEvent) {
+    await this.toAdmins(
+      'AGREEMENT_CREATED',
+      {
+        type: NotificationType.AGREEMENT_CREATED,
+        title: 'Agreement Draft Created',
+        body: 'A new billing agreement draft has been created.',
+        entity: 'Agreement',
+        entityId: event.agreementId,
+        actionUrl: URLS.agreement(event.agreementId),
+      },
+      event.actorId,
+    );
+  }
+
+  @OnEvent(NotificationEventEnum.AGREEMENT_ACTIVATED)
+  async handleAgreementActivated(event: AgreementActivatedEvent) {
+    await this.toAdmins(
+      'AGREEMENT_ACTIVATED',
+      {
+        type: NotificationType.AGREEMENT_ACTIVATED,
+        title: 'Agreement Activated',
+        body: 'A billing agreement has been activated and is now immutable.',
+        entity: 'Agreement',
+        entityId: event.agreementId,
+        actionUrl: URLS.agreement(event.agreementId),
+      },
+      event.actorId,
+    );
+  }
+
+  @OnEvent(NotificationEventEnum.AGREEMENT_RETIRED)
+  async handleAgreementRetired(event: AgreementRetiredEvent) {
+    await this.toAdmins(
+      'AGREEMENT_RETIRED',
+      {
+        type: NotificationType.AGREEMENT_RETIRED,
+        title: 'Agreement Retired',
+        body: 'A billing agreement has been retired.',
+        entity: 'Agreement',
+        entityId: event.agreementId,
+        actionUrl: URLS.agreement(event.agreementId),
+      },
+      event.actorId,
+    );
+  }
+
+  @OnEvent(NotificationEventEnum.VICTIM_PROFILE_AGREEMENT_ASSIGNED)
+  async handleVictimProfileAgreementAssigned(event: VictimProfileAgreementAssignedEvent) {
+    // ID-only body, same privacy rule as the audit row: no profile name.
+    await this.toAdmins(
+      'VICTIM_PROFILE_AGREEMENT_ASSIGNED',
+      {
+        type: NotificationType.VICTIM_PROFILE_AGREEMENT_ASSIGNED,
+        title: 'Profile Agreement Changed',
+        body: "A victim profile's billing agreement has been reassigned.",
+        entity: 'VictimProfile',
+        entityId: event.profileId,
+        actionUrl: URLS.victimProfileAgreement(event.profileId),
+      },
+      event.actorId,
     );
   }
 

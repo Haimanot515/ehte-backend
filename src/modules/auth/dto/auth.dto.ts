@@ -77,6 +77,59 @@ export class SignupVerifyDto {
 }
 
 // ─────────────────────────────────────────────
+// SOCIAL SIGNUP / LOGIN — GOOGLE
+//
+// One endpoint handles both signup and login: the client gets an ID token from
+// Google's own SDK, we verify it server-side, and find-or-create the account.
+// ─────────────────────────────────────────────
+
+export class GoogleAuthDto {
+  @ApiProperty({
+    description: "ID token returned by Google Sign-In on the client (NOT an access token)",
+  })
+  @IsString()
+  @IsNotEmpty()
+  idToken: string;
+}
+
+// ─────────────────────────────────────────────
+// SOCIAL SIGNUP / LOGIN — FACEBOOK
+// ─────────────────────────────────────────────
+
+export class FacebookAuthDto {
+  @ApiProperty({
+    description: 'Access token returned by the Facebook SDK on the client',
+  })
+  @IsString()
+  @IsNotEmpty()
+  accessToken: string;
+}
+
+// ─────────────────────────────────────────────
+// SOCIAL SIGNUP / LOGIN — APPLE
+//
+// `name` is optional and only meaningful on a user's very first-ever
+// "Sign in with Apple" — Apple sends it to the client just that once, never
+// inside the token itself, so the client forwards it to us if present.
+// ─────────────────────────────────────────────
+
+export class AppleAuthDto {
+  @ApiProperty({
+    description: 'Identity token returned by Sign in with Apple',
+  })
+  @IsString()
+  @IsNotEmpty()
+  idToken: string;
+
+  @ApiPropertyOptional({
+    description: "User's full name — only ever sent by Apple on the first authorization",
+  })
+  @IsOptional()
+  @IsString()
+  name?: string;
+}
+
+// ─────────────────────────────────────────────
 // LOGIN
 // ─────────────────────────────────────────────
 

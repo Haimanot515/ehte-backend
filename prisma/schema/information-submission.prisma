@@ -1,3 +1,10 @@
+enum InformationStatus {
+  PENDING
+  UNDER_REVIEW
+  REVIEWED
+  REJECTED
+}
+
 model InformationSubmission {
   id              String            @id @default(uuid())
   userId          String?
@@ -14,7 +21,6 @@ model InformationSubmission {
   document String[]
   other    String[]
 
-  // Running total of attached media bytes, computed from statObject() results
   mediaTotalBytes Int @default(0)
 
   status     InformationStatus @default(PENDING)
@@ -22,23 +28,16 @@ model InformationSubmission {
   updatedAt  DateTime          @updatedAt
   reviewNote String?
 
-  // Per-user duplicate-submission protection, NULL keys never conflict
   idempotencyKey String?
 
   missingPerson MissingPerson @relation(fields: [missingPersonId], references: [id], onDelete: Cascade)
   user          User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  // Running total of attached media bytes, computed from statObject() results.
   @@unique([userId, idempotencyKey])
   @@index([userId])
   @@index([missingPersonId])
   @@index([status])
   @@index([status, createdAt])
   @@map("information_submission")
-}
-
-enum InformationStatus {
-  PENDING
-  UNDER_REVIEW
-  REVIEWED
-  REJECTED
 }

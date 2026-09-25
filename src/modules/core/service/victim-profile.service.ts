@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -12,7 +13,6 @@ import {
   AuditOutcome,
   AuditSeverity,
   Prisma,
-  SupportStatus,
   VictimProfile,
   VictimProfileStatus,
 } from '@prisma/client';
@@ -75,6 +75,39 @@ const STALE_ELIGIBLE_EXCLUDED_STATUSES: VictimProfileStatus[] = [
   VictimProfileStatus.PUBLISHED,
   VictimProfileStatus.REJECTED,
 ];
+
+// G22 (billing review, section 4 design rule): money never leaves this
+// service as a JS number. Number() loses precision on large sums and
+// invites float-arithmetic bugs; a decimal string round-trips exactly.
+const money = (d: Prisma.Decimal | number | string | null | undefined): string =>
+  d == null ? '0.00' : new Prisma.Decimal(d).toFixed(2);
+
+// G22: reconcileAllTotals used to run Promise.all over every profile in
+// the table at once — fine at a few hundred rows, a self-inflicted outage
+// once the platform has thousands. Runs `fn` over `items` with at most
+// `size` in flight at a time.
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  size: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let cursor = 0;
+  async function worker() {
+    while (cursor < items.length) {
+      const i = cursor++;
+      results[i] = await fn(items[i]);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(size, items.length) }, worker));
+  return results;
+}
+
+// G11: fields findOne() must never return unless the caller has been
+// through the SUPPORT_PAYMENT_MANAGE-gated bank-details endpoint. Listed
+// explicitly (rather than an exclusion) so a future schema field is safe
+// by default instead of leaking until someone remembers to blocklist it.
+const BANK_DETAIL_FIELDS = ['bankAccountName', 'bankAccountNumber', 'bankName'] as const;
 
 @Injectable()
 export class VictimProfileService {
@@ -648,7 +681,11 @@ export class VictimProfileService {
     return profile;
   }
 
-  // Includes bank details, so it's deliberately not cached.
+  // G11: this used to return every scalar column, bank details included,
+  // to anyone with PROFILE_READ — a much lower bar than SUPPORT_PAYMENT_MANAGE,
+  // which is what's required to *change* those same fields. Bank fields are
+  // now stripped from the object entirely; use findBankDetails() from a
+  // route gated on SUPPORT_PAYMENT_MANAGE when they're actually needed.
   async findOne(id: string) {
     const profile = await this.prisma.victimProfile.findUnique({
       where: { id },
@@ -668,6 +705,31 @@ export class VictimProfileService {
             createdAt: true,
           },
         },
+      },
+    });
+
+    if (!profile) {
+      throw new NotFoundException('victim_profile_not_found');
+    }
+
+    for (const field of BANK_DETAIL_FIELDS) {
+      delete (profile as Record<string, unknown>)[field];
+    }
+
+    return profile;
+  }
+
+  // G11: the SUPPORT_PAYMENT_MANAGE-gated counterpart to findOne(). Call
+  // this from a route that requires the same permission updateBankDetails()
+  // already requires, not from the plain PROFILE_READ :id route.
+  async findBankDetails(id: string) {
+    const profile = await this.prisma.victimProfile.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        bankAccountName: true,
+        bankAccountNumber: true,
+        bankName: true,
       },
     });
 
@@ -843,11 +905,11 @@ export class VictimProfileService {
       name: profile.name,
       story: profile.story ?? '',
       supportType: profile.supportType,
-      supportGoal: profile.supportGoal ? Number(profile.supportGoal) : null,
+      supportGoal: profile.supportGoal ? money(profile.supportGoal) : null,
 
       photo: profile.involvesChild ? [] : profile.photo,
 
-      totalRaised: Number(profile.totalRaised),
+      totalRaised: money(profile.totalRaised),
 
       createdAt: profile.createdAt,
     };
@@ -1002,6 +1064,30 @@ export class VictimProfileService {
 
     this.assertAdminCanAccessProfile(admin, profile, AuditEventEnum.VICTIM_PROFILE_DELETED);
 
+    // G8: a PAID payment with an unsettled allocation means real money is
+    // still owed to someone against this profile (recipient, institution or
+    // platform). Deleting the profile out from under it either cascades the
+    // Support row away (losing the split breakdown, G8's original finding)
+    // or — once the section-9 sync migration lands — fails with a DB-level
+    // Restrict error instead of this readable one. Either way, block first.
+    const unsettled = await this.prisma.payment.findFirst({
+      where: {
+        victimProfileId: id,
+        status: 'PAID',
+        allocations: { some: { settlementStatus: 'PENDING' } },
+      },
+      select: { id: true },
+    });
+    if (unsettled) {
+      this.emitProfileFailure(
+        admin,
+        AuditEventEnum.VICTIM_PROFILE_DELETED,
+        profile,
+        'victim_profile_has_unsettled_payments',
+      );
+      throw new ConflictException('victim_profile_has_unsettled_payments');
+    }
+
     const result = await this.prisma.victimProfile.deleteMany({
       where: { id, updatedAt: profile.updatedAt },
     });
@@ -1037,7 +1123,7 @@ export class VictimProfileService {
         involvesChild: profile.involvesChild,
         mediaFilesDeleted: mediaKeys.length,
         mediaTotalBytes: profile.mediaTotalBytes,
-        totalRaisedAtDeletion: Number(profile.totalRaised),
+        totalRaisedAtDeletion: money(profile.totalRaised),
       },
     });
 
@@ -1144,7 +1230,7 @@ export class VictimProfileService {
       published: counts[VictimProfileStatus.PUBLISHED] ?? 0,
       unpublished: counts[VictimProfileStatus.UNPUBLISHED] ?? 0,
       rejected: counts[VictimProfileStatus.REJECTED] ?? 0,
-      totalRaisedAllProfiles: Number(raised._sum.totalRaised ?? 0),
+      totalRaisedAllProfiles: money(raised._sum.totalRaised ?? 0),
     };
   }
 
@@ -1158,7 +1244,7 @@ export class VictimProfileService {
     });
 
     return {
-      totalRaisedAllProfiles: Number(raised._sum.totalRaised ?? 0),
+      totalRaisedAllProfiles: money(raised._sum.totalRaised ?? 0),
     };
   }
 
@@ -1663,6 +1749,20 @@ export class VictimProfileService {
       AuditEventEnum.VICTIM_PROFILE_BANK_DETAILS_UPDATED,
     );
 
+    // G12: a minor cannot be the payout account holder. If the profile
+    // involves a child, whoever is filling this form must say who the
+    // account actually belongs to (parent, guardian, or another adult) —
+    // SELF is only valid for a non-child profile.
+    if (profile.involvesChild && data.accountHolderRelationship === 'SELF') {
+      this.emitProfileFailure(
+        admin,
+        AuditEventEnum.VICTIM_PROFILE_BANK_DETAILS_UPDATED,
+        profile,
+        'account_holder_cannot_be_the_child',
+      );
+      throw new BadRequestException('account_holder_cannot_be_the_child');
+    }
+
     const wasApproved = profile.isAdminApproved;
     const isAdminApproved = wasApproved ? false : profile.isAdminApproved;
 
@@ -1690,6 +1790,32 @@ export class VictimProfileService {
       { admin, action: AuditEventEnum.VICTIM_PROFILE_BANK_DETAILS_UPDATED, profile },
     );
 
+    // G40 (section 9): PayoutDestination is meant to become the only source
+    // of truth for where money goes, but nothing writes to it today except
+    // this transitional dual-write. One-per-profile owner, so upsert on
+    // victimProfileId. isVerified deliberately left false/unset here — G2
+    // requires an approver to verify the destination before it's usable,
+    // not whoever just typed it into this form.
+    await this.prisma.payoutDestination.upsert({
+      where: { victimProfileId: id },
+      create: {
+        rail: 'BANK',
+        bankName: data.bankName,
+        accountNumber: data.bankAccountNumber,
+        accountHolder: data.accountHolderName,
+        victimProfileId: id,
+      },
+      update: {
+        bankName: data.bankName,
+        accountNumber: data.bankAccountNumber,
+        accountHolder: data.accountHolderName,
+        // A changed destination is not the one that was verified.
+        // TODO(section 9 sync migration): also clear verifiedAt/verifiedById
+        // once those columns exist — today isVerified is all there is.
+        isVerified: false,
+      },
+    });
+
     await this.cache.invalidateVictimProfileEverywhere(id);
 
     this.emitAudit({
@@ -1716,6 +1842,13 @@ export class VictimProfileService {
           data.bankAccountNumber !== undefined &&
           data.bankAccountNumber !== profile.bankAccountNumber,
         bankNameChanged: data.bankName !== undefined && data.bankName !== profile.bankName,
+        accountHolderRelationship: data.accountHolderRelationship,
+        // TODO(section 9 sync migration): bankCode has no persisted column
+        // yet on VictimProfile or PayoutDestination — kept here so it's at
+        // least traceable in the audit trail rather than silently dropped,
+        // until the schema catches up and disbursement.service.ts can
+        // validate it against Chapa's banks list (G4).
+        bankCodeProvided: data.bankCode,
       },
     });
 
@@ -1990,23 +2123,31 @@ export class VictimProfileService {
     return updatedProfile;
   }
 
+  // G22 / design rule (section 4): "compute every total from Payment
+  // (PAID) and PaymentAllocation, never from Support amounts." The old
+  // version summed Support.recipientAmount ?? Support.amount — Support is
+  // a mirror billing writes for its own record-keeping, not the ledger,
+  // and the ?? fallback silently substituted the *gross* pledge whenever
+  // recipientAmount was null, overstating what the recipient actually got.
+  // totalRaised is defined here as gross paid (Payment.amount summed where
+  // status=PAID), matching the "pick one public number" rule and what
+  // FundingQueryService.getPublicProfileFunding computes independently —
+  // the two should never drift apart because they now share one definition.
   async reconcileProfileTotal(admin: CurrentUserDto, id: string, autoCorrect: boolean) {
     const profile = await this.prisma.victimProfile.findUnique({ where: { id } });
     if (!profile) {
       throw new NotFoundException('victim_profile_not_found');
     }
 
-    const supports = await this.prisma.support.findMany({
-      where: { victimProfileId: id, status: SupportStatus.CONFIRMED },
-      select: { amount: true, recipientAmount: true },
+    const agg = await this.prisma.payment.aggregate({
+      where: { victimProfileId: id, status: 'PAID' },
+      _sum: { amount: true },
+      _count: true,
     });
 
-    const liveTotal = supports.reduce(
-      (sum, s) => sum + Number(s.recipientAmount ?? s.amount ?? 0),
-      0,
-    );
-    const cachedTotal = Number(profile.totalRaised);
-    const mismatch = Math.abs(liveTotal - cachedTotal) > 0.01;
+    const liveTotal = new Prisma.Decimal(agg._sum.amount ?? 0);
+    const cachedTotal = new Prisma.Decimal(profile.totalRaised);
+    const mismatch = liveTotal.sub(cachedTotal).abs().gt('0.01');
 
     let corrected = false;
 
@@ -2032,31 +2173,34 @@ export class VictimProfileService {
         entityLabel: this.profileLabel(profile),
         diff: {
           result: corrected ? 'success' : 'mismatch_detected',
-          previousCachedTotal: cachedTotal,
-          liveTotal,
+          previousCachedTotal: money(cachedTotal),
+          liveTotal: money(liveTotal),
           corrected,
         },
         metadata: {
-          difference: Number((liveTotal - cachedTotal).toFixed(2)),
-          confirmedSupportCount: supports.length,
+          difference: money(liveTotal.sub(cachedTotal)),
+          paidPaymentCount: agg._count,
         },
       });
     }
 
     return {
       victimProfileId: id,
-      cachedTotal,
-      liveTotal,
+      cachedTotal: money(cachedTotal),
+      liveTotal: money(liveTotal),
       mismatch,
       corrected,
     };
   }
 
+  // G22: was an unbounded Promise.all over every profile in the table —
+  // fine in dev, a self-inflicted DB connection-pool exhaustion once there
+  // are thousands of profiles. Bounded to 10 concurrent reconciliations.
   async reconcileAllTotals(admin: CurrentUserDto, autoCorrect: boolean) {
     const profiles = await this.prisma.victimProfile.findMany({ select: { id: true } });
 
-    const results = await Promise.all(
-      profiles.map((p) => this.reconcileProfileTotal(admin, p.id, autoCorrect)),
+    const results = await mapWithConcurrency(profiles, 10, (p) =>
+      this.reconcileProfileTotal(admin, p.id, autoCorrect),
     );
 
     return results.filter((r) => r.mismatch);

@@ -24,6 +24,42 @@ model MissingPerson {
   rewardApproved       Boolean @default(false)
   rewardDetails        String?
   rewardOffered        Boolean @default(false)
+  rewardCurrency       String  @default("ETB")
+
+  // Section 22: published reward terms are versioned so a claim submitted under
+  // an earlier offer preserves what was publicly offered at submission time.
+  // Bumped on every change to rewardAmount/rewardDetails/rewardConditions after
+  // first publication.
+  publicRewardVersion Int     @default(1)
+  rewardConditions    String?
+
+  // Section 6-9 / 17-19: funding method and the reserved/funded/unfunded split of
+  // the reward principal. Separate from rewardAmount (the OFFER) and separate
+  // from postingFee* below (the fee is never mixed into the reward balance,
+  // section 8 / section 33).
+  fundingMethod  RewardFundingMethod?
+  fundingStatus  RewardFundingStatus  @default(UNFUNDED)
+  fundedAmount   Decimal              @default(0) @db.Decimal(14, 2) // sum of PAID MISSING_PERSON_REWARD payments
+  reservedAmount Decimal              @default(0) @db.Decimal(14, 2) // PREPAID funds reserved for this case only
+  sponsorUserId  String? // set when the sponsor is an individual/family distinct from the case owner
+
+  // Section 5 / 8 / 27: the posting/promotion fee, tracked independently of the
+  // reward principal. Amount/currency/status mirror VictimProfile's posting-fee
+  // fields (see victim-profile.prisma) for the same reason: publication must be
+  // blocked on POSTING_FEE_PAID regardless of reward funding state.
+  postingFeeAmount   Decimal?         @db.Decimal(14, 2)
+  postingFeeCurrency String           @default("ETB")
+  postingFeeStatus   PostingFeeStatus @default(NOT_REQUIRED)
+
+  // Section 11-12: admin-selected evaluation weights for this case, as whole
+  // percentages that must sum to 100. Nullable until an admin configures them
+  // (a case with a single obvious informant may never need weighting at all).
+  timeWeight       Int?
+  evidenceWeight   Int?
+  credibilityWeight Int?
+
+  agreementId      String?
+  agreementVersion Int?
 
   // Per-user duplicate-submission protection, NULL keys never conflict
   idempotencyKey String?
@@ -34,18 +70,26 @@ model MissingPerson {
   claimedByUserId String?
   claimedAt       DateTime?
 
-  // Child-safety dual control, a second distinct admin must confirm before APPROVED
   childSafetyFirstConfirmedByUserId String?
   childSafetyFirstConfirmedAt       DateTime?
 
+  // FOUND/EXPIRED/CANCELLED closure bookkeeping (section 21).
+  closureReason String?
+  closedAt      DateTime?
+
   informationSubmissions InformationSubmission[]
+  rewardClaims           RewardClaim[]
   user                   User?                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  agreement              Agreement?              @relation(fields: [agreementId], references: [id])
+  // Reward-funding and posting-fee payments that reference this case.
+  payments               Payment[]
 
   @@unique([userId, idempotencyKey])
   @@index([userId])
   @@index([status])
   @@index([personType])
   @@index([status, createdAt])
+  @@index([fundingStatus])
   @@map("missing_person")
 }
 
@@ -61,4 +105,33 @@ enum MissingPersonStatus {
   REJECTED
   FOUND
   MORE_INFORMATION_REQUESTED
+  EXPIRED
+  CANCELLED
+}
+
+// Section 7 / 17-19
+enum RewardFundingMethod {
+  PROMISE_TO_PAY
+  PREPAID
+}
+
+enum RewardFundingStatus {
+  UNFUNDED
+  PARTIALLY_FUNDED
+  FULLY_FUNDED
+  PAYMENT_DUE // PROMISE_TO_PAY case became payable; sponsor owes the money now
+  PAYMENT_OVERDUE
+  PAYMENT_DEFAULTED
+  REFUND_DUE
+  REFUNDED
+}
+
+// Shared by VictimProfile and MissingPerson posting fees (section 5 / 8 / 27).
+enum PostingFeeStatus {
+  NOT_REQUIRED
+  PENDING
+  PAID
+  WAIVED
+  REFUND_DUE
+  REFUNDED
 }

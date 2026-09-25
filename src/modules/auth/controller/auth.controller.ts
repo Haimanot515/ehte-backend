@@ -14,6 +14,9 @@ import {
   ResetPasswordDto,
   ChangePasswordInitiateDto,
   RefreshTokenDto,
+  GoogleAuthDto,
+  FacebookAuthDto,
+  AppleAuthDto,
 } from '../dto/auth.dto';
 
 import { AllowAnonymous } from 'src/common/decorators/public.decorator';
@@ -74,6 +77,45 @@ export class AuthController {
   })
   async login(@Body() data: LoginDto) {
     return this.authService.login(data);
+  }
+
+  // SOCIAL LOGIN — GOOGLE. Covers signup and login: first sign-in creates the
+  // account, a repeat one just logs in. Same throttle band as password login since
+  // it's also an unauthenticated, credential-adjacent endpoint.
+
+  @AllowAnonymous()
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @Post('social/google')
+  @ApiOperation({
+    summary: 'Sign up or log in with a Google ID token (USER accounts only)',
+  })
+  async loginWithGoogle(@Body() data: GoogleAuthDto) {
+    return this.authService.loginWithGoogle(data);
+  }
+
+  // SOCIAL LOGIN — FACEBOOK.
+
+  @AllowAnonymous()
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @Post('social/facebook')
+  @ApiOperation({
+    summary: 'Sign up or log in with a Facebook access token (USER accounts only)',
+  })
+  async loginWithFacebook(@Body() data: FacebookAuthDto) {
+    return this.authService.loginWithFacebook(data);
+  }
+
+  // SOCIAL LOGIN — APPLE. Required alongside Google/Facebook on iOS per App Store
+  // review guideline 4.8.
+
+  @AllowAnonymous()
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @Post('social/apple')
+  @ApiOperation({
+    summary: 'Sign up or log in with Sign in with Apple (USER accounts only)',
+  })
+  async loginWithApple(@Body() data: AppleAuthDto) {
+    return this.authService.loginWithApple(data);
   }
 
   // REFRESH TOKEN. Global default throttle — requires a valid signed token, not a guessable credential.

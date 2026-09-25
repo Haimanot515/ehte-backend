@@ -20,6 +20,7 @@ import emailConfig from './config/email.config';
 import { PrismaModule } from './prisma/prisma.module';
 import { MinioModule } from './services/minio/minio.module';
 import { RedisModule } from './services/redis/redis.module';
+import { RedisThrottlerStorage } from './services/redis/redis-throttler.storage';
 import { AppLoggerModule } from './common/logger/logger.module';
 import { RequestContextModule } from './common/request-context/request-context.module';
 import { EmailModule } from './services/email/email.module';
@@ -56,6 +57,41 @@ import { RolesSeeder } from './common/seed/roles.seeder';
 import { PermissionsSeeder } from './common/seed/permissions.seeder';
 import { SeedOrchestratorService } from './common/seed/seed-orchestrator.service';
 
+/**
+ * Production Redis URL rules (applied to REDIS_URL and REDIS_SECURITY_URL):
+ *  - must carry a password (redis://:password@host:port), and
+ *  - must use TLS (rediss://), unless REDIS_ALLOW_INSECURE=true.
+ * The cache holds victim, child and tip data, and the security instance holds
+ * lockout and throttle state, so neither should run unauthenticated or in
+ * clear text. Outside production this is a no-op.
+ */
+const requireSecureRedisUrl = (value: string, helpers: Joi.CustomHelpers) => {
+  const root = (helpers.state.ancestors?.[0] ?? {}) as Record<string, unknown>;
+  if (root.NODE_ENV !== 'production') return value;
+
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return value; // .uri() already reports a malformed URL
+  }
+
+  const insecureAllowed = String(root.REDIS_ALLOW_INSECURE) === 'true';
+  if (!insecureAllowed && url.protocol !== 'rediss:') {
+    return helpers.message({
+      custom: '{{#label}} must use rediss:// (TLS) in production, or set REDIS_ALLOW_INSECURE=true',
+    });
+  }
+  if (!url.password) {
+    return helpers.message({
+      custom: '{{#label}} must include a password (redis://:password@host:port) in production',
+    });
+  }
+  return value;
+};
+
+const REDIS_URL_SCHEMES = { scheme: ['redis', 'rediss'] };
+
 @Module({
   imports: [
     ConfigModule.forRoot({
@@ -84,6 +120,19 @@ import { SeedOrchestratorService } from './common/seed/seed-orchestrator.service
         JWT_EXPIRES_IN: Joi.string().default('15m'),
         JWT_REFRESH_SECRET: Joi.string().min(32).optional(),
         JWT_REFRESH_EXPIRES_IN: Joi.string().default('7d'),
+
+        // Social login (SocialAuthUtil, src/common/utils/social-auth.util.ts).
+        // Optional at the schema level — the app boots fine with social login
+        // entirely unconfigured — but SocialAuthUtil reads all three via
+        // getOrThrow(), so setting only HALF of a pair (e.g. FACEBOOK_APP_ID
+        // without FACEBOOK_APP_SECRET) used to fail silently at boot and only
+        // surface on the first real request. The .and(...) below at least
+        // catches that one Facebook case at boot; Google/Apple are single
+        // values so there's no pair to enforce.
+        GOOGLE_CLIENT_ID: Joi.string().optional(),
+        FACEBOOK_APP_ID: Joi.string().optional(),
+        FACEBOOK_APP_SECRET: Joi.string().optional(),
+        APPLE_CLIENT_ID: Joi.string().optional(),
 
         OTP_EXPIRES_IN_MINUTES: Joi.number().default(10),
         OTP_RESEND_COOLDOWN_SECONDS: Joi.number().default(60),
@@ -116,8 +165,12 @@ import { SeedOrchestratorService } from './common/seed/seed-orchestrator.service
         SENDET_TIMEOUT_MS: Joi.number().default(10000),
 
         // Optional: PUSH delivery is disabled when unset, everything else still boots.
+        // All three optional individually, but if you set ANY one of them you must
+        // set all three — a partial config used to fail silently (push just stayed
+        // off with no error), which made misconfiguration hard to notice. Enforced
+        // below via .and(...) on the schema.
         FIREBASE_PROJECT_ID: Joi.string().optional(),
-        FIREBASE_CLIENT_EMAIL: Joi.string().optional(),
+        FIREBASE_CLIENT_EMAIL: Joi.string().email().optional(),
         FIREBASE_PRIVATE_KEY: Joi.string().optional(),
 
         MINIO_ENDPOINT: Joi.string().required(),
@@ -129,11 +182,46 @@ import { SeedOrchestratorService } from './common/seed/seed-orchestrator.service
         MINIO_REGION: Joi.string().default('us-east-1'),
         DURATION_OF_PRE_SIGNED_DOCUMENT: Joi.number().default(600),
 
-        REDIS_URL: Joi.string().optional(),
+        // Redis. In production the server refuses to start unless Redis is
+        // reached over TLS (rediss://) with a password. REDIS_URL wins over
+        // host/port; host/port mode has no TLS support, so in production it is
+        // only accepted with REDIS_ALLOW_INSECURE=true.
+        REDIS_ALLOW_INSECURE: Joi.boolean().default(false),
+        REDIS_URL: Joi.string()
+          .uri(REDIS_URL_SCHEMES)
+          .custom(requireSecureRedisUrl)
+          .when('NODE_ENV', {
+            is: 'production',
+            then: Joi.string().when('REDIS_ALLOW_INSECURE', {
+              is: true,
+              then: Joi.optional(),
+              otherwise: Joi.required(),
+            }),
+            otherwise: Joi.optional(),
+          }),
         REDIS_HOST: Joi.string().default('localhost'),
         REDIS_PORT: Joi.number().default(6379),
-        REDIS_PASSWORD: Joi.string().optional(),
+        // Required in production when REDIS_URL (which can carry the password)
+        // is not set.
+        REDIS_PASSWORD: Joi.string().when('NODE_ENV', {
+          is: 'production',
+          then: Joi.string().when('REDIS_URL', {
+            is: Joi.exist(),
+            then: Joi.optional(),
+            otherwise: Joi.required(),
+          }),
+          otherwise: Joi.optional(),
+        }),
         REDIS_DB: Joi.number().default(0),
+        // Separate instance for throttle / lockout / reset state so cache
+        // eviction can't drop it. Unset = same Redis as the cache.
+        REDIS_SECURITY_URL: Joi.string().uri(REDIS_URL_SCHEMES).custom(requireSecureRedisUrl).optional(),
+        // Isolates environments that share one Redis. Empty string is allowed
+        // (no prefix). Defaults are set in configuration.ts.
+        REDIS_KEY_PREFIX: Joi.string()
+          .pattern(/^[A-Za-z0-9:_-]*$/)
+          .allow('')
+          .optional(),
 
         MEDIA_MAX_FILE_SIZE: Joi.number().default(52_428_800),
         MEDIA_ALLOWED_MIME_TYPES: Joi.string().default(
@@ -254,7 +342,9 @@ import { SeedOrchestratorService } from './common/seed/seed-orchestrator.service
         SMTP_PASSWORD: Joi.string().required(),
         SMTP_FROM: Joi.string().optional(),
         SMTP_FROM_NAME: Joi.string().default('Ehte'),
-      }),
+      })
+        .and('FIREBASE_PROJECT_ID', 'FIREBASE_CLIENT_EMAIL', 'FIREBASE_PRIVATE_KEY')
+        .and('FACEBOOK_APP_ID', 'FACEBOOK_APP_SECRET'),
 
       validationOptions: {
         abortEarly: false,
@@ -267,9 +357,11 @@ import { SeedOrchestratorService } from './common/seed/seed-orchestrator.service
     ScheduleModule.forRoot(),
 
     ThrottlerModule.forRootAsync({
-      imports: [ConfigModule],
-      inject: [ConfigService],
-      useFactory: (config: ConfigService) => ({
+      // RedisModule is @Global, but importing it here makes the dependency on
+      // RedisThrottlerStorage explicit.
+      imports: [ConfigModule, RedisModule],
+      inject: [ConfigService, RedisThrottlerStorage],
+      useFactory: (config: ConfigService, storage: RedisThrottlerStorage) => ({
         throttlers: [
           {
             ttl: config.get<number>('THROTTLE_TTL_SECONDS', 60) * 1000,
@@ -278,11 +370,20 @@ import { SeedOrchestratorService } from './common/seed/seed-orchestrator.service
           {
             // Named profile for payment-initiating routes (checkout, reward
             // funding). Activated on a route via @Throttle({ checkout: {} }).
+            //
+            // VERIFY: in current @nestjs/throttler versions every named
+            // throttler runs on every route unless skipped, so this 5/60s
+            // limit may be applying app-wide. Check for
+            // @SkipThrottle({ checkout: true }) on non-payment controllers.
             name: 'checkout',
             ttl: config.get<number>('PAYMENT_CHECKOUT_RATE_LIMIT_TTL_SECONDS', 60) * 1000,
             limit: config.get<number>('PAYMENT_CHECKOUT_RATE_LIMIT', 5),
           },
         ],
+        // Shared counters across instances (was unset, so ThrottlerGuard used
+        // per-instance in-memory storage). Falls back to in-memory only while
+        // Redis is unreachable.
+        storage,
       }),
     }),
 

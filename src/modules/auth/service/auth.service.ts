@@ -29,6 +29,8 @@ import { RolesEnum } from 'src/common/enums/roles.enum';
 import { OtpUtil } from 'src/common/utils/otp.util';
 import { LockoutUtil } from 'src/common/utils/lockout.util';
 import { TokenUtil } from 'src/common/utils/token.util';
+import { SocialAuthUtil, SocialProfile } from 'src/common/utils/social-auth.util';
+import { CacheService } from 'src/services/redis/cache.service'; // REDIS
 
 import { sendSms } from 'src/services/sms/sendet.service';
 import { renderOtpSms } from 'src/services/sms/templates/sms-otp.template';
@@ -70,6 +72,8 @@ type ForgotPasswordResult = {
   purpose?: 'password_reset' | 'phone_verification';
 };
 
+export type SocialProvider = 'google' | 'facebook' | 'apple';
+
 const ADMIN_ROLES = [RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN];
 
 type UserRoleWithPermissions = {
@@ -98,6 +102,8 @@ export class AuthService {
     private readonly otpUtil: OtpUtil,
     private readonly lockoutUtil: LockoutUtil,
     private readonly tokenUtil: TokenUtil,
+    private readonly socialAuthUtil: SocialAuthUtil,
+    private readonly cache: CacheService, // REDIS
   ) {}
 
   private emitAudit(payload: AuditEventPayload): void {
@@ -704,6 +710,208 @@ export class AuthService {
     );
   }
 
+  // SOCIAL LOGIN — GOOGLE. Controller passes the raw ID token straight through;
+  // only SocialAuthUtil's own verified-token payload is trusted for the email.
+  async loginWithGoogle(data: { idToken: string }): Promise<TokenPair> {
+    const profile = await this.socialAuthUtil.verifyGoogleIdToken(data.idToken);
+    return this.socialAuth('google', profile);
+  }
+
+  // SOCIAL LOGIN — FACEBOOK.
+  async loginWithFacebook(data: { accessToken: string }): Promise<TokenPair> {
+    const profile = await this.socialAuthUtil.verifyFacebookAccessToken(data.accessToken);
+    return this.socialAuth('facebook', profile);
+  }
+
+  // SOCIAL LOGIN — APPLE. `name` is only ever present on a user's first-ever
+  // Apple authorization (Apple sends it to the client that one time, never
+  // inside the token) — the controller forwards it through if given.
+  async loginWithApple(data: { idToken: string; name?: string }): Promise<TokenPair> {
+    const profile = await this.socialAuthUtil.verifyAppleIdToken(data.idToken, data.name);
+    return this.socialAuth('apple', profile);
+  }
+
+  // Shared find-or-create-or-link logic for all three social providers. One
+  // endpoint per provider covers both signup and login: a first-time sign-in
+  // creates the account, a repeat one just logs in. If the verified email
+  // already belongs to an account (e.g. they signed up with phone+password
+  // first, or used a different social provider before), we LINK this provider
+  // to that account rather than creating a duplicate — safe only because
+  // `profile.emailVerified` came from the provider's own signed token, never
+  // from anything the client told us directly.
+  //
+  // Deliberately does NOT reuse login()'s `!user.isPhoneVerified` gate: that
+  // gate exists because phone is the trusted credential for password login,
+  // and it sends an SMS OTP — which would throw outright for a social user
+  // with no phone at all (requirePhone() rejects null). Here the provider's
+  // own verification already proved identity, so a social user proceeds
+  // straight to a token regardless of phone/isPhoneVerified state. One
+  // consequence worth knowing: linking by email also bypasses that gate for a
+  // *pre-existing* phone+password account whose phone was never verified, if
+  // its stored email happens to match. Low-risk in this codebase today since
+  // SignupDto never collects email — email only reaches a phone account via a
+  // separate profile-update flow the user (not an attacker) performed — but
+  // flagging it here rather than leaving it implicit.
+  private async socialAuth(provider: SocialProvider, profile: SocialProfile): Promise<TokenPair> {
+    if (!profile.emailVerified) {
+      throw new UnauthorizedException('unverified_social_email');
+    }
+
+    const providerWhere: Prisma.UserWhereInput =
+      provider === 'google'
+        ? { googleId: profile.providerId }
+        : provider === 'facebook'
+          ? { facebookId: profile.providerId }
+          : { appleId: profile.providerId };
+    const providerData =
+      provider === 'google'
+        ? { googleId: profile.providerId }
+        : provider === 'facebook'
+          ? { facebookId: profile.providerId }
+          : { appleId: profile.providerId };
+
+    const includeRoles = {
+      userRoles: {
+        include: { role: { include: { rolePermissions: { include: { permission: true } } } } },
+      },
+    };
+
+    let user = await this.prisma.user.findFirst({
+      where: providerWhere,
+      include: includeRoles,
+    });
+
+    let isNewUser = false;
+
+    if (!user) {
+      const existingByEmail = await this.prisma.user.findUnique({
+        where: { email: profile.email },
+        include: includeRoles,
+      });
+
+      if (existingByEmail) {
+        user = await this.prisma.user.update({
+          where: { id: existingByEmail.id },
+          data: { ...providerData, isEmailVerified: true },
+          include: includeRoles,
+        });
+      } else {
+        const userRole = await this.prisma.role.findUnique({ where: { name: RolesEnum.USER } });
+
+        if (!userRole) {
+          this.emitAudit({
+            actorType: resolveActorType([]),
+            action: AuditEventEnum.USER_CREATED,
+            outcome: AuditOutcome.FAILURE,
+            severity: AuditSeverity.CRITICAL,
+            entity: 'User',
+            entityId: null,
+            diff: { result: 'failure', reason: 'user_role_not_configured' },
+            metadata: { provider, attemptedEmail: profile.email },
+          });
+          throw new BadRequestException('user_role_not_configured');
+        }
+
+        try {
+          user = await this.prisma.user.create({
+            data: {
+              name: profile.name ?? profile.email.split('@')[0],
+              email: profile.email,
+              isEmailVerified: true,
+              isActive: true,
+              ...providerData,
+              userRoles: { create: { roleId: userRole.id } },
+            },
+            include: includeRoles,
+          });
+        } catch (error) {
+          if (this.isUniqueConstraintError(error)) {
+            throw new BadRequestException('email_already_registered');
+          }
+          throw error;
+        }
+
+        isNewUser = true;
+      }
+    }
+
+    const roles = user.userRoles.map((userRole) => userRole.role.name);
+    const permissions = this.derivePermissions(user.userRoles);
+
+    if (!roles.includes(RolesEnum.USER)) {
+      this.emitAudit({
+        userId: user.id,
+        actorType: resolveActorType(roles),
+        action: AuditEventEnum.LOGIN_FAILED,
+        outcome: AuditOutcome.DENIED,
+        severity: AuditSeverity.WARNING,
+        entity: 'User',
+        entityId: user.id,
+        entityLabel: user.name ?? undefined,
+        diff: { result: 'failed', reason: 'no_user_role_use_admin_login' },
+        metadata: { method: provider },
+      });
+      throw new UnauthorizedException('use_admin_login');
+    }
+
+    // Same lockout check login() does, in the same position relative to the
+    // role check: a locked account stays locked no matter which credential
+    // type is used to prove who's asking.
+    try {
+      this.lockoutUtil.assertNotLocked(user);
+    } catch (err) {
+      this.emitAudit({
+        userId: user.id,
+        actorType: resolveActorType(roles),
+        action: AuditEventEnum.LOGIN_FAILED,
+        outcome: AuditOutcome.DENIED,
+        severity: AuditSeverity.WARNING,
+        entity: 'User',
+        entityId: user.id,
+        entityLabel: user.name ?? undefined,
+        diff: { result: 'failed', reason: 'account_locked' },
+        metadata: { method: provider },
+      });
+      throw err;
+    }
+
+    await this.lockoutUtil.resetLoginAttempts(user);
+
+    if (!user.isActive) {
+      this.emitAudit({
+        userId: user.id,
+        actorType: resolveActorType(roles),
+        action: AuditEventEnum.LOGIN_FAILED,
+        outcome: AuditOutcome.DENIED,
+        severity: AuditSeverity.WARNING,
+        entity: 'User',
+        entityId: user.id,
+        entityLabel: user.name ?? undefined,
+        diff: { result: 'failed', reason: 'account_inactive' },
+        metadata: { method: provider },
+      });
+      throw new UnauthorizedException('account_inactive');
+    }
+
+    this.emitAudit({
+      userId: user.id,
+      actorType: resolveActorType(roles),
+      action: isNewUser ? AuditEventEnum.USER_CREATED : AuditEventEnum.LOGIN_SUCCESS,
+      entity: 'User',
+      entityId: user.id,
+      entityLabel: user.name ?? undefined,
+      diff: { result: 'success' },
+      metadata: { method: provider, linkedExistingAccount: !isNewUser },
+    });
+
+    return this.tokenUtil.issueTokens(
+      user.id,
+      { phone: user.phone, email: user.email },
+      roles,
+      permissions,
+    );
+  }
+
   async forgotPassword(data: ForgotPasswordDto): Promise<ForgotPasswordResult> {
     const phone = this.normalizePhoneOrThrow(data.phone);
 
@@ -920,6 +1128,9 @@ export class AuthService {
       sessionsRevoked = revoked.count;
     });
 
+    // REDIS: every Postgres session is gone; drop the cached session/profile too (retried if Redis is down).
+    await this.cache.purgeUserCache(otpRecord.user.id);
+
     this.emitAudit({
       userId: otpRecord.user.id,
       actorType: resolveActorType(roles),
@@ -991,6 +1202,9 @@ export class AuthService {
         where: { userId: payload.sub, revokedAt: null },
         data: { revokedAt: new Date() },
       });
+
+      // REDIS: same event, same reason: nothing cached for this user may outlive the revocation.
+      await this.cache.purgeUserCache(payload.sub);
 
       this.emitAudit({
         targetUserId: payload.sub,
@@ -1081,35 +1295,40 @@ export class AuthService {
     });
   }
 
+  // REDIS: cached per user (TTL.PROFILE). Every writer of these fields must call
+  // cache.invalidateProfile(userId) or cache.purgeUserCache(userId): name, email, phone,
+  // isActive, discreet mode, roles. UserService already does for its own writers.
   async me(currentUser: CurrentUserDto) {
-    const user = await this.prisma.user.findUnique({
-      where: { id: currentUser.id },
-      select: {
-        id: true,
-        name: true,
-        phone: true,
-        email: true,
-        isActive: true,
-        discreetModeEnabled: true,
-        discreetModeUpdatedAt: true,
-        createdAt: true,
-        updatedAt: true,
-        userRoles: {
-          select: {
-            role: { select: { name: true } },
+    return this.cache.wrapProfile(currentUser.id, async () => {
+      const user = await this.prisma.user.findUnique({
+        where: { id: currentUser.id },
+        select: {
+          id: true,
+          name: true,
+          phone: true,
+          email: true,
+          isActive: true,
+          discreetModeEnabled: true,
+          discreetModeUpdatedAt: true,
+          createdAt: true,
+          updatedAt: true,
+          userRoles: {
+            select: {
+              role: { select: { name: true } },
+            },
           },
         },
-      },
+      });
+
+      if (!user) {
+        throw new NotFoundException('user_not_found');
+      }
+
+      const roles = user.userRoles.map((userRole) => userRole.role.name);
+      const { userRoles: _userRoles, ...userData } = user;
+
+      return { ...userData, roles };
     });
-
-    if (!user) {
-      throw new NotFoundException('user_not_found');
-    }
-
-    const roles = user.userRoles.map((userRole) => userRole.role.name);
-    const { userRoles: _userRoles, ...userData } = user;
-
-    return { ...userData, roles };
   }
 
   async changePasswordInitiate(
@@ -1355,6 +1574,9 @@ export class AuthService {
       sessionsRevoked = revoked.count;
     });
 
+    // REDIS: every Postgres session is gone; drop the cached session/profile too (retried if Redis is down).
+    await this.cache.purgeUserCache(otpRecord.user.id);
+
     this.emitAudit({
       userId: otpRecord.user.id,
       actorType: resolveActorType(roles),
@@ -1391,6 +1613,10 @@ export class AuthService {
       });
       sessionsRevoked = deleted.count;
     }
+
+    // REDIS: the cached session key is per user, so drop it for single-session logout too;
+    // the guard then re-checks Postgres.
+    await this.cache.purgeUserCache(user.id);
 
     const roles = user.roles ?? [];
 

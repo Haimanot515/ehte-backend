@@ -10,7 +10,7 @@ import { Roles } from '../../../common/decorators/roles.decorator';
 import { RolesEnum } from '../../../common/enums/roles.enum';
 import { PermissionsEnum as P } from '../../../common/enums/permissions.enum';
 import { AgreementService } from '../service/agreement.service';
-import { AssignAgreementDto, CreateAgreementDto, CreateInstitutionDto } from '../dto/agreement.dto';
+import { AssignAgreementDto, CreateAgreementDto, CreateInstitutionDto, RetireAgreementDto } from '../dto/agreement.dto';
 
 @ApiTags('Billing Admin')
 @ApiBearerAuth('access-token')
@@ -61,9 +61,18 @@ export class AgreementController {
     return this.agreements.assignToProfile(a.id, profileId, dto.agreementId);
   }
 
+  // Section 28: admin should see the impact review before retiring.
   @RequirePermissions(P.AGREEMENTS_ACTIVATE)
+  @Get('agreements/:id/retirement-impact')
+  retirementImpact(@Param('id') id: string) {
+    return this.agreements.getRetirementImpact(id);
+  }
+
+  // Sensitive financial transition (section 28) — same reauth guard as bank-detail edits.
+  @RequirePermissions(P.AGREEMENTS_ACTIVATE)
+  @RequireReauthentication()
   @Post('agreements/:id/retire')
-  retire(@CurrentUser() a: CurrentUserDto, @Param('id') id: string) {
-    return this.agreements.retire(a.id, id);
+  retire(@CurrentUser() a: CurrentUserDto, @Param('id') id: string, @Body() dto: RetireAgreementDto) {
+    return this.agreements.retire(a.id, id, dto);
   }
 }

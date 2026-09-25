@@ -18,11 +18,13 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { DisbursementMethod, Prisma } from '@prisma/client';
+import { DisbursementMethod, Prisma, AuditOutcome, AuditSeverity } from '@prisma/client';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { ChapaService } from '../../../services/chapa/chapa.service';
 import { BillingEventsService } from './billing-events.service';
 import { AuditEventEnum } from '../../../common/enums/shared/audit-events.enum';
+import { NotificationEventEnum } from '../../../common/enums/shared/notification-events.enum';
+import { DisbursementPaidOutEvent } from '../../misc/events/notification.events';
 
 export type ExecuteInput = {
   // CHAPA_TRANSFER
@@ -55,7 +57,21 @@ export class DisbursementService {
     return this.configService.get<number>('disbursement.processingTimeoutMinutes', 60);
   }
 
-  async create(adminId: string, allocationId: string, method: DisbursementMethod) {
+  /**
+   * rewardClaimId is required for a REWARD_BENEFICIARY allocation once the case
+   * has more than one approved informant (section 12): the allocation holds the
+   * WHOLE informant pool, and each informant is paid out from it separately.
+   * The disbursement amount is then the claim's own rewardAmount, not the
+   * allocation's full amount, and several disbursements can exist against the
+   * same allocation as long as their amounts never exceed it (section 25:
+   * "a financial claim must not be successfully disbursed twice").
+   */
+  async create(
+    adminId: string,
+    allocationId: string,
+    method: DisbursementMethod,
+    rewardClaimId?: string,
+  ) {
     const allocation = await this.prisma.paymentAllocation.findUnique({
       where: { id: allocationId },
       include: { payment: true, disbursements: true },
@@ -63,28 +79,54 @@ export class DisbursementService {
     if (!allocation) throw new NotFoundException('Allocation not found');
     if (allocation.payment.status !== 'PAID')
       throw new BadRequestException('Payment is not settled');
-    if (allocation.settlementStatus !== 'PENDING')
-      throw new BadRequestException('Allocation is not pending');
-    if (allocation.disbursements.some((d) => !['FAILED', 'CANCELLED'].includes(d.status))) {
-      throw new BadRequestException('A disbursement already exists for this allocation');
+    if (!['PENDING', 'PARTIALLY_PAID_OUT'].includes(allocation.settlementStatus)) {
+      throw new BadRequestException('Allocation is not payable');
     }
     if (allocation.partyType === 'RECIPIENT') {
+      if (allocation.disbursements.some((d) => !['FAILED', 'CANCELLED'].includes(d.status))) {
+        throw new BadRequestException('A disbursement already exists for this allocation');
+      }
       await this.loadPayableRecipient(allocation.payment.victimProfileId); // fail early
     }
-    if (allocation.partyType === 'REWARD_BENEFICIARY' && allocation.payment.missingPersonId) {
-      const claim = await this.prisma.rewardClaim.findUnique({
-        where: { missingPersonId: allocation.payment.missingPersonId },
-      });
-      if (claim?.status !== 'APPROVED') {
-        throw new BadRequestException('Reward claim has not been approved');
+
+    let amount = allocation.amount;
+
+    if (allocation.partyType === 'REWARD_BENEFICIARY') {
+      if (!rewardClaimId) {
+        throw new BadRequestException('rewardClaimId is required for a reward payout');
       }
+      const claim = await this.prisma.rewardClaim.findUnique({ where: { id: rewardClaimId } });
+      if (!claim || claim.missingPersonId !== allocation.payment.missingPersonId) {
+        throw new BadRequestException('Reward claim does not belong to this payment');
+      }
+      if (claim.status !== 'APPROVED_FOR_REWARD') {
+        throw new BadRequestException('Reward claim has not been approved for a reward');
+      }
+      if (!claim.rewardAmount) {
+        throw new BadRequestException('Reward claim has no allocated amount');
+      }
+      if (
+        allocation.disbursements.some(
+          (d) => d.rewardClaimId === rewardClaimId && !['FAILED', 'CANCELLED'].includes(d.status),
+        )
+      ) {
+        throw new BadRequestException('This claim has already been disbursed');
+      }
+      const alreadyCommitted = allocation.disbursements
+        .filter((d) => !['FAILED', 'CANCELLED'].includes(d.status))
+        .reduce((sum, d) => sum.add(d.amount), new Prisma.Decimal(0));
+      if (alreadyCommitted.add(claim.rewardAmount).gt(allocation.amount)) {
+        throw new BadRequestException('Split disbursements would exceed the funded reward pool');
+      }
+      amount = claim.rewardAmount;
     }
 
     const d = await this.prisma.disbursement.create({
       data: {
         allocationId,
+        rewardClaimId: allocation.partyType === 'REWARD_BENEFICIARY' ? rewardClaimId : null,
         method,
-        amount: allocation.amount,
+        amount,
         reference: this.chapa.generateTxRef('dsb'),
         createdById: adminId,
       },
@@ -101,13 +143,44 @@ export class DisbursementService {
   async approve(adminId: string, id: string) {
     const d = await this.prisma.disbursement.findUnique({ where: { id } });
     if (!d) throw new NotFoundException('Disbursement not found');
-    if (d.createdById === adminId) throw new ForbiddenException('A different admin must approve');
+    if (d.createdById === adminId) {
+      // FIX: the four-eyes violation itself — the exact thing this guard
+      // exists to catch — threw with no audit row at all. Same gap
+      // ReportService.assertAdminCanAccessReport() closes: write a DENIED
+      // row before throwing, so an admin repeatedly trying to self-approve
+      // leaves a trace instead of just bouncing off a 403.
+      await this.events.log({
+        actorId: adminId,
+        action: AuditEventEnum.DISBURSEMENT_APPROVED,
+        outcome: AuditOutcome.DENIED,
+        severity: AuditSeverity.WARNING,
+        entityType: 'Disbursement',
+        entityId: id,
+        metadata: { reason: 'same_admin_cannot_approve_own_disbursement' },
+      });
+      throw new ForbiddenException('A different admin must approve');
+    }
 
     const { count } = await this.prisma.disbursement.updateMany({
       where: { id, status: 'PENDING_APPROVAL' },
       data: { status: 'APPROVED', approvedById: adminId },
     });
-    if (count === 0) throw new BadRequestException('Not awaiting approval');
+    if (count === 0) {
+      // FIX: same class of gap as the four-eyes check above — a lost
+      // optimistic-concurrency race (someone else approved/executed first)
+      // threw with no audit row, unlike the equivalent
+      // report_transition_conflict guards elsewhere in this module.
+      await this.events.log({
+        actorId: adminId,
+        action: AuditEventEnum.DISBURSEMENT_APPROVED,
+        outcome: AuditOutcome.FAILURE,
+        severity: AuditSeverity.WARNING,
+        entityType: 'Disbursement',
+        entityId: id,
+        metadata: { reason: 'not_awaiting_approval', currentStatus: d.status },
+      });
+      throw new BadRequestException('Not awaiting approval');
+    }
     await this.events.log({
       actorId: adminId,
       action: AuditEventEnum.DISBURSEMENT_APPROVED,
@@ -165,13 +238,16 @@ export class DisbursementService {
         });
         // Stays PROCESSING until syncProcessing() sees it succeed.
       } else {
-        await this.prisma.$transaction(async (tx) => {
+        const outcome = await this.prisma.$transaction(async (tx) => {
           await tx.disbursement.update({
             where: { id },
             data: { externalReference: input.externalReference },
           });
-          await this.markPaidOut(tx, id);
+          return this.markPaidOut(tx, id);
         });
+        if (outcome.paid) {
+          await this.notifyPaidOut(id, outcome.partyType, outcome.missingPersonId, outcome.rewardClaimId);
+        }
       }
     } catch (err) {
       await this.prisma.disbursement.update({
@@ -181,6 +257,8 @@ export class DisbursementService {
       await this.events.log({
         actorId: adminId,
         action: AuditEventEnum.DISBURSEMENT_FAILED,
+        outcome: AuditOutcome.FAILURE,
+        severity: AuditSeverity.WARNING,
         entityType: 'Disbursement',
         entityId: id,
       });
@@ -260,7 +338,25 @@ export class DisbursementService {
       try {
         const remote = await this.chapa.verifyTransfer(d.reference);
         if (remote.status === 'success') {
-          await this.prisma.$transaction((tx) => this.markPaidOut(tx, d.id));
+          const outcome = await this.prisma.$transaction((tx) => this.markPaidOut(tx, d.id));
+          if (outcome.paid) {
+            // FIX: this branch settles CHAPA_TRANSFER payouts from the cron,
+            // parallel to the MANUAL_BANK branch of execute() above — but was
+            // missing the events.log() call that branch has, so a payout
+            // settled here fired a user notification with no audit trail
+            // entry at all. actorId: null follows BillingEventsService.log's
+            // existing system-actor convention (null -> ActorType.SYSTEM),
+            // same as how webhook-triggered billing events are already
+            // logged elsewhere in this module.
+            await this.events.log({
+              actorId: null,
+              action: AuditEventEnum.DISBURSEMENT_EXECUTED,
+              entityType: 'Disbursement',
+              entityId: d.id,
+              metadata: { source: 'chapa_sync_cron', partyType: outcome.partyType },
+            });
+            await this.notifyPaidOut(d.id, outcome.partyType, outcome.missingPersonId, outcome.rewardClaimId);
+          }
           continue;
         }
         if (remote.status === 'failed') {
@@ -309,6 +405,10 @@ export class DisbursementService {
     void this.events.log({
       actorId: d.createdById,
       action: AuditEventEnum.SECURITY_ALERT,
+      // Same reasoning as PAYMENT_EXPIRED in payment.service.ts: severity
+      // only, no `outcome` — nothing was attempted-and-rejected here, it's
+      // a stuck-state flag for an admin to look at, not a failed operation.
+      severity: AuditSeverity.WARNING,
       entityType: 'Disbursement',
       entityId: d.id,
       metadata: {
@@ -321,27 +421,86 @@ export class DisbursementService {
   }
 
   // ── Shared completion, always inside a transaction ────────────────────────
-
-  private async markPaidOut(tx: Prisma.TransactionClient, id: string) {
+  //
+  // Returns what the caller needs to fire the PAID_OUT notification AFTER
+  // the transaction commits — never emit from inside a transaction that
+  // might still roll back.
+  private async markPaidOut(
+    tx: Prisma.TransactionClient,
+    id: string,
+  ): Promise<{
+    paid: boolean;
+    partyType?: string;
+    missingPersonId?: string | null;
+    rewardClaimId?: string | null;
+  }> {
     const { count } = await tx.disbursement.updateMany({
       where: { id, status: { in: ['PROCESSING', 'APPROVED'] } },
       data: { status: 'PAID_OUT' },
     });
-    if (count === 0) return;
+    if (count === 0) return { paid: false };
 
     const d = await tx.disbursement.findUniqueOrThrow({
       where: { id },
-      include: { allocation: { include: { payment: true } } },
+      include: { allocation: { include: { payment: true, disbursements: true } } },
     });
+
+    // A reward payout may be one of several disbursements against the same
+    // allocation (split among informants) — the allocation only moves to the
+    // fully PAID_OUT settlement status once every committed disbursement has
+    // settled; until then it stays PARTIALLY_PAID_OUT (section 25).
+    const paidOutTotal = d.allocation.disbursements
+      .filter((x) => x.id === d.id || x.status === 'PAID_OUT')
+      .reduce((sum, x) => sum.add(x.amount), new Prisma.Decimal(0));
+    const settlementStatus = paidOutTotal.gte(d.allocation.amount) ? 'PAID_OUT' : 'PARTIALLY_PAID_OUT';
     await tx.paymentAllocation.update({
       where: { id: d.allocationId },
-      data: { settlementStatus: 'PAID_OUT' },
+      data: { settlementStatus },
     });
-    if (d.allocation.partyType === 'REWARD_BENEFICIARY' && d.allocation.payment.missingPersonId) {
-      await tx.rewardClaim.updateMany({
-        where: { missingPersonId: d.allocation.payment.missingPersonId, status: 'APPROVED' },
+
+    if (d.allocation.partyType === 'REWARD_BENEFICIARY' && d.rewardClaimId) {
+      await tx.rewardClaim.update({
+        where: { id: d.rewardClaimId },
         data: { status: 'PAID_OUT' },
       });
     }
+
+    return {
+      paid: true,
+      partyType: d.allocation.partyType,
+      missingPersonId: d.allocation.payment.missingPersonId,
+      rewardClaimId: d.rewardClaimId,
+    };
+  }
+
+  // Resolves who to notify for a PAID_OUT disbursement and fires it. Only
+  // REWARD_BENEFICIARY is resolvable today, via the same
+  // InformationSubmission.userId path used in RewardService.approveClaim —
+  // same unconfirmed-field-name caveat applies. RECIPIENT payouts go to a
+  // VictimProfile, which isn't loaded here; wire that once the profile's
+  // owning userId is confirmed, rather than guessing a join.
+  private async notifyPaidOut(
+    disbursementId: string,
+    partyType?: string,
+    missingPersonId?: string | null,
+    rewardClaimId?: string | null,
+  ) {
+    if (partyType !== 'REWARD_BENEFICIARY' || !rewardClaimId) return;
+
+    // rewardClaimId now identifies exactly which informant this specific
+    // disbursement paid (a case can have several, see reward-claim.prisma) —
+    // no more missingPersonId-keyed lookup, which only ever worked for a
+    // single-informant case.
+    const claim = await this.prisma.rewardClaim.findUnique({
+      where: { id: rewardClaimId },
+      select: { informantUserId: true },
+    });
+    if (!claim?.informantUserId) return;
+
+    this.events.notify<DisbursementPaidOutEvent>(NotificationEventEnum.DISBURSEMENT_PAID_OUT, {
+      userId: claim.informantUserId,
+      disbursementId,
+      partyType,
+    });
   }
 }

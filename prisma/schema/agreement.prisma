@@ -1,5 +1,3 @@
-// prisma/schema/agreement.prisma
-
 enum AgreementStatus {
   DRAFT
   ACTIVE
@@ -7,50 +5,58 @@ enum AgreementStatus {
 }
 
 enum RuleMode {
-  PERCENT_BPS // basis points: 500 = 5%
+  PERCENT_BPS
   FLAT
 }
 
-// An agreement row is immutable once ACTIVE. To change terms, create version + 1
-// and re-point the profile. Old payments keep their snapshot.
-//
-// FIX: added @@unique([type, institutionId, version]) below. Without a DB-level
-// constraint, AgreementService.createDraft()'s read-latest-version-then-create
-// step was only an application-level check — two concurrent createDraft calls
-// for the same (type, institutionId) could read the same `last.version` and
-// both succeed with a duplicate version number, silently corrupting the
-// version history. The constraint turns that race into a P2002 that
-// AgreementService.createAgreementWithUniqueVersion() now catches and retries
-// against, the same pattern ReportService uses for caseReference collisions.
-//
-// NOTE: on Postgres, NULL is distinct in unique constraints, so multiple
-// DIRECT agreements (institutionId: null) do not collide with each other on
-// institutionId alone — version is still what disambiguates them within that
-// group, and this constraint enforces that correctly.
 model Agreement {
   id            String               @id @default(uuid())
-  type          SupportAgreementType // existing enum (also used by Support.agreementType)
+  type          SupportAgreementType
   institutionId String?
-  institution   Institution?         @relation(fields: [institutionId], references: [id])
   version       Int                  @default(1)
   status        AgreementStatus      @default(DRAFT)
+  currency      String               @default("ETB")
   effectiveFrom DateTime
   effectiveTo   DateTime?
   approvedById  String?
   createdAt     DateTime             @default(now())
 
-  rules    AllocationRule[]
-  payments Payment[]
+  // Section 14 / 27 / 28: policies are attached to the agreement version they were
+  // accepted under, not edited in place — a new agreement version is required to
+  // change them, same as any other commercial term.
+  refundPolicy       String?
+  cancellationPolicy String?
 
+  // Section 3 / 28: retirement must capture a reason and be attributable; an
+  // impact review (assigned/published profiles, pending payments, open reward
+  // cases) is computed on demand by AgreementService.retire() rather than stored,
+  // since it is a point-in-time report, not a fact about the agreement itself.
+  retirementReason String?
+  retiredById      String?
+  retiredAt        DateTime?
+
+  institution    Institution?     @relation(fields: [institutionId], references: [id])
+  rules          AllocationRule[]
+  payments       Payment[]
+  supports       Support[]
+  victimProfiles VictimProfile[]
+  missingPersons MissingPerson[]
+
+  // @@unique below turns concurrent createDraft() version races into a P2002 that
+  // AgreementService.createAgreementWithUniqueVersion() catches and retries on.
   @@unique([type, institutionId, version])
   @@map("agreements")
 }
 
-// RECIPIENT is never stored as a rule: recipient = total - sum(rules).
+// RuleLines. A rule's paymentType determines which financial direction it belongs
+// to (section 33): SUPPORT = Victim Profile Payment allocation, MISSING_PERSON_REWARD
+// = Reward allocation, *_POSTING_FEE = Posting/Promotion Fee allocation. Keeping them
+// as PaymentType variants (rather than a separate "businessDomain" column) means
+// AllocationService's existing per-paymentType rule lookup already isolates the three
+// directions without extra branching.
 model AllocationRule {
   id            String      @id @default(uuid())
   agreementId   String
-  agreement     Agreement   @relation(fields: [agreementId], references: [id], onDelete: Restrict)
   paymentType   PaymentType
   partyType     PartyType
   institutionId String?
@@ -58,6 +64,11 @@ model AllocationRule {
   valueBps      Int?
   flatAmount    Decimal?    @db.Decimal(14, 2)
 
+  agreement   Agreement    @relation(fields: [agreementId], references: [id], onDelete: Restrict)
+  institution Institution? @relation(fields: [institutionId], references: [id])
+
+  // RECIPIENT (support) / REWARD_BENEFICIARY-as-remainder (reward pool) is never
+  // stored as a rule: it is always total - sum(other rules) for that paymentType.
   @@index([agreementId, paymentType])
   @@map("allocation_rules")
 }

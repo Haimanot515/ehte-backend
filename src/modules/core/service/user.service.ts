@@ -23,6 +23,7 @@ import { RolesEnum } from 'src/common/enums/roles.enum';
 import { OtpUtil } from 'src/common/utils/otp.util';
 import { LockoutUtil } from 'src/common/utils/lockout.util';
 import { MinioService } from 'src/services/minio/minio.service';
+import { CacheService } from 'src/services/redis/cache.service';
 
 import { AuditEventEnum } from 'src/common/enums/shared/audit-events.enum';
 import { AuditEventPayload } from 'src/modules/misc/events/audit.events';
@@ -49,6 +50,7 @@ export class UserService {
     private readonly otpUtil: OtpUtil,
     private readonly lockoutUtil: LockoutUtil,
     private readonly minioService: MinioService,
+    private readonly cache: CacheService,
   ) {}
 
   private emitAudit(payload: AuditEventPayload): void {
@@ -219,6 +221,8 @@ export class UserService {
         where: { id: currentUser.id },
         data: { name: data.name.trim() },
       });
+      // `GET /auth/me` is cached and includes the name.
+      await this.cache.invalidateProfile(currentUser.id);
     }
 
     if (profileTouched) {
@@ -303,6 +307,9 @@ export class UserService {
         select: { id: true, discreetModeEnabled: true, discreetModeUpdatedAt: true },
       });
 
+      // `GET /auth/me` is cached (discreet-mode fields are part of it).
+      await this.cache.invalidateProfile(currentUser.id);
+
       this.emitAudit({
         userId: currentUser.id,
         actorType,
@@ -356,6 +363,9 @@ export class UserService {
       },
       select: { id: true, discreetModeEnabled: true, discreetModeUpdatedAt: true },
     });
+
+    // `GET /auth/me` is cached (discreet-mode fields are part of it).
+    await this.cache.invalidateProfile(currentUser.id);
 
     this.emitAudit({
       userId: currentUser.id,
@@ -449,6 +459,9 @@ export class UserService {
         select: { id: true, discreetModeEnabled: true, discreetModeUpdatedAt: true },
       });
 
+      // `GET /auth/me` is cached (discreet-mode fields are part of it).
+      await this.cache.invalidateProfile(targetUserId);
+
       this.emitAudit({
         userId: actor.id,
         targetUserId,
@@ -507,6 +520,9 @@ export class UserService {
       },
       select: { id: true, discreetModeEnabled: true, discreetModeUpdatedAt: true },
     });
+
+    // `GET /auth/me` is cached (discreet-mode fields are part of it).
+    await this.cache.invalidateProfile(targetUserId);
 
     this.emitAudit({
       userId: actor.id,
@@ -595,6 +611,9 @@ export class UserService {
         const revoked = await tx.session.deleteMany({ where: { userId: currentUser.id } });
         sessionsRevoked = revoked.count;
       });
+
+      // Postgres sessions are gone; drop anything Redis still holds for this user (retried if Redis is down).
+      await this.cache.purgeUserCache(currentUser.id);
     } catch (err) {
       if (err instanceof ForbiddenException) {
         this.emitAudit({
@@ -720,6 +739,9 @@ export class UserService {
         const revoked = await tx.session.deleteMany({ where: { userId: targetUserId } });
         sessionsRevoked = revoked.count;
       });
+
+      // Postgres sessions are gone; drop anything Redis still holds for this user (retried if Redis is down).
+      await this.cache.purgeUserCache(targetUserId);
     } catch (err) {
       if (err instanceof ForbiddenException) {
         this.emitAudit({
@@ -861,6 +883,7 @@ export class UserService {
     const revokedSessions = await this.prisma.session.deleteMany({
       where: { userId: targetUserId },
     });
+    await this.cache.purgeUserCache(targetUserId);
 
     this.emitAudit({
       userId: actor.id,
@@ -919,6 +942,7 @@ export class UserService {
     }
 
     await this.prisma.session.delete({ where: { id: sessionId } });
+    await this.cache.purgeUserCache(targetUserId);
 
     this.emitAudit({
       userId: actor.id,
@@ -1209,6 +1233,9 @@ export class UserService {
       throw error;
     }
 
+    // Cached profile/session still carry the old phone number.
+    await this.cache.purgeUserCache(user.id);
+
     this.emitAudit({
       userId: user.id,
       actorType,
@@ -1422,6 +1449,11 @@ export class UserService {
       update: {},
     });
 
+    if (!alreadyHeld) {
+      // Cached session/profile may carry the old role set.
+      await this.cache.purgeUserCache(targetUserId);
+    }
+
     this.emitAudit({
       userId: actor.id,
       targetUserId,
@@ -1516,6 +1548,9 @@ export class UserService {
           where: { userId_roleId: { userId: targetUserId, roleId: roleToRevoke.id } },
         });
       });
+
+      // A revoked admin role must not survive in a cached session.
+      await this.cache.purgeUserCache(targetUserId);
     } catch (err) {
       if (err instanceof ForbiddenException) {
         this.emitAudit({
@@ -1610,6 +1645,14 @@ export class UserService {
       data: { lockedUntil: null, failedLoginAttempts: 0 },
     });
 
+    // The failed-attempt counter also lives in Redis (keyed by user id or login identifier). Clear all,
+    // or the next wrong password can re-lock the account straight after an admin unlock.
+    await Promise.all(
+      [targetUser.id, targetUser.phone, targetUser.email]
+        .filter((id): id is string => !!id)
+        .map((id) => this.cache.resetFailedLoginAttempts(id)),
+    );
+
     this.emitAudit({
       userId: actor.id,
       targetUserId,
@@ -1700,6 +1743,11 @@ export class UserService {
   // ── ADMIN — DASHBOARD STATS ──
 
   async getDashboardStats() {
+    // Heavy multi-count aggregate: serve from cache for a short TTL (TTL.ADMIN_DASHBOARD_STATS).
+    return this.cache.wrapStats('user-dashboard', () => this.getDashboardStatsUncached());
+  }
+
+  private async getDashboardStatsUncached() {
     const sevenDaysAgo = new Date();
     sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
     const thirtyDaysAgo = new Date();

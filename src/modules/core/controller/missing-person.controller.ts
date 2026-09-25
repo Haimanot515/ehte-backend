@@ -188,10 +188,21 @@ async getStats() {
     return this.missingPersonService.unclaimMissingPerson(admin, id);
   }
 
+  // G6: this was reachable with MISSING_PERSON_REVIEW alone — the same
+  // permission used to approve/reject the case itself — while
+  // RewardService.approveOffer (the other write path onto these same
+  // fields) requires REWARDS_APPROVE. Requiring both here closes the gap
+  // where a reviewer without reward-approval privilege could still change
+  // or revoke reward terms through this route. The underlying "two write
+  // paths for one field" problem (G6's other half) is fixed on the
+  // service side by MissingPersonService.updateReward()'s funded-lock;
+  // fully consolidating onto RewardService as the single write path is
+  // tracked as a billing-module change, not done here.
   @Patch('admin/:id/reward')
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
-  @RequirePermissions(PermissionsEnum.MISSING_PERSON_REVIEW)
+  @RequirePermissions(PermissionsEnum.MISSING_PERSON_REVIEW, PermissionsEnum.REWARDS_APPROVE)
+  @RequireReauthentication()
   @ApiOperation({ summary: 'Admin: approve or revise the reward for a missing person case' })
   async updateReward(
     @CurrentUser() admin: CurrentUserDto,

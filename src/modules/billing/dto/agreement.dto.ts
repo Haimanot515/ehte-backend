@@ -11,6 +11,7 @@ import {
   IsUUID,
   Matches,
   Max,
+  MaxLength,
   Min,
   ValidateNested,
 } from 'class-validator';
@@ -35,6 +36,12 @@ export class CreateAgreementDto {
   @ValidateNested({ each: true })
   @Type(() => AllocationRuleDto)
   rules!: AllocationRuleDto[];
+
+  // Section 14 / 27: refund/cancellation terms are part of the commercial
+  // agreement, versioned with everything else — free text for now (policy
+  // engine is out of scope here), stored verbatim on the agreement version.
+  @IsOptional() @IsString() @MaxLength(4000) refundPolicy?: string;
+  @IsOptional() @IsString() @MaxLength(4000) cancellationPolicy?: string;
 }
 
 export class AssignAgreementDto {
@@ -43,4 +50,8 @@ export class AssignAgreementDto {
 
 export class CreateInstitutionDto {
   @IsString() name!: string;
+}
+
+export class RetireAgreementDto {
+  @IsString() @MaxLength(500) reason!: string;
 }

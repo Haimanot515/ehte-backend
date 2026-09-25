@@ -23,16 +23,10 @@ model VictimProfile {
   isPublished           Boolean             @default(false)
   createdAt             DateTime            @default(now())
   updatedAt             DateTime            @updatedAt
-  bankAccountName       String?
-  bankAccountNumber     String?
-  bankName              String?
   isChildSafetyReviewed Boolean             @default(false)
-  supports              Support[]
 
   createdByUserId String?
-
-  // Scoped to the creating admin, NULL keys never conflict
-  idempotencyKey String?
+  idempotencyKey  String?
 
   mediaTotalBytes Int @default(0)
 
@@ -42,15 +36,25 @@ model VictimProfile {
   childSafetyFirstConfirmedByUserId String?
   childSafetyFirstConfirmedAt       DateTime?
 
-  // Cached total of CONFIRMED support, never client-writable
   totalRaised Decimal @default(0) @db.Decimal(12, 2)
 
-  // Added for Chapa billing: the active agreement VERSION that governs the
-  // support split for this profile (PRD §22 — split depends on the agreement
-  // per case). Only settable while isPublished = false (see AgreementService.
-  // assignToProfile in SUPPORT_INTEGRATION.md §9). A profile with no
-  // agreementId cannot receive support — AllocationService.preview() rejects it.
+  // Legacy pre-Chapa direct-transfer destination; confirm with disbursement owner before dropping.
+  bankAccountName   String?
+  bankAccountNumber String?
+  bankName          String?
+
+  // Section 5 / 27: the posting fee is separate from supporter money and must be
+  // confirmed before publish() moves this profile to PUBLISHED (section 4 step 4-6).
+  postingFeeAmount   Decimal?         @db.Decimal(14, 2)
+  postingFeeCurrency String           @default("ETB")
+  postingFeeStatus   PostingFeeStatus @default(NOT_REQUIRED)
+
   agreementId String?
+
+  agreement         Agreement?         @relation(fields: [agreementId], references: [id])
+  supports          Support[]
+  payments          Payment[]
+  payoutDestination PayoutDestination? // was: payoutDestinations PayoutDestination[]
 
   @@unique([createdByUserId, idempotencyKey])
   @@index([status])

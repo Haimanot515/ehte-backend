@@ -21,6 +21,7 @@ import { PermissionService } from './service/permission.service';
 import { OtpUtil } from 'src/common/utils/otp.util';
 import { LockoutUtil } from 'src/common/utils/lockout.util';
 import { TokenUtil } from 'src/common/utils/token.util';
+import { SocialAuthUtil } from 'src/common/utils/social-auth.util';
 
 @Module({
   imports: [
@@ -55,6 +56,7 @@ import { TokenUtil } from 'src/common/utils/token.util';
     OtpUtil,
     LockoutUtil,
     TokenUtil,
+    SocialAuthUtil,
   ],
 
   exports: [AuthService, AdminAuthService, RoleService, PermissionService, OtpUtil, LockoutUtil],

@@ -9,9 +9,21 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PartyType, Prisma } from '@prisma/client';
 import { PrismaService } from '../../../prisma/prisma.service';
-import { CreateAgreementDto } from '../dto/agreement.dto';
+import { CreateAgreementDto, RetireAgreementDto } from '../dto/agreement.dto';
 import { BillingEventsService } from './billing-events.service';
 import { AuditEventEnum } from '../../../common/enums/shared/audit-events.enum';
+// FIX: this file logged every mutation but never notified anyone — see
+// NotificationEventEnum import and the events.notify() call added to each
+// method below. Mirrors the pattern already used in payment.service.ts /
+// reward.service.ts / disbursement.service.ts.
+import { NotificationEventEnum } from '../../../common/enums/shared/notification-events.enum';
+import {
+  InstitutionSignedEvent,
+  AgreementCreatedEvent,
+  AgreementActivatedEvent,
+  AgreementRetiredEvent,
+  VictimProfileAgreementAssignedEvent,
+} from '../../misc/events/notification.events';
 
 // How many times to retry version assignment on a unique constraint collision
 // before giving up. Mirrors CASE_REFERENCE_MAX_ATTEMPTS in ReportService.
@@ -41,6 +53,10 @@ export class AgreementService {
       action: AuditEventEnum.INSTITUTION_SIGNED,
       entityType: 'Institution',
       entityId: id,
+    });
+    this.events.notify<InstitutionSignedEvent>(NotificationEventEnum.INSTITUTION_SIGNED, {
+      institutionId: id,
+      actorId: adminId,
     });
   }
 
@@ -80,6 +96,10 @@ export class AgreementService {
       entityType: 'Agreement',
       entityId: agreement.id,
     });
+    this.events.notify<AgreementCreatedEvent>(NotificationEventEnum.AGREEMENT_CREATED, {
+      agreementId: agreement.id,
+      actorId: adminId,
+    });
     return agreement;
   }
 
@@ -100,12 +120,30 @@ export class AgreementService {
       entityType: 'Agreement',
       entityId: id,
     });
+    this.events.notify<AgreementActivatedEvent>(NotificationEventEnum.AGREEMENT_ACTIVATED, {
+      agreementId: id,
+      actorId: adminId,
+    });
   }
 
-  async retire(adminId: string, id: string) {
+  /**
+   * Section 3 / 28: retirement requires a reason and preserves an impact
+   * summary (assigned/published profiles, pending payments, open reward
+   * cases) as audit metadata — the historical payments/allocations themselves
+   * are untouched, they keep the agreement version they were created under.
+   */
+  async retire(adminId: string, id: string, dto: RetireAgreementDto) {
+    const impact = await this.getRetirementImpact(id);
+
     const { count } = await this.prisma.agreement.updateMany({
       where: { id, status: 'ACTIVE' },
-      data: { status: 'RETIRED', effectiveTo: new Date() },
+      data: {
+        status: 'RETIRED',
+        effectiveTo: new Date(),
+        retirementReason: dto.reason,
+        retiredById: adminId,
+        retiredAt: new Date(),
+      },
     });
     if (count === 0) throw new BadRequestException('Only active agreements can be retired');
     await this.events.log({
@@ -113,7 +151,27 @@ export class AgreementService {
       action: AuditEventEnum.AGREEMENT_RETIRED,
       entityType: 'Agreement',
       entityId: id,
+      reason: dto.reason,
+      metadata: impact,
     });
+    this.events.notify<AgreementRetiredEvent>(NotificationEventEnum.AGREEMENT_RETIRED, {
+      agreementId: id,
+      actorId: adminId,
+    });
+  }
+
+  /** Admin-facing impact review shown before retiring (section 28 sample page). */
+  async getRetirementImpact(agreementId: string) {
+    const [assignedProfiles, publishedProfiles, pendingPayments, openRewardCases] =
+      await this.prisma.$transaction([
+        this.prisma.victimProfile.count({ where: { agreementId } }),
+        this.prisma.victimProfile.count({ where: { agreementId, isPublished: true } }),
+        this.prisma.payment.count({ where: { agreementId, status: 'PENDING' } }),
+        this.prisma.missingPerson.count({
+          where: { agreementId, status: { in: ['PENDING', 'UNDER_REVIEW', 'APPROVED'] } },
+        }),
+      ]);
+    return { assignedProfiles, publishedProfiles, pendingPayments, openRewardCases };
   }
 
   /**
@@ -153,6 +211,16 @@ export class AgreementService {
         : (profile.name ?? null),
       metadata: { previousAgreementId: profile.agreementId, agreementId },
     });
+    // Same privacy rule applies to the notification payload — profile name
+    // and involvesChild are never sent, ID-only, same as the audit row above.
+    this.events.notify<VictimProfileAgreementAssignedEvent>(
+      NotificationEventEnum.VICTIM_PROFILE_AGREEMENT_ASSIGNED,
+      {
+        profileId,
+        agreementId,
+        actorId: adminId,
+      },
+    );
   }
 
   list() {
@@ -201,6 +269,8 @@ export class AgreementService {
             version: nextVersion,
             effectiveFrom: dto.effectiveFrom,
             effectiveTo: dto.effectiveTo,
+            refundPolicy: dto.refundPolicy,
+            cancellationPolicy: dto.cancellationPolicy,
             rules: {
               create: dto.rules.map((r) => ({
                 paymentType: r.paymentType,

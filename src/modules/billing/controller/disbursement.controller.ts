@@ -2,6 +2,10 @@
 //
 // Four-eyes: the admin who creates a disbursement cannot approve it.
 // Give create / approve / execute to different roles where staffing allows.
+//
+// PRD alignment (Sep 2026): the single approve-claim endpoint is replaced by the
+// full per-informant flow (section 11-12 / 16 / 20) — funding method, evaluation
+// weights, claim creation from a submission, scoring, decision, and splitting.
 
 import { Body, Controller, Get, Param, Post } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
@@ -13,8 +17,16 @@ import { RolesEnum } from '../../../common/enums/roles.enum';
 import { PermissionsEnum as P } from '../../../common/enums/permissions.enum';
 import { RewardService } from '../service/reward.service';
 import { DisbursementService } from '../service/disbursement.service';
-import { ApproveClaimDto, ReasonDto } from '../dto/payment.dto';
+import { ReasonDto } from '../dto/payment.dto';
 import { CreateDisbursementDto, ExecuteDisbursementDto } from '../dto/disbursement.dto';
+import {
+  CreateClaimFromSubmissionDto,
+  DecideClaimDto,
+  ScoreClaimDto,
+  SetEvaluationWeightsDto,
+  SetFundingMethodDto,
+  SplitRewardDto,
+} from '../dto/reward-claim.dto';
 
 @ApiTags('Billing Admin')
 @ApiBearerAuth('access-token')
@@ -26,7 +38,7 @@ export class DisbursementController {
     private readonly disbursements: DisbursementService,
   ) {}
 
-  // ── Rewards ───────────────────────────────────────────────────────────────
+  // ── Rewards: offer ───────────────────────────────────────────────────────
 
   @RequirePermissions(P.REWARDS_APPROVE)
   @Post('missing-persons/:missingPersonId/reward/approve')
@@ -44,14 +56,24 @@ export class DisbursementController {
     return this.rewards.rejectOffer(a.id, id, dto.reason);
   }
 
-  @RequirePermissions(P.REWARDS_VERIFY_CLAIM)
-  @Post('missing-persons/:missingPersonId/reward/approve-claim')
-  approveClaim(
+  @RequirePermissions(P.REWARDS_APPROVE)
+  @Post('missing-persons/:missingPersonId/reward/funding-method')
+  setFundingMethod(
     @CurrentUser() a: CurrentUserDto,
     @Param('missingPersonId') id: string,
-    @Body() dto: ApproveClaimDto,
+    @Body() dto: SetFundingMethodDto,
   ) {
-    return this.rewards.approveClaim(a.id, id, dto.submissionId);
+    return this.rewards.setFundingMethod(a.id, id, dto);
+  }
+
+  @RequirePermissions(P.REWARDS_APPROVE)
+  @Post('missing-persons/:missingPersonId/reward/evaluation-weights')
+  setEvaluationWeights(
+    @CurrentUser() a: CurrentUserDto,
+    @Param('missingPersonId') id: string,
+    @Body() dto: SetEvaluationWeightsDto,
+  ) {
+    return this.rewards.setEvaluationWeights(a.id, id, dto);
   }
 
   @RequirePermissions(P.REWARDS_APPROVE)
@@ -62,6 +84,48 @@ export class DisbursementController {
     @Body() dto: ReasonDto,
   ) {
     return this.rewards.closeWithoutPayout(a.id, id, dto.reason);
+  }
+
+  // ── Rewards: per-informant claims ────────────────────────────────────────
+
+  @RequirePermissions(P.REWARDS_VERIFY_CLAIM)
+  @Post('missing-persons/:missingPersonId/reward/claims')
+  createClaim(
+    @CurrentUser() a: CurrentUserDto,
+    @Param('missingPersonId') id: string,
+    @Body() dto: CreateClaimFromSubmissionDto,
+  ) {
+    return this.rewards.createClaimFromSubmission(a.id, id, dto.informationSubmissionId);
+  }
+
+  @RequirePermissions(P.REWARDS_VERIFY_CLAIM)
+  @Post('reward-claims/:claimId/score')
+  scoreClaim(
+    @CurrentUser() a: CurrentUserDto,
+    @Param('claimId') claimId: string,
+    @Body() dto: ScoreClaimDto,
+  ) {
+    return this.rewards.scoreClaim(a.id, claimId, dto);
+  }
+
+  @RequirePermissions(P.REWARDS_VERIFY_CLAIM)
+  @Post('reward-claims/:claimId/decide')
+  decideClaim(
+    @CurrentUser() a: CurrentUserDto,
+    @Param('claimId') claimId: string,
+    @Body() dto: DecideClaimDto,
+  ) {
+    return this.rewards.decideClaim(a.id, claimId, dto);
+  }
+
+  @RequirePermissions(P.REWARDS_APPROVE)
+  @Post('missing-persons/:missingPersonId/reward/split')
+  splitReward(
+    @CurrentUser() a: CurrentUserDto,
+    @Param('missingPersonId') id: string,
+    @Body() dto: SplitRewardDto,
+  ) {
+    return this.rewards.splitReward(a.id, id, dto);
   }
 
   // ── Disbursements ─────────────────────────────────────────────────────────
@@ -79,7 +143,7 @@ export class DisbursementController {
     @Param('id') id: string,
     @Body() dto: CreateDisbursementDto,
   ) {
-    return this.disbursements.create(a.id, id, dto.method);
+    return this.disbursements.create(a.id, id, dto.method, dto.rewardClaimId);
   }
 
   @RequirePermissions(P.DISBURSEMENTS_APPROVE)

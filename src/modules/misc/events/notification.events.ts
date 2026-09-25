@@ -309,6 +309,92 @@ export interface SecurityAlertEvent {
 }
 
 // ─────────────────────────────────────────────
+// BILLING
+//
+// NEW — backs NotificationListener's billing handlers. Shapes are
+// taken directly from each service's events.notify<...>() call site,
+// not guessed:
+//
+//   PaymentService.reconcile():
+//     this.events.notify<PaymentVerifiedEvent>(NotificationEventEnum.PAYMENT_VERIFIED, {
+//       userId: payment.payerUserId,
+//       paymentId: payment.id,
+//       supportId: payment.supportId ?? undefined,
+//       missingPersonId: payment.missingPersonId ?? undefined,
+//     });
+//
+//   RewardService.approveClaim() (only when submission.userId is set):
+//     this.events.notify<RewardClaimApprovedEvent>(NotificationEventEnum.REWARD_CLAIM_APPROVED, {
+//       userId: submission.userId,
+//       rewardClaimId: claim.id,
+//       missingPersonId,
+//     });
+//
+//   DisbursementService.notifyPaidOut() (REWARD_BENEFICIARY payouts only —
+//   RECIPIENT/VictimProfile payouts aren't wired yet):
+//     this.events.notify<DisbursementPaidOutEvent>(NotificationEventEnum.DISBURSEMENT_PAID_OUT, {
+//       userId: submission.userId,
+//       disbursementId,
+//       partyType,
+//     });
+// ─────────────────────────────────────────────
+
+export interface PaymentVerifiedEvent {
+  userId: string;
+  paymentId: string;
+  supportId?: string;
+  missingPersonId?: string;
+}
+
+export interface RewardClaimApprovedEvent {
+  userId: string;
+  rewardClaimId: string;
+  missingPersonId: string;
+}
+
+export interface DisbursementPaidOutEvent {
+  userId: string;
+  disbursementId: string;
+  partyType: string;
+}
+
+// NEW — backs NotificationListener's agreement/institution handlers.
+// AgreementService logged every mutation via events.log() but never called
+// events.notify() — these back-office actions had no notification path at
+// all. Broadcast to admins (toAdmins), not a specific user: signing an
+// institution or activating/retiring an agreement isn't something a single
+// end user is waiting on. actorId lets the listener exclude the admin who
+// performed the action from their own notification feed.
+export interface InstitutionSignedEvent {
+  institutionId: string;
+  actorId: string;
+}
+
+export interface AgreementCreatedEvent {
+  agreementId: string;
+  actorId: string;
+}
+
+export interface AgreementActivatedEvent {
+  agreementId: string;
+  actorId: string;
+}
+
+export interface AgreementRetiredEvent {
+  agreementId: string;
+  actorId: string;
+}
+
+// Same privacy rule as VictimProfileService.profileLabel / the audit row in
+// AgreementService.assignToProfile(): profile name and involvesChild never
+// leave the service, ID-only here too.
+export interface VictimProfileAgreementAssignedEvent {
+  profileId: string;
+  agreementId: string;
+  actorId: string;
+}
+
+// ─────────────────────────────────────────────
 // AUTH
 // ─────────────────────────────────────────────
 

@@ -11,12 +11,15 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { PaymentStatus, PaymentType, Prisma } from '@prisma/client';
+import { PaymentStatus, PaymentType, Prisma, AuditOutcome, AuditSeverity } from '@prisma/client';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { ChapaService } from '../../../services/chapa/chapa.service';
 import { BillingEventsService } from './billing-events.service';
 import { AllocationPreview, AllocationService } from './allocation.service';
 import { AuditEventEnum } from '../../../common/enums/shared/audit-events.enum';
+import { NotificationEventEnum } from '../../../common/enums/shared/notification-events.enum';
+import { PaymentVerifiedEvent } from '../../misc/events/notification.events';
+import { ReviewDecision, ResolveReviewDto } from '../dto/billing-report.dto';
 
 export type Payer = { id: string; email?: string | null };
 
@@ -141,6 +144,79 @@ export class PaymentService {
     });
   }
 
+  // Section 5 / 8 / 27: posting/promotion fee, always separate from SUPPORT and
+  // MISSING_PERSON_REWARD payments. Publication must be blocked until this
+  // settles PAID — the object service (VictimProfileService / MissingPersonService,
+  // not provided in this pass) should flip postingFeeStatus to PAID on the same
+  // BILLING_PAYMENT_PAID event PaymentService already emits, mirroring how
+  // RewardService listens for reward funding.
+  async initiatePostingFeeCheckout(
+    payer: Payer,
+    objectType: 'VICTIM_PROFILE' | 'MISSING_PERSON',
+    objectId: string,
+  ) {
+    this.assertEnabled('payments.enabled');
+
+    const type =
+      objectType === 'VICTIM_PROFILE'
+        ? PaymentType.VICTIM_PROFILE_POSTING_FEE
+        : PaymentType.MISSING_PERSON_POSTING_FEE;
+
+    const feeState =
+      objectType === 'VICTIM_PROFILE'
+        ? await this.prisma.victimProfile.findUnique({
+            where: { id: objectId },
+            select: { postingFeeAmount: true, postingFeeStatus: true, agreementId: true },
+          })
+        : await this.prisma.missingPerson.findUnique({
+            where: { id: objectId },
+            select: { postingFeeAmount: true, postingFeeStatus: true, agreementId: true },
+          });
+    if (!feeState) throw new NotFoundException('Object not found');
+    if (feeState.postingFeeStatus === 'NOT_REQUIRED' || feeState.postingFeeStatus === 'PAID') {
+      throw new BadRequestException('No posting fee is due for this object');
+    }
+    if (!feeState.postingFeeAmount) {
+      throw new BadRequestException('Posting fee amount has not been resolved for this object yet');
+    }
+
+    const already = await this.prisma.payment.findFirst({
+      where: {
+        type,
+        ...(objectType === 'VICTIM_PROFILE'
+          ? { victimProfileId: objectId }
+          : { missingPersonId: objectId }),
+        OR: [
+          { status: 'PAID' },
+          { status: 'PENDING', createdAt: { gt: new Date(Date.now() - 30 * 60_000) } },
+        ],
+      },
+      select: { status: true },
+    });
+    if (already) {
+      throw new ConflictException(
+        already.status === 'PAID'
+          ? 'This posting fee is already paid'
+          : 'A payment for this posting fee is already in progress',
+      );
+    }
+
+    const preview = await this.allocation.previewPostingFee(
+      type,
+      new Prisma.Decimal(feeState.postingFeeAmount),
+      feeState.agreementId,
+    );
+
+    return this.startCheckout({
+      type,
+      amount: new Prisma.Decimal(preview.total),
+      payer,
+      preview,
+      victimProfileId: objectType === 'VICTIM_PROFILE' ? objectId : undefined,
+      missingPersonId: objectType === 'MISSING_PERSON' ? objectId : undefined,
+    });
+  }
+
   // Row created before Chapa can ever call back, so a webhook never sees an
   // unknown tx_ref.
   private async startCheckout(args: {
@@ -173,6 +249,21 @@ export class PaymentService {
         previewShownAt: new Date(),
       },
     });
+    // FIX: payment creation itself had no audit row — every other Payment
+    // status this file reaches (MISMATCH, PAID, FAILED, EXPIRED) is logged;
+    // the very first step wasn't. No events.notify() here: the payer just
+    // triggered this themselves by clicking pay, so a notification back to
+    // them would be redundant — same reasoning DisbursementService.create()
+    // uses for staying audit-only.
+    // ASSUMPTION TO VERIFY: AuditEventEnum.PAYMENT_INITIATED does not exist
+    // yet either — add it alongside PAYMENT_FAILED/PAYMENT_EXPIRED.
+    await this.events.log({
+      actorId: args.payer.id,
+      action: AuditEventEnum.PAYMENT_INITIATED,
+      entityType: 'Payment',
+      entityId: payment.id,
+      metadata: { type: args.type },
+    });
 
     try {
       const { checkoutUrl } = await this.chapa.initialize({
@@ -191,6 +282,21 @@ export class PaymentService {
       await this.prisma.payment.updateMany({
         where: { id: payment.id, status: 'PENDING' },
         data: { status: 'FAILED' },
+      });
+      // FIX: second FAILED transition in this file with no audit row —
+      // same gap as reconcile()'s FAILED branch, different trigger (Chapa
+      // rejected the checkout init call itself, not a later verify). actorId
+      // is the payer here (their checkout attempt is what failed), unlike
+      // reconcile()'s FAILED branch where actorId is null (async webhook/cron
+      // path with no direct user in the loop).
+      await this.events.log({
+        actorId: args.payer.id,
+        action: AuditEventEnum.PAYMENT_FAILED,
+        outcome: AuditOutcome.FAILURE,
+        severity: AuditSeverity.WARNING,
+        entityType: 'Payment',
+        entityId: payment.id,
+        metadata: { type: args.type, reason: 'checkout_initiation_failed' },
       });
       throw err;
     }
@@ -217,6 +323,25 @@ export class PaymentService {
         where: { id: payment.id, status: 'PENDING' },
         data: { status: 'FAILED' },
       });
+      // FIX: this branch previously updated status with no audit row at all —
+      // the PAYMENT_MISMATCH branch right below it, and the PAYMENT_PAID
+      // branch further down, both log via events.log(); FAILED was the only
+      // terminal outcome of reconcile() that left no trace. actorId: null
+      // follows the same system-actor convention already used for
+      // PAYMENT_MISMATCH just below (this is Chapa reporting the failure,
+      // not an admin action).
+      // ASSUMPTION TO VERIFY: AuditEventEnum.PAYMENT_FAILED does not exist
+      // in this codebase's enum yet (checked — no other call site references
+      // it). Add it to audit-events.enum.ts before this compiles.
+      await this.events.log({
+        actorId: null,
+        action: AuditEventEnum.PAYMENT_FAILED,
+        outcome: AuditOutcome.FAILURE,
+        severity: AuditSeverity.WARNING,
+        entityType: 'Payment',
+        entityId: payment.id,
+        metadata: { type: payment.type },
+      });
       return 'FAILED';
     }
     if (remote.status !== 'success') return 'PENDING';
@@ -231,6 +356,8 @@ export class PaymentService {
       await this.events.log({
         actorId: null,
         action: AuditEventEnum.PAYMENT_MISMATCH,
+        outcome: AuditOutcome.FAILURE,
+        severity: AuditSeverity.WARNING,
         entityType: 'Payment',
         entityId: payment.id,
       });
@@ -261,15 +388,15 @@ export class PaymentService {
         })),
       });
 
-      if (payment.missingPersonId) {
-        // RewardService also listens on BILLING_PAYMENT_PAID and calls
-        // onFunded() itself; upsert keeps both paths idempotent together.
-        await tx.rewardClaim.upsert({
-          where: { missingPersonId: payment.missingPersonId },
-          create: { missingPersonId: payment.missingPersonId },
-          update: {},
-        });
-      }
+      // FIX: this used to upsert a RewardClaim keyed on missingPersonId, back
+      // when RewardClaim was one row per case. Now that a case can have many
+      // claims (one per informant, see reward-claim.prisma), there is no
+      // single row to upsert here — RewardService.onPaymentPaid(), which
+      // already listens on BILLING_PAYMENT_PAID below, is the only place that
+      // updates MissingPerson.fundedAmount/fundingStatus. Posting-fee
+      // payments (VICTIM_PROFILE_POSTING_FEE / MISSING_PERSON_POSTING_FEE)
+      // are handled the same way, via their own listeners on the object
+      // services — nothing to do here either.
       return true;
     });
 
@@ -285,6 +412,15 @@ export class PaymentService {
         paymentId: payment.id,
         supportId: payment.supportId,
         missingPersonId: payment.missingPersonId,
+      });
+      // Amount deliberately left out of the notification body/payload —
+      // same convention as PostService/AuthService keeping financial
+      // specifics out of user-facing notification content.
+      this.events.notify<PaymentVerifiedEvent>(NotificationEventEnum.PAYMENT_VERIFIED, {
+        userId: payment.payerUserId,
+        paymentId: payment.id,
+        supportId: payment.supportId ?? undefined,
+        missingPersonId: payment.missingPersonId ?? undefined,
       });
     }
     return 'PAID';
@@ -311,20 +447,126 @@ export class PaymentService {
     };
   }
 
+  // ADMIN — G9 REVIEW RESOLUTION. reconcile()'s mismatch branch parks a
+  // payment at REVIEW_REQUIRED and stops; nothing before this method ever
+  // moves it back out of that state. resolveReview() is that missing exit:
+  // an admin either rejects it (same FAILED transition reconcile() takes on
+  // a hard failure) or approves it (same PAID transition reconcile() takes
+  // on a clean match — allocations from the stored snapshot, paymentPaid
+  // event, PAYMENT_VERIFIED notification).
+  // CONFIRMED (Sep 2026): AuditEventEnum.PAYMENT_REVIEW_RESOLVED exists. Still
+  // assumes ResolveReviewDto/ReviewDecision in billing-report.dto.ts are the
+  // final contract; adjust this method to match if that shape changes.
+  async resolveReview(adminId: string, paymentId: string, dto: ResolveReviewDto) {
+    const payment = await this.prisma.payment.findUnique({ where: { id: paymentId } });
+    if (!payment) throw new NotFoundException('Payment not found');
+    if (payment.status !== 'REVIEW_REQUIRED') {
+      throw new ConflictException('Payment is not awaiting review');
+    }
+
+    if (dto.decision === ReviewDecision.REJECT) {
+      const { count } = await this.prisma.payment.updateMany({
+        where: { id: payment.id, status: 'REVIEW_REQUIRED' },
+        data: { status: 'FAILED' },
+      });
+      if (count === 0) throw new ConflictException('Payment is not awaiting review');
+
+      await this.events.log({
+        actorId: adminId,
+        action: AuditEventEnum.PAYMENT_REVIEW_RESOLVED,
+        outcome: AuditOutcome.FAILURE,
+        severity: AuditSeverity.WARNING,
+        entityType: 'Payment',
+        entityId: payment.id,
+        metadata: { decision: dto.decision, reason: dto.reason },
+      });
+      return { status: 'FAILED' as PaymentStatus };
+    }
+
+    const snapshot = payment.allocationSnapshot as unknown as AllocationPreview;
+
+    const won = await this.prisma.$transaction(async (tx) => {
+      const { count } = await tx.payment.updateMany({
+        where: { id: payment.id, status: 'REVIEW_REQUIRED' },
+        data: { status: 'PAID', paidAt: new Date() },
+      });
+      if (count === 0) return false;
+
+      await tx.paymentAllocation.createMany({
+        data: snapshot.lines.map((l) => ({
+          paymentId: payment.id,
+          partyType: l.partyType,
+          institutionId: l.institutionId,
+          amount: new Prisma.Decimal(l.amount),
+          ruleId: l.ruleId,
+        })),
+      });
+
+      // See the matching note in reconcile() above: no RewardClaim upsert
+      // here anymore, RewardService.onPaymentPaid() owns the funding update.
+      return true;
+    });
+
+    if (!won) throw new ConflictException('Payment is not awaiting review');
+
+    await this.events.log({
+      actorId: adminId,
+      action: AuditEventEnum.PAYMENT_REVIEW_RESOLVED,
+      entityType: 'Payment',
+      entityId: payment.id,
+      metadata: { decision: dto.decision, reason: dto.reason },
+    });
+    await this.events.paymentPaid({
+      paymentId: payment.id,
+      supportId: payment.supportId,
+      missingPersonId: payment.missingPersonId,
+    });
+    this.events.notify<PaymentVerifiedEvent>(NotificationEventEnum.PAYMENT_VERIFIED, {
+      userId: payment.payerUserId,
+      paymentId: payment.id,
+      supportId: payment.supportId ?? undefined,
+      missingPersonId: payment.missingPersonId ?? undefined,
+    });
+
+    return { status: 'PAID' as PaymentStatus };
+  }
+
   @Cron(CronExpression.EVERY_10_MINUTES)
   async reconcileStale(): Promise<void> {
     const stale = await this.prisma.payment.findMany({
       where: { status: 'PENDING', createdAt: { lt: new Date(Date.now() - 15 * 60_000) } },
-      select: { txRef: true, createdAt: true },
+      select: { id: true, txRef: true, createdAt: true },
       take: 100,
     });
     for (const p of stale) {
       const status = await this.reconcile(p.txRef);
       if (status === 'PENDING' && p.createdAt.getTime() < Date.now() - 24 * 3_600_000) {
-        await this.prisma.payment.updateMany({
+        const { count } = await this.prisma.payment.updateMany({
           where: { txRef: p.txRef, status: 'PENDING' },
           data: { status: 'EXPIRED' },
         });
+        // FIX: silently expired a stale payment with no audit row — the only
+        // other cron in this module that mutates state without a human actor
+        // (syncProcessing's stale-flag branch in disbursement.service.ts)
+        // still logs via events.log(). actorId: null, same system-actor
+        // convention used for PAYMENT_FAILED/PAYMENT_MISMATCH above.
+        // ASSUMPTION TO VERIFY: AuditEventEnum.PAYMENT_EXPIRED does not exist
+        // yet either — add it alongside PAYMENT_FAILED.
+        if (count > 0) {
+          await this.events.log({
+            actorId: null,
+            action: AuditEventEnum.PAYMENT_EXPIRED,
+            // WARNING severity, no `outcome` — expiry isn't a failed
+            // operation the way FAILED/MISMATCH are (nothing was attempted
+            // and rejected), it's a routine timeout on an abandoned
+            // checkout. Still worth flagging for visibility, so it keeps
+            // severity but not FAILURE.
+            severity: AuditSeverity.WARNING,
+            entityType: 'Payment',
+            entityId: p.id,
+            metadata: { reason: 'reconcile_stale_timeout' },
+          });
+        }
       }
     }
   }
@@ -486,4 +728,4 @@ export class PaymentService {
       })),
     };
   }
-}
+} 

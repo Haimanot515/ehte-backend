@@ -1369,6 +1369,36 @@ export class InformationSubmissionService {
       throw new BadRequestException('review_note_required_for_rejection');
     }
 
+    // G21: REVIEWED is the terminal decision that makes a submission
+    // eligible for RewardService.approveClaim(submissionId) — the step
+    // that turns a tip into a payout. userId is nullable on
+    // InformationSubmission (anonymous/USSD tips per SubmissionChannel),
+    // and there is no other identifying field on the model yet
+    // (contactPhone is proposed in the section-9 schema review but not
+    // migrated), so an anonymous tip cannot currently be verified or paid.
+    // Block REVIEWED rather than let it through and fail later, silently
+    // or otherwise, inside RewardService.
+    if (status === InformationStatus.REVIEWED && !submission.userId) {
+      this.emitAudit({
+        userId: reviewer.id,
+        targetUserId: submission.userId,
+        actorType,
+        action: auditEventForStatus,
+        outcome: AuditOutcome.FAILURE,
+        severity: AuditSeverity.WARNING,
+        entity: 'InformationSubmission',
+        entityId: id,
+        entityLabel: label,
+        diff: {
+          result: 'failure',
+          reason: 'finder_not_verifiable',
+          channel: submission.channel,
+        },
+        metadata: { missingPersonId: submission.missingPersonId },
+      });
+      throw new BadRequestException('finder_not_verifiable');
+    }
+
     const updated = await this.prisma.informationSubmission.update({
       where: { id },
       data: {

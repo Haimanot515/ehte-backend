@@ -5,6 +5,7 @@ import * as bcrypt from 'bcrypt';
 import { randomInt } from 'crypto';
 
 import { PrismaService } from 'src/prisma/prisma.service';
+import { CacheService } from 'src/services/redis/cache.service'; // REDIS
 
 import { sendSms } from 'src/services/sms/sendet.service';
 import { renderOtpSms } from 'src/services/sms/templates/sms-otp.template';
@@ -25,6 +26,7 @@ export class OtpUtil {
     private readonly prisma: PrismaService,
     private readonly configService: ConfigService,
     private readonly emailService: EmailService,
+    private readonly cache: CacheService, // REDIS
   ) {}
 
   async issueAndSendOtp(
@@ -36,6 +38,17 @@ export class OtpUtil {
     const cooldownSeconds = this.configService.get<number>('otp.resendCooldownSeconds', 60);
     const otpExpiresInMinutes = this.configService.get<number>('otp.expiresInMinutes', 10);
 
+    // REDIS: fast path for a repeat tap on "resend" — every request within the cooldown
+    // window after the first ends here with one Redis GET, instead of a Postgres read.
+    // Correctness doesn't depend on this: it's a read-through cache in front of the
+    // Postgres check below, which remains the source of truth and stays unchanged. A
+    // miss here (cold cache, Redis down, or two requests racing the very first send)
+    // just falls through to the original path, which is itself transaction-safe.
+    const cachedId = await this.cache.getOtpCooldown(userId, purpose, channel);
+    if (cachedId) {
+      return { verificationId: cachedId };
+    }
+
     const cooling = await this.findCooldownOtp(
       this.prisma,
       userId,
@@ -45,6 +58,7 @@ export class OtpUtil {
     );
 
     if (cooling) {
+      await this.cache.setOtpCooldown(userId, purpose, channel, cooling.id, cooldownSeconds);
       return { verificationId: cooling.id };
     }
 
@@ -76,6 +90,10 @@ export class OtpUtil {
 
       return { reused: false as const, verificationId: created.id };
     });
+
+    // REDIS: cache the cooldown regardless of which branch created it, so the NEXT repeat
+    // tap (not this one) hits the fast path above instead of Postgres.
+    await this.cache.setOtpCooldown(userId, purpose, channel, result.verificationId, cooldownSeconds);
 
     if (result.reused) {
       return { verificationId: result.verificationId };

@@ -204,7 +204,6 @@ Use the **Authorize** button and enter:
       .addTag('Missing Persons')
       .addTag('Information Submissions')
       .addTag('Victim Profiles')
-      .addTag('Support')
       .addTag('Notifications')
       .addTag('Users')
       .addTag('Roles')

@@ -56,6 +56,25 @@ export class PaymentController {
     return this.paymentService.initiateRewardFunding(user, missingPersonId);
   }
 
+  // Section 5 / 27: posting fee checkout, separate from the support/reward flows above.
+  @Post('victim-profile/:victimProfileId/posting-fee-checkout')
+  @ApiOperation({ summary: 'Start a Chapa checkout for a Victim Profile posting fee' })
+  async initiateVictimProfilePostingFeeCheckout(
+    @CurrentUser() user: CurrentUserDto,
+    @Param('victimProfileId') victimProfileId: string,
+  ) {
+    return this.paymentService.initiatePostingFeeCheckout(user, 'VICTIM_PROFILE', victimProfileId);
+  }
+
+  @Post('missing-person/:missingPersonId/posting-fee-checkout')
+  @ApiOperation({ summary: 'Start a Chapa checkout for a Missing Person posting/promotion fee' })
+  async initiateMissingPersonPostingFeeCheckout(
+    @CurrentUser() user: CurrentUserDto,
+    @Param('missingPersonId') missingPersonId: string,
+  ) {
+    return this.paymentService.initiatePostingFeeCheckout(user, 'MISSING_PERSON', missingPersonId);
+  }
+
   @Get(':txRef/status')
   @ApiOperation({ summary: 'Get the status of a payment by tx_ref (payer only)' })
   async getStatus(@Param('txRef') txRef: string, @CurrentUser() user: CurrentUserDto) {

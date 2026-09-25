@@ -6,9 +6,10 @@
 
 import { Injectable } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { ActorType } from '@prisma/client';
+import { ActorType, AuditOutcome, AuditSeverity } from '@prisma/client';
 import { AuditEventEnum } from 'src/common/enums/shared/audit-events.enum';
 import { AuditEventPayload } from '../../misc/events/audit.events';
+import { NotificationEventEnum } from 'src/common/enums/shared/notification-events.enum';
 
 /** Internal (non-audit) event: Support/Reward modules react to a settled payment. */
 export const BILLING_PAYMENT_PAID = 'billing.payment.paid';
@@ -35,6 +36,15 @@ export type BillingAuditInput = {
   entityLabel?: string | null;
   reason?: string | null;
   metadata?: Record<string, unknown>;
+  // FIX: this type had no outcome/severity fields at all, so no billing
+  // call site could mark a row as a failure or denial — every billing
+  // audit row landed indistinguishable from a success, unlike
+  // ReportService.emitAudit()'s calls, which pass
+  // outcome: AuditOutcome.FAILURE/DENIED and severity: AuditSeverity.WARNING
+  // for exactly this class of event. Both optional so existing success-path
+  // call sites (which omit them and rely on the DB default) don't need to change.
+  outcome?: AuditOutcome;
+  severity?: AuditSeverity;
 };
 
 @Injectable()
@@ -50,6 +60,8 @@ export class BillingEventsService {
       userId: input.actorId,
       actorType: input.actorId ? ActorType.ADMIN : ActorType.SYSTEM,
       action: input.action,
+      outcome: input.outcome,
+      severity: input.severity,
       entity: input.entityType,
       entityId: input.entityId,
       entityLabel: input.entityLabel ?? null,
@@ -63,20 +75,16 @@ export class BillingEventsService {
     this.emitter.emit(BILLING_PAYMENT_PAID, payload);
   }
 
-  // notifyNeutralUpdate() removed: NotificationService already substitutes
-  // DISCREET_TITLE/DISCREET_BODY at send time based on user.discreetModeEnabled
-  // (see dispatchOne() in notification.service.ts). Billing calls the real
-  // NotificationService with genuine content and Discreet Mode is handled for free.
-  // TODO: swap this stub for the actual NotificationService injection once its
-  // public create() signature is confirmed (only the private internals were seen).
-  async notify(
-    userId: string,
-    type: string,
-    title: string,
-    body: string,
-    entity?: string,
-    entityId?: string,
-  ): Promise<void> {
-    this.emitter.emit('notification.create', { userId, type, title, body, entity, entityId });
+  // Same shape as AuthService/PostService's direct eventEmitter.emit(...)
+  // calls to NotificationEventEnum members — routed through this wrapper
+  // only so every billing call site stays off EventEmitter2 directly,
+  // matching how they already do it for audit via log() above.
+  // NotificationListener has one @OnEvent handler per NotificationEventEnum
+  // member (see misc module), so `event` must be a real enum member with a
+  // matching interface in notification.events.ts — passing a plain string
+  // here silently drops the notification, same failure mode BillingAuditInput
+  // was typed to prevent for audit events.
+  notify<E extends object>(event: NotificationEventEnum, payload: E): void {
+    this.emitter.emit(event, payload);
   }
 }

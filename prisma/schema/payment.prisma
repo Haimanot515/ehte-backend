@@ -1,10 +1,15 @@
-// prisma/schema/payment.prisma
-// Money: Decimal(14,2), ETB only in v1. External FKs (User, VictimProfile) are plain strings;
-// add @relation lines to match your models if you want them.
+// Money: Decimal(14,2), ETB by default; other currencies via `currency` + FX fields below.
+//
+// PRD alignment (Sep 2026 pass): PaymentType gained the two posting/promotion-fee
+// flows (section 5 / section 8 / section 27 of the EHTE BILLIG SYSTEMN spec).
+// Posting fees are a SEPARATE financial movement from supporter contributions and
+// from the reward principal — never merged into the same balance (section 33).
 
 enum PaymentType {
   SUPPORT
   MISSING_PERSON_REWARD
+  VICTIM_PROFILE_POSTING_FEE
+  MISSING_PERSON_POSTING_FEE
 }
 
 enum PaymentStatus {
@@ -12,19 +17,20 @@ enum PaymentStatus {
   PAID
   FAILED
   EXPIRED
-  REVIEW_REQUIRED // Chapa said "success" but amount/currency did not match
+  REVIEW_REQUIRED
   REFUNDED
 }
 
 enum PartyType {
-  RECIPIENT // always the remainder, never a rule
+  RECIPIENT
   RESPONSIBLE_ORGANIZATION
-  PLATFORM // Pitron
+  PLATFORM
   REWARD_BENEFICIARY
 }
 
 enum SettlementStatus {
   PENDING
+  PARTIALLY_PAID_OUT // some, but not all, of this allocation's amount has been disbursed (split reward payouts)
   PAID_OUT
   CANCELLED
 }
@@ -36,41 +42,69 @@ model Payment {
   amount   Decimal       @db.Decimal(14, 2)
   currency String        @default("ETB")
 
-  // Opaque random reference sent to Chapa. Never contains user/profile ids.
+  // FX (section 29): only populated when payout/settlement currency differs from
+  // the transaction currency captured here. Never silently converted.
+  fxRate               Decimal?  @db.Decimal(18, 8)
+  fxRateCapturedAt     DateTime?
+  settlementCurrency   String?
+
   txRef          String   @unique
   chapaReference String?
   chapaFee       Decimal? @db.Decimal(14, 2)
 
+  // Required for payment creation / provider callbacks per section 25's validation rules.
+  // Distinct from txRef: txRef is the provider-facing checkout reference, idempotencyKey
+  // is our own dedupe key for retried create-payment requests from the same client action.
+  idempotencyKey String?
+
   payerUserId     String
   victimProfileId String?
-  supportId       String? // existing Support row this payment settles
-  missingPersonId String? // MissingPerson this reward payment funds (rewardOffered/rewardApproved live there)
+  supportId       String?
+  missingPersonId String?
 
-  agreementId        String?
-  agreement          Agreement? @relation(fields: [agreementId], references: [id])
-  agreementVersion   Int?
-  // Exact breakdown the payer saw before paying.
+  // Which business object a posting fee is for, when type is one of the
+  // POSTING_FEE variants. victimProfileId / missingPersonId above already carry
+  // this for their respective fee type, so no separate column is needed.
+
+  agreementId      String?
+  agreementVersion Int?
+
   allocationSnapshot Json
   previewShownAt     DateTime
+
+  // Posting-fee refund/cancellation outcome (section 27). Independent of the
+  // generic PaymentStatus so "PAID then refunded" stays distinguishable from
+  // "never collected".
+  refundStatus String?
+  refundAmount Decimal? @db.Decimal(14, 2)
+  refundReason String?
 
   paidAt    DateTime?
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
 
-  allocations PaymentAllocation[]
+  payer         User                @relation(fields: [payerUserId], references: [id])
+  victimProfile VictimProfile?      @relation(fields: [victimProfileId], references: [id])
+  support       Support?            @relation(fields: [supportId], references: [id])
+  agreement     Agreement?          @relation(fields: [agreementId], references: [id])
+  missingPerson MissingPerson?      @relation(fields: [missingPersonId], references: [id])
+  allocations   PaymentAllocation[]
 
   @@index([status, createdAt])
   @@index([victimProfileId])
   @@index([supportId])
   @@index([missingPersonId])
+  @@index([type, missingPersonId, status])
+  @@index([type, victimProfileId, status])
   @@map("payments")
 }
 
-// Created only when a payment becomes PAID. Append-only apart from settlementStatus.
+// type=SUPPORT sets supportId+victimProfileId; type=MISSING_PERSON_REWARD sets
+// missingPersonId only; type=VICTIM_PROFILE_POSTING_FEE sets victimProfileId only;
+// type=MISSING_PERSON_POSTING_FEE sets missingPersonId only.
 model PaymentAllocation {
   id               String           @id @default(uuid())
   paymentId        String
-  payment          Payment          @relation(fields: [paymentId], references: [id], onDelete: Restrict)
   partyType        PartyType
   institutionId    String?
   amount           Decimal          @db.Decimal(14, 2)
@@ -78,6 +112,8 @@ model PaymentAllocation {
   settlementStatus SettlementStatus @default(PENDING)
   createdAt        DateTime         @default(now())
 
+  payment       Payment        @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  institution   Institution?   @relation(fields: [institutionId], references: [id])
   disbursements Disbursement[]
 
   @@index([paymentId])

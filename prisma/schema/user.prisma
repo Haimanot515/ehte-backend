@@ -18,6 +18,13 @@ model User {
   inviteTokenHash          String?   @unique
   isEmailVerified          Boolean   @default(false)
 
+  // Social login — one nullable+unique column per provider, same pattern as
+  // the rest of this model. NULL is fine on all three for local (phone/
+  // password) accounts; Postgres unique indexes allow multiple NULLs.
+  googleId   String? @unique
+  facebookId String? @unique
+  appleId    String? @unique
+
   pendingPhone String?
 
   auditLogs            AuditLog[]
@@ -30,11 +37,16 @@ model User {
   requestedInformation ReportInformationRequest[] @relation("InfoRequestRequestedBy")
   sessions             Session[]
   supports             Support[]
+  payments             Payment[]
   otps                 UserOtp[]
   userRoles            UserRole[]
   assignedRoles        UserRole[]                 @relation("UserRoleAssignedBy")
 
-  // One-to-one, created lazily on first profile edit
+  // FIX: added to match the new @relation on DeviceToken/NotificationPreference
+  // in notification-delivery.prisma — both sides required for a Prisma relation.
+  deviceTokens            DeviceToken[]
+  notificationPreferences NotificationPreference[]
+
   profile UserProfile?
 
   @@map("user")

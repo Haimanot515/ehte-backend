@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -12,6 +13,7 @@ import {
   MissingPersonStatus,
   MissingPersonType,
   Prisma,
+  RewardClaimStatus,
 } from '@prisma/client';
 
 import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
@@ -28,6 +30,7 @@ import { NotificationEventEnum } from 'src/common/enums/shared/notification-even
 
 import { MinioService } from 'src/services/minio/minio.service';
 import { CacheService } from 'src/services/redis/cache.service';
+import { RewardService } from 'src/modules/billing/service/reward.service';
 
 import {
   AdminCreateMissingPersonDto,
@@ -63,9 +66,16 @@ const UPDATABLE_FIELD_NAMES = [
 type MissingPersonAuditRef = Pick<MissingPerson, 'id' | 'name' | 'personType' | 'userId'>;
 
 // Finished cases: never stale, and only REJECTED counts against a user.
+// ASSUMPTION TO VERIFY: EXPIRED/CANCELLED were added to the MissingPersonStatus
+// enum (schema change not included in this pass) with no other reference to
+// either value anywhere in this file, the controller, or notifications — so
+// there's nothing here to confirm the intended semantics against. Treated as
+// terminal, same bucket as REJECTED/FOUND, until confirmed otherwise.
 const TERMINAL_STATUSES: MissingPersonStatus[] = [
   MissingPersonStatus.REJECTED,
   MissingPersonStatus.FOUND,
+  MissingPersonStatus.EXPIRED,
+  MissingPersonStatus.CANCELLED,
 ];
 
 @Injectable()
@@ -76,6 +86,7 @@ export class MissingPersonService {
     private readonly minioService: MinioService,
     private readonly configService: ConfigService,
     private readonly cache: CacheService,
+    private readonly rewardService: RewardService,
   ) {}
 
   private readonly EDITABLE_STATUSES: MissingPersonStatus[] = [
@@ -84,17 +95,35 @@ export class MissingPersonService {
   ];
 
   // Admin status workflow. PENDING must pass through UNDER_REVIEW first.
+  // ASSUMPTION TO VERIFY (see TERMINAL_STATUSES note above): EXPIRED reachable
+  // from every pre-FOUND state (a case going stale before resolution);
+  // CANCELLED reachable from PENDING/UNDER_REVIEW/MORE_INFORMATION_REQUESTED
+  // only (an APPROVED case is close enough to resolution that closing it
+  // should go through REJECTED/FOUND, which is what actually distinguishes
+  // it for the maybeFlagUserForRejections()/reward-refund paths). Confirm
+  // against the real product requirement before relying on this.
   private readonly ALLOWED_TRANSITIONS: Record<MissingPersonStatus, MissingPersonStatus[]> = {
-    [MissingPersonStatus.PENDING]: [MissingPersonStatus.UNDER_REVIEW],
+    [MissingPersonStatus.PENDING]: [
+      MissingPersonStatus.UNDER_REVIEW,
+      MissingPersonStatus.CANCELLED,
+      MissingPersonStatus.EXPIRED,
+    ],
     [MissingPersonStatus.UNDER_REVIEW]: [
       MissingPersonStatus.MORE_INFORMATION_REQUESTED,
       MissingPersonStatus.APPROVED,
       MissingPersonStatus.REJECTED,
+      MissingPersonStatus.CANCELLED,
+      MissingPersonStatus.EXPIRED,
     ],
-    [MissingPersonStatus.MORE_INFORMATION_REQUESTED]: [],
-    [MissingPersonStatus.APPROVED]: [MissingPersonStatus.FOUND],
+    [MissingPersonStatus.MORE_INFORMATION_REQUESTED]: [
+      MissingPersonStatus.CANCELLED,
+      MissingPersonStatus.EXPIRED,
+    ],
+    [MissingPersonStatus.APPROVED]: [MissingPersonStatus.FOUND, MissingPersonStatus.EXPIRED],
     [MissingPersonStatus.REJECTED]: [],
     [MissingPersonStatus.FOUND]: [],
+    [MissingPersonStatus.EXPIRED]: [],
+    [MissingPersonStatus.CANCELLED]: [],
   };
 
   // Explicit public projection so new model fields never leak by default.
@@ -531,6 +560,64 @@ export class MissingPersonService {
           result: 'flagged_for_review',
         },
       });
+    }
+  }
+
+  // G6: both reward-edit write paths (owner update() and admin updateReward())
+  // need this same check — once a payer has actually funded the reward
+  // (a PAID Payment of type MISSING_PERSON_REWARD exists for this case),
+  // the terms shown at checkout time cannot change out from under the
+  // escrowed money. Funding itself is already blocked once any PAID
+  // payment exists (PaymentService.initiateRewardFunding), so this is the
+  // other half: block edits, not just top-ups.
+  private async isRewardFunded(missingPersonId: string): Promise<boolean> {
+    const count = await this.prisma.payment.count({
+      where: { missingPersonId, type: 'MISSING_PERSON_REWARD', status: 'PAID' },
+    });
+    return count > 0;
+  }
+
+  // PRD alignment (Sep 2026): RewardClaim is no longer one row per case, and
+  // a case-level refund-due state now lives on MissingPerson.fundingStatus
+  // (see reward-claim.prisma / missing-person.prisma) — not a synthetic
+  // per-case RewardClaim row. Delegate to RewardService.closeWithoutPayout(),
+  // which already rejects any still-open claims and marks fundingStatus
+  // REFUND_DUE; it's a no-op (throws BadRequestException) when there's
+  // nothing to close.
+  private async syncRewardClaimOnClosure(
+    adminId: string,
+    missingPersonId: string,
+    status: MissingPersonStatus,
+  ): Promise<void> {
+    if (status !== MissingPersonStatus.FOUND && status !== MissingPersonStatus.REJECTED) return;
+
+    const funded = await this.isRewardFunded(missingPersonId);
+    if (!funded) return;
+
+    if (status === MissingPersonStatus.FOUND) {
+      // A claim already approved or paid out means the reward is
+      // legitimately spoken for — closeWithoutPayout() must not run here,
+      // since it would flip fundingStatus to REFUND_DUE on money that's
+      // already committed (or already sent) to that informant.
+      const settledForPayout = await this.prisma.rewardClaim.findFirst({
+        where: {
+          missingPersonId,
+          status: { in: [RewardClaimStatus.APPROVED_FOR_REWARD, RewardClaimStatus.PAID_OUT] },
+        },
+        select: { id: true },
+      });
+      if (settledForPayout) return;
+    }
+
+    const reason =
+      status === MissingPersonStatus.REJECTED
+        ? 'case_rejected_after_funding'
+        : 'case_found_with_no_approved_informant';
+
+    try {
+      await this.rewardService.closeWithoutPayout(adminId, missingPersonId, reason);
+    } catch (err) {
+      if (!(err instanceof BadRequestException)) throw err;
     }
   }
 
@@ -1192,6 +1279,20 @@ async getStats() {
 
     const rewardUpdate = this.buildRewardProposalUpdate(data, existing);
 
+    // G6: rewardApproved (and therefore funding) is independent of case
+    // status — see updateReward()'s own comment — so EDITABLE_STATUSES
+    // above does not by itself guarantee a funded reward can't reach here.
+    if (rewardUpdate !== null && (await this.isRewardFunded(id))) {
+      this.emitCaseFailure(
+        user,
+        AuditEventEnum.MISSING_PERSON_UPDATED,
+        existing,
+        'reward_terms_locked_once_funded',
+        { metadata: { operation: 'reward_edit_blocked' } },
+      );
+      throw new ConflictException('reward_terms_locked_once_funded');
+    }
+
     // Changing the terms of an approved reward resets its approval.
     const rewardTermsChanged =
       rewardUpdate !== null &&
@@ -1520,6 +1621,8 @@ async getStats() {
       await this.maybeFlagUserForRejections(existing.userId);
     }
 
+    await this.syncRewardClaimOnClosure(admin.id, id, status);
+
     return updated;
   }
 
@@ -1535,6 +1638,23 @@ async getStats() {
 
     if (!existing) {
       throw new NotFoundException('missing_person_not_found');
+    }
+
+    // G6: this is one of two write paths onto rewardApproved/rewardAmount
+    // (the other being RewardService.approveOffer, REWARDS_APPROVE) — once
+    // a PAID payment exists against this case, neither should be able to
+    // move the terms the payer actually funded. autoCorrect-free: there is
+    // no legitimate reason to touch this endpoint post-funding, so it's a
+    // hard block rather than a partial one.
+    if (await this.isRewardFunded(id)) {
+      this.emitCaseFailure(
+        admin,
+        AuditEventEnum.MISSING_PERSON_UPDATED,
+        existing,
+        'reward_terms_locked_once_funded',
+        { metadata: { operation: 'reward_review_blocked' } },
+      );
+      throw new ConflictException('reward_terms_locked_once_funded');
     }
 
     if (rewardApproved && !existing.rewardOffered) {

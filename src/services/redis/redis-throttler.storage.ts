@@ -34,7 +34,7 @@ export class RedisThrottlerStorage implements ThrottlerStorage {
       return this.fallback.increment(key, ttl, limit, blockDuration, throttlerName);
     }
 
-    const hitKey = `ehte:throttle:${throttlerName}:${key}`;
+    const hitKey = `${this.redis.keyPrefix}throttle:${throttlerName}:${key}`;
     const blockKey = `${hitKey}:blocked`;
     const client = this.redis.client;
 

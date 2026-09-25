@@ -1,7 +1,16 @@
+const nodeEnv = process.env.NODE_ENV || 'development';
+
+// Key prefix so dev/staging/prod can share one Redis without colliding.
+// Production keeps the historical 'ehte:' prefix so existing keys stay valid.
+// NOTE: only takes effect once cache.keys.ts and redis-throttler.storage.ts
+// build their keys from this value (both still hard-code 'ehte:').
+const redisKeyPrefix =
+  process.env.REDIS_KEY_PREFIX ?? (nodeEnv === 'production' ? 'ehte:' : `ehte:${nodeEnv}:`);
+
 export default () => ({
   app: {
     name: process.env.APP_NAME || 'Ehte',
-    env: process.env.NODE_ENV || 'development',
+    env: nodeEnv,
     port: Number(process.env.PORT) || 3000,
 
     // Public URL of this API deployment (Swagger, EmailTemplateService links).
@@ -39,10 +48,12 @@ export default () => ({
 
   // Read by FirebaseService via ConfigService, not process.env directly.
   // All three optional — PUSH delivery just stays disabled when unset.
+  // FIREBASE_PRIVATE_KEY arrives with literal \n sequences (how it's stored
+  // in .env / most secret managers) — unescape here, once, at the source.
   firebase: {
     projectId: process.env.FIREBASE_PROJECT_ID,
     clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-    privateKey: process.env.FIREBASE_PRIVATE_KEY,
+    privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
   },
 
   database: {
@@ -51,12 +62,42 @@ export default () => ({
 
   jwt: {
     secret: process.env.JWT_SECRET,
-    expiresIn: process.env.JWT_EXPIRES_IN || '1d',
+
+    // Default aligned with the Joi default in app.module.ts (was '1d' here,
+    // '15m' there — this file wins at runtime because it reads process.env
+    // directly). Anything deriving a session cache TTL from this value should
+    // use the same number.
+    expiresIn: process.env.JWT_EXPIRES_IN || '15m',
 
     // Without this mapping, refresh lookups silently fell back to jwt.secret.
     refreshSecret: process.env.JWT_REFRESH_SECRET,
 
     refreshExpiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '7d',
+  },
+
+  // Social login — one block per provider, all read only by SocialAuthUtil
+  // (src/common/utils/social-auth.util.ts). Each ID token / access token is
+  // verified against these values server-side; nothing here is optional at
+  // runtime for a provider you actually enable — getOrThrow() is used for
+  // all three in SocialAuthUtil, so an unset value fails loudly on first use
+  // rather than silently accepting an unverifiable token.
+  google: {
+    // OAuth 2.0 Client ID from Google Cloud Console. If the web and mobile
+    // clients use DIFFERENT client IDs, SocialAuthUtil.verifyGoogleIdToken()
+    // will need to accept an array here instead of a single string — it
+    // currently does not.
+    clientId: process.env.GOOGLE_CLIENT_ID,
+  },
+
+  facebook: {
+    appId: process.env.FACEBOOK_APP_ID,
+    appSecret: process.env.FACEBOOK_APP_SECRET,
+  },
+
+  apple: {
+    // Services ID (web/Android) or app bundle ID (native iOS) — whichever
+    // audience your client's Sign in with Apple flow actually uses.
+    clientId: process.env.APPLE_CLIENT_ID,
   },
 
   cors: {
@@ -69,6 +110,9 @@ export default () => ({
     enabled: process.env.SWAGGER_ENABLED === 'true',
   },
 
+  // No reader found in the files reviewed (the throttler is configured from
+  // THROTTLE_TTL_SECONDS / THROTTLE_LIMIT in app.module.ts). Grep for
+  // 'rateLimit.' before deleting; kept so nothing else breaks.
   rateLimit: {
     ttl: parseInt(process.env.RATE_LIMIT_TTL ?? '60', 10),
     limit: parseInt(process.env.RATE_LIMIT_LIMIT ?? '100', 10),
@@ -116,6 +160,21 @@ export default () => ({
     port: parseInt(process.env.REDIS_PORT ?? '6379', 10),
     password: process.env.REDIS_PASSWORD,
     db: parseInt(process.env.REDIS_DB ?? '0', 10),
+
+    // TLS is selected by the rediss:// scheme in REDIS_URL (ioredis enables it
+    // automatically). Host/port mode has no TLS support in RedisService.
+    tls: (process.env.REDIS_URL ?? '').startsWith('rediss://'),
+
+    // Production refuses to boot without TLS + password unless this is true
+    // (see app.module.ts). Only for Redis on a trusted private network.
+    allowInsecure: process.env.REDIS_ALLOW_INSECURE === 'true',
+
+    // Separate instance for throttle counters, login lockout counters and
+    // reset keys, so an evicting cache can't drop them. Unset = same Redis
+    // as the cache. Read by SecurityRedisService (redis.module.ts).
+    securityUrl: process.env.REDIS_SECURITY_URL,
+
+    keyPrefix: redisKeyPrefix,
   },
 
   security: {

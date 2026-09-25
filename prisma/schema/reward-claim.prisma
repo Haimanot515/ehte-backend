@@ -1,30 +1,80 @@
 // prisma/schema/reward-claim.prisma
 //
-// MissingPerson already carries the reward OFFER: rewardOffered, rewardAmount
-// (Int — whole ETB, no cents; flag this to product if fractional rewards are
-// ever needed), rewardApproved, rewardDetails. None of that identifies WHO
-// gets paid once the person is found — that is a claim against one specific
-// confidential InformationSubmission, verified by an admin. This model is
-// that missing piece; it does not duplicate anything already on MissingPerson.
+// MissingPerson carries the reward OFFER and the funding/fee state (rewardOffered,
+// rewardAmount, rewardApproved, rewardDetails, funding*/postingFee* fields — see
+// missing-person.prisma). RewardClaim is the per-informant record: WHO submitted
+// what, how it scored, and what share (if any) of the funded reward pool they earn.
+//
+// PRD alignment (Sep 2026): the platform supports one, two, three or more informants
+// per case (section 11), so this is now a one-to-many relation to MissingPerson
+// instead of one row per case. Reward splitting (section 12) lives here as
+// rewardPercentage/rewardAmount per approved claim. A case with a single informant
+// still uses this model — that informant's claim just gets rewardPercentage = 100.
 
 enum RewardClaimStatus {
-  PENDING // reward funded, no claim decided yet
-  APPROVED // admin verified informationSubmissionId led to the outcome
+  SUBMITTED // informationSubmission escalated to a claim, not yet reviewed
+  UNDER_REVIEW
+  VALID
+  INVALID
+  DUPLICATE // materially the same tip as another claim on this case
+  ALREADY_KNOWN // information the case already had before this submission
+  INELIGIBLE // valid information that does not meet the published reward conditions
+  APPROVED_FOR_REWARD // admin decided this claim earns a share; rewardPercentage/rewardAmount set
+  REJECTED
   PAID_OUT
-  REFUND_DUE // funded, case closed, no valid claim — money owed back to requester
+  REFUND_DUE // funded, case closed, no valid claim on this row — money owed back to sponsor
   REFUNDED
 }
 
 model RewardClaim {
   id                      String            @id @default(uuid())
-  missingPersonId         String            @unique // one active claim per case
-  informationSubmissionId String? // set only once an admin approves a specific tip
-  status                  RewardClaimStatus @default(PENDING)
-  approvedById            String?
-  approvedAt              DateTime?
-  closedReason            String?
-  createdAt               DateTime          @default(now())
-  updatedAt               DateTime          @updatedAt
+  missingPersonId         String
+  informationSubmissionId String? // set once an admin links a specific confidential tip
+  informantUserId         String? // denormalized from the submission for query convenience
 
+  status RewardClaimStatus @default(SUBMITTED)
+
+  // Section 11 / 16: scoring inputs and the weighted result. Weights are copied
+  // from MissingPerson.time/evidence/credibilityWeight at scoring time so a later
+  // change to the case's weights never silently reweights an already-scored claim.
+  timeScore         Int?
+  evidenceScore     Int?
+  credibilityScore  Int?
+  timeWeight        Int?
+  evidenceWeight    Int?
+  credibilityWeight Int?
+  weightedScore     Decimal? @db.Decimal(6, 2)
+
+  // Section 12 / 14: this claim's share of the informant pool once approved.
+  // rewardPercentage is this claim's percentage of the informant pool (not of the
+  // gross reward); rewardAmount is the resulting ETB amount, frozen at decision time.
+  rewardPercentage Decimal? @db.Decimal(5, 2)
+  rewardAmount     Decimal? @db.Decimal(14, 2)
+
+  // Frozen at approval time, same reasoning as Payment.agreementId/agreementVersion:
+  // a later agreement change must never recalculate an already-decided claim.
+  agreementId      String?
+  agreementVersion Int?
+
+  duplicateOfClaimId String? // set when status=DUPLICATE, points at the original claim
+
+  decisionReason String?
+  reviewedById   String?
+  reviewedAt     DateTime?
+
+  approvedById String?
+  approvedAt   DateTime?
+  closedReason String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  missingPerson MissingPerson @relation(fields: [missingPersonId], references: [id], onDelete: Cascade)
+  disbursements Disbursement[]
+
+  // One claim per confidential submission — the same tip cannot be claimed twice.
+  @@unique([missingPersonId, informationSubmissionId])
+  @@index([missingPersonId, status])
+  @@index([informantUserId])
   @@map("reward_claims")
 }
