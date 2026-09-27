@@ -10,6 +10,13 @@ model PayoutDestination {
   id            String     @id @default(uuid())
   rail          PayoutRail
   bankName      String?
+  // GAP 4 FIX (G4): Chapa's bank code for this destination's bankName,
+  // validated against ChapaService.getBanks() at write time
+  // (victim-profile.service.ts) and re-validated at payout time
+  // (disbursement.service.ts's transferOrReconcile()), since the list can
+  // change between when someone entered bank details and when a payout
+  // actually runs.
+  bankCode      String?
   accountNumber String?
   telebirrPhone String?
   accountHolder String
@@ -54,6 +61,22 @@ model Disbursement {
   executedAt          DateTime?
   failureReason       String?
   createdAt           DateTime           @default(now())
+
+  // GAP 2 FIX (disbursement idempotency): lets DisbursementService.retry()
+  // safely re-attempt a FAILED CHAPA_TRANSFER without ever re-sending blind —
+  // see the "GAP 2 FIX" comments in disbursement.service.ts.
+  //   retryCount    — capped by config (disbursement.maxRetryAttempts,
+  //                   default 3); incremented atomically in the same
+  //                   updateMany() that flips FAILED -> PROCESSING, so two
+  //                   concurrent retry() calls can't both slip in under the cap.
+  //   lastBankCode  — the Chapa bank code used on the most recent transfer
+  //                   attempt for this disbursement, so a retry doesn't need
+  //                   it re-supplied by the admin. Only meaningful for
+  //                   CHAPA_TRANSFER; left null for MANUAL_BANK. Re-validated
+  //                   against ChapaService.getBanks() on every send, not just
+  //                   trusted as-is (G4).
+  retryCount          Int                @default(0)
+  lastBankCode        String?
 
   // Snapshot of PayoutDestination at execution time; the standing record can change later.
   destinationSnapshot Json?

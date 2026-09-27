@@ -1,6 +1,5 @@
 import {
   BadRequestException,
-  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -46,6 +45,11 @@ type MediaFieldName = (typeof MEDIA_FIELD_NAMES)[number];
 type MediaBearing = Record<MediaFieldName, string[]>;
 type MediaBearingDto = Partial<Record<MediaFieldName, string[] | undefined>>;
 
+// G6: rewardOffered/rewardAmount/rewardDetails removed — update() (the
+// general owner-update route) must only ever touch non-financial case
+// fields. Reward terms are set at creation and, after that, only ever
+// reviewed through RewardService.reviewOffer() (admin/:id/reward,
+// REWARDS_APPROVE), never through this route.
 const UPDATABLE_FIELD_NAMES = [
   'personType',
   'name',
@@ -58,9 +62,6 @@ const UPDATABLE_FIELD_NAMES = [
   'pdf',
   'document',
   'other',
-  'rewardOffered',
-  'rewardAmount',
-  'rewardDetails',
 ] as const;
 
 type MissingPersonAuditRef = Pick<MissingPerson, 'id' | 'name' | 'personType' | 'userId'>;
@@ -1277,30 +1278,6 @@ async getStats() {
     const shouldReturnToPending =
       existing.status === MissingPersonStatus.MORE_INFORMATION_REQUESTED;
 
-    const rewardUpdate = this.buildRewardProposalUpdate(data, existing);
-
-    // G6: rewardApproved (and therefore funding) is independent of case
-    // status — see updateReward()'s own comment — so EDITABLE_STATUSES
-    // above does not by itself guarantee a funded reward can't reach here.
-    if (rewardUpdate !== null && (await this.isRewardFunded(id))) {
-      this.emitCaseFailure(
-        user,
-        AuditEventEnum.MISSING_PERSON_UPDATED,
-        existing,
-        'reward_terms_locked_once_funded',
-        { metadata: { operation: 'reward_edit_blocked' } },
-      );
-      throw new ConflictException('reward_terms_locked_once_funded');
-    }
-
-    // Changing the terms of an approved reward resets its approval.
-    const rewardTermsChanged =
-      rewardUpdate !== null &&
-      (rewardUpdate.rewardOffered !== existing.rewardOffered ||
-        rewardUpdate.rewardAmount !== existing.rewardAmount ||
-        rewardUpdate.rewardDetails !== existing.rewardDetails);
-    const shouldResetRewardApproval = rewardTermsChanged && existing.rewardApproved;
-
     const fieldsUpdated = UPDATABLE_FIELD_NAMES.filter((field) => data[field] !== undefined);
 
     const updated = await this.prisma.missingPerson.update({
@@ -1317,14 +1294,6 @@ async getStats() {
         ...(data.pdf !== undefined ? { pdf: data.pdf } : {}),
         ...(data.document !== undefined ? { document: data.document } : {}),
         ...(data.other !== undefined ? { other: data.other } : {}),
-        ...(rewardUpdate !== null
-          ? {
-              rewardOffered: rewardUpdate.rewardOffered,
-              rewardAmount: rewardUpdate.rewardAmount,
-              rewardDetails: rewardUpdate.rewardDetails,
-            }
-          : {}),
-        ...(shouldResetRewardApproval ? { rewardApproved: false } : {}),
         ...(shouldReturnToPending ? { status: MissingPersonStatus.PENDING } : {}),
         mediaTotalBytes: newTotalBytes,
       },
@@ -1344,7 +1313,6 @@ async getStats() {
         returnedToPending: shouldReturnToPending,
         previousStatus: existing.status,
         currentStatus: updated.status,
-        rewardApprovalReset: shouldResetRewardApproval,
         result: 'success',
       },
       metadata: {
@@ -1626,109 +1594,4 @@ async getStats() {
     return updated;
   }
 
-  // Independent of the status workflow and claims. Approval needs an existing offer and amount.
-  async updateReward(
-    admin: CurrentUserDto,
-    id: string,
-    rewardApproved: boolean,
-    rewardAmount?: number,
-    rewardDetails?: string,
-  ) {
-    const existing = await this.prisma.missingPerson.findUnique({ where: { id } });
-
-    if (!existing) {
-      throw new NotFoundException('missing_person_not_found');
-    }
-
-    // G6: this is one of two write paths onto rewardApproved/rewardAmount
-    // (the other being RewardService.approveOffer, REWARDS_APPROVE) — once
-    // a PAID payment exists against this case, neither should be able to
-    // move the terms the payer actually funded. autoCorrect-free: there is
-    // no legitimate reason to touch this endpoint post-funding, so it's a
-    // hard block rather than a partial one.
-    if (await this.isRewardFunded(id)) {
-      this.emitCaseFailure(
-        admin,
-        AuditEventEnum.MISSING_PERSON_UPDATED,
-        existing,
-        'reward_terms_locked_once_funded',
-        { metadata: { operation: 'reward_review_blocked' } },
-      );
-      throw new ConflictException('reward_terms_locked_once_funded');
-    }
-
-    if (rewardApproved && !existing.rewardOffered) {
-      this.emitCaseFailure(
-        admin,
-        AuditEventEnum.MISSING_PERSON_UPDATED,
-        existing,
-        'cannot_approve_reward_that_was_not_offered',
-        { metadata: { operation: 'reward_review' } },
-      );
-      throw new BadRequestException('cannot_approve_reward_that_was_not_offered');
-    }
-
-    const finalAmount = rewardAmount !== undefined ? rewardAmount : existing.rewardAmount;
-    const finalDetails = rewardDetails !== undefined ? rewardDetails : existing.rewardDetails;
-
-    if (rewardApproved && (finalAmount === undefined || finalAmount === null)) {
-      this.emitCaseFailure(
-        admin,
-        AuditEventEnum.MISSING_PERSON_UPDATED,
-        existing,
-        'reward_amount_required_when_approved',
-        { metadata: { operation: 'reward_review' } },
-      );
-      throw new BadRequestException('reward_amount_required_when_approved');
-    }
-
-    const updated = await this.prisma.missingPerson.update({
-      where: { id },
-      data: {
-        rewardApproved,
-        rewardAmount: finalAmount,
-        rewardDetails: finalDetails,
-      },
-    });
-
-    // rewardApproved/rewardAmount/rewardDetails feed maskUnapprovedReward() on the
-    // public detail/list views, so any change here can change what's shown publicly.
-    await this.cache.invalidateMissingPersonEverywhere(id);
-
-    this.emitAudit({
-      userId: admin.id,
-      ...this.targetUserFor(admin, existing),
-      actorType: resolveActorType(admin.roles ?? []),
-      action: AuditEventEnum.MISSING_PERSON_UPDATED,
-      entity: 'MissingPerson',
-      entityId: id,
-      entityLabel: this.caseLabel(updated),
-      diff: {
-        previousRewardApproved: existing.rewardApproved,
-        previousRewardAmount: existing.rewardAmount,
-        previousRewardDetails: existing.rewardDetails,
-        rewardApproved: updated.rewardApproved,
-        rewardAmount: updated.rewardAmount,
-        rewardDetails: updated.rewardDetails,
-        result: 'success',
-      },
-      metadata: {
-        operation: 'reward_review',
-        amountOverriddenByAdmin:
-          rewardAmount !== undefined && rewardAmount !== existing.rewardAmount,
-        detailsOverriddenByAdmin:
-          rewardDetails !== undefined && rewardDetails !== existing.rewardDetails,
-      },
-    });
-
-    this.eventEmitter.emit(NotificationEventEnum.MISSING_PERSON_UPDATED, {
-      userId: existing.userId,
-      missingPersonId: updated.id,
-      status: updated.status,
-      rewardApproved: updated.rewardApproved,
-      rewardAmount: updated.rewardAmount,
-    });
-
-    return updated;
-  }
 }

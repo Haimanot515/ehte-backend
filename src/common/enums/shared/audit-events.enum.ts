@@ -165,6 +165,12 @@ export enum AuditEventEnum {
   // AgreementService/DisbursementService/RewardService/PaymentService
   // comments claiming "every step is audited".
   INSTITUTION_SIGNED = 'INSTITUTION_SIGNED',
+  // GAP 8 — Institution KYC / beneficial ownership (Section 13 of the
+  // standard). See modules/billing/service/institution.service.ts.
+  INSTITUTION_KYC_UPDATED = 'INSTITUTION_KYC_UPDATED',
+  INSTITUTION_KYC_SUBMITTED = 'INSTITUTION_KYC_SUBMITTED',
+  INSTITUTION_KYC_APPROVED = 'INSTITUTION_KYC_APPROVED',
+  INSTITUTION_KYC_REJECTED = 'INSTITUTION_KYC_REJECTED',
   AGREEMENT_CREATED = 'AGREEMENT_CREATED',
   AGREEMENT_ACTIVATED = 'AGREEMENT_ACTIVATED',
   AGREEMENT_RETIRED = 'AGREEMENT_RETIRED',

@@ -22,6 +22,7 @@ import { RequirePermissions } from 'src/common/decorators/require-permissions.de
 import { PermissionsEnum } from 'src/common/enums/permissions.enum';
 import { RequireReauthentication } from 'src/common/decorators/reauth.decorator';
 import { MediaKeyQueryDto } from 'src/modules/media/dto/media-key-query.dto';
+import { RewardService } from 'src/modules/billing/service/reward.service';
 
 import {
   AdminCreateMissingPersonDto,
@@ -38,7 +39,10 @@ import { MissingPersonService } from '../service/missing-person.service';
 @ApiTags('Missing Persons')
 @Controller('missing-persons')
 export class MissingPersonController {
-  constructor(private readonly missingPersonService: MissingPersonService) {}
+  constructor(
+    private readonly missingPersonService: MissingPersonService,
+    private readonly rewardService: RewardService,
+  ) {}
 
   @Post()
   @ApiBearerAuth('access-token')
@@ -188,16 +192,13 @@ async getStats() {
     return this.missingPersonService.unclaimMissingPerson(admin, id);
   }
 
-  // G6: this was reachable with MISSING_PERSON_REVIEW alone — the same
-  // permission used to approve/reject the case itself — while
-  // RewardService.approveOffer (the other write path onto these same
-  // fields) requires REWARDS_APPROVE. Requiring both here closes the gap
-  // where a reviewer without reward-approval privilege could still change
-  // or revoke reward terms through this route. The underlying "two write
-  // paths for one field" problem (G6's other half) is fixed on the
-  // service side by MissingPersonService.updateReward()'s funded-lock;
-  // fully consolidating onto RewardService as the single write path is
-  // tracked as a billing-module change, not done here.
+  // G6 RESOLVED: rewardApproved/rewardAmount/rewardDetails now have exactly
+  // one write path — RewardService.reviewOffer(), called directly below.
+  // MissingPersonService.updateReward() has been removed; the billing
+  // route (admin/billing/missing-persons/:id/reward/approve) that used to
+  // write these fields with no funded-lock now calls into reviewOffer()
+  // too (see RewardService.approveOffer()). This route keeps requiring
+  // both MISSING_PERSON_REVIEW and REWARDS_APPROVE, unchanged.
   @Patch('admin/:id/reward')
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
@@ -209,8 +210,8 @@ async getStats() {
     @Param('id') id: string,
     @Body() data: UpdateMissingPersonRewardDto,
   ) {
-    return this.missingPersonService.updateReward(
-      admin,
+    return this.rewardService.reviewOffer(
+      admin.id,
       id,
       data.rewardApproved,
       data.rewardAmount,

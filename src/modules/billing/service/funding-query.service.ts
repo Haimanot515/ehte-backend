@@ -537,11 +537,11 @@ export class FundingQueryService {
     };
   }
 
-  // GET admin/billing/liabilities (G27)
+  // GET admin/billing/liabilities (G27 — RESOLVED)
   // Compares what Ehte still owes (unpaid allocations) against Chapa's reported balance.
-  // chapa.getBalance() is not confirmed to exist yet (section 8, G27) — this degrades
-  // gracefully to "unknown" rather than failing the whole report if the method or the Chapa
-  // call is unavailable.
+  // ChapaService.getBalance() is now implemented (see chapa.service.ts) — this still
+  // degrades gracefully to "unknown" on a transient Chapa outage, but no longer needs
+  // the duck-typing runtime check that existed only because the method might not exist.
   async getLiabilities() {
     const unpaid = await this.prisma.paymentAllocation.groupBy({
       by: ['partyType', 'settlementStatus'],
@@ -558,15 +558,11 @@ export class FundingQueryService {
     let chapaBalance: string | null = null;
     let chapaBalanceError: string | null = null;
     try {
-      const getBalance = (this.chapa as unknown as { getBalance?: () => Promise<{ available: number }> })
-        .getBalance;
-      if (typeof getBalance === 'function') {
-        const balance = await getBalance.call(this.chapa);
-        chapaBalance = money(balance.available);
-      } else {
-        chapaBalanceError = 'ChapaService.getBalance() is not implemented yet (see G27).';
-      }
+      const balance = await this.chapa.getBalance();
+      chapaBalance = money(balance.available);
     } catch (err) {
+      // Chapa unreachable/erroring at request time — still a graceful "unknown",
+      // just no longer a stand-in for "method doesn't exist".
       chapaBalanceError = `Could not fetch Chapa balance: ${String(err)}`;
     }
 

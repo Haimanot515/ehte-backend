@@ -17,6 +17,9 @@ import { DisbursementService } from './service/disbursement.service';
 import { AgreementService } from './service/agreement.service';
 import { BillingEventsService } from './service/billing-events.service';
 import { FundingQueryService } from './service/funding-query.service';
+import { FX_RATE_PROVIDER, UnconfiguredFxRateProvider } from './service/fx-rate.provider';
+import { InstitutionController } from './controller/institution.controller';
+import { InstitutionService } from './service/institution.service';
 
 @Module({
   imports: [ChapaModule],
@@ -26,6 +29,7 @@ import { FundingQueryService } from './service/funding-query.service';
     AgreementController,
     DisbursementController,
     BillingReportController,
+    InstitutionController,
   ],
   providers: [
     BillingEventsService,
@@ -35,7 +39,21 @@ import { FundingQueryService } from './service/funding-query.service';
     DisbursementService,
     AgreementService,
     FundingQueryService,
+    InstitutionService,
+    // GAP 7: swap this binding for a real feed's implementation of
+    // FxRateProvider (see fx-rate.provider.ts) once one is chosen.
+    // Left as UnconfiguredFxRateProvider — which always throws
+    // FxRateUnavailableException — until then, so a currency divergence
+    // fails loudly instead of silently converting at a guessed rate.
+    { provide: FX_RATE_PROVIDER, useClass: UnconfiguredFxRateProvider },
   ],
-  exports: [AllocationService, PaymentService, RewardService, BillingEventsService, FundingQueryService],
+  exports: [
+    AllocationService,
+    PaymentService,
+    RewardService,
+    BillingEventsService,
+    FundingQueryService,
+    InstitutionService,
+  ],
 })
 export class BillingModule {}

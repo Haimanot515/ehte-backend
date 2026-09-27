@@ -233,11 +233,24 @@ export class PaymentService {
       throw new ServiceUnavailableException('Payments are not configured');
     }
     const txRef = this.chapa.generateTxRef();
+    // GAP 7: at most one line in the preview carries a non-null fxSnapshot
+    // today (the remainder line — RECIPIENT for SUPPORT — since that's the
+    // only currency AllocationService currently resolves per-payment; see
+    // its resolveInstitutionPayoutCurrencies() for the institution-line
+    // case). If more than one line ever diverges simultaneously, only the
+    // first is mirrored onto these typed columns — the complete picture,
+    // every line's own snapshot, always remains in allocationSnapshot below.
+    const fx = args.preview.lines.find((l) => l.fxSnapshot)?.fxSnapshot ?? null;
     const payment = await this.prisma.payment.create({
       data: {
         type: args.type,
         amount: args.amount,
-        currency: 'ETB',
+        currency: args.preview.currency,
+        fxRate: fx ? new Prisma.Decimal(fx.rate) : undefined,
+        fxRateCapturedAt: fx?.rateTimestamp,
+        fxRateSource: fx?.rateSource,
+        settlementCurrency: fx?.destinationCurrency,
+        fxRoundingAdjustment: fx ? new Prisma.Decimal(fx.roundingAdjustment) : undefined,
         txRef,
         payerUserId: args.payer.id,
         victimProfileId: args.victimProfileId,
@@ -245,7 +258,7 @@ export class PaymentService {
         missingPersonId: args.missingPersonId,
         agreementId: args.preview.agreementId,
         agreementVersion: args.preview.agreementVersion,
-        allocationSnapshot: args.preview,
+        allocationSnapshot: args.preview as unknown as Prisma.InputJsonValue,
         previewShownAt: new Date(),
       },
     });
@@ -728,4 +741,4 @@ export class PaymentService {
       })),
     };
   }
-} 
+}

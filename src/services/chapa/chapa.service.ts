@@ -7,6 +7,7 @@
 //   - opaque tx_ref (no user/profile ids ever reach Chapa)
 //   - no PII in logs
 //   - transfer() for payouts
+//   - getBalance() for admin liability reconciliation (G27)
 
 import {
   BadRequestException,
@@ -59,6 +60,28 @@ export type ChapaTransferInput = {
   reference: string;
 };
 
+// GAP 3 FIX (G27): Chapa's merchant balance, used by the admin liabilities
+// report (FundingQueryService.getLiabilities()) to compare what Ehte still
+// owes in unpaid allocations against what's actually sitting in the Chapa
+// account. `available` is intentionally a plain number here, not a
+// Prisma.Decimal — funding-query.service.ts's money() helper already
+// accepts number | Decimal | null and normalizes it, so there's no reason
+// to import Prisma.Decimal into this response type just to wrap a value
+// that came from Chapa as JSON in the first place.
+export type ChapaBalance = {
+  available: number;
+  currency: string;
+};
+
+// GAP 4 FIX (G4): Chapa's own bank list, typed down to just what
+// disbursement.service.ts and victim-profile.service.ts need to validate a
+// submitted bankCode against. getBanks() below used to return
+// Array<Record<string, unknown>> straight off the wire.
+export type ChapaBank = {
+  code: string;
+  name: string;
+};
+
 @Injectable()
 export class ChapaService {
   private readonly logger = new Logger(ChapaService.name);
@@ -79,6 +102,16 @@ export class ChapaService {
   private readonly titleMaxLength: number;
   private readonly descriptionMaxLength: number;
 
+  // GAP 4 FIX (G4): getBanks() is a slow-changing list, and both
+  // victim-profile.service.ts (data entry) and disbursement.service.ts
+  // (execute-time re-validation) now call it — without a cache, that's a
+  // Chapa round-trip on every profile save AND every payout. banksCache is
+  // process-local, not Redis-backed: a stale entry only lasts up to
+  // banksCacheTtlMs and a bad bank code still fails Chapa's own transfer
+  // call, so cross-instance drift is not a correctness risk here.
+  private banksCache: { data: ChapaBank[]; fetchedAt: number } | null = null;
+  private readonly banksCacheTtlMs: number;
+
   constructor(config: ConfigService) {
     this.secretKey = config.get<string>('chapa.secretKey', '');
     this.webhookSecret = config.get<string>('chapa.webhookSecret', '');
@@ -90,6 +123,8 @@ export class ChapaService {
     this.requestTimeoutMs = config.get<number>('chapa.timeoutMs', 15_000);
     this.titleMaxLength = config.get<number>('chapa.titleMaxLength', 16);
     this.descriptionMaxLength = config.get<number>('chapa.descriptionMaxLength', 50);
+    // 6 hours default — "slow-changing list" per the existing getBanks() comment.
+    this.banksCacheTtlMs = config.get<number>('chapa.banksCacheTtlMs', 6 * 60 * 60 * 1000);
   }
 
   // ── Low-level request ─────────────────────────────────────────────────────
@@ -218,16 +253,39 @@ export class ChapaService {
     this.logger.log(`[Chapa] transfer accepted reference=${input.reference}`);
   }
 
-  /**
-   * Banks Chapa can pay out to. Transfers need Chapa's bank code, and VictimProfile.bankName is free text,
-   * so the admin picks the code at payout time. Confirm the endpoint/shape in Chapa's docs.
-   */
-  async getBanks(): Promise<Array<Record<string, unknown>>> {
+  // Banks Chapa can pay out to. Transfers need Chapa's bank code, and
+  // PayoutDestination.bankName is free text, so the admin picks the code
+  // at payout time and victim-profile.service.ts / disbursement.service.ts
+  // validate it against this list (G4).
+  //
+  // Cached for banksCacheTtlMs (see constructor) since this rarely changes
+  // and gets called on every bank-details save and every disbursement
+  // execute. Pass forceRefresh: true to bypass the cache (e.g. an admin
+  // "refresh bank list" action, if one gets added later).
+  //
+  // Confirm the endpoint/shape in Chapa's docs before shipping: `id` is
+  // mapped to `code` below because that's the field commonly passed back
+  // as bank_code in Chapa transfer examples — if Chapa's response instead
+  // has a distinct `code` or `slug` field meant for this, swap the mapping.
+  async getBanks(forceRefresh = false): Promise<ChapaBank[]> {
+    const now = Date.now();
+    if (!forceRefresh && this.banksCache && now - this.banksCache.fetchedAt < this.banksCacheTtlMs) {
+      return this.banksCache.data;
+    }
+
     const res = await this.request<ChapaEnvelope & { data: Array<Record<string, unknown>> }>(
       'GET',
       '/banks',
     );
-    return res.data;
+    const banks: ChapaBank[] = res.data
+      .map((row) => ({
+        code: String(row.id ?? row.code ?? ''),
+        name: String(row.name ?? ''),
+      }))
+      .filter((b) => b.code && b.name);
+
+    this.banksCache = { data: banks, fetchedAt: now };
+    return banks;
   }
 
   /** Check the exact verify-transfer endpoint in Chapa's docs before shipping. */
@@ -237,6 +295,32 @@ export class ChapaService {
       `/transfers/verify/${encodeURIComponent(reference)}`,
     );
     return res.data;
+  }
+
+  // GAP 3 FIX (G27): Chapa's merchant balance, for the admin liabilities
+  // report (FundingQueryService.getLiabilities()) to compare against total
+  // unpaid allocations.
+  //
+  // Reuses this.request(), so failures already surface as a typed
+  // BadRequestException (bad response / non-success status) or
+  // ServiceUnavailableException (no secret key configured) — never a bare
+  // Error — which is what lets getLiabilities()'s try/catch tell "Chapa is
+  // down or rejected the call" apart from a bug in this method itself.
+  //
+  // Confirm the exact path and response field names (available_balance,
+  // currency) against Chapa's current balance-endpoint docs before
+  // shipping — same caveat as getBanks() and verifyTransfer() above; this
+  // is written to match Chapa's documented shape as of this writing, not
+  // verified against a live call.
+  async getBalance(currency: string = this.currency): Promise<ChapaBalance> {
+    const res = await this.request<
+      ChapaEnvelope & { data: { available_balance: number; currency: string } }
+    >('GET', `/balances/${encodeURIComponent(currency)}`);
+
+    return {
+      available: res.data.available_balance,
+      currency: res.data.currency,
+    };
   }
 
   // ── References ────────────────────────────────────────────────────────────

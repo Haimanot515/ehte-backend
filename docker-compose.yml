@@ -1,17 +1,39 @@
 # ============================================================
-# Ehte Backend — DEV API only
+# Ehte Backend — DEV
 # Azure checkout on ecs-a447. Project name is pinned so the
 # Azure dir "s" cannot collide with other stacks.
 #
-# API-only. Does NOT start Postgres, Redis, or MinIO.
+# Starts API + dedicated ehte_postgres-dev only.
+# Does NOT start MinIO or Redis. Does NOT use any other
+# postgres_* container. Postgres is docker-network only
+# (no host port) so it cannot collide with existing DBs.
 # Secrets come from .env (secure file ehte-dev.env).
-# Nest reads MINIO_ENDPOINT / MINIO_PORT (not *_DOCKER), so
-# those are set here. The deploy job attaches this service to
-# shared-minio's existing Docker network (SHARED_MINIO_NETWORK).
+# Nest reads MINIO_ENDPOINT / MINIO_PORT (not *_DOCKER).
+# Deploy attaches the API to shared-minio's existing network
+# (SHARED_MINIO_NETWORK).
 # ============================================================
 name: ehte_backend-dev
 
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: ehte_postgres-dev
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-ehte_db}
+      POSTGRES_USER: ${POSTGRES_USER:-ehte_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in ehte-dev.env}
+    volumes:
+      - ehte_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ehte_user} -d ${POSTGRES_DB:-ehte_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    networks:
+      - default
+
   api:
     image: ${REGISTRY_HOST:-images.pitrontech.et}/ehte_backend:dev-latest
     container_name: ehte_backend-dev
@@ -23,6 +45,9 @@ services:
       PORT: "3000"
       APP_URL: https://api.eheta.dev.pitrontech.et
       ADMIN_APP_URL: https://admin.eheta.dev.pitrontech.et
+      # Override placeholder DATABASE_URL in the secure file.
+      DATABASE_URL: ${DATABASE_URL}
+      DIRECT_URL: ${DIRECT_URL:-${DATABASE_URL}}
       # App Joi schema requires these names. Env file only has *_DOCKER.
       MINIO_ENDPOINT: ${MINIO_ENDPOINT:-shared-minio}
       MINIO_PORT: ${MINIO_PORT:-9000}
@@ -31,6 +56,9 @@ services:
       - "host.docker.internal:host-gateway"
     ports:
       - "127.0.0.1:4430:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
     networks:
       - default
       - shared_minio
@@ -39,3 +67,7 @@ networks:
   shared_minio:
     external: true
     name: ${SHARED_MINIO_NETWORK:?SHARED_MINIO_NETWORK must be the docker network of shared-minio}
+
+volumes:
+  ehte_postgres_data:
+    name: ehte_postgres_data

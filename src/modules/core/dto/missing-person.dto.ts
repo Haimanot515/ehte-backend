@@ -232,33 +232,12 @@ export class UpdateMissingPersonDto {
   @IsString({ each: true })
   other?: string[];
 
-  @ApiPropertyOptional({
-    description:
-      'Whether the submitter is offering a reward for information - "I will pay this amount if the missing person is found."',
-  })
-  @IsOptional()
-  @IsBoolean()
-  rewardOffered?: boolean;
-
-  @ApiPropertyOptional({
-    description:
-      'Reward amount to pay if the missing person is found (platform base currency unit). Required when this request sets rewardOffered to true.',
-    example: 20000,
-  })
-  @ValidateIf((o: UpdateMissingPersonDto) => o.rewardOffered === true)
-  @IsInt()
-  @Min(1)
-  rewardAmount?: number;
-
-  @ApiPropertyOptional({
-    description:
-      'Free-text reward details (e.g. conditions, how to claim). Only meaningful when rewardOffered is true; ignored otherwise.',
-    maxLength: 1000,
-  })
-  @IsOptional()
-  @IsString()
-  @MaxLength(1000)
-  rewardDetails?: string;
+  // G6: rewardOffered/rewardAmount/rewardDetails were removed from this DTO.
+  // This is the general case-update route (owner, MISSING_PERSON_REVIEW-free,
+  // reauth only) — reward terms are financial and must only ever change
+  // through the dedicated admin/:id/reward route (UpdateMissingPersonRewardDto,
+  // gated by REWARDS_APPROVE), which is now the single write path onto these
+  // fields via RewardService.reviewOffer(). See MissingPersonService.update().
 
   @ApiPropertyOptional({
     description:

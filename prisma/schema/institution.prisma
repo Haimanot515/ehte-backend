@@ -4,6 +4,21 @@ enum InstitutionStatus {
   SUSPENDED
 }
 
+// GAP 8 — Institution KYC / beneficial ownership (Section 13 of the
+// standard). See modules/billing/service/institution.service.ts.
+enum KycStatus {
+  NOT_STARTED
+  SUBMITTED
+  APPROVED
+  REJECTED
+}
+
+enum RiskRating {
+  LOW
+  MEDIUM
+  HIGH
+}
+
 model Institution {
   id        String            @id @default(uuid())
   name      String
@@ -12,11 +27,32 @@ model Institution {
   createdAt DateTime          @default(now())
   updatedAt DateTime          @updatedAt
 
+  // GAP 8 — identity, authorized representative, beneficial ownership,
+  // compliance. All nullable/defaulted: existing rows (created via
+  // AgreementService.createInstitution) start at kycStatus: NOT_STARTED
+  // with everything else null, no backfill required.
+  legalName          String?
+  registrationNumber String?
+  taxId              String?
+  authorizedRep      Json? // AuthorizedRepresentativeDto shape (institution.dto.ts)
+  // BeneficialOwnerDto[] shape. CONDITIONAL per the standard — only
+  // required where jurisdiction/risk policy says so (InstitutionService.
+  // beneficialOwnershipRequired()); a plain Json array for now, not a
+  // dedicated relation table.
+  beneficialOwners   Json?
+  kycStatus          KycStatus  @default(NOT_STARTED)
+  riskRating         RiskRating?
+  kycSubmittedAt     DateTime?
+  kycReviewedAt      DateTime?
+  kycReviewedById    String?
+  kycRejectionReason String?
+
   agreements         Agreement[]
   allocationRules    AllocationRule[]
   allocations        PaymentAllocation[]
   payoutDestinations PayoutDestination[]
 
   // Only AGREEMENT_SIGNED institutions may be shown as partners or as RESPONSIBLE_ORGANIZATION.
+  @@index([kycStatus])
   @@map("institutions")
 }

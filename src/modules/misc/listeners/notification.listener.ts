@@ -50,6 +50,8 @@ import {
   RewardClaimApprovedEvent,
   DisbursementPaidOutEvent,
   InstitutionSignedEvent,
+  InstitutionKycSubmittedEvent,
+  InstitutionKycReviewedEvent,
   AgreementCreatedEvent,
   AgreementActivatedEvent,
   AgreementRetiredEvent,
@@ -558,6 +560,47 @@ export class NotificationListener {
         type: NotificationType.INSTITUTION_SIGNED,
         title: 'Institution Agreement Signed',
         body: 'An institution has signed its billing agreement.',
+        entity: 'Institution',
+        entityId: event.institutionId,
+        actionUrl: URLS.institution(event.institutionId),
+      },
+      event.actorId,
+    );
+  }
+
+  // GAP 8 — Institution KYC.
+  // REQUIRES: NotificationType.INSTITUTION_KYC_SUBMITTED and
+  // .INSTITUTION_KYC_REVIEWED added to the Prisma enum (new migration), and
+  // NotificationEventEnum.INSTITUTION_KYC_SUBMITTED / .INSTITUTION_KYC_REVIEWED
+  // in notification-events.enum.ts — same as INSTITUTION_SIGNED above, this
+  // file only references them, it can't create them.
+  @OnEvent(NotificationEventEnum.INSTITUTION_KYC_SUBMITTED)
+  async handleInstitutionKycSubmitted(event: InstitutionKycSubmittedEvent) {
+    await this.toAdmins(
+      'INSTITUTION_KYC_SUBMITTED',
+      {
+        type: NotificationType.INSTITUTION_KYC_SUBMITTED,
+        title: 'Institution KYC Submitted',
+        body: 'An institution submitted its KYC profile for review.',
+        entity: 'Institution',
+        entityId: event.institutionId,
+        actionUrl: URLS.institution(event.institutionId),
+      },
+      event.actorId,
+    );
+  }
+
+  @OnEvent(NotificationEventEnum.INSTITUTION_KYC_REVIEWED)
+  async handleInstitutionKycReviewed(event: InstitutionKycReviewedEvent) {
+    await this.toAdmins(
+      'INSTITUTION_KYC_REVIEWED',
+      {
+        type: NotificationType.INSTITUTION_KYC_REVIEWED,
+        title: event.decision === 'APPROVED' ? 'Institution KYC Approved' : 'Institution KYC Rejected',
+        body:
+          event.decision === 'APPROVED'
+            ? 'An institution KYC profile was approved.'
+            : 'An institution KYC profile was rejected.',
         entity: 'Institution',
         entityId: event.institutionId,
         actionUrl: URLS.institution(event.institutionId),

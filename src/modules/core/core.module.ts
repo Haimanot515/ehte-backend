@@ -2,6 +2,7 @@ import { Module, forwardRef } from '@nestjs/common';
 
 import { AuthModule } from 'src/modules/auth/auth.module';
 import { BillingModule } from 'src/modules/billing/billing.module';
+import { ChapaModule } from 'src/services/chapa/chapa.module';
 
 import { UserController } from './controller/user.controller';
 import { ReportController } from './controller/report.controller';
@@ -48,7 +49,13 @@ import { VictimProfileService } from './service/victim-profile.service';
   // SupportService here will depend on BillingModule's AllocationService/
   // PaymentService/BillingEventsService) so re-enabling Support only needs
   // the three steps in the comment above, not another DI change here.
-  imports: [AuthModule, forwardRef(() => BillingModule)],
+  //
+  // ChapaModule imported so VictimProfileService can inject ChapaService
+  // (used by updateBankDetails() to validate bankCode against Chapa's bank
+  // list — see G4 in the billing review). No forwardRef needed here:
+  // ChapaModule doesn't import CoreModule or BillingModule, so there's no
+  // cycle in this direction.
+  imports: [AuthModule, forwardRef(() => BillingModule), ChapaModule],
 
   controllers: [
     UserController,

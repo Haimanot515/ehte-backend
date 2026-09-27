@@ -370,6 +370,19 @@ export interface InstitutionSignedEvent {
   actorId: string;
 }
 
+// GAP 8 — Institution KYC. Same reasoning as InstitutionSignedEvent above:
+// back-office actions, broadcast to admins (toAdmins), not a specific user.
+export interface InstitutionKycSubmittedEvent {
+  institutionId: string;
+  actorId: string;
+}
+
+export interface InstitutionKycReviewedEvent {
+  institutionId: string;
+  actorId: string;
+  decision: 'APPROVED' | 'REJECTED';
+}
+
 export interface AgreementCreatedEvent {
   agreementId: string;
   actorId: string;

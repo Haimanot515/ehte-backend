@@ -47,6 +47,11 @@ model Payment {
   fxRate               Decimal?  @db.Decimal(18, 8)
   fxRateCapturedAt     DateTime?
   settlementCurrency   String?
+  // GAP 7 additions: which feed quoted fxRate, and the rounding leftover
+  // applied to make the settled amount exact in settlementCurrency's
+  // smallest unit (see FxSnapshotDto in modules/billing/dto/fx.dto.ts).
+  fxRateSource         String?
+  fxRoundingAdjustment Decimal?  @db.Decimal(14, 2)
 
   txRef          String   @unique
   chapaReference String?

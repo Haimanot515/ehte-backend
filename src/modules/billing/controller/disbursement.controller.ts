@@ -161,4 +161,15 @@ export class DisbursementController {
   ) {
     return this.disbursements.execute(a.id, id, dto);
   }
+
+  // GAP 2 FIX: safe retry for a FAILED CHAPA_TRANSFER disbursement. Same
+  // permission as execute() — retrying a payout is still executing money
+  // movement, not a lesser action. Takes no body: destination details are
+  // re-resolved (RECIPIENT) or reused from the last attempt (see
+  // DisbursementService.retry()'s lastBankCode note).
+  @RequirePermissions(P.DISBURSEMENTS_EXECUTE)
+  @Post('disbursements/:id/retry')
+  retry(@CurrentUser() a: CurrentUserDto, @Param('id') id: string) {
+    return this.disbursements.retry(a.id, id);
+  }
 }

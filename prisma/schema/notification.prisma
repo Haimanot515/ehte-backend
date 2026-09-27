@@ -109,4 +109,8 @@ enum NotificationType {
   AGREEMENT_ACTIVATED
   AGREEMENT_RETIRED
   VICTIM_PROFILE_AGREEMENT_ASSIGNED
+
+  // GAP 8 — Institution KYC (see notification.listener.ts's handlers).
+  INSTITUTION_KYC_SUBMITTED
+  INSTITUTION_KYC_REVIEWED
 }

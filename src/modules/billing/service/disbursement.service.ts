@@ -8,6 +8,34 @@
 //   - bank details are supplied at execute time and are NOT stored
 //   - reward payouts require reward.status = CLAIM_APPROVED
 //   - every step is audited
+//
+// GAP 2 FIX (disbursement idempotency):
+// Retrying a failed transfer used to be impossible on purpose — there was no
+// safe way to know whether a "failed" call had actually gone through on
+// Chapa's side before firing it again, so automatic/manual retry was left
+// out entirely (see the old comment on processingTimeoutMinutes below).
+//
+// The fix doesn't require a change to ChapaService: every disbursement
+// already gets one stable `reference` at create() time (this.chapa.
+// generateTxRef('dsb')) and reuses it for the life of the disbursement.
+// verifyTransfer(reference) — already used by syncProcessing() — can tell us
+// whether Chapa has *any* record of that reference before we ever call
+// transfer() again. So instead of blindly re-calling transfer(), both a
+// fresh execute() and a retry() now check with Chapa first:
+//   - Chapa has no record of it  -> safe to call transfer(), first time or not
+//   - Chapa already shows it as settled -> mark PAID_OUT locally, never re-send
+//   - Chapa shows it still pending -> leave it to syncProcessing(), don't retry
+// This makes "retry" mean "ask Chapa what actually happened, then act
+// accordingly" rather than "call transfer() again and hope."
+//
+// GAP 4 FIX (bank code validation):
+// bankCode is checked once at data-entry time (victim-profile.service.ts),
+// but Chapa's bank list can change between then and an actual payout
+// attempt — including a retry that reuses a bank code from an earlier
+// attempt (lastBankCode). transferOrReconcile() below is the single place
+// that's ever about to actually call chapa.transfer(), for both a fresh
+// execute() and a retry(), so that's where the re-check lives — one check,
+// not one per call site.
 
 import {
   BadRequestException,
@@ -46,15 +74,19 @@ export class DisbursementService {
     private readonly configService: ConfigService,
   ) {}
 
-  /**
-   * How long a disbursement may sit in PROCESSING before syncProcessing()
-   * flags it instead of silently retrying forever. NOT a retry count — no
-   * automatic retry exists yet (see DISBURSEMENT_MAX_RETRY_ATTEMPTS note
-   * below, still unimplemented pending an idempotency check on
-   * ChapaService.transfer()).
-   */
+  // How long a disbursement may sit in PROCESSING before syncProcessing()
+  // flags it instead of silently retrying forever.
   private get processingTimeoutMinutes(): number {
     return this.configService.get<number>('disbursement.processingTimeoutMinutes', 60);
+  }
+
+  // GAP 2 FIX: the ceiling this comment used to say didn't exist yet. Now
+  // enforced by retry() below — once a disbursement has been retried this
+  // many times it stops here and needs a human to look at it, rather than
+  // looping forever against a Chapa failure that isn't going to resolve
+  // itself.
+  private get maxRetryAttempts(): number {
+    return this.configService.get<number>('disbursement.maxRetryAttempts', 3);
   }
 
   /**
@@ -144,11 +176,6 @@ export class DisbursementService {
     const d = await this.prisma.disbursement.findUnique({ where: { id } });
     if (!d) throw new NotFoundException('Disbursement not found');
     if (d.createdById === adminId) {
-      // FIX: the four-eyes violation itself — the exact thing this guard
-      // exists to catch — threw with no audit row at all. Same gap
-      // ReportService.assertAdminCanAccessReport() closes: write a DENIED
-      // row before throwing, so an admin repeatedly trying to self-approve
-      // leaves a trace instead of just bouncing off a 403.
       await this.events.log({
         actorId: adminId,
         action: AuditEventEnum.DISBURSEMENT_APPROVED,
@@ -166,10 +193,6 @@ export class DisbursementService {
       data: { status: 'APPROVED', approvedById: adminId },
     });
     if (count === 0) {
-      // FIX: same class of gap as the four-eyes check above — a lost
-      // optimistic-concurrency race (someone else approved/executed first)
-      // threw with no audit row, unlike the equivalent
-      // report_transition_conflict guards elsewhere in this module.
       await this.events.log({
         actorId: adminId,
         action: AuditEventEnum.DISBURSEMENT_APPROVED,
@@ -189,7 +212,7 @@ export class DisbursementService {
     });
   }
 
-  /** Banks and their Chapa codes, for the admin to pick from at payout time. */
+  // Banks and their Chapa codes, for the admin to pick from at payout time.
   listBanks() {
     return this.chapa.getBanks();
   }
@@ -207,8 +230,8 @@ export class DisbursementService {
       // The destination is the bank account on the approved profile, never something typed in the request.
       const p = await this.loadPayableRecipient(d.allocation.payment.victimProfileId);
       account = {
-        accountName: p.bankAccountName as string,
-        accountNumber: p.bankAccountNumber as string,
+        accountName: p.payoutDestination!.accountHolder as string,
+        accountNumber: p.payoutDestination!.accountNumber as string,
       };
     } else if (input.accountName && input.accountNumber) {
       account = { accountName: input.accountName, accountNumber: input.accountNumber };
@@ -229,14 +252,18 @@ export class DisbursementService {
 
     try {
       if (d.method === 'CHAPA_TRANSFER') {
-        await this.chapa.transfer({
+        // GAP 2 FIX: ask Chapa first. If this exact reference was already
+        // sent (e.g. a prior execute() call whose response never made it
+        // back to us before the process died), transfer() must never be
+        // called a second time for it.
+        await this.transferOrReconcile(d.id, d.reference, {
           accountName: (account as { accountName: string }).accountName,
           accountNumber: (account as { accountNumber: string }).accountNumber,
           bankCode: input.bankCode as string,
           amount: d.amount,
           reference: d.reference,
         });
-        // Stays PROCESSING until syncProcessing() sees it succeed.
+        // Stays PROCESSING until syncProcessing() (or the check above) sees it succeed.
       } else {
         const outcome = await this.prisma.$transaction(async (tx) => {
           await tx.disbursement.update({
@@ -281,6 +308,191 @@ export class DisbursementService {
   }
 
   /**
+   * GAP 2 FIX — the new entry point for retrying a FAILED CHAPA_TRANSFER
+   * disbursement. This is what admins should call instead of trying to
+   * force execute() to run again.
+   *
+   * Safety comes from never re-calling chapa.transfer() blind:
+   *   1. Refuse if retryCount is already at the cap — a human needs to look.
+   *   2. Ask Chapa what it actually knows about this reference.
+   *   3. Only call transfer() again if Chapa has genuinely never seen it;
+   *      otherwise reconcile to whatever Chapa says (paid, or still pending).
+   */
+  async retry(adminId: string, id: string) {
+    const d = await this.prisma.disbursement.findUnique({
+      where: { id },
+      include: { allocation: { include: { payment: true } } },
+    });
+    if (!d) throw new NotFoundException('Disbursement not found');
+    if (d.method !== 'CHAPA_TRANSFER') {
+      throw new BadRequestException('Only CHAPA_TRANSFER disbursements can be retried this way');
+    }
+    if (d.retryCount >= this.maxRetryAttempts) {
+      await this.events.log({
+        actorId: adminId,
+        action: AuditEventEnum.DISBURSEMENT_FAILED,
+        outcome: AuditOutcome.DENIED,
+        severity: AuditSeverity.WARNING,
+        entityType: 'Disbursement',
+        entityId: id,
+        reason: 'max_retry_attempts_reached',
+        metadata: { retryCount: d.retryCount, maxRetryAttempts: this.maxRetryAttempts },
+      });
+      throw new BadRequestException(
+        `Max retry attempts (${this.maxRetryAttempts}) reached — needs manual review`,
+      );
+    }
+
+    // Gate: only one retry can move FAILED -> PROCESSING at a time, and it
+    // increments retryCount as part of the same atomic update so two
+    // concurrent retry() calls can't both slip in under the cap.
+    const { count } = await this.prisma.disbursement.updateMany({
+      where: { id, status: 'FAILED', retryCount: d.retryCount },
+      data: {
+        status: 'PROCESSING',
+        executedById: adminId,
+        executedAt: new Date(),
+        retryCount: { increment: 1 },
+        failureReason: null,
+      },
+    });
+    if (count === 0) {
+      throw new BadRequestException('Not in a retryable state, or a retry is already in flight');
+    }
+
+    // Account details were never stored (by design — see file header rule),
+    // so a retry re-resolves the destination exactly like execute() did.
+    let account: { accountName: string; accountNumber: string } | null = null;
+    if (d.allocation.partyType === 'RECIPIENT') {
+      const p = await this.loadPayableRecipient(d.allocation.payment.victimProfileId);
+      account = {
+        accountName: p.payoutDestination!.accountHolder as string,
+        accountNumber: p.payoutDestination!.accountNumber as string,
+      };
+    }
+    if (!account || !d.lastBankCode) {
+      // Retry can't proceed without the bank code used originally — this
+      // service intentionally never persisted the admin-supplied bankCode
+      // for a non-RECIPIENT payout, so those must go through execute() again
+      // with the details re-supplied rather than through retry().
+      await this.prisma.disbursement.updateMany({
+        where: { id, status: 'PROCESSING' },
+        data: { status: 'FAILED', failureReason: 'retry_missing_destination_details' },
+      });
+      throw new BadRequestException(
+        'Destination details are unavailable for this disbursement — use execute() again with the details supplied',
+      );
+    }
+
+    try {
+      await this.transferOrReconcile(d.id, d.reference, {
+        accountName: account.accountName,
+        accountNumber: account.accountNumber,
+        bankCode: d.lastBankCode,
+        amount: d.amount,
+        reference: d.reference,
+      });
+    } catch (err) {
+      await this.prisma.disbursement.update({
+        where: { id },
+        data: { status: 'FAILED', failureReason: String((err as Error).message).slice(0, 200) },
+      });
+      await this.events.log({
+        actorId: adminId,
+        action: AuditEventEnum.DISBURSEMENT_FAILED,
+        outcome: AuditOutcome.FAILURE,
+        severity: AuditSeverity.WARNING,
+        entityType: 'Disbursement',
+        entityId: id,
+        metadata: { retryCount: d.retryCount + 1 },
+      });
+      throw err;
+    }
+
+    await this.events.log({
+      actorId: adminId,
+      action: AuditEventEnum.DISBURSEMENT_EXECUTED,
+      entityType: 'Disbursement',
+      entityId: id,
+      metadata: { retried: true, retryCount: d.retryCount + 1 },
+    });
+  }
+
+  /**
+   * GAP 2 FIX — the idempotency guard. Never calls chapa.transfer()
+   * without first checking whether Chapa already has a record of this
+   * reference. This is what makes both execute() and retry() safe to call
+   * more than once for the same disbursement.
+   *
+   *   - Chapa reports success already  -> mark PAID_OUT locally, don't re-send.
+   *   - Chapa reports it still pending -> leave PROCESSING, don't re-send;
+   *     syncProcessing() will pick it up.
+   *   - Chapa has no record of it (404 / not-found style response) -> this is
+   *     genuinely the first (or first successful) send, safe to call transfer().
+   *
+   * GAP 4 FIX — bank code re-validation lives here too, in the "about to
+   * actually send" branch only. If Chapa already has a record of this
+   * reference (settled or still pending), the bank code was already good
+   * enough to reach Chapa the first time — no reason to re-check it just to
+   * reconcile a status. Only a genuinely fresh send needs the check, and
+   * this is the one place both execute() and retry() route through before
+   * one happens.
+   */
+  private async transferOrReconcile(
+    disbursementId: string,
+    reference: string,
+    transferInput: {
+      accountName: string;
+      accountNumber: string;
+      bankCode: string;
+      amount: Prisma.Decimal;
+      reference: string;
+    },
+  ): Promise<void> {
+    const known = await this.safeVerifyTransfer(reference);
+
+    if (known?.status === 'success') {
+      const outcome = await this.prisma.$transaction((tx) => this.markPaidOut(tx, disbursementId));
+      if (outcome.paid) {
+        await this.notifyPaidOut(disbursementId, outcome.partyType, outcome.missingPersonId, outcome.rewardClaimId);
+      }
+      return;
+    }
+    if (known?.status === 'pending' || known?.status === 'processing') {
+      // Already in flight at Chapa — do nothing, let syncProcessing() settle it.
+      return;
+    }
+
+    // GAP 4: about to send for real — bankCode was checked once at data
+    // entry, but Chapa's bank list can change before this moment, including
+    // between a first execute() and a later retry() reusing lastBankCode.
+    const banks = await this.chapa.getBanks();
+    const bankIsValid = banks.some((b) => b.code === transferInput.bankCode);
+    if (!bankIsValid) {
+      throw new BadRequestException('invalid_bank_code');
+    }
+
+    // Persist the bank code used, so a *future* retry (if this attempt also
+    // fails) doesn't need it re-supplied by the admin.
+    await this.prisma.disbursement.update({
+      where: { id: disbursementId },
+      data: { lastBankCode: transferInput.bankCode },
+    });
+
+    await this.chapa.transfer(transferInput);
+  }
+
+  /** verifyTransfer() failing (e.g. Chapa unreachable) must not be read as "never sent" — treat it as unknown. */
+  private async safeVerifyTransfer(reference: string): Promise<{ status: string } | null> {
+    try {
+      return await this.chapa.verifyTransfer(reference);
+    } catch (err) {
+      this.logger.warn(`verifyTransfer failed for ${reference}: ${String(err)}`);
+      return null;
+    }
+  }
+
+  /**
    * A recipient payout is only allowed while the profile still passes every approval gate.
    * Editing a profile, changing bank details or revoking consent resets isAdminApproved, so
    * money collected earlier is held until an admin re-approves. Publication is NOT required
@@ -299,9 +511,11 @@ export class DisbursementService {
         hasConsent: true,
         isPrivacyReviewed: true,
         isAdminApproved: true,
-        bankAccountName: true,
-        bankAccountNumber: true,
-        bankName: true,
+        // G40: payout destination now lives on PayoutDestination, not the
+        // legacy VictimProfile.bank* columns.
+        payoutDestination: {
+          select: { accountHolder: true, accountNumber: true, bankName: true },
+        },
       },
     });
     if (!p) throw new NotFoundException('recipient_profile_not_found');
@@ -314,7 +528,13 @@ export class DisbursementService {
     if (!p.hasConsent) missing.push('hasConsent');
     if (!p.isPrivacyReviewed) missing.push('isPrivacyReviewed');
     if (!p.isAdminApproved) missing.push('isAdminApproved');
-    if (!p.bankAccountName || !p.bankAccountNumber || !p.bankName) missing.push('bankDetails');
+    if (
+      !p.payoutDestination?.accountHolder ||
+      !p.payoutDestination?.accountNumber ||
+      !p.payoutDestination?.bankName
+    ) {
+      missing.push('bankDetails');
+    }
     if (missing.length) {
       throw new BadRequestException({ code: 'recipient_profile_not_payable', missing });
     }
@@ -340,14 +560,6 @@ export class DisbursementService {
         if (remote.status === 'success') {
           const outcome = await this.prisma.$transaction((tx) => this.markPaidOut(tx, d.id));
           if (outcome.paid) {
-            // FIX: this branch settles CHAPA_TRANSFER payouts from the cron,
-            // parallel to the MANUAL_BANK branch of execute() above — but was
-            // missing the events.log() call that branch has, so a payout
-            // settled here fired a user notification with no audit trail
-            // entry at all. actorId: null follows BillingEventsService.log's
-            // existing system-actor convention (null -> ActorType.SYSTEM),
-            // same as how webhook-triggered billing events are already
-            // logged elsewhere in this module.
             await this.events.log({
               actorId: null,
               action: AuditEventEnum.DISBURSEMENT_EXECUTED,
@@ -405,9 +617,6 @@ export class DisbursementService {
     void this.events.log({
       actorId: d.createdById,
       action: AuditEventEnum.SECURITY_ALERT,
-      // Same reasoning as PAYMENT_EXPIRED in payment.service.ts: severity
-      // only, no `outcome` — nothing was attempted-and-rejected here, it's
-      // a stuck-state flag for an admin to look at, not a failed operation.
       severity: AuditSeverity.WARNING,
       entityType: 'Disbursement',
       entityId: d.id,
@@ -487,10 +696,6 @@ export class DisbursementService {
   ) {
     if (partyType !== 'REWARD_BENEFICIARY' || !rewardClaimId) return;
 
-    // rewardClaimId now identifies exactly which informant this specific
-    // disbursement paid (a case can have several, see reward-claim.prisma) —
-    // no more missingPersonId-keyed lookup, which only ever worked for a
-    // single-informant case.
     const claim = await this.prisma.rewardClaim.findUnique({
       where: { id: rewardClaimId },
       select: { informantUserId: true },

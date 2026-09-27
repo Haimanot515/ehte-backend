@@ -13,9 +13,12 @@
 // MissingPerson.fundedAmount/fundingStatus track the reward pool's funding state
 // directly; onPaymentPaid() updates those instead of upserting a RewardClaim row.
 //
-// ASSUMPTION TO VERIFY: MissingPersonService likely owns rewardOffered/rewardApproved
-// changes for the offer itself — reconcile before merging so two places don't write
-// the same columns (unchanged from the original note here).
+// G6 RESOLVED: rewardOffered/rewardApproved/rewardAmount/rewardDetails now
+// have exactly one write path — reviewOffer() (with approveOffer()/
+// rejectOffer() as thin wrappers over it/the same funded-lock) below.
+// MissingPersonService no longer has an updateReward() method; the
+// admin/:id/reward controller route calls RewardService.reviewOffer()
+// directly. See reviewOffer()'s own comment for the full history.
 // ASSUMPTION TO VERIFY (confirmed against the real audit-events.enum.ts, Sep 2026):
 // REWARD_APPROVED / REWARD_REJECTED / REWARD_FUNDED / REWARD_CLOSED already exist —
 // REWARD_CLOSED is reused for closeWithoutPayout() rather than adding a duplicate.
@@ -31,8 +34,9 @@
 
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
-import { Prisma, RewardClaimStatus, RewardFundingStatus } from '@prisma/client';
+import { AuditOutcome, AuditSeverity, Prisma, RewardClaimStatus, RewardFundingStatus } from '@prisma/client';
 import { PrismaService } from '../../../prisma/prisma.service';
+import { CacheService } from '../../../services/redis/cache.service';
 import {
   BILLING_PAYMENT_PAID,
   BillingEventsService,
@@ -59,31 +63,156 @@ export class RewardService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly events: BillingEventsService,
+    private readonly cache: CacheService,
   ) {}
 
-  // ── Admin: approve/reject the reward OFFER (may belong in MissingPersonService — see note above) ──
-
-  async approveOffer(adminId: string, missingPersonId: string) {
-    const mp = await this.prisma.missingPerson.findUnique({
-      where: { id: missingPersonId },
-      select: { rewardOffered: true, rewardApproved: true },
+  // G6: shared by every write path onto rewardApproved/rewardAmount below.
+  // Once a PAID payment exists against this case, the terms the payer
+  // actually funded can never move again — no legitimate reason to touch
+  // any of these once funded, so it's a hard block, not a partial one.
+  private async isRewardFunded(missingPersonId: string): Promise<boolean> {
+    const count = await this.prisma.payment.count({
+      where: { missingPersonId, type: 'MISSING_PERSON_REWARD', status: 'PAID' },
     });
-    if (!mp) throw new NotFoundException('missing_person_not_found');
-    if (!mp.rewardOffered) throw new BadRequestException('no_reward_offered_for_this_case');
-    if (mp.rewardApproved) throw new BadRequestException('reward_already_approved');
+    return count > 0;
+  }
 
-    await this.prisma.missingPerson.update({
+  // ── Admin: approve/revise/reject the reward OFFER ──────────────────────────
+  //
+  // G6 RESOLVED: rewardApproved/rewardAmount/rewardDetails used to have two
+  // independent write paths — this method (approveOffer, REWARDS_APPROVE
+  // alone, no funded-lock) and MissingPersonService.updateReward()
+  // (admin/:id/reward, MISSING_PERSON_REVIEW + REWARDS_APPROVE, funded-lock
+  // present). A reviewer with only REWARDS_APPROVE could approve/revise
+  // through the billing route and bypass both the dual-permission
+  // requirement and the funded-lock enforced on the other route. reviewOffer()
+  // below is now the only method that writes these three fields; approveOffer()
+  // is kept as a thin, backward-compatible wrapper over it so the existing
+  // admin/billing/.../reward/approve route keeps working, and updateReward()
+  // has been removed from MissingPersonService entirely — the
+  // admin/:id/reward controller route calls reviewOffer() directly.
+  async reviewOffer(
+    adminId: string,
+    missingPersonId: string,
+    rewardApproved: boolean,
+    rewardAmount?: number,
+    rewardDetails?: string,
+  ) {
+    const existing = await this.prisma.missingPerson.findUnique({ where: { id: missingPersonId } });
+    if (!existing) {
+      throw new NotFoundException('missing_person_not_found');
+    }
+
+    if (await this.isRewardFunded(missingPersonId)) {
+      await this.events.log({
+        actorId: adminId,
+        action: AuditEventEnum.REWARD_APPROVED,
+        outcome: AuditOutcome.FAILURE,
+        severity: AuditSeverity.WARNING,
+        entityType: 'MissingPerson',
+        entityId: missingPersonId,
+        reason: 'reward_terms_locked_once_funded',
+        metadata: { operation: 'reward_review_blocked' },
+      });
+      throw new ConflictException('reward_terms_locked_once_funded');
+    }
+
+    if (rewardApproved && !existing.rewardOffered) {
+      await this.events.log({
+        actorId: adminId,
+        action: AuditEventEnum.REWARD_APPROVED,
+        outcome: AuditOutcome.FAILURE,
+        severity: AuditSeverity.WARNING,
+        entityType: 'MissingPerson',
+        entityId: missingPersonId,
+        reason: 'cannot_approve_reward_that_was_not_offered',
+        metadata: { operation: 'reward_review' },
+      });
+      throw new BadRequestException('cannot_approve_reward_that_was_not_offered');
+    }
+
+    const finalAmount = rewardAmount !== undefined ? rewardAmount : existing.rewardAmount;
+    const finalDetails = rewardDetails !== undefined ? rewardDetails : existing.rewardDetails;
+
+    if (rewardApproved && (finalAmount === undefined || finalAmount === null)) {
+      await this.events.log({
+        actorId: adminId,
+        action: AuditEventEnum.REWARD_APPROVED,
+        outcome: AuditOutcome.FAILURE,
+        severity: AuditSeverity.WARNING,
+        entityType: 'MissingPerson',
+        entityId: missingPersonId,
+        reason: 'reward_amount_required_when_approved',
+        metadata: { operation: 'reward_review' },
+      });
+      throw new BadRequestException('reward_amount_required_when_approved');
+    }
+
+    const updated = await this.prisma.missingPerson.update({
       where: { id: missingPersonId },
-      data: { rewardApproved: true },
+      data: {
+        rewardApproved,
+        rewardAmount: finalAmount,
+        rewardDetails: finalDetails,
+      },
     });
+
+    // rewardApproved/rewardAmount/rewardDetails feed maskUnapprovedReward() on
+    // the public detail/list views, so any change here can change what's
+    // shown publicly.
+    await this.cache.invalidateMissingPersonEverywhere(missingPersonId);
+
     await this.events.log({
       actorId: adminId,
       action: AuditEventEnum.REWARD_APPROVED,
       entityType: 'MissingPerson',
       entityId: missingPersonId,
+      metadata: {
+        operation: 'reward_review',
+        previousRewardApproved: existing.rewardApproved,
+        previousRewardAmount: existing.rewardAmount,
+        previousRewardDetails: existing.rewardDetails,
+        rewardApproved: updated.rewardApproved,
+        rewardAmount: updated.rewardAmount,
+        rewardDetails: updated.rewardDetails,
+        amountOverriddenByAdmin:
+          rewardAmount !== undefined && rewardAmount !== existing.rewardAmount,
+        detailsOverriddenByAdmin:
+          rewardDetails !== undefined && rewardDetails !== existing.rewardDetails,
+      },
     });
+
+    this.events.notify<{ userId: string; missingPersonId: string; status: string }>(
+      NotificationEventEnum.MISSING_PERSON_UPDATED,
+      {
+        userId: existing.userId ?? '',
+        missingPersonId: updated.id,
+        status: existing.status,
+      },
+    );
+
+    return updated;
   }
 
+  // Thin wrapper over reviewOffer() so the existing no-body
+  // admin/billing/missing-persons/:id/reward/approve route keeps working —
+  // now with the same funded-lock and validation reviewOffer() enforces
+  // everywhere else, instead of the unguarded direct write this used to do.
+  async approveOffer(adminId: string, missingPersonId: string) {
+    const mp = await this.prisma.missingPerson.findUnique({
+      where: { id: missingPersonId },
+      select: { rewardApproved: true },
+    });
+    if (!mp) throw new NotFoundException('missing_person_not_found');
+    if (mp.rewardApproved) throw new BadRequestException('reward_already_approved');
+
+    return this.reviewOffer(adminId, missingPersonId, true);
+  }
+
+  // G6: withdrawing the offer writes rewardOffered, not rewardApproved —
+  // a different field than reviewOffer() above governs — but it is the same
+  // "reward terms locked once funded" money the funded-lock protects, so it
+  // gets the identical guard rather than a second, slightly-different rule.
   async rejectOffer(adminId: string, missingPersonId: string, reason: string) {
     const mp = await this.prisma.missingPerson.findUnique({
       where: { id: missingPersonId },
@@ -93,11 +222,25 @@ export class RewardService {
     if (!mp.rewardOffered || mp.rewardApproved) {
       throw new BadRequestException('reward_not_awaiting_approval');
     }
+    if (await this.isRewardFunded(missingPersonId)) {
+      await this.events.log({
+        actorId: adminId,
+        action: AuditEventEnum.REWARD_REJECTED,
+        outcome: AuditOutcome.FAILURE,
+        severity: AuditSeverity.WARNING,
+        entityType: 'MissingPerson',
+        entityId: missingPersonId,
+        reason: 'reward_terms_locked_once_funded',
+        metadata: { operation: 'reward_reject_blocked' },
+      });
+      throw new ConflictException('reward_terms_locked_once_funded');
+    }
 
     await this.prisma.missingPerson.update({
       where: { id: missingPersonId },
       data: { rewardOffered: false, rewardDetails: reason },
     });
+    await this.cache.invalidateMissingPersonEverywhere(missingPersonId);
     await this.events.log({
       actorId: adminId,
       action: AuditEventEnum.REWARD_REJECTED,

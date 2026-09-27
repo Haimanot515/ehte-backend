@@ -28,6 +28,7 @@ import { NotificationEventEnum } from 'src/common/enums/shared/notification-even
 
 import { MinioService } from 'src/services/minio/minio.service';
 import { CacheService } from 'src/services/redis/cache.service';
+import { ChapaService } from 'src/services/chapa/chapa.service';
 
 import {
   CreateVictimProfileDto,
@@ -117,6 +118,7 @@ export class VictimProfileService {
     private readonly minioService: MinioService,
     private readonly configService: ConfigService,
     private readonly cache: CacheService,
+    private readonly chapa: ChapaService,
   ) {}
 
   private emitAudit(payload: AuditEventPayload): void {
@@ -722,14 +724,24 @@ export class VictimProfileService {
   // G11: the SUPPORT_PAYMENT_MANAGE-gated counterpart to findOne(). Call
   // this from a route that requires the same permission updateBankDetails()
   // already requires, not from the plain PROFILE_READ :id route.
+  // G40 RESOLVED: reads PayoutDestination instead of the legacy
+  // VictimProfile.bank* columns — the response shape is kept close to the
+  // old one (bankAccountName/bankAccountNumber/bankName) so existing
+  // consumers don't break, with bankCode/isVerified now available too.
   async findBankDetails(id: string) {
     const profile = await this.prisma.victimProfile.findUnique({
       where: { id },
       select: {
         id: true,
-        bankAccountName: true,
-        bankAccountNumber: true,
-        bankName: true,
+        payoutDestination: {
+          select: {
+            bankName: true,
+            bankCode: true,
+            accountNumber: true,
+            accountHolder: true,
+            isVerified: true,
+          },
+        },
       },
     });
 
@@ -737,7 +749,14 @@ export class VictimProfileService {
       throw new NotFoundException('victim_profile_not_found');
     }
 
-    return profile;
+    return {
+      id: profile.id,
+      bankAccountName: profile.payoutDestination?.accountHolder ?? null,
+      bankAccountNumber: profile.payoutDestination?.accountNumber ?? null,
+      bankName: profile.payoutDestination?.bankName ?? null,
+      bankCode: profile.payoutDestination?.bankCode ?? null,
+      isVerified: profile.payoutDestination?.isVerified ?? false,
+    };
   }
 
   async getSupportsSummary(id: string) {
@@ -1283,9 +1302,11 @@ export class VictimProfileService {
         isAdminApproved: true,
         involvesChild: true,
         status: true,
-        bankAccountName: true,
-        bankAccountNumber: true,
-        bankName: true,
+        // G40: payout destination now lives on PayoutDestination, not the
+        // legacy VictimProfile.bank* columns.
+        payoutDestination: {
+          select: { accountHolder: true, accountNumber: true, bankName: true },
+        },
         claimedByUserId: true,
         claimedAt: true,
       },
@@ -1309,7 +1330,7 @@ export class VictimProfileService {
 
       involvesChild: profile.involvesChild,
       childSafetySatisfied: !profile.involvesChild || profile.isChildSafetyReviewed,
-      hasBankDetails: this.hasBankDetails(profile),
+      hasBankDetails: this.hasBankDetails(profile.payoutDestination),
 
       claimedByUserId: profile.claimedByUserId,
       claimedAt: profile.claimedAt,
@@ -1347,15 +1368,26 @@ export class VictimProfileService {
     return VictimProfileStatus.APPROVED;
   }
 
+  // G40: PayoutDestination is now the only source of truth for whether a
+  // payout destination exists — the legacy VictimProfile.bank* columns are
+  // no longer written to (see updateBankDetails()) so checking them here
+  // would eventually just see stale/empty values.
   private hasBankDetails(
-    profile: Pick<VictimProfile, 'bankAccountName' | 'bankAccountNumber' | 'bankName'>,
-  ) {
-    return !!profile.bankAccountName && !!profile.bankAccountNumber && !!profile.bankName;
+    destination:
+      | { accountHolder: string | null; accountNumber: string | null; bankName: string | null }
+      | null
+      | undefined,
+  ): boolean {
+    return !!destination?.accountHolder && !!destination?.accountNumber && !!destination?.bankName;
   }
 
   async updateGates(admin: CurrentUserDto, id: string, data: UpdateVictimGateDto) {
     const profile = await this.prisma.victimProfile.findUnique({
       where: { id },
+      // FIX: hasBankDetails() reads PayoutDestination, not the legacy
+      // VictimProfile.bank* columns — needs to be included here the same
+      // way getGates() and publish() already do it.
+      include: { payoutDestination: true },
     });
 
     if (!profile) {
@@ -1372,7 +1404,10 @@ export class VictimProfileService {
     const isAdminApproved = data.isAdminApproved ?? profile.isAdminApproved;
 
     const childSafetySatisfied = !profile.involvesChild || isChildSafetyReviewed;
-    const hasBankDetails = this.hasBankDetails(profile);
+    // FIX: was this.hasBankDetails(profile) — passed the whole profile
+    // object instead of the payoutDestination sub-object the method
+    // actually expects.
+    const hasBankDetails = this.hasBankDetails(profile.payoutDestination);
 
     if (
       isAdminApproved &&
@@ -1737,6 +1772,10 @@ export class VictimProfileService {
   async updateBankDetails(admin: CurrentUserDto, id: string, data: UpdateBankDetailsDto) {
     const profile = await this.prisma.victimProfile.findUnique({
       where: { id },
+      // G40: the previous destination (for change-detection metadata below)
+      // now comes from PayoutDestination, not the legacy VictimProfile.bank*
+      // columns.
+      include: { payoutDestination: true },
     });
 
     if (!profile) {
@@ -1763,6 +1802,22 @@ export class VictimProfileService {
       throw new BadRequestException('account_holder_cannot_be_the_child');
     }
 
+    // G4: reject a bankCode Chapa doesn't recognize before it ever reaches
+    // a payout. getBanks() is cached (see ChapaService), so this doesn't
+    // add a network round-trip to every save the way an uncached call
+    // would.
+    const banks = await this.chapa.getBanks();
+    const bankIsValid = banks.some((b) => b.code === data.bankCode);
+    if (!bankIsValid) {
+      this.emitProfileFailure(
+        admin,
+        AuditEventEnum.VICTIM_PROFILE_BANK_DETAILS_UPDATED,
+        profile,
+        'invalid_bank_code',
+      );
+      throw new BadRequestException('invalid_bank_code');
+    }
+
     const wasApproved = profile.isAdminApproved;
     const isAdminApproved = wasApproved ? false : profile.isAdminApproved;
 
@@ -1776,13 +1831,15 @@ export class VictimProfileService {
       isAdminApproved,
     });
 
+    // G40 RESOLVED: no longer dual-writes bankAccountName/bankAccountNumber/
+    // bankName onto VictimProfile — PayoutDestination (upserted below) is
+    // now the only place this data is written. The legacy columns are left
+    // exactly as they were (a separate migration drops them once nothing
+    // reads them anywhere — see the spec note on this).
     const updatedProfile = await this.conditionalUpdate(
       id,
       profile.updatedAt,
       {
-        bankAccountName: data.bankAccountName,
-        bankAccountNumber: data.bankAccountNumber,
-        bankName: data.bankName,
         isAdminApproved,
         isPublished: wasApproved ? false : profile.isPublished,
         status,
@@ -1790,23 +1847,24 @@ export class VictimProfileService {
       { admin, action: AuditEventEnum.VICTIM_PROFILE_BANK_DETAILS_UPDATED, profile },
     );
 
-    // G40 (section 9): PayoutDestination is meant to become the only source
-    // of truth for where money goes, but nothing writes to it today except
-    // this transitional dual-write. One-per-profile owner, so upsert on
-    // victimProfileId. isVerified deliberately left false/unset here — G2
-    // requires an approver to verify the destination before it's usable,
-    // not whoever just typed it into this form.
+    // G40: PayoutDestination is now the only source of truth for where
+    // money goes. One-per-profile owner, so upsert on victimProfileId.
+    // isVerified deliberately left false/unset here — G2 requires an
+    // approver to verify the destination before it's usable, not whoever
+    // just typed it into this form.
     await this.prisma.payoutDestination.upsert({
       where: { victimProfileId: id },
       create: {
         rail: 'BANK',
         bankName: data.bankName,
+        bankCode: data.bankCode,
         accountNumber: data.bankAccountNumber,
         accountHolder: data.accountHolderName,
         victimProfileId: id,
       },
       update: {
         bankName: data.bankName,
+        bankCode: data.bankCode,
         accountNumber: data.bankAccountNumber,
         accountHolder: data.accountHolderName,
         // A changed destination is not the one that was verified.
@@ -1817,6 +1875,8 @@ export class VictimProfileService {
     });
 
     await this.cache.invalidateVictimProfileEverywhere(id);
+
+    const previousDestination = profile.payoutDestination;
 
     this.emitAudit({
       userId: admin.id,
@@ -1836,19 +1896,20 @@ export class VictimProfileService {
         reapprovalRequired: wasApproved,
       },
       metadata: {
+        // G40: change-detection now compares against the previous
+        // PayoutDestination row instead of the legacy VictimProfile columns.
         accountNameChanged:
-          data.bankAccountName !== undefined && data.bankAccountName !== profile.bankAccountName,
+          data.accountHolderName !== previousDestination?.accountHolder,
         accountNumberChanged:
-          data.bankAccountNumber !== undefined &&
-          data.bankAccountNumber !== profile.bankAccountNumber,
-        bankNameChanged: data.bankName !== undefined && data.bankName !== profile.bankName,
+          data.bankAccountNumber !== previousDestination?.accountNumber,
+        bankNameChanged: data.bankName !== previousDestination?.bankName,
         accountHolderRelationship: data.accountHolderRelationship,
-        // TODO(section 9 sync migration): bankCode has no persisted column
-        // yet on VictimProfile or PayoutDestination — kept here so it's at
-        // least traceable in the audit trail rather than silently dropped,
-        // until the schema catches up and disbursement.service.ts can
-        // validate it against Chapa's banks list (G4).
-        bankCodeProvided: data.bankCode,
+        // G4 RESOLVED: bankCode is now validated against Chapa's bank list
+        // above and persisted on PayoutDestination. Bank details are never
+        // written to audit rows (see disbursement.service.ts's own note on
+        // this), so only the code itself is recorded here — not the bank
+        // name or account number.
+        bankCode: data.bankCode,
       },
     });
 
@@ -1864,6 +1925,7 @@ export class VictimProfileService {
   async publish(admin: CurrentUserDto, id: string) {
     const profile = await this.prisma.victimProfile.findUnique({
       where: { id },
+      include: { payoutDestination: true },
     });
 
     if (!profile) {
@@ -1872,7 +1934,7 @@ export class VictimProfileService {
 
     this.assertAdminCanAccessProfile(admin, profile, AuditEventEnum.VICTIM_PROFILE_PUBLISHED);
 
-    const hasBankDetails = this.hasBankDetails(profile);
+    const hasBankDetails = this.hasBankDetails(profile.payoutDestination);
     const childSafetySatisfied = !profile.involvesChild || profile.isChildSafetyReviewed;
 
     const allGatesSatisfied =

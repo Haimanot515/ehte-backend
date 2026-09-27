@@ -15,17 +15,39 @@
 // shares now come from the agreement's MISSING_PERSON_REWARD rules instead
 // of the reward being 100% beneficiary as before.
 
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable } from '@nestjs/common';
 import * as crypto from 'crypto';
 import { PartyType, PaymentType, Prisma, SupportAgreementType } from '@prisma/client';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { PROFILE_PUBLIC_STATUS } from '../billing.constants';
+import { FxSnapshotDto } from '../dto/fx.dto';
+import { FX_RATE_PROVIDER, FxRateProvider } from './fx-rate.provider';
+
+// Decimal places each payout currency's smallest unit has. Extend as new
+// payout currencies are actually onboarded — deliberately NOT defaulting
+// silently to "2 unless listed", since a wrong minor-unit count rounds
+// FX conversions wrong in a way that's easy to miss in review. Currencies
+// with a genuinely non-2 minor unit (e.g. JPY has none) must be added here
+// before AllocationService will convert into them.
+const CURRENCY_MINOR_UNITS: Record<string, number> = {
+  ETB: 2,
+  USD: 2,
+  EUR: 2,
+  GBP: 2,
+  KES: 2,
+};
 
 export type AllocationLine = {
   partyType: PartyType;
   institutionId: string | null;
-  amount: string; // "800.00"
+  amount: string; // "800.00", in the TRANSACTION currency (see AllocationPreview.currency)
   ruleId: string | null;
+  /**
+   * GAP 7 / Section 29: set only when this line's recipient is paid out in a
+   * currency other than the transaction currency. Null means "same currency,
+   * no conversion happened" — never a stand-in for "conversion skipped".
+   */
+  fxSnapshot: FxSnapshotDto | null;
 };
 
 export type AllocationPreview = {
@@ -39,11 +61,15 @@ export type AllocationPreview = {
   hash: string;
 };
 
-type MinorLine = Omit<AllocationLine, 'amount'> & { minor: number };
+type MinorLine = Omit<AllocationLine, 'amount' | 'fxSnapshot'> & { minor: number };
+type MinorLineWithFx = MinorLine & { fxSnapshot: FxSnapshotDto | null };
 
 @Injectable()
 export class AllocationService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Inject(FX_RATE_PROVIDER) private readonly fxRates: FxRateProvider,
+  ) {}
 
   /**
    * Reward funding. The amount comes from MissingPerson.rewardAmount (Int, whole ETB) —
@@ -124,6 +150,7 @@ export class AllocationService {
       agreement.id,
       agreement.version,
       agreement.type,
+      { institutionPayoutCurrencies: await this.resolveInstitutionPayoutCurrencies(agreement.rules) },
     );
   }
 
@@ -144,6 +171,12 @@ export class AllocationService {
         bankAccountName: true,
         bankAccountNumber: true,
         bankName: true,
+        // GAP 7: PayoutDestination.currency already exists in the schema
+        // (default "ETB") — this is the only field this method needs from
+        // it. The legacy bank* checks below are untouched; G40's cutover to
+        // reading bank details from payoutDestination instead of these
+        // legacy columns is a separate, not-yet-done fix.
+        payoutDestination: { select: { currency: true } },
       },
     });
     if (!profile?.agreementId) {
@@ -161,7 +194,12 @@ export class AllocationService {
     }
 
     const lines = this.applyRulesWithRemainder(agreement.rules, totalMinor, PartyType.RECIPIENT);
-    return this.build(type, totalMinor, lines, agreement.id, agreement.version, agreement.type);
+    return this.build(type, totalMinor, lines, agreement.id, agreement.version, agreement.type, {
+      // undefined (not "ETB") when no PayoutDestination row exists yet, so
+      // attachFx() falls through to the transactionCurrency default instead
+      // of comparing "ETB" to a made-up value.
+      recipientPayoutCurrency: profile.payoutDestination?.currency,
+    });
   }
 
   /**
@@ -205,7 +243,9 @@ export class AllocationService {
     }
 
     const lines = this.applyRulesWithRemainder(agreement.rules, totalMinor, PartyType.PLATFORM);
-    return this.build(type, totalMinor, lines, agreement.id, agreement.version, agreement.type);
+    return this.build(type, totalMinor, lines, agreement.id, agreement.version, agreement.type, {
+      institutionPayoutCurrencies: await this.resolveInstitutionPayoutCurrencies(agreement.rules),
+    });
   }
 
   // ── helpers ───────────────────────────────────────────────────────────────
@@ -271,21 +311,30 @@ export class AllocationService {
     return lines;
   }
 
-  private build(
+  private async build(
     type: PaymentType,
     totalMinor: number,
     lines: MinorLine[],
     agreementId: string | null,
     agreementVersion: number | null,
     agreementType: SupportAgreementType | null,
-  ): AllocationPreview {
-    const out: AllocationLine[] = lines.map(({ minor, ...rest }) => ({
+    fx?: {
+      /** Set when the line's remainder party (RECIPIENT) is known to be paid out off-platform. */
+      recipientPayoutCurrency?: string;
+      /** institutionId -> payout currency, for rule lines tied to a specific institution. */
+      institutionPayoutCurrencies?: Record<string, string>;
+    },
+  ): Promise<AllocationPreview> {
+    const transactionCurrency = 'ETB' as const;
+    const linesWithFx = await this.attachFx(lines, transactionCurrency, fx);
+    const out: AllocationLine[] = linesWithFx.map(({ minor, fxSnapshot, ...rest }) => ({
       ...rest,
       amount: this.fromMinor(minor),
+      fxSnapshot,
     }));
     const body = {
       paymentType: type,
-      currency: 'ETB' as const,
+      currency: transactionCurrency,
       total: this.fromMinor(totalMinor),
       lines: out,
       agreementId,
@@ -294,6 +343,107 @@ export class AllocationService {
     };
     const hash = crypto.createHash('sha256').update(JSON.stringify(body)).digest('hex');
     return { ...body, hash };
+  }
+
+  /**
+   * GAP 7 / Section 29: attaches an FxSnapshotDto to every line whose
+   * resolved payout currency differs from `transactionCurrency`, and null to
+   * every line that doesn't. Never converts silently — a line that needs
+   * conversion but has no live rate available makes the WHOLE preview throw
+   * (via buildFxSnapshot -> FxRateProvider), rather than shipping a preview
+   * with some lines converted and one silently skipped.
+   */
+  private async attachFx(
+    lines: MinorLine[],
+    transactionCurrency: string,
+    fx?: {
+      recipientPayoutCurrency?: string;
+      institutionPayoutCurrencies?: Record<string, string>;
+    },
+  ): Promise<MinorLineWithFx[]> {
+    const out: MinorLineWithFx[] = [];
+    for (const line of lines) {
+      const destinationCurrency =
+        (line.institutionId && fx?.institutionPayoutCurrencies?.[line.institutionId]) ||
+        (line.partyType === PartyType.RECIPIENT ? fx?.recipientPayoutCurrency : undefined) ||
+        transactionCurrency;
+
+      if (destinationCurrency === transactionCurrency) {
+        out.push({ ...line, fxSnapshot: null });
+        continue;
+      }
+
+      out.push({
+        ...line,
+        fxSnapshot: await this.buildFxSnapshot(line, transactionCurrency, destinationCurrency),
+      });
+    }
+    return out;
+  }
+
+  private async buildFxSnapshot(
+    line: MinorLine,
+    sourceCurrency: string,
+    destinationCurrency: string,
+  ): Promise<FxSnapshotDto> {
+    // Hard-fail rather than guess: if the feed is unconfigured or down, this
+    // throws FxRateUnavailableException straight out of preview()/
+    // previewReward()/previewPostingFee() — no allocation line is ever
+    // attached to a converted amount without a recorded, live-quoted rate
+    // behind it (see fx-rate.provider.ts).
+    const quote = await this.fxRates.getRate(sourceCurrency, destinationCurrency);
+    const rate = new Prisma.Decimal(quote.rate);
+
+    const sourceAmount = new Prisma.Decimal(line.minor).div(100); // major units, sourceCurrency
+    const rawConverted = sourceAmount.mul(rate);
+
+    const destinationDecimals = CURRENCY_MINOR_UNITS[destinationCurrency];
+    if (destinationDecimals === undefined) {
+      throw new BadRequestException(
+        `Unsupported payout currency: ${destinationCurrency} (add it to CURRENCY_MINOR_UNITS first)`,
+      );
+    }
+
+    const convertedRounded = rawConverted.toDecimalPlaces(destinationDecimals, Prisma.Decimal.ROUND_HALF_UP);
+    const roundingAdjustment = convertedRounded.sub(rawConverted);
+
+    return {
+      rate: rate.toString(),
+      rateTimestamp: quote.rateTimestamp,
+      rateSource: quote.rateSource,
+      sourceCurrency,
+      destinationCurrency,
+      convertedAmount: convertedRounded.toFixed(destinationDecimals),
+      roundingAdjustment: roundingAdjustment.toFixed(destinationDecimals),
+    };
+  }
+
+  /**
+   * GAP 7: institutions' payout currency lives on PayoutDestination
+   * (institutionId FK, `currency` column, default "ETB") — same model G40
+   * uses for victim profiles. One query for every distinct institutionId a
+   * rule set references; institutions with no PayoutDestination row yet
+   * (or none at all, since institutionId can be null) are simply absent
+   * from the returned map, which attachFx() treats as "transaction currency".
+   */
+  private async resolveInstitutionPayoutCurrencies(
+    rules: { institutionId: string | null }[],
+  ): Promise<Record<string, string>> {
+    const institutionIds = [...new Set(rules.map((r) => r.institutionId).filter((id): id is string => !!id))];
+    if (institutionIds.length === 0) return {};
+
+    const destinations = await this.prisma.payoutDestination.findMany({
+      where: { institutionId: { in: institutionIds } },
+      select: { institutionId: true, currency: true },
+    });
+    const out: Record<string, string> = {};
+    for (const d of destinations) {
+      // If an institution ever has more than one PayoutDestination, this
+      // takes whichever one the query returns last — fine while institutions
+      // have at most one in practice; revisit if that stops being true.
+      if (d.institutionId) out[d.institutionId] = d.currency;
+    }
+    return out;
   }
 
   private toMinor(amount: Prisma.Decimal): number {
