@@ -30,7 +30,7 @@ import { OtpUtil } from 'src/common/utils/otp.util';
 import { LockoutUtil } from 'src/common/utils/lockout.util';
 import { TokenUtil } from 'src/common/utils/token.util';
 
-import { sendEmail } from 'src/services/email/email.service';
+import { EmailService } from 'src/services/email/email.service';
 import {
   renderEmailChangeVerificationSubject,
   renderEmailChangeVerificationHtml,
@@ -104,6 +104,7 @@ export class AdminAuthService {
     private readonly otpUtil: OtpUtil,
     private readonly lockoutUtil: LockoutUtil,
     private readonly tokenUtil: TokenUtil,
+    private readonly emailService: EmailService,
   ) {}
 
   // Typed audit-emit helper so a missing field is caught at compile time, not silently dropped.
@@ -252,7 +253,7 @@ export class AdminAuthService {
     const registrationExpiresInHours = Math.round(REGISTRATION_TOKEN_EXPIRES_MINUTES / 60);
 
     try {
-      await sendEmail(
+      await this.emailService.send(
         email,
         renderAdminRegistrationEmailSubject(),
         renderAdminRegistrationEmailHtml({
@@ -862,7 +863,7 @@ export class AdminAuthService {
     const expiresInHours = Math.round(PROMOTION_TOKEN_EXPIRES_MINUTES / 60);
 
     try {
-      await sendEmail(
+      await this.emailService.send(
         email,
         renderPromotionEmailSubject(),
         renderPromotionEmailHtml({ promotionLink, expiresInHours }),
@@ -999,7 +1000,7 @@ export class AdminAuthService {
     const expiresInHours = Math.round(PROMOTION_TOKEN_EXPIRES_MINUTES / 60);
 
     try {
-      await sendEmail(
+      await this.emailService.send(
         user.email,
         renderPromotionEmailSubject(),
         renderPromotionEmailHtml({ promotionLink, expiresInHours }),
@@ -1999,7 +2000,7 @@ export class AdminAuthService {
     // Dedicated link-based template — previously this borrowed the OTP-code template
     // as a stand-in, which read wrong ("Your OTP is: https://...") for a clickable link.
     try {
-      await sendEmail(
+      await this.emailService.send(
         newEmail,
         renderEmailChangeVerificationSubject(),
         renderEmailChangeVerificationHtml({
