@@ -28,7 +28,7 @@ import {
   ResolveReviewDto,
 } from '../dto/billing-report.dto';
 
-@ApiTags('Billing Admin — Reports')
+@ApiTags('Billing Reports')
 @ApiBearerAuth('access-token')
 @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
 @Controller('admin/billing')

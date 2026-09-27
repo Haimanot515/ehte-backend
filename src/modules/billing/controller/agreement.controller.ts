@@ -2,7 +2,7 @@
 
 import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
 import { RequireReauthentication } from '../../../common/decorators/reauth.decorator';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { RequirePermissions } from '../../../common/decorators/require-permissions.decorator';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { CurrentUserDto } from '../../../common/dtos/current-user.dto';
@@ -12,39 +12,48 @@ import { PermissionsEnum as P } from '../../../common/enums/permissions.enum';
 import { AgreementService } from '../service/agreement.service';
 import { AssignAgreementDto, CreateAgreementDto, CreateInstitutionDto, RetireAgreementDto } from '../dto/agreement.dto';
 
-@ApiTags('Billing Admin')
+@ApiTags('Agreements')
 @ApiBearerAuth('access-token')
 @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
 @Controller('admin/billing') // guards are global (AppModule)
 export class AgreementController {
   constructor(private readonly agreements: AgreementService) {}
 
+  // ── Institutions ──────────────────────────────────────────────────────
+
   @RequirePermissions(P.INSTITUTIONS_MANAGE)
   @Post('institutions')
+  @ApiOperation({ summary: 'Admin: register a new partner institution' })
   createInstitution(@Body() dto: CreateInstitutionDto) {
     return this.agreements.createInstitution(dto.name);
   }
 
   @RequirePermissions(P.INSTITUTIONS_MANAGE)
   @Post('institutions/:id/mark-signed')
+  @ApiOperation({ summary: 'Admin: mark an institution as having signed the partner agreement' })
   markSigned(@CurrentUser() a: CurrentUserDto, @Param('id') id: string) {
     return this.agreements.markSigned(a.id, id);
   }
 
+  // ── Agreements ────────────────────────────────────────────────────────
+
   @RequirePermissions(P.AGREEMENTS_MANAGE)
   @Get('agreements')
+  @ApiOperation({ summary: 'Admin: list funding agreements' })
   list() {
     return this.agreements.list();
   }
 
   @RequirePermissions(P.AGREEMENTS_MANAGE)
   @Post('agreements')
+  @ApiOperation({ summary: 'Admin: create a draft funding agreement' })
   create(@CurrentUser() a: CurrentUserDto, @Body() dto: CreateAgreementDto) {
     return this.agreements.createDraft(a.id, dto);
   }
 
   @RequirePermissions(P.AGREEMENTS_ACTIVATE)
   @Post('agreements/:id/activate')
+  @ApiOperation({ summary: 'Admin: activate a draft agreement' })
   activate(@CurrentUser() a: CurrentUserDto, @Param('id') id: string) {
     return this.agreements.activate(a.id, id);
   }
@@ -53,6 +62,7 @@ export class AgreementController {
   @RequirePermissions(P.AGREEMENTS_MANAGE)
   @RequireReauthentication()
   @Patch('profiles/:profileId/agreement')
+  @ApiOperation({ summary: 'Admin: assign an active agreement to a victim profile (requires reauth)' })
   assign(
     @CurrentUser() a: CurrentUserDto,
     @Param('profileId') profileId: string,
@@ -64,6 +74,7 @@ export class AgreementController {
   // Section 28: admin should see the impact review before retiring.
   @RequirePermissions(P.AGREEMENTS_ACTIVATE)
   @Get('agreements/:id/retirement-impact')
+  @ApiOperation({ summary: 'Admin: preview the impact of retiring an agreement before retiring it' })
   retirementImpact(@Param('id') id: string) {
     return this.agreements.getRetirementImpact(id);
   }
@@ -72,6 +83,7 @@ export class AgreementController {
   @RequirePermissions(P.AGREEMENTS_ACTIVATE)
   @RequireReauthentication()
   @Post('agreements/:id/retire')
+  @ApiOperation({ summary: 'Admin: retire an agreement (requires reauth)' })
   retire(@CurrentUser() a: CurrentUserDto, @Param('id') id: string, @Body() dto: RetireAgreementDto) {
     return this.agreements.retire(a.id, id, dto);
   }

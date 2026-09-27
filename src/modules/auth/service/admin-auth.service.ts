@@ -221,7 +221,7 @@ export class AdminAuthService {
     const registrationExpiresInHours = Math.round(REGISTRATION_TOKEN_EXPIRES_MINUTES / 60);
 
     try {
-      await this.emailService.sendEmail(
+      await this.emailService.send(
         email,
         renderAdminRegistrationEmailSubject(),
         renderAdminRegistrationEmailHtml({
@@ -732,7 +732,7 @@ export class AdminAuthService {
     const expiresInHours = Math.round(PROMOTION_TOKEN_EXPIRES_MINUTES / 60);
 
     try {
-      await this.emailService.sendEmail(
+      await this.emailService.send(
         email,
         renderPromotionEmailSubject(),
         renderPromotionEmailHtml({ promotionLink, expiresInHours }),
@@ -858,7 +858,7 @@ export class AdminAuthService {
     const expiresInHours = Math.round(PROMOTION_TOKEN_EXPIRES_MINUTES / 60);
 
     try {
-      await this.emailService.sendEmail(
+      await this.emailService.send(
         user.email,
         renderPromotionEmailSubject(),
         renderPromotionEmailHtml({ promotionLink, expiresInHours }),
@@ -1739,7 +1739,7 @@ export class AdminAuthService {
     const expiresInHours = Math.round(EMAIL_CHANGE_TOKEN_EXPIRES_MINUTES / 60) || 1;
 
     try {
-      await this.emailService.sendEmail(
+      await this.emailService.send(
         newEmail,
         renderEmailChangeVerificationSubject(),
         renderEmailChangeVerificationHtml({

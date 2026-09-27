@@ -143,12 +143,28 @@ stages:
                 export MINIO_PORT=9000
               fi
 
+              ENV_FILE="$(Build.SourcesDirectory)/.env"
+              POSTGRES_USER="$(grep -E '^POSTGRES_USER=' "$ENV_FILE" | tail -1 | cut -d= -f2- | tr -d '\r' | sed 's/^["'\'']//;s/["'\'']$//')"
+              POSTGRES_PASSWORD="$(grep -E '^POSTGRES_PASSWORD=' "$ENV_FILE" | tail -1 | cut -d= -f2- | tr -d '\r' | sed 's/^["'\'']//;s/["'\'']$//')"
+              POSTGRES_DB="$(grep -E '^POSTGRES_DB=' "$ENV_FILE" | tail -1 | cut -d= -f2- | tr -d '\r' | sed 's/^["'\'']//;s/["'\'']$//')"
+              POSTGRES_USER="${POSTGRES_USER:-ehte_user}"
+              POSTGRES_DB="${POSTGRES_DB:-ehte_db}"
+              if [ -z "$POSTGRES_PASSWORD" ]; then
+                echo "POSTGRES_PASSWORD is empty in ehte-dev.env — aborting (will not touch other databases)."
+                exit 1
+              fi
+              export POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DB
+              export DATABASE_URL="$(python3 -c 'import os, urllib.parse; u=os.environ["POSTGRES_USER"]; p=urllib.parse.quote(os.environ["POSTGRES_PASSWORD"], safe=""); d=os.environ["POSTGRES_DB"]; print("postgresql://%s:%s@ehte_postgres-dev:5432/%s?sslmode=disable" % (u, p, d))')"
+              export DIRECT_URL="$DATABASE_URL"
+              echo "Using dedicated ehte_postgres-dev (not host/database placeholder, not other postgres containers)."
+
+              # Recreate the API only. Leave ehte_postgres-dev, shared-minio, and ehte_admin-dev running.
               docker rm -f ehte_backend-dev 2>/dev/null || true
 
               docker compose -f docker-compose.yml pull
               docker compose -f docker-compose.yml up -d
 
-              docker ps | grep ehte_backend-dev
+              docker ps --filter name=ehte_backend-dev --filter name=ehte_postgres-dev --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
 
             displayName: "Deploy (dev)"
 

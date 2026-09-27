@@ -9,6 +9,7 @@ import { PaymentController } from './controller/payment.controller';
 import { ChapaWebhookController } from './controller/chapa-webhook.controller';
 import { AgreementController } from './controller/agreement.controller';
 import { DisbursementController } from './controller/disbursement.controller';
+import { RewardController } from './controller/reward.controller';
 import { BillingReportController } from './controller/billing-report.controller';
 import { AllocationService } from './service/allocation.service';
 import { PaymentService } from './service/payment.service';
@@ -25,6 +26,7 @@ import { FundingQueryService } from './service/funding-query.service';
     ChapaWebhookController,
     AgreementController,
     DisbursementController,
+    RewardController,
     BillingReportController,
   ],
   providers: [

@@ -21,14 +21,8 @@ import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { RolesEnum } from 'src/common/enums/roles.enum';
 import { RequireReauthentication } from 'src/common/decorators/reauth.decorator';
-// NOTE: adjust these two import paths to match your actual file locations —
-// they were not present in the source file provided, so the names/paths
-// below follow the same convention as Roles / RolesEnum above.
 import { RequirePermissions } from 'src/common/decorators/require-permissions.decorator';
 import { PermissionsEnum } from 'src/common/enums/permissions.enum';
-// NOTE: adjust this path to wherever MediaModule actually lives — same
-// DTO VictimProfileController/PostController already use for their
-// media routes.
 import { MediaKeyQueryDto } from 'src/modules/media/dto/media-key-query.dto';
 
 @ApiTags('Reports')
@@ -37,22 +31,8 @@ import { MediaKeyQueryDto } from 'src/modules/media/dto/media-key-query.dto';
 export class ReportController {
   constructor(private readonly reportService: ReportService) {}
 
-  // ─────────────────────────────────────────────
-  // CREATE REPORT
-  // POST /reports
-  //
-  // FIX (item #5): accepts an optional Idempotency-Key header —
-  // same convention as PostController.create — so a client
-  // retrying after a dropped response doesn't create a duplicate
-  // report. ReportService.create returns the original report on a
-  // repeat key instead.
-  //
-  // FIX (item #12): route-specific burst limit, same values as
-  // PostController.create — 5 creates/min is generous for a real
-  // reporter but meaningfully slows a scripted flood. Reports go
-  // straight to PENDING on create (no separate submit step like
-  // Post has), so this is the only creation-side throttle point.
-  // ─────────────────────────────────────────────
+  // Accepts an optional Idempotency-Key so a dropped-response retry
+  // returns the original report instead of creating a duplicate
   @Post()
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @RequireReauthentication()
@@ -73,33 +53,7 @@ export class ReportController {
     return this.reportService.findMyReports(user);
   }
 
-
-
-
-// ─────────────────────────────────────────────
-// ADMIN — DASHBOARD STATISTICS
-// GET /reports/stats
-//
-// Declared before the bare GET / and before ':id' so "stats"
-// is never matched as a report id.
-// ─────────────────────────────────────────────
-@Get('stats')
-@Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
-@RequirePermissions(PermissionsEnum.DASHBOARD_READ)
-@ApiOperation({ summary: 'Admin: get report statistics for the dashboard' })
-async getStats() {
-  return this.reportService.getStats();
-}
-  // ─────────────────────────────────────────────
-  // MY ASSIGNED REPORTS (ADMIN)
-  // GET /reports/assigned-to-me
-  //
-  // Declared before GET /reports/:id so "assigned-to-me"
-  // is never matched as a route parameter.
-  //
-  // ActorType.ADMIN, ActorType.SUPER_ADMIN
-  // ─────────────────────────────────────────────
-
+  // Declared before ':id' so "assigned-to-me" isn't matched as a route param
   @Get('assigned-to-me')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.REPORT_READ)
@@ -115,31 +69,22 @@ async getStats() {
     return this.reportService.findAssignedToMe(admin, { page, limit });
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — STALE / UNREVIEWED-TOO-LONG REPORTS
-  // GET /reports/stale
-  // (item #15)
-  //
-  // Declared BEFORE ':id' so Nest doesn't treat "stale" as a
-  // report id — same route-order reasoning as "assigned-to-me"
-  // above and PostController's equivalent route.
-  //
-  // Flags reports that are both unassigned AND not yet in a
-  // terminal status (CLOSED/REJECTED) and older than the
-  // configured threshold — a report that's already ASSIGNED to
-  // someone actively working it is not "forgotten" the same way
-  // an untouched PENDING one is, so this checks assignment too,
-  // not just status, unlike PostService.findStalePending (Post
-  // has no assignment concept).
-  //
-  // ADMIN / SUPER_ADMIN
-  // ─────────────────────────────────────────────
+  // Declared before ':id' so "stale" isn't matched as a report id
   @Get('stale')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.REPORT_READ)
   @ApiOperation({ summary: 'Admin: get unassigned reports that have been waiting too long' })
   async findStalePending() {
     return this.reportService.findStalePending();
+  }
+
+  // Declared before ':id' so "stats" isn't matched as a report id
+  @Get('stats')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.DASHBOARD_READ)
+  @ApiOperation({ summary: 'Admin: get report statistics for the dashboard' })
+  async getStats() {
+    return this.reportService.getStats();
   }
 
   @Get()
@@ -156,16 +101,6 @@ async getStats() {
     return this.reportService.findAllForAdmin(query);
   }
 
-  // ─────────────────────────────────────────────
-  // GET ONE OF MY REPORTS
-  // GET /reports/:id
-  //
-  // FIX (item #23): added re-authentication + no-store, matching
-  // PostController.findMyPost's treatment of a single owned
-  // record. A report is at least as sensitive as a post, so it
-  // shouldn't have a weaker re-auth posture than Post's equivalent
-  // single-record read.
-  // ─────────────────────────────────────────────
   @Get(':id')
   @RequireReauthentication()
   @Header('Cache-Control', 'no-store')
@@ -174,14 +109,6 @@ async getStats() {
     return this.reportService.findOne(user, reportId);
   }
 
-  // ─────────────────────────────────────────────
-  // GET MEDIA DOWNLOAD URL (REPORTER — OWN REPORT)
-  // GET /reports/:id/media?key=...
-  //
-  // Mirrors VictimProfileController/PostController's media-download
-  // routes, scoped the same way findOne() already is: a reporter may
-  // only request a URL for a key attached to a report they own.
-  // ─────────────────────────────────────────────
   @Get(':id/media')
   @ApiOperation({ summary: "Get a short-lived download URL for one of my report's media" })
   async getMedia(
@@ -216,16 +143,6 @@ async getStats() {
     return this.reportService.findOneForAdmin(admin, reportId);
   }
 
-  // ─────────────────────────────────────────────
-  // GET MEDIA DOWNLOAD URL (ADMIN)
-  // GET /reports/:id/admin/media?key=...
-  //
-  // Viewing a report's media is open to any ADMIN or SUPER_ADMIN,
-  // matching findOneForAdmin()'s access rule — same permissions as
-  // that route, since this is another way to access the same
-  // reporter-submitted content. Assignment only gates *acting* on a
-  // report elsewhere in this controller.
-  // ─────────────────────────────────────────────
   @Get(':id/admin/media')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.REPORT_READ, PermissionsEnum.REPORTER_INFO_READ)
@@ -238,18 +155,6 @@ async getStats() {
     return this.reportService.getMediaDownloadUrlForAdmin(admin, reportId, query.key);
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — PER-REPORT HISTORY / TIMELINE
-  // GET /reports/:id/history
-  // (item #18)
-  //
-  // Mirrors PostController.getHistory. Same ASSUMPTION as Post:
-  // relies on an `auditLog` model populated by a listener
-  // subscribed to the events emitAudit() already fires throughout
-  // ReportService.
-  //
-  // ADMIN / SUPER_ADMIN
-  // ─────────────────────────────────────────────
   @Get(':id/history')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.REPORT_READ)
@@ -269,10 +174,6 @@ async getStats() {
   ) {
     return this.reportService.updateStatus(admin, reportId, data);
   }
-
-  // ─────────────────────────────────────────────
-  // INFORMATION REQUESTS
-  // ─────────────────────────────────────────────
 
   @Get(':id/information-requests')
   @ApiOperation({

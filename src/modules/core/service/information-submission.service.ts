@@ -32,11 +32,7 @@ import {
   UpdateInformationSubmissionDto,
 } from '../dto/information-submission.dto';
 
-// The six media-array fields shared by CreateInformationSubmissionDto/
-// UpdateInformationSubmissionDto and the InformationSubmission model
-// itself. Mirrors PostService's / VictimProfileService's
-// MEDIA_FIELD_NAMES so every module stays in sync if a new media
-// kind is ever added.
+// Media array fields shared by the DTOs and the InformationSubmission model.
 const MEDIA_FIELD_NAMES = ['photo', 'video', 'audio', 'pdf', 'document', 'other'] as const;
 type MediaFieldName = (typeof MEDIA_FIELD_NAMES)[number];
 type MediaBearing = Record<MediaFieldName, string[]>;
@@ -107,13 +103,7 @@ export class InformationSubmissionService {
     return (user as unknown as { roles?: string[] }).roles ?? [];
   }
 
-  // FIX (audit review, item #4): InformationSubmission has no
-  // caseReference-style human identifier, and the tipster is
-  // deliberately anonymous-ish to the public (their identity is only
-  // ever exposed to admins via findOneForAdmin). So the label leans
-  // on whichever missing-person case the tip is about — the thing an
-  // admin actually searches an audit list by — falling back to a
-  // truncated snippet of the tip text, and only then to an id prefix.
+  // Labels by the missing-person case the tip is about, falling back to a snippet or id.
   private buildSubmissionLabel(
     submission: { id: string; information: string },
     missingPersonName?: string | null,
@@ -128,16 +118,6 @@ export class InformationSubmissionService {
     return `submission:${submission.id.slice(0, 8)}`;
   }
 
-  // ─────────────────────────────────────────────
-  // MEDIA HELPERS
-  //
-  // Mirrors PostService's / VictimProfileService's media helpers.
-  // InformationSubmission stores media as plain filepath strings in
-  // typed arrays (photo/video/audio/pdf/document/other), same as
-  // Post, Report, VictimProfile, and MissingPerson — kept in one
-  // place so every read/write of that shape stays consistent.
-  // ─────────────────────────────────────────────
-
   private collectMediaFields(entity: MediaBearing): string[] {
     return MEDIA_FIELD_NAMES.flatMap((field) => entity[field]);
   }
@@ -146,10 +126,7 @@ export class InformationSubmissionService {
     return MEDIA_FIELD_NAMES.flatMap((field) => dto[field] ?? []);
   }
 
-  // Diffs each media field individually (not the flattened whole),
-  // so a client resending the same array doesn't get treated as
-  // "remove and re-add." Only fields present in the incoming DTO
-  // are considered — an omitted field means "leave this one alone."
+  // Diffs each media field individually so resending the same array isn't a remove+re-add.
   private diffMediaFields(
     before: MediaBearing,
     incoming: MediaBearingDto,
@@ -168,15 +145,7 @@ export class InformationSubmissionService {
     return { added, removed };
   }
 
-  // FIX (item #3): previously only checked objectExists(). Now mirrors
-  // PostService.validateMediaFilesExist() — also rejects files that are
-  // too large or of a disallowed content-type, and returns each file's
-  // size so callers can maintain mediaTotalBytes without re-statting
-  // already-attached files.
-  //
-  // Shares the MEDIA_MAX_FILE_SIZE / MEDIA_ALLOWED_MIME_TYPES config
-  // keys with Post — one bucket-wide policy, not a per-module one,
-  // since the underlying risk (fake/dangerous files) is identical.
+  // Confirms every new filepath exists in the media bucket and is within size/type limits.
   private async validateMediaFilesExist(
     filepaths: string[],
   ): Promise<Array<{ filepath: string; size: number }>> {
@@ -221,10 +190,7 @@ export class InformationSubmissionService {
     return checks.map((c) => ({ filepath: c.filepath, size: c.size }));
   }
 
-  // FIX (item #13): per-field attachment counts, checked before any
-  // MinIO round trips. Shares the CONTENT_* shared defaults with Post/
-  // Report/etc.; an optional INFORMATION_SUBMISSION_* override lets
-  // this module diverge later without touching any other module's copy.
+  // Per-field attachment caps, checked before any MinIO round trips.
   private assertAttachmentCounts(media: MediaBearing): void {
     const maxPhotos = Number(
       this.configService.get<string>('INFORMATION_SUBMISSION_MAX_PHOTOS') ??
@@ -255,9 +221,7 @@ export class InformationSubmissionService {
     }
   }
 
-  // FIX (item #13): total attached-media size cap, checked against the
-  // running mediaTotalBytes column rather than re-summing every
-  // attached file on every write.
+  // Total attached-media size cap per submission.
   private assertTotalBytes(totalBytes: number): void {
     const maxTotalBytes = Number(
       this.configService.get<string>('INFORMATION_SUBMISSION_MAX_TOTAL_UPLOAD_BYTES') ??
@@ -269,25 +233,13 @@ export class InformationSubmissionService {
     }
   }
 
-  // Best-effort delete against MinIO. A file that's already gone
-  // (or MinIO briefly unreachable) must never block the DB write
-  // that triggered the cleanup — failures are swallowed per-file
-  // via allSettled rather than surfaced to the caller.
+  // Best-effort delete; a failure here must never block the DB write that triggered it.
   private async deleteMediaFiles(filepaths: string[]): Promise<void> {
     if (!filepaths.length) return;
     await Promise.allSettled(filepaths.map((fp) => this.minioService.deleteFile(fp)));
   }
 
-  // ─────────────────────────────────────────────
-  // MEDIA — DOWNLOAD URL (owner)
-  // GET /information-submissions/:id/media?key=...
-  //
-  // No audit trail here, matching ReportService.getMediaDownloadUrl
-  // (the reporter-facing equivalent) — a user downloading their own
-  // attachment isn't a "someone accessed something" event the way an
-  // admin doing the same is.
-  // ─────────────────────────────────────────────
-
+  // Owner-facing download; not audited, same as ReportService's reporter-facing equivalent.
   async getMediaDownloadUrl(id: string, userId: string, key: string): Promise<{ url: string }> {
     const submission = await this.prisma.informationSubmission.findUnique({
       where: { id },
@@ -310,24 +262,7 @@ export class InformationSubmissionService {
     return { url };
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — MEDIA DOWNLOAD URL
-  // GET /information-submissions/admin/:id/media?key=...
-  //
-  // FIX (audit review, items #1/#2/#5): this method previously took
-  // no acting-admin parameter at all, so there was no honest way to
-  // record who accessed a tipster's attachment — the exact case
-  // ReportService.getMediaDownloadUrlForAdmin exists to audit. Now
-  // mirrors it: a mismatched key emits a DENIED row before throwing
-  // (a stale link, or someone probing for media on a submission they
-  // have no other reason to open), the submitter is recorded as
-  // targetUserId, and the accessed key is captured in metadata on
-  // the success row.
-  //
-  // ⚠️ SIGNATURE CHANGE: takes the acting admin. Update the
-  // controller to pass @CurrentUser().
-  // ─────────────────────────────────────────────
-
+  // Admin download; a mismatched key emits DENIED before throwing, success is logged too.
   async getMediaDownloadUrlForAdmin(
     admin: CurrentUserDto,
     id: string,
@@ -520,6 +455,7 @@ export class InformationSubmissionService {
     }
   }
 
+  // Only allowed against APPROVED cases, and not by the case's own reporter.
   async create(
     user: CurrentUserDto,
     missingPersonId: string,
@@ -533,9 +469,6 @@ export class InformationSubmissionService {
         where: { userId: user.id, idempotencyKey },
       });
       if (existing) {
-        // Safe replay of a duplicate submission (double-tap, retried
-        // request after a flaky connection) — return the original
-        // instead of creating a second one.
         return existing;
       }
     }
@@ -757,10 +690,6 @@ export class InformationSubmissionService {
     });
   }
 
-  // ─────────────────────────────────────────────
-  // GET ONE — OWNER
-  // ─────────────────────────────────────────────
-
   async findOne(id: string, userId: string) {
     const submission = await this.prisma.informationSubmission.findUnique({
       where: { id },
@@ -901,11 +830,7 @@ export class InformationSubmissionService {
       const validatedAdded = await this.validateMediaFilesExist(added);
       addedBytes = validatedAdded.reduce((sum, v) => sum + v.size, 0);
 
-      // Stat removed files before they're deleted, purely to back out
-      // their bytes from the running total — a stat failure here
-      // (already gone, MinIO hiccup) just means we can't credit that
-      // byte count back, so treat it as 0 rather than blocking the
-      // update.
+      // Stat failure on a removed file just means 0 bytes credited back, not a blocker.
       const removedStats = await Promise.allSettled(
         removed.map((fp) => this.minioService.statObject(fp)),
       );
@@ -950,9 +875,7 @@ export class InformationSubmissionService {
       },
     });
 
-    // Only after the DB write commits — deleting first and having
-    // the write fail would strand the submission pointing at
-    // nothing.
+    // Delete only after the write commits, so a failed write never strands an orphan reference.
     await this.deleteMediaFiles(removed);
 
     this.emitAudit({
@@ -1082,8 +1005,6 @@ export class InformationSubmissionService {
     const [data, total] = await this.prisma.$transaction([
       this.prisma.informationSubmission.findMany({
         where,
-        // user / missingPerson detail no longer included here —
-        // use admin/:id for full detail on one record.
         orderBy: { createdAt: 'desc' },
         skip: (page - 1) * limit,
         take: limit,
@@ -1094,22 +1015,7 @@ export class InformationSubmissionService {
     return { data, meta: { page, limit, total, totalPages: Math.ceil(total / limit) } };
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — GET ONE (full detail)
-  //
-  // NOTE (audit gap, deliberately NOT fixed here): this include pulls
-  // the tipster's name and phone — the same class of PII access
-  // ReportService.findOneForAdmin audits as REPORTER_INFORMATION_
-  // OPENED. It isn't audited here because doing so needs (a) an
-  // acting-admin parameter, which this method doesn't currently take,
-  // and (b) confidence that a matching action enum member exists,
-  // which I don't have for this file the way I did for Report's. Add
-  // an `admin: CurrentUserDto` parameter and an
-  // INFORMATION_SUBMITTER_INFORMATION_OPENED-shaped emit here once
-  // that enum member exists, following the exact pattern in
-  // ReportService.findOneForAdmin.
-  // ─────────────────────────────────────────────
-
+  // Pulls the tipster's name and phone; not yet audited (needs an acting-admin param and enum member).
   async findOneForAdmin(id: string) {
     const submission = await this.prisma.informationSubmission.findUnique({
       where: { id },
@@ -1126,17 +1032,36 @@ export class InformationSubmissionService {
     return submission;
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — STALE / UNREVIEWED-TOO-LONG SUBMISSIONS
-  // GET /information-submissions/admin/stale
-  // (item #15)
-  //
-  // Flags PENDING or UNDER_REVIEW submissions older than the shared
-  // CONTENT_STALE_PENDING_HOURS default, mirroring
-  // PostService.findStalePending. Purely informational — nothing
-  // here changes status or ownership.
-  // ─────────────────────────────────────────────
+  // Admin dashboard stats: totals by status.
+  async getStats() {
+    const [total, byStatus] = await this.prisma.$transaction([
+      this.prisma.informationSubmission.count(),
+      this.prisma.informationSubmission.groupBy({
+        by: ['status'],
+        _count: { status: true },
+        orderBy: { status: 'asc' },
+      }),
+    ]);
 
+    const statusCounts = Object.fromEntries(
+      Object.values(InformationStatus).map((status) => [status, 0]),
+    ) as Record<InformationStatus, number>;
+
+    for (const row of byStatus) {
+      const rowCount = row._count as { status?: number } | undefined;
+      statusCounts[row.status] = rowCount?.status ?? 0;
+    }
+
+    return {
+      total,
+      pending: statusCounts[InformationStatus.PENDING] ?? 0,
+      underReview: statusCounts[InformationStatus.UNDER_REVIEW] ?? 0,
+      reviewed: statusCounts[InformationStatus.REVIEWED] ?? 0,
+      rejected: statusCounts[InformationStatus.REJECTED] ?? 0,
+    };
+  }
+
+  // Flags PENDING/UNDER_REVIEW submissions older than the configured stale window.
   async findStalePending() {
     const staleHours = Number(
       this.configService.get<string>('INFORMATION_SUBMISSION_STALE_PENDING_HOURS') ??
@@ -1159,18 +1084,8 @@ export class InformationSubmissionService {
     }));
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — HISTORY
-  // GET /information-submissions/admin/:id/history
-  // (item #18)
-  //
-  // ASSUMPTION: same auditLog model assumption as
-  // PostService.getHistory / VictimProfile's admin history endpoint
-  // — adjust the model/field names if your schema differs.
-  // ─────────────────────────────────────────────
-
   async getHistory(id: string) {
-    await this.findOneForAdmin(id); // 404s if the submission doesn't exist
+    await this.findOneForAdmin(id);
 
     return this.prisma.auditLog.findMany({
       where: { entity: 'InformationSubmission', entityId: id },

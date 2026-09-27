@@ -103,7 +103,7 @@ export class OtpUtil {
 
     if (channel === OtpChannelEnum.email) {
       try {
-        await this.emailService.sendEmail(
+        await this.emailService.send(
           contact,
           renderOtpEmailSubject(),
           renderOtpEmailHtml({ otp, expiresInMinutes: otpExpiresInMinutes }),

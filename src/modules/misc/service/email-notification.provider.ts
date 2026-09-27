@@ -27,7 +27,7 @@ export class EmailNotificationProvider implements NotificationChannelProvider {
     const html = this.renderHtml(params);
     const text = params.actionUrl ? `${params.body}\n\n${params.actionUrl}` : params.body;
 
-    await this.email.sendEmail(to, params.title, html, text);
+    await this.email.send(to, params.title, html, text);
   }
 
   // Minimal inline template — no external assets or tracking pixels, both

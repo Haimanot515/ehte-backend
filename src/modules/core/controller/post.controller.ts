@@ -19,12 +19,8 @@ import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { RolesEnum } from 'src/common/enums/roles.enum';
 import { RequireReauthentication } from 'src/common/decorators/reauth.decorator';
-// NOTE: adjust these two import paths to match your actual file locations —
-// same convention as Roles / RolesEnum above.
 import { RequirePermissions } from 'src/common/decorators/require-permissions.decorator';
 import { PermissionsEnum } from 'src/common/enums/permissions.enum';
-// NOTE: adjust this path to wherever MediaModule actually lives —
-// same DTO VictimProfileController already uses for its media routes.
 import { MediaKeyQueryDto } from 'src/modules/media/dto/media-key-query.dto';
 import {
   CreatePostDto,
@@ -46,23 +42,7 @@ import { PostService } from '../service/post.service';
 export class PostController {
   constructor(private readonly postService: PostService) {}
 
-  // ─────────────────────────────────────────────
-  // CREATE POST
-  // POST /posts
-  // AUTHENTICATED USER
-  // Requires password re-authentication.
-  //
-  // FIX (item #5): accepts an optional Idempotency-Key
-  // header so a client retrying after a dropped response
-  // (e.g. a double-tap on a flaky connection) doesn't end
-  // up creating two identical posts — PostService.create
-  // returns the original post on a repeat key instead.
-  //
-  // FIX (item #12): a route-specific burst limit tighter
-  // than the app-wide default (THROTTLE_TTL_SECONDS /
-  // THROTTLE_LIMIT, 20/60s) — 5 creates/min is generous for
-  // a genuine user but meaningfully slows a scripted flood.
-  // ─────────────────────────────────────────────
+  // POST /posts — authenticated user, requires re-auth.
   @Post()
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @RequireReauthentication()
@@ -78,34 +58,7 @@ export class PostController {
     return this.postService.create(user.id, data, idempotencyKey);
   }
 
-// ─────────────────────────────────────────────
-// ADMIN — DASHBOARD STATISTICS
-// GET /posts/stats
-//
-// Declared before ':id' so Nest doesn't treat "stats" as a
-// post id — same route-order reasoning as 'stale' below.
-//
-// ADMIN / SUPER_ADMIN
-// ─────────────────────────────────────────────
-@Get('stats')
-@ApiBearerAuth('access-token')
-@Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
-@RequirePermissions(PermissionsEnum.DASHBOARD_READ)
-@ApiOperation({
-  summary: 'Admin: get post statistics for the dashboard',
-})
-async getStats() {
-  return this.postService.getStats();
-}
-
-  // ─────────────────────────────────────────────
-  // MY POSTS
-  // GET /posts/me
-  // AUTHENTICATED USER
-  // Requires password re-authentication, sent via
-  // X-Reauth-Password header since this is a GET.
-  // Response is never cached.
-  // ─────────────────────────────────────────────
+  // GET /posts/me — authenticated user.
   @Get('me')
   @RequireReauthentication()
   @Header('Cache-Control', 'no-store')
@@ -117,11 +70,7 @@ async getStats() {
     return this.postService.findMyPosts(user.id);
   }
 
-  // ─────────────────────────────────────────────
-  // MY POST
-  // GET /posts/me/:id
-  // AUTHENTICATED USER
-  // ─────────────────────────────────────────────
+  // GET /posts/me/:id — authenticated user.
   @Get('me/:id')
   @RequireReauthentication()
   @Header('Cache-Control', 'no-store')
@@ -133,15 +82,7 @@ async getStats() {
     return this.postService.findMyPost(user.id, postId);
   }
 
-  // ─────────────────────────────────────────────
-  // UPDATE MY POST
-  // PATCH /posts/me/:id
-  //
-  // Allowed only while DRAFT or CHANGES_REQUESTED —
-  // enforced in PostService.updateMyPost.
-  //
-  // AUTHENTICATED USER
-  // ─────────────────────────────────────────────
+  // PATCH /posts/me/:id — allowed only while DRAFT or CHANGES_REQUESTED.
   @Patch('me/:id')
   @ApiBearerAuth('access-token')
   @ApiOperation({
@@ -155,25 +96,7 @@ async getStats() {
     return this.postService.updateMyPost(user.id, postId, data);
   }
 
-  // ─────────────────────────────────────────────
-  // SUBMIT MY POST
-  // PATCH /posts/me/:id/submit
-  //
-  // Moves DRAFT or CHANGES_REQUESTED → PENDING,
-  // putting the post in front of admins (PRD §12).
-  // Rejects with too_many_pending_posts once the
-  // caller already has CONTENT_MAX_PENDING_PER_USER
-  // (or POST_MAX_PENDING_PER_USER, if set) posts
-  // sitting in PENDING (item #1).
-  //
-  // FIX (item #12): route-specific burst limit — this
-  // is the step that actually enters the admin review
-  // queue, so it deserves its own tighter cap alongside
-  // create()'s.
-  //
-  // AUTHENTICATED USER
-  // Requires password re-authentication.
-  // ─────────────────────────────────────────────
+  // PATCH /posts/me/:id/submit — moves DRAFT/CHANGES_REQUESTED -> PENDING.
   @Patch('me/:id/submit')
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @RequireReauthentication()
@@ -185,13 +108,7 @@ async getStats() {
     return this.postService.submitMyPost(user.id, postId);
   }
 
-  // ─────────────────────────────────────────────
-  // CANCEL / WITHDRAW MY POST
-  // PATCH /posts/me/:id/cancel
-  // PENDING → DRAFT.
-  //
-  // AUTHENTICATED USER
-  // ─────────────────────────────────────────────
+  // PATCH /posts/me/:id/cancel — PENDING -> DRAFT.
   @Patch('me/:id/cancel')
   @ApiBearerAuth('access-token')
   @ApiOperation({
@@ -201,16 +118,7 @@ async getStats() {
     return this.postService.cancelMyPost(user.id, postId);
   }
 
-  // ─────────────────────────────────────────────
-  // DELETE MY POST
-  // DELETE /posts/me/:id
-  //
-  // Scoped to DRAFT only — enforced in
-  // PostService.deleteMyPost.
-  //
-  // AUTHENTICATED USER
-  // Requires password re-authentication.
-  // ─────────────────────────────────────────────
+  // DELETE /posts/me/:id — scoped to DRAFT only.
   @Delete('me/:id')
   @RequireReauthentication()
   @ApiBearerAuth('access-token')
@@ -221,14 +129,7 @@ async getStats() {
     return this.postService.deleteMyPost(user.id, postId);
   }
 
-  // ─────────────────────────────────────────────
-  // PUBLIC POSTS
-  // GET /posts/published
-  // ANONYMOUS
-  //
-  // FIX (item #7): responses no longer include the
-  // poster's userId — see PostService.toPublicPost.
-  // ─────────────────────────────────────────────
+  // GET /posts/published — anonymous.
   @Get('published')
   @AllowAnonymous()
   @ApiOperation({
@@ -241,19 +142,7 @@ async getStats() {
     return this.postService.findPublishedPosts(query);
   }
 
-  // ─────────────────────────────────────────────
-  // PUBLIC POST — MEDIA DOWNLOAD URL
-  // GET /posts/published/:id/media?key=...
-  //
-  // Returns only a key that getPubliclyVisibleMediaKeys() would
-  // actually expose — i.e. never a child-involving post's media,
-  // never an unpublished post's media at all (findFirst's WHERE
-  // 404s first). Same visibility contract as findPublishedPost().
-  //
-  // Declared BEFORE 'published/:id' so Nest matches this more
-  // specific path first — route order matters here.
-  // ANONYMOUS
-  // ─────────────────────────────────────────────
+  // GET /posts/published/:id/media?key=... — declared before published/:id.
   @Get('published/:id/media')
   @AllowAnonymous()
   @ApiOperation({
@@ -263,14 +152,7 @@ async getStats() {
     return this.postService.getPublicMediaDownloadUrl(postId, query.key);
   }
 
-  // ─────────────────────────────────────────────
-  // PUBLIC POST
-  // GET /posts/published/:id
-  // ANONYMOUS
-  //
-  // FIX (item #7): response no longer includes the
-  // poster's userId — see PostService.toPublicPost.
-  // ─────────────────────────────────────────────
+  // GET /posts/published/:id — anonymous.
   @Get('published/:id')
   @AllowAnonymous()
   @ApiOperation({
@@ -280,18 +162,7 @@ async getStats() {
     return this.postService.findPublishedPost(postId);
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — CREATE OFFICIAL POST
-  // POST /posts/official
-  //
-  // Distinct from POST /posts: attributed to the
-  // admin as author. When publishImmediately=true
-  // (default) AND involvesChild=true,
-  // childSafetyConfirmed=true is required in the
-  // body — enforced in PostService.createOfficial.
-  //
-  // ADMIN / SUPER_ADMIN
-  // ─────────────────────────────────────────────
+  // POST /posts/official — admin-authored, distinct from POST /posts.
   @Post('official')
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
@@ -303,15 +174,7 @@ async getStats() {
     return this.postService.createOfficial(user, data);
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — ALL POSTS
-  // GET /posts
-  //
-  // Filters/pagination via AdminPostQueryDto (status,
-  // type, involvesChild, authorId, page, limit).
-  //
-  // ADMIN / SUPER_ADMIN
-  // ─────────────────────────────────────────────
+  // GET /posts — admin, filters/pagination via AdminPostQueryDto.
   @Get()
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
@@ -329,17 +192,19 @@ async getStats() {
     return this.postService.findAll(query);
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — STALE / UNREVIEWED-TOO-LONG POSTS
-  // GET /posts/stale
-  // (item #15)
-  //
-  // Declared BEFORE ':id' so Nest doesn't treat
-  // "stale" as a post id — same reasoning as the
-  // published/:id/media route above.
-  //
-  // ADMIN / SUPER_ADMIN
-  // ─────────────────────────────────────────────
+  // GET /posts/stats — declared before ':id' so "stats" isn't matched as an id.
+  @Get('stats')
+  @ApiBearerAuth('access-token')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.DASHBOARD_READ)
+  @ApiOperation({
+    summary: 'Admin: get post counts by status and type',
+  })
+  async getStats() {
+    return this.postService.getStats();
+  }
+
+  // GET /posts/stale — declared before ':id' for the same reason as 'stats'.
   @Get('stale')
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
@@ -351,19 +216,7 @@ async getStats() {
     return this.postService.findStalePending();
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — BULK APPROVE
-  // PATCH /posts/bulk/approve
-  // (item #20)
-  //
-  // Declared BEFORE ':id/approve' so Nest doesn't
-  // match "bulk" as a post id here — route order
-  // matters, same as elsewhere in this controller.
-  // Any involvesChild post in the batch is skipped
-  // and reported back as requiring individual review.
-  //
-  // ADMIN / SUPER_ADMIN
-  // ─────────────────────────────────────────────
+  // PATCH /posts/bulk/approve — declared before ':id/approve'.
   @Patch('bulk/approve')
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
@@ -375,16 +228,7 @@ async getStats() {
     return this.postService.bulkApprove(user, data.ids);
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — BULK REJECT
-  // PATCH /posts/bulk/reject
-  // (item #20)
-  //
-  // Declared BEFORE ':id/reject' — same route-order
-  // reasoning as bulk/approve above.
-  //
-  // ADMIN / SUPER_ADMIN
-  // ─────────────────────────────────────────────
+  // PATCH /posts/bulk/reject — declared before ':id/reject'.
   @Patch('bulk/reject')
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
@@ -396,19 +240,7 @@ async getStats() {
     return this.postService.bulkReject(user, data.ids, data.reason);
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — GET MEDIA DOWNLOAD URL
-  // GET /posts/:id/media?key=...
-  //
-  // Admins can request a download URL for any media key actually
-  // attached to the post, regardless of status — same admin-only,
-  // no-visibility-filtering access as findOne().
-  //
-  // Declared BEFORE ':id' so Nest matches this more specific path
-  // first — route order matters here.
-  //
-  // ADMIN / SUPER_ADMIN
-  // ─────────────────────────────────────────────
+  // GET /posts/:id/media?key=... — admin, declared before ':id'.
   @Get(':id/media')
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
@@ -420,13 +252,7 @@ async getStats() {
     return this.postService.getMediaDownloadUrl(postId, query.key);
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — PER-POST HISTORY / TIMELINE
-  // GET /posts/:id/history
-  // (item #18)
-  //
-  // ADMIN / SUPER_ADMIN
-  // ─────────────────────────────────────────────
+  // GET /posts/:id/history — admin.
   @Get(':id/history')
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
@@ -438,11 +264,7 @@ async getStats() {
     return this.postService.getHistory(postId);
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — ONE POST
-  // GET /posts/:id
-  // ADMIN / SUPER_ADMIN
-  // ─────────────────────────────────────────────
+  // GET /posts/:id — admin.
   @Get(':id')
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
@@ -454,19 +276,7 @@ async getStats() {
     return this.postService.findOne(postId);
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — UPDATE STATUS
-  // PATCH /posts/:id/status
-  //
-  // Takes UpdatePostStatusDto so the status value is
-  // DTO-validated (@IsEnum) like every other write
-  // endpoint. Every transition is also validated
-  // against the shared status-transition map, the
-  // claim guard (#17), and the child-safety
-  // dual-control gate (#16).
-  //
-  // ADMIN / SUPER_ADMIN
-  // ─────────────────────────────────────────────
+  // PATCH /posts/:id/status — validated against the shared transition map.
   @Patch(':id/status')
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
@@ -482,20 +292,7 @@ async getStats() {
     return this.postService.updateStatus(user, postId, data.status, data.childSafetyConfirmed);
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — APPROVE
-  // PATCH /posts/:id/approve
-  //
-  // Requires childSafetyConfirmed=true in the body
-  // when the post has involvesChild = true (PRD §32),
-  // and now requires two DIFFERENT admins to each send
-  // it before the post actually becomes APPROVED
-  // (item #16) — enforced in PostService.approve.
-  // Blocked if the post is claimed by a different
-  // admin (item #17).
-  //
-  // ADMIN / SUPER_ADMIN
-  // ─────────────────────────────────────────────
+  // PATCH /posts/:id/approve — requires dual-admin child-safety confirmation.
   @Patch(':id/approve')
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
@@ -511,18 +308,7 @@ async getStats() {
     return this.postService.approve(user, postId, data);
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — CLAIM
-  // PATCH /posts/:id/claim
-  // (item #17)
-  //
-  // Lets an admin mark a post as "being handled" so a
-  // second admin doesn't start reviewing it in parallel.
-  // Idempotent for the same admin; rejected if already
-  // claimed by someone else.
-  //
-  // ADMIN / SUPER_ADMIN
-  // ─────────────────────────────────────────────
+  // PATCH /posts/:id/claim — marks a post as being handled.
   @Patch(':id/claim')
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
@@ -534,13 +320,7 @@ async getStats() {
     return this.postService.claimPost(user, postId);
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — UNCLAIM
   // PATCH /posts/:id/unclaim
-  // (item #17)
-  //
-  // ADMIN / SUPER_ADMIN
-  // ─────────────────────────────────────────────
   @Patch(':id/unclaim')
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
@@ -552,16 +332,7 @@ async getStats() {
     return this.postService.unclaimPost(user, postId);
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — REQUEST CHANGES
-  // PATCH /posts/:id/request-changes
-  //
-  // PRD §24: "Request changes" (Posts). Persists the
-  // message on the Post row itself in addition to the
-  // audit log and notification.
-  //
-  // ADMIN / SUPER_ADMIN
-  // ─────────────────────────────────────────────
+  // PATCH /posts/:id/request-changes — persists the message on the Post row.
   @Patch(':id/request-changes')
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
@@ -577,11 +348,7 @@ async getStats() {
     return this.postService.requestChanges(user, postId, data);
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — PUBLISH
   // PATCH /posts/:id/publish
-  // ADMIN / SUPER_ADMIN
-  // ─────────────────────────────────────────────
   @Patch(':id/publish')
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
@@ -593,19 +360,7 @@ async getStats() {
     return this.postService.publish(user, postId);
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — REJECT
-  // PATCH /posts/:id/reject
-  //
-  // Takes RejectPostDto so the owner is told why,
-  // mirroring request-changes and PRD §40's
-  // transparency principle. Blocks rejecting a
-  // PUBLISHED post directly — it must be unpublished
-  // first, via the shared transition map — and
-  // persists the reason on the Post row itself.
-  //
-  // ADMIN / SUPER_ADMIN
-  // ─────────────────────────────────────────────
+  // PATCH /posts/:id/reject — a PUBLISHED post must be unpublished first.
   @Patch(':id/reject')
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
@@ -621,15 +376,7 @@ async getStats() {
     return this.postService.reject(user, postId, data);
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — UNPUBLISH
   // PATCH /posts/:id/unpublish
-  //
-  // Notifies the post owner, matching
-  // approve/reject/request-changes.
-  //
-  // ADMIN / SUPER_ADMIN
-  // ─────────────────────────────────────────────
   @Patch(':id/unpublish')
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)

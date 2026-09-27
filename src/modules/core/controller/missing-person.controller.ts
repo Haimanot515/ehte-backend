@@ -53,21 +53,29 @@ export class MissingPersonController {
   }
 
   // ─────────────────────────────────────────────
-// ADMIN — DASHBOARD STATISTICS
-// GET /missing-persons/admin/stats
-//
-// Declared before 'admin/:id' so Nest doesn't treat "stats" as a
-// missing person id — same route-order reasoning as 'admin/stale'
-// below.
-// ─────────────────────────────────────────────
-@Get('admin/stats')
-@ApiBearerAuth('access-token')
-@Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
-@RequirePermissions(PermissionsEnum.DASHBOARD_READ)
-@ApiOperation({ summary: 'Admin: get missing person statistics for the dashboard' })
-async getStats() {
-  return this.missingPersonService.getStats();
-}
+  // ADMIN — DASHBOARD STATISTICS
+  // GET /missing-persons/admin/stats
+  //
+  // Declared before 'admin/:id' so Nest doesn't treat "stats" as a
+  // missing person id — same route-order reasoning as 'admin/stale'
+  // below.
+  //
+  // NOTE: a second, duplicate @Get('admin/stats')/getStats() handler
+  // existed further down this file (near 'admin/stale'), calling the
+  // same service method with a narrower summary ('counts by status
+  // and type'). Two methods with the same name in one class don't
+  // compile, so it's been removed — this is the one kept, since it
+  // matches the richer getStats() shape MissingPersonService actually
+  // returns (byStatus, byPersonType, reward breakdown, dailyTrend, etc).
+  // ─────────────────────────────────────────────
+  @Get('admin/stats')
+  @ApiBearerAuth('access-token')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.DASHBOARD_READ)
+  @ApiOperation({ summary: 'Admin: get missing person statistics for the dashboard' })
+  async getStats() {
+    return this.missingPersonService.getStats();
+  }
 
   // Admin creates a case directly. CHILD cases still need two-admin approval.
   @Post('admin')

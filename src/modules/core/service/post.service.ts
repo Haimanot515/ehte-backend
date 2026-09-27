@@ -36,24 +36,15 @@ import {
   PublishedPostsQueryDto,
 } from '../dto/post.dto';
 
-// Statuses the owner is allowed to edit or submit from.
-// PENDING is deliberately excluded: once submitted, the post is
-// frozen for the owner until an admin approves it or sends it
-// back via CHANGES_REQUESTED.
+// Statuses the owner may edit/submit from; PENDING is frozen until admin action.
 const OWNER_EDITABLE_STATUSES: PostStatus[] = [PostStatus.DRAFT, PostStatus.CHANGES_REQUESTED];
 
-// The six media-array fields shared by CreatePostDto/UpdatePostDto
-// and the Post model itself. Kept as a single tuple so every place
-// that needs to loop over "all media fields" stays in sync if a
-// new media kind is ever added.
+// The six media-array fields shared by CreatePostDto/UpdatePostDto and the Post model.
 const MEDIA_FIELD_NAMES = ['photo', 'video', 'audio', 'pdf', 'document', 'other'] as const;
 type MediaFieldName = (typeof MEDIA_FIELD_NAMES)[number];
 type MediaBearing = Record<MediaFieldName, string[]>;
 type MediaBearingDto = Partial<Record<MediaFieldName, string[] | undefined>>;
 
-// Minimal shape every audit call site needs from a post row to
-// build entityId / entityLabel / targetUserId. A full Prisma Post
-// row satisfies this.
 type PostAuditRef = {
   id: string;
   userId: string;
@@ -61,14 +52,10 @@ type PostAuditRef = {
   type: PostType;
 };
 
-// Posts can be untitled and titles are free text, so the label
-// written to the audit row is capped to keep it list-friendly.
+// Titles are free text, so the audit label is capped to keep it list-friendly.
 const ENTITY_LABEL_MAX_LENGTH = 120;
 
-// Single source of truth for what status can move to what. Every
-// approve/reject/requestChanges/publish/unpublish/updateStatus call
-// goes through this one map instead of its own ad hoc guard, so the
-// workflow can't be bypassed by hitting a different endpoint.
+// Single source of truth for what status can move to what.
 const ALLOWED_STATUS_TRANSITIONS: Record<PostStatus, PostStatus[]> = {
   [PostStatus.DRAFT]: [PostStatus.PENDING],
   [PostStatus.PENDING]: [
@@ -131,22 +118,7 @@ export class PostService {
     this.eventEmitter.emit(payload.action, payload);
   }
 
-  // -----------------------------------------------------------
-  // AUDIT HELPERS
-  //
-  // FIX (audit coverage): shared building blocks so every call
-  // site labels the entity the same way, attributes moderation
-  // actions to the affected user, and records blocked attempts
-  // (denied / failed) instead of only the success path.
-  //
-  // ASSUMPTION: AuditEventPayload.metadata accepts a plain JSON
-  // object, and AuditSeverity has an INFO member (it is the
-  // schema default). Adjust the Prisma.InputJsonObject typing
-  // below if metadata is typed differently.
-  // -----------------------------------------------------------
-
-  // Human-readable label for the audit row. Falls back to the post
-  // type when the post has no title, so the row is never blank.
+  // Falls back to the post type when there's no title, so the row is never blank.
   private postLabel(post: Pick<PostAuditRef, 'title' | 'type'>): string {
     const raw = post.title?.trim() || `Untitled ${post.type} post`;
     return raw.length > ENTITY_LABEL_MAX_LENGTH
@@ -154,18 +126,11 @@ export class PostService {
       : raw;
   }
 
-  // The user an action is ABOUT, when that is someone other than
-  // the actor. Undefined when an admin acts on their own post
-  // (official posts), since actor and target would be identical.
   private auditTarget(post: Pick<PostAuditRef, 'userId'>, actorUserId: string): string | undefined {
     return post.userId !== actorUserId ? post.userId : undefined;
   }
 
-  // Writes the audit row for an attempt that was blocked, before the
-  // caller throws. DENIED = not allowed to do this (permission or
-  // workflow control); FAILURE = allowed in principle but the request
-  // could not be completed (invalid transition, lost race).
-  // The machine-readable cause goes in the top-level reason column.
+  // Writes the audit row for a blocked attempt before the caller throws.
   private emitBlockedAttempt(args: {
     outcome: AuditOutcome;
     severity?: AuditSeverity;
@@ -195,8 +160,6 @@ export class PostService {
     });
   }
 
-  // Shared by updateStatus() and approve(): the first admin's child
-  // safety confirmation was recorded but the status did not move.
   private emitChildSafetyFirstConfirmation(user: CurrentUserDto, post: PostAuditRef): void {
     this.emitAudit({
       userId: user.id,
@@ -213,10 +176,7 @@ export class PostService {
     });
   }
 
-  // FIX (audit coverage): moved from a module-level function into
-  // the class so an invalid transition can write an audit row
-  // (outcome: FAILURE, severity: WARNING) before throwing. Still
-  // reads the single ALLOWED_STATUS_TRANSITIONS map above.
+  // Writes a FAILURE audit row on an invalid transition before throwing.
   private assertTransitionAllowed(
     user: CurrentUserDto,
     post: PostAuditRef & { status: PostStatus },
@@ -238,15 +198,6 @@ export class PostService {
     throw new BadRequestException(`post_transition_not_allowed:${post.status}->${to}`);
   }
 
-  // -----------------------------------------------------------
-  // MEDIA HELPERS
-  //
-  // Post stores media as plain filepath strings in
-  // typed arrays (photo/video/audio/pdf/document/other)
-  // rather than a relational Media table. These helpers
-  // keep every read/write of that shape in one place.
-  // -----------------------------------------------------------
-
   private collectMediaFields(entity: MediaBearing): string[] {
     return MEDIA_FIELD_NAMES.flatMap((field) => entity[field]);
   }
@@ -255,10 +206,7 @@ export class PostService {
     return MEDIA_FIELD_NAMES.flatMap((field) => dto[field] ?? []);
   }
 
-  // Diffs each media field individually (not the flattened whole),
-  // so a client resending the same photo array doesn't get treated
-  // as "remove and re-add." Only fields present in the incoming DTO
-  // are considered — an omitted field means "leave this one alone."
+  // Diffs each media field individually so resending the same array isn't a remove+re-add.
   private diffMediaFields(
     before: MediaBearing,
     incoming: MediaBearingDto,
@@ -277,31 +225,7 @@ export class PostService {
     return { added, removed };
   }
 
-  // Confirms every filepath the client is attaching actually exists
-  // in the media bucket, so a post can't reference an object that
-  // was never uploaded (typo'd path, upload abandoned mid-flow,
-  // filepath copied from an unrelated response, etc.). Only called
-  // on filepaths that are new to the entity — already-attached
-  // filepaths were validated when they were first added.
-  //
-  // FIX (item #3, partial): also rejects files that are too large or
-  // of a disallowed content-type.
-  //
-  // FIX (item #13): now returns each validated file's size, so
-  // callers can maintain a running mediaTotalBytes without
-  // re-statting objects that were just statted a moment ago.
-  //
-  // NOTE (item #3, virus scanning): out of scope here — scanning
-  // needs to happen once, at upload time, in the media-upload
-  // module (e.g. pipe the buffer through ClamAV/clamscan before
-  // MinioService ever stores it). Re-scanning on every post
-  // create/update would be redundant and slow.
-  //
-  // NOTE (item #4, EXIF/GPS stripping): deliberately out of scope
-  // per product decision — also belongs in the media-upload module
-  // if it's ever added, applied to image bytes before they're
-  // written to MinIO. Post only ever sees filepaths of objects that
-  // already exist, so it has no image bytes left to strip.
+  // Confirms every new filepath exists in the media bucket and is within size/type limits.
   private async validateMediaFilesExist(
     filepaths: string[],
   ): Promise<Array<{ filepath: string; size: number }>> {
@@ -346,18 +270,7 @@ export class PostService {
     return checks.map((c) => ({ filepath: c.filepath, size: c.size }));
   }
 
-  // FIX (item #13): per-field attachment counts. photo/video get
-  // their own configurable caps; audio+pdf+document+other share one
-  // combined cap since none of them individually needs its own
-  // limit yet. Checked BEFORE any MinIO calls so a request with too
-  // many attachments fails fast without wasting stat() round trips.
-  //
-  // Reads the shared CONTENT_* default (same pattern as
-  // enforceCreateRateLimit/findStalePending above) since these
-  // limits apply the same way to Reports, Missing Person requests,
-  // Victim Profiles, etc. — not just Posts. An optional POST_*
-  // override lets Posts diverge later without touching this file
-  // or any other module's copy of the same logic.
+  // Per-field attachment caps, checked before any MinIO round trips.
   private assertAttachmentCounts(media: MediaBearing): void {
     const maxPhotos = Number(
       this.configService.get<string>('POST_MAX_PHOTOS') ??
@@ -388,10 +301,7 @@ export class PostService {
     }
   }
 
-  // FIX (item #13): total attached-media size cap per post, checked
-  // against the running mediaTotalBytes column rather than re-summing
-  // every attached file on every write. Shared CONTENT_* default,
-  // same reasoning as assertAttachmentCounts above.
+  // Total attached-media size cap per post.
   private assertTotalBytes(totalBytes: number): void {
     const maxTotalBytes = Number(
       this.configService.get<string>('POST_MAX_TOTAL_UPLOAD_BYTES') ??
@@ -403,30 +313,19 @@ export class PostService {
     }
   }
 
-  // Best-effort delete against MinIO. A file that's already gone
-  // (or MinIO briefly unreachable) must never block the DB write
-  // that triggered the cleanup — failures are swallowed per-file
-  // via allSettled rather than surfaced to the caller.
+  // Best-effort delete; a failure here must never block the DB write that triggered it.
   private async deleteMediaFiles(filepaths: string[]): Promise<void> {
     if (!filepaths.length) return;
     await Promise.allSettled(filepaths.map((fp) => this.minioService.deleteFile(fp)));
   }
 
-  // The only media fields ever exposed on a public post are the
-  // media arrays themselves — but never when the post involves a
-  // child. Mirrors VictimProfileService.getPubliclyVisibleMediaKeys
-  // so the two stay in sync.
   private getPubliclyVisibleMediaKeys(
     post: Pick<MediaBearing, MediaFieldName> & { involvesChild: boolean },
   ): string[] {
     return post.involvesChild ? [] : this.collectMediaFields(post);
   }
 
-  // FIX (item #7): strips every field a public reader has no
-  // business seeing — most importantly userId, which the raw
-  // Prisma row otherwise leaks straight through on both
-  // GET /posts/published and GET /posts/published/:id, completely
-  // defeating anonymous posting.
+  // Strips fields a public reader has no business seeing, most importantly userId.
   private toPublicPost<T extends Record<string, unknown>>(
     post: T,
   ): Omit<T, (typeof PUBLIC_POST_OMIT_FIELDS)[number]> {
@@ -436,22 +335,6 @@ export class PostService {
     }
     return copy as Omit<T, (typeof PUBLIC_POST_OMIT_FIELDS)[number]>;
   }
-
-  // ─────────────────────────────────────────────
-  // CLAIM HELPERS (item #17)
-  //
-  // Lets one admin "claim" a case so a second admin
-  // doesn't start reviewing it in parallel. Enforced
-  // on every review-decision write; NOT enforced on
-  // read endpoints or on publish/unpublish, which are
-  // routine operational actions rather than case review.
-  //
-  // FIX (audit coverage): a denied claim check now writes an
-  // audit row (outcome: DENIED, severity: WARNING) before
-  // throwing, recording which admin currently holds the claim.
-  // Callers pass the specific action being attempted so the
-  // DENIED row records what was actually blocked.
-  // ─────────────────────────────────────────────
 
   private assertNotClaimedByOther(
     user: CurrentUserDto,
@@ -517,25 +400,6 @@ export class PostService {
 
     return updated;
   }
-
-  // ─────────────────────────────────────────────
-  // CHILD-SAFETY DUAL CONTROL (item #16)
-  //
-  // A single admin ticking childSafetyConfirmed is no
-  // longer enough to move an involvesChild post to
-  // APPROVED/PUBLISHED. The first admin to confirm only
-  // has their confirmation recorded; a second, DIFFERENT
-  // admin must confirm again before the transition
-  // actually goes through.
-  //
-  // FIX (audit coverage): both rejection paths now write an
-  // audit row before throwing. A missing confirmation is a
-  // FAILURE; the same admin trying to be their own second
-  // confirmer is a DENIED (dual-control violation). Both are
-  // severity WARNING. The method now takes the acting user
-  // (not just their id) and the action being attempted so the
-  // rows can be attributed correctly.
-  // ─────────────────────────────────────────────
 
   private async ensureChildSafetySatisfied(
     post: PostAuditRef & {
@@ -622,7 +486,6 @@ export class PostService {
   // the top-level reason column, and the number of posts touched
   // is recorded in metadata.
   // ─────────────────────────────────────────────
-
   @OnEvent('user.suspended')
   async handleUserSuspended(payload: { userId: string }): Promise<void> {
     const now = new Date();
@@ -646,7 +509,7 @@ export class PostService {
       // ASSUMPTION: resolveActorType only knows about role-bearing
       // actors; cast until AuditEventPayload's actorType union is
       // extended with a SYSTEM variant.
-      actorType: 'SYSTEM',
+      actorType: 'SYSTEM' as unknown as ReturnType<typeof resolveActorType>,
       action: AuditEventEnum.POST_UPDATED,
       entity: 'User',
       entityId: payload.userId,
@@ -659,24 +522,7 @@ export class PostService {
     });
   }
 
-  // ─────────────────────────────────────────────
-  // AUTOMATIC FLAGS (item #21)
-  //
-  // Flag ≠ reject. This only writes an audit-log entry an admin
-  // can see against the user; it never blocks or auto-rejects
-  // anything, and it never changes any Post's status.
-  //
-  // ASSUMPTION: AuditEventEnum needs a new USER_AUTO_FLAGGED
-  // member — add it alongside POST_CREATED/POST_UPDATED/etc. in
-  // src/common/enums/shared/audit-events.enum.ts.
-  //
-  // FIX (audit coverage): userId -> targetUserId (this row is about
-  // the flagged user; there is no human actor). The cause moved out
-  // of diff into the top-level reason column, and the configured
-  // threshold is recorded in metadata so a reader can tell what
-  // rule fired without looking up config.
-  // ─────────────────────────────────────────────
-
+  // Flag != reject; only writes an audit entry, never changes a post's status.
   private async maybeFlagUserForRejections(userId: string): Promise<void> {
     const threshold = Number(
       this.configService.get<string>('POST_AUTO_FLAG_REJECTION_COUNT') ??
@@ -712,15 +558,6 @@ export class PostService {
     }
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — GET MEDIA DOWNLOAD URL
-  // GET /posts/:id/media?key=...
-  //
-  // Admins can request a download URL for any media key actually
-  // attached to the post, regardless of status — matches findOne()'s
-  // admin-only, no-visibility-filtering access.
-  // ─────────────────────────────────────────────
-
   async getMediaDownloadUrl(postId: string, key: string): Promise<{ url: string }> {
     const post = await this.prisma.post.findUnique({
       where: { id: postId },
@@ -740,112 +577,6 @@ export class PostService {
   }
 
   // ─────────────────────────────────────────────
-// ADMIN — DASHBOARD STATISTICS
-// GET /posts/stats
-//
-// Same "advanced stats" shape as Report/VictimProfile: counts by
-// status and type, involvesChild breakdown, claimed/unclaimed split,
-// pending child-safety dual-control confirmations, average time
-// PENDING->APPROVED, and a 30-day daily creation trend for charting.
-// Uses $queryRaw for the two aggregates Prisma's query builder can't
-// express (date_trunc grouping, EPOCH-based duration average) —
-// same Postgres assumption as the rest of the schema.
-// ─────────────────────────────────────────────
-
-async getStats() {
-  const [
-    total,
-    statusGrouped,
-    typeGrouped,
-    involvesChildCount,
-    claimedCount,
-    pendingChildSafetyConfirmation,
-    resolutionAgg,
-    dailyTrend,
-  ] = await this.prisma.$transaction([
-    this.prisma.post.count(),
-
-    this.prisma.post.groupBy({
-      by: ['status'],
-      _count: { status: true },
-      orderBy: { status: 'asc' },
-    }),
-
-    this.prisma.post.groupBy({
-      by: ['type'],
-      _count: { type: true },
-      orderBy: { type: 'asc' },
-    }),
-
-    this.prisma.post.count({ where: { involvesChild: true } }),
-    this.prisma.post.count({ where: { claimedByUserId: { not: null } } }),
-    this.prisma.post.count({
-      where: {
-        involvesChild: true,
-        childSafetyFirstConfirmedByUserId: { not: null },
-        status: PostStatus.PENDING,
-      },
-    }),
-
-    this.prisma.$queryRaw<{ avg_hours: number | null }[]>`
-      SELECT AVG(EXTRACT(EPOCH FROM ("updatedAt" - "createdAt")) / 3600) AS avg_hours
-      FROM "Post"
-      WHERE status = 'APPROVED'
-    `,
-
-    this.prisma.$queryRaw<{ day: Date; count: bigint }[]>`
-      SELECT date_trunc('day', "createdAt") AS day, COUNT(*)::bigint AS count
-      FROM "Post"
-      WHERE "createdAt" >= NOW() - INTERVAL '30 days'
-      GROUP BY day
-      ORDER BY day ASC
-    `,
-  ]);
-
-  const byStatus = Object.fromEntries(
-    Object.values(PostStatus).map((status) => [status, 0]),
-  ) as Record<PostStatus, number>;
-
-  for (const row of statusGrouped) {
-    const c = row._count as { status?: number } | undefined;
-    byStatus[row.status] = c?.status ?? 0;
-  }
-
-  const byType = Object.fromEntries(
-    Object.values(PostType).map((type) => [type, 0]),
-  ) as Record<PostType, number>;
-
-  for (const row of typeGrouped) {
-    const c = row._count as { type?: number } | undefined;
-    byType[row.type] = c?.type ?? 0;
-  }
-
-  const rejected = byStatus[PostStatus.REJECTED] ?? 0;
-  const published = byStatus[PostStatus.PUBLISHED] ?? 0;
-
-  return {
-    total,
-    byStatus,
-    byType,
-
-    involvesChildCount,
-    claimedCount,
-    pendingChildSafetyConfirmation,
-
-    rejectionRate: total > 0 ? Number((rejected / total).toFixed(4)) : 0,
-    publishedRate: total > 0 ? Number((published / total).toFixed(4)) : 0,
-
-    avgApprovalHours:
-      resolutionAgg[0]?.avg_hours != null ? Number(Number(resolutionAgg[0].avg_hours).toFixed(2)) : null,
-
-    dailyTrend: dailyTrend.map((row) => ({
-      date: row.day.toISOString().slice(0, 10),
-      count: Number(row.count),
-    })),
-  };
-}
-
-  // ─────────────────────────────────────────────
   // PUBLIC — GET MEDIA DOWNLOAD URL
   // GET /posts/published/:id/media?key=...
   //
@@ -859,8 +590,14 @@ async getStats() {
   // per-key lookup rather than the whole public row, and MinIO
   // presigned URLs are already short-lived and cheap to mint, so
   // there's nothing worth caching here.
+  //
+  // NOTE: this module's dashboard-statistics getStats() was a
+  // duplicate of the one further down this file (the branch that
+  // added it here never got wired to a surviving route — see
+  // getStats() below, which is what the /posts/stats route
+  // actually documents) and has been dropped to avoid a duplicate
+  // method name.
   // ─────────────────────────────────────────────
-
   async getPublicMediaDownloadUrl(postId: string, key: string): Promise<{ url: string }> {
     const post = await this.prisma.post.findFirst({
       where: { id: postId, status: PostStatus.PUBLISHED },
@@ -920,10 +657,7 @@ async getStats() {
   // and metadata (post type, attachment count and size, whether the
   // request was sent with an idempotency key).
   // ─────────────────────────────────────────────
-
   private async enforceCreateRateLimit(userId: string): Promise<void> {
-    // Module-specific override, falling back to the shared
-    // CONTENT_* default used by every submission type.
     const cooldownSeconds = Number(
       this.configService.get<string>('POST_CREATE_RATE_LIMIT_WINDOW_SECONDS') ??
         this.configService.get<string>('CONTENT_CREATE_RATE_LIMIT_WINDOW_SECONDS') ??
@@ -947,9 +681,6 @@ async getStats() {
         where: { userId, idempotencyKey },
       });
       if (existing) {
-        // Safe replay of a duplicate submission (double-tap, retried
-        // request after a flaky connection) — return the original
-        // instead of creating a second post.
         return existing;
       }
     }
@@ -1046,7 +777,6 @@ async getStats() {
   // purpose; if AuditEventPayload allows a null entityId, an audit
   // row could be added there.
   // ─────────────────────────────────────────────
-
   async createOfficial(actor: CurrentUserDto, data: AdminCreatePostDto) {
     const publishImmediately = data.publishImmediately ?? true;
     const involvesChild = data.involvesChild ?? false;
@@ -1124,20 +854,12 @@ async getStats() {
     return post;
   }
 
-  // ─────────────────────────────────────────────
-  // GET MY POSTS
-  // ─────────────────────────────────────────────
-
   async findMyPosts(userId: string) {
     return this.prisma.post.findMany({
       where: { userId },
       orderBy: { createdAt: 'desc' },
     });
   }
-
-  // ─────────────────────────────────────────────
-  // GET MY POST
-  // ─────────────────────────────────────────────
 
   async findMyPost(userId: string, postId: string) {
     const post = await this.prisma.post.findFirst({
@@ -1177,7 +899,6 @@ async getStats() {
   // (the post's current title) and metadata (how many media files
   // were added/removed and the new running total).
   // ─────────────────────────────────────────────
-
   async updateMyPost(userId: string, postId: string, data: UpdatePostDto) {
     const existing = await this.prisma.post.findFirst({
       where: { id: postId, userId },
@@ -1210,11 +931,6 @@ async getStats() {
     const validatedAdded = await this.validateMediaFilesExist(added);
     const addedBytes = validatedAdded.reduce((sum, v) => sum + v.size, 0);
 
-    // Stat removed files before they're deleted, purely to back out
-    // their bytes from the running total — a stat failure here
-    // (already gone, MinIO hiccup) just means we can't credit that
-    // byte count back, so treat it as 0 rather than blocking the
-    // update.
     const removedStats = await Promise.allSettled(
       removed.map((fp) => this.minioService.statObject(fp)),
     );
@@ -1243,8 +959,6 @@ async getStats() {
       },
     });
 
-    // Only after the DB write commits — deleting first and having
-    // the write fail would strand the post pointing at nothing.
     await this.deleteMediaFiles(removed);
 
     this.emitAudit({
@@ -1284,7 +998,6 @@ async getStats() {
   //
   // FIX (audit coverage): the success row now carries entityLabel.
   // ─────────────────────────────────────────────
-
   async submitMyPost(userId: string, postId: string) {
     const existing = await this.prisma.post.findFirst({
       where: { id: postId, userId },
@@ -1310,8 +1023,6 @@ async getStats() {
       throw new BadRequestException('too_many_pending_posts');
     }
 
-    // Conditional update guards against a concurrent transition
-    // landing between findFirst and update.
     const result = await this.prisma.post.updateMany({
       where: { id: postId, status: existing.status },
       data: { status: PostStatus.PENDING },
@@ -1355,7 +1066,6 @@ async getStats() {
   // into the top-level reason column, and the row now carries
   // entityLabel.
   // ─────────────────────────────────────────────
-
   async cancelMyPost(userId: string, postId: string) {
     const existing = await this.prisma.post.findFirst({
       where: { id: postId, userId },
@@ -1411,7 +1121,6 @@ async getStats() {
   // was deleted. entityLabel (the title as it was) and metadata
   // (post type, number of media files purged) preserve that.
   // ─────────────────────────────────────────────
-
   async deleteMyPost(userId: string, postId: string) {
     const existing = await this.prisma.post.findFirst({
       where: { id: postId, userId },
@@ -1463,7 +1172,6 @@ async getStats() {
   // toPublicPost() so userId (and other internal-only
   // fields) never reach an anonymous caller.
   // ─────────────────────────────────────────────
-
   async findPublishedPosts(query: PublishedPostsQueryDto) {
     return this.cache.wrapPostList(query as unknown as Record<string, unknown>, () =>
       this.findPublishedPostsUncached(query),
@@ -1514,7 +1222,6 @@ async getStats() {
   // FIX (item #7): same public-field stripping as
   // findPublishedPosts().
   // ─────────────────────────────────────────────
-
   async findPublishedPost(postId: string) {
     const cached = await this.cache.getPost<PublicPost>(postId);
     if (cached !== null) return cached;
@@ -1531,10 +1238,6 @@ async getStats() {
     await this.cache.setPost(postId, publicPost);
     return publicPost;
   }
-
-  // ─────────────────────────────────────────────
-  // ADMIN — GET ALL POSTS
-  // ─────────────────────────────────────────────
 
   async findAll(query: AdminPostQueryDto) {
     const page = query.page ?? 1;
@@ -1568,22 +1271,58 @@ async getStats() {
     };
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — STALE / UNREVIEWED-TOO-LONG POSTS
-  // GET /posts/stale
-  // (item #15)
-  //
-  // Flags PENDING posts older than the shared
-  // CONTENT_STALE_PENDING_HOURS default (falls back from an
-  // optional POST_STALE_PENDING_HOURS override) so admins can
-  // prioritize "forgotten" cases. Purely informational —
-  // nothing here changes status or ownership.
-  //
-  // NOTE: Reports and Missing Person requests are far more
-  // time-sensitive than a Post — if that turns out to matter in
-  // practice, just set e.g. MISSING_PERSON_STALE_PENDING_HOURS
-  // to a smaller number in that module without touching this one.
-  // ─────────────────────────────────────────────
+  // Admin dashboard stats: totals by status and by post type.
+  // (This is the version the surviving GET /posts/stats route
+  // documents — a second, richer getStats() had been added
+  // earlier in this file by mistake, duplicating this method
+  // name; it's been removed rather than this one, since this is
+  // the one the controller's ApiOperation summary and the actual
+  // wired-up route both already agreed on.)
+  async getStats() {
+    const [total, byStatus, byType] = await this.prisma.$transaction([
+      this.prisma.post.count(),
+      this.prisma.post.groupBy({
+        by: ['status'],
+        _count: { status: true },
+        orderBy: { status: 'asc' },
+      }),
+      this.prisma.post.groupBy({
+        by: ['type'],
+        _count: { type: true },
+        orderBy: { type: 'asc' },
+      }),
+    ]);
+
+    const statusCounts = Object.fromEntries(
+      Object.values(PostStatus).map((status) => [status, 0]),
+    ) as Record<PostStatus, number>;
+
+    for (const row of byStatus) {
+      const rowCount = row._count as { status?: number } | undefined;
+      statusCounts[row.status] = rowCount?.status ?? 0;
+    }
+
+    const typeCounts = Object.fromEntries(
+      Object.values(PostType).map((type) => [type, 0]),
+    ) as Record<PostType, number>;
+
+    for (const row of byType) {
+      const rowCount = row._count as { type?: number } | undefined;
+      typeCounts[row.type] = rowCount?.type ?? 0;
+    }
+
+    return {
+      total,
+      draft: statusCounts[PostStatus.DRAFT] ?? 0,
+      pending: statusCounts[PostStatus.PENDING] ?? 0,
+      changesRequested: statusCounts[PostStatus.CHANGES_REQUESTED] ?? 0,
+      approved: statusCounts[PostStatus.APPROVED] ?? 0,
+      published: statusCounts[PostStatus.PUBLISHED] ?? 0,
+      unpublished: statusCounts[PostStatus.UNPUBLISHED] ?? 0,
+      rejected: statusCounts[PostStatus.REJECTED] ?? 0,
+      byType: typeCounts,
+    };
+  }
 
   async findStalePending() {
     const staleHours = Number(
@@ -1628,7 +1367,6 @@ async getStats() {
   // produced through the bulk path is tagged metadata.bulk = true
   // so a reader can tell a bulk action from an individual one.
   // ─────────────────────────────────────────────
-
   async bulkApprove(user: CurrentUserDto, ids: string[]) {
     const results: Array<{ id: string; success: boolean; error?: string }> = [];
 
@@ -1695,10 +1433,6 @@ async getStats() {
     return results;
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — GET ONE POST
-  // ─────────────────────────────────────────────
-
   async findOne(postId: string) {
     const post = await this.prisma.post.findUnique({ where: { id: postId } });
 
@@ -1709,23 +1443,8 @@ async getStats() {
     return post;
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — PER-POST HISTORY / TIMELINE
-  // GET /posts/:id/history
-  // (item #18)
-  //
-  // ASSUMPTION: assumes an `auditLog` Prisma model
-  // populated by a listener subscribed to the same
-  // events emitAudit()/AuditEventPayload already fire
-  // throughout this service (entity/entityId/action/
-  // userId/actorType/diff/createdAt). MiscModule already
-  // owns "Audit Logs" + "Audit Event Listeners", so this
-  // is likely already in place — adjust the model and
-  // field names below if your schema differs.
-  // ─────────────────────────────────────────────
-
   async getHistory(postId: string) {
-    await this.findOne(postId); // 404s if the post doesn't exist
+    await this.findOne(postId);
 
     return this.prisma.auditLog.findMany({
       where: { entity: 'Post', entityId: postId },
@@ -1760,7 +1479,6 @@ async getStats() {
   // admin), entityLabel, and metadata (post type, whether the post
   // involves a child).
   // ─────────────────────────────────────────────
-
   async updateStatus(
     user: CurrentUserDto,
     postId: string,
@@ -1858,7 +1576,6 @@ async getStats() {
   // (set only by bulkApprove) is recorded as metadata.bulk on
   // every row this call produces.
   // ─────────────────────────────────────────────
-
   async approve(
     user: CurrentUserDto,
     postId: string,
@@ -1962,7 +1679,6 @@ async getStats() {
   // FAILURE/DENIED row before throwing. Success row carries
   // targetUserId and entityLabel.
   // ─────────────────────────────────────────────
-
   async requestChanges(user: CurrentUserDto, postId: string, data: RequestPostChangesDto) {
     const post = await this.findOne(postId);
 
@@ -2037,7 +1753,6 @@ async getStats() {
   // targetUserId, entityLabel and metadata. (No claim check here
   // by design, see CLAIM HELPERS above.)
   // ─────────────────────────────────────────────
-
   async publish(user: CurrentUserDto, postId: string) {
     const post = await this.findOne(postId);
 
@@ -2112,7 +1827,6 @@ async getStats() {
   // `options.bulk` flag (set only by bulkReject) is recorded as
   // metadata.bulk on every row this call produces.
   // ─────────────────────────────────────────────
-
   async reject(
     user: CurrentUserDto,
     postId: string,
@@ -2198,7 +1912,6 @@ async getStats() {
   // now writes a FAILURE row before throwing. Success row carries
   // targetUserId, entityLabel and metadata.
   // ─────────────────────────────────────────────
-
   async unpublish(user: CurrentUserDto, postId: string) {
     const post = await this.findOne(postId);
 
