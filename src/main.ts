@@ -51,7 +51,8 @@ async function bootstrap() {
 
   const corsCredentials = configService.getOrThrow<boolean>('cors.credentials');
 
-  app.set('trust proxy', 1);
+  // Was hardcoded to 1; now reads TRUST_PROXY_HOPS (defaults to 0, no proxy trusted).
+  app.set('trust proxy', configService.get<number>('app.trustProxyHops', 0));
 
   if (corsCredentials && corsOrigin.includes('*')) {
     throw new Error(
@@ -203,7 +204,6 @@ Use the **Authorize** button and enter:
       .addTag('Missing Persons')
       .addTag('Information Submissions')
       .addTag('Victim Profiles')
-      .addTag('Support')
       .addTag('Notifications')
       .addTag('Users')
       .addTag('Roles')

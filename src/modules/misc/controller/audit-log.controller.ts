@@ -72,7 +72,11 @@ export class AuditLogController {
   @ApiQuery({ name: 'cursor', required: false, description: 'Cursor pagination (preferred)' })
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
-  @ApiQuery({ name: 'q', required: false, description: 'Free text: entityLabel, reason, actorName' })
+  @ApiQuery({
+    name: 'q',
+    required: false,
+    description: 'Free text: entityLabel, reason, actorName',
+  })
   @ApiQuery({ name: 'action', required: false })
   @ApiQuery({ name: 'entity', required: false })
   @ApiQuery({ name: 'entityId', required: false })
@@ -327,10 +331,7 @@ export class AuditLogController {
       'deleted), and a short-lived confirmToken required by DELETE /audit-logs/purge.',
   })
   @ApiQuery({ name: 'olderThan', required: true, description: 'ISO date' })
-  async previewPurge(
-    @Query() query: PurgePreviewQueryDto,
-    @CurrentUser() actor: CurrentUserDto,
-  ) {
+  async previewPurge(@Query() query: PurgePreviewQueryDto, @CurrentUser() actor: CurrentUserDto) {
     return this.auditLogService.previewPurge(query.olderThan, actor);
   }
 
@@ -399,7 +400,7 @@ export class AuditLogController {
   @ApiOperation({
     summary: 'Audit trail for one user',
     description:
-      "as=actor (default): things the user did. as=target: things done TO the user. " +
+      'as=actor (default): things the user did. as=target: things done TO the user. ' +
       'as=both: either.',
   })
   @ApiParam({ name: 'userId', description: 'User ID' })

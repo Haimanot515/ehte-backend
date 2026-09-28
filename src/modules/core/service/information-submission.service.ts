@@ -8,7 +8,12 @@ import {
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { ConfigService } from '@nestjs/config';
 
-import { AuditOutcome, AuditSeverity, InformationStatus, MissingPersonStatus } from '@prisma/client';
+import {
+  AuditOutcome,
+  AuditSeverity,
+  InformationStatus,
+  MissingPersonStatus,
+} from '@prisma/client';
 
 import { PrismaService } from 'src/prisma/prisma.service';
 import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
@@ -19,6 +24,7 @@ import { AuditEventPayload } from 'src/modules/misc/events/audit.events';
 import { NotificationEventEnum } from 'src/common/enums/shared/notification-events.enum';
 
 import { MinioService } from 'src/services/minio/minio.service';
+import { CacheService } from 'src/services/redis/cache.service';
 
 import {
   CreateInformationSubmissionDto,
@@ -32,8 +38,27 @@ type MediaFieldName = (typeof MEDIA_FIELD_NAMES)[number];
 type MediaBearing = Record<MediaFieldName, string[]>;
 type MediaBearingDto = Partial<Record<MediaFieldName, string[] | undefined>>;
 
-// Assumes AuditEventEnum has INFORMATION_SUBMISSION_UPDATED and
-// INFORMATION_SUBMISSION_MEDIA_DOWNLOADED members; add them if missing.
+// ⚠️ ASSUMPTIONS ON THE AUDIT ENUM
+//
+// Two action names are referenced below that this file didn't
+// previously import: AuditEventEnum.INFORMATION_SUBMISSION_UPDATED
+// and AuditEventEnum.INFORMATION_SUBMISSION_MEDIA_DOWNLOADED. Every
+// other service in this codebase follows a <Entity>_<VERB> naming
+// convention for its audit actions (REPORT_UPDATED, REPORT_MEDIA_
+// DOWNLOADED, USER_UPDATED, SUPPORT_CANCELLED, ...), so these are
+// assumed to exist or to be trivial additions to the shared enum. If
+// they don't exist yet, add them there rather than repurposing an
+// unrelated action name — reusing e.g. INFORMATION_SUBMITTED for an
+// edit would make "who submitted this" and "who edited this" show up
+// as the same action in a history view.
+//
+// ⚠️ ASSUMPTION ON THE CACHE SERVICE
+//
+// Same convention as MissingPersonService/PostService: getX/setX for
+// a single cached row, wrapXList for a paginated/filterable list, and
+// invalidateXList (rather than invalidateXEverywhere) since — unlike
+// Post/MissingPerson — no single-submission public read exists here
+// to invalidate, only the list.
 
 @Injectable()
 export class InformationSubmissionService {
@@ -42,9 +67,27 @@ export class InformationSubmissionService {
     private readonly eventEmitter: EventEmitter2,
     private readonly minioService: MinioService,
     private readonly configService: ConfigService,
+    private readonly cache: CacheService,
   ) {}
 
-  // Admin workflow: PENDING -> UNDER_REVIEW -> REVIEWED|REJECTED (terminal).
+  // ─────────────────────────────────────────────
+  // Admin workflow.
+  //
+  //   PENDING → UNDER_REVIEW           (updateStatus)
+  //   UNDER_REVIEW → REVIEWED|REJECTED (review — terminal)
+  //   REVIEWED → (final)
+  //   REJECTED → (final)
+  //
+  // Both REVIEWED and REJECTED are terminal — there is no transition
+  // back out of either. That matters for caching below: since
+  // REVIEWED is the only status findForMissingPerson() ever serves,
+  // and nothing can ever leave REVIEWED once it gets there, a
+  // submission can only ever enter the cached public list once and
+  // never has to be invalidated OUT of it — unlike Post (PUBLISHED
+  // <-> UNPUBLISHED) or MissingPerson, which both need bidirectional
+  // invalidation.
+  // ─────────────────────────────────────────────
+
   private readonly ALLOWED_STATUS_TRANSITIONS: Record<InformationStatus, InformationStatus[]> = {
     [InformationStatus.PENDING]: [InformationStatus.UNDER_REVIEW],
     [InformationStatus.UNDER_REVIEW]: [],
@@ -271,7 +314,20 @@ export class InformationSubmissionService {
     return { url };
   }
 
-  // Media only reachable once REVIEWED; unreviewed submissions 404 here.
+  // ─────────────────────────────────────────────
+  // PUBLIC — MEDIA DOWNLOAD URL
+  // GET /information-submissions/public/:id/media?key=...
+  //
+  // Media on a submission is only reachable once it has been
+  // REVIEWED. A submission that exists but isn't reviewed yet
+  // 404s here, not a different error shape.
+  //
+  // Deliberately NOT read through the cache: like
+  // Post.getPublicMediaDownloadUrl, this is a narrow per-key lookup
+  // rather than the whole public row, and MinIO presigned URLs are
+  // already short-lived and cheap to mint.
+  // ─────────────────────────────────────────────
+
   async getPublicMediaDownloadUrl(id: string, key: string): Promise<{ url: string }> {
     const submission = await this.prisma.informationSubmission.findFirst({
       where: {
@@ -301,11 +357,70 @@ export class InformationSubmissionService {
     return { url };
   }
 
+  // ─────────────────────────────────────────────
+  // CREATE INFORMATION
+  // Only allowed against APPROVED (publicly visible) cases, and
+  // not by the person who filed the missing-person report itself.
+  //
+  // A freshly created submission is always PENDING — never REVIEWED,
+  // the only status the public cache holds — so there's nothing to
+  // invalidate here.
+  //
+  // FIX (item #1): per-user cooldown between submissions, plus a
+  // cap on how many of a user's submissions can sit in
+  // PENDING/UNDER_REVIEW at once — collapsed into one step here
+  // since Information Submission has no separate draft→submit
+  // flow the way Post does.
+  //
+  // FIX (item #5): optional Idempotency-Key lets a client safely
+  // retry a create call after a dropped response — a repeat with
+  // the same key returns the original submission instead of
+  // creating a duplicate.
+  //
+  // FIX (item #13): attachment counts checked before any MinIO
+  // round trips; total size persisted as mediaTotalBytes.
+  //
+  // FIX (audit review, item #1): actorType was hardcoded to
+  // resolveActorType(['USER']) rather than resolved from the actual
+  // submitter's roles — a plain typo-shaped bug (every other create()
+  // in this codebase resolves from the real actor). It's now resolved
+  // properly, which requires the actor's roles, so this method now
+  // takes the full CurrentUserDto instead of a bare userId.
+  //
+  // ⚠️ SIGNATURE CHANGE: create(user: CurrentUserDto, ...) instead of
+  // create(userId: string, ...). Update the controller accordingly.
+  //
+  // FIX (audit review, item #1, continued): every guard below —
+  // not-approved, self-submission, rate limit, max-pending, media
+  // validation — threw with no audit row. The not-approved and
+  // self-submission guards run after the MissingPerson is loaded, so
+  // both now emit against entity: 'MissingPerson' (there's no
+  // InformationSubmission row yet to attach to). Deliberately NOT
+  // fixed: missing_person_not_found itself, and the rate-limit/max-
+  // pending/media-validation failures, for the same reason
+  // ReportService.create() leaves its pre-creation guards unaudited —
+  // no natural entity to hang the row on without a schema/product
+  // decision on nullable entityIds.
+  //
+  // FIX (audit review, item #2): cannot_submit_information_on_own_report
+  // is a user attempting to act on THEIR OWN missing-person report by
+  // routing through the tip pathway — the missing person's owner
+  // (i.e. the actor themselves here) is recorded as targetUserId for
+  // consistency with how every other "acting on a record tied to a
+  // user" case is audited elsewhere, even though actor and subject
+  // are the same person in this specific case.
+  //
+  // FIX (audit review, item #4): entityLabel added, via the
+  // already-loaded missingPerson's name.
+  //
+  // FIX (audit review, item #5): missingPersonId, attachment count,
+  // and mediaTotalBytes are the investigative context worth keeping
+  // and weren't captured before — moved into metadata.
+  // ─────────────────────────────────────────────
+
   private async enforceCreateRateLimit(userId: string): Promise<void> {
     const cooldownSeconds = Number(
-      this.configService.get<string>(
-        'INFORMATION_SUBMISSION_CREATE_RATE_LIMIT_WINDOW_SECONDS',
-      ) ??
+      this.configService.get<string>('INFORMATION_SUBMISSION_CREATE_RATE_LIMIT_WINDOW_SECONDS') ??
         this.configService.get<string>('CONTENT_CREATE_RATE_LIMIT_WINDOW_SECONDS') ??
         60,
     );
@@ -460,6 +575,11 @@ export class InformationSubmissionService {
     return submission;
   }
 
+  // ─────────────────────────────────────────────
+  // GET MY SUBMISSIONS (paginated)
+  // Owner-scoped, not public — no cache.
+  // ─────────────────────────────────────────────
+
   async findMine(userId: string, query: ListInformationSubmissionsQueryDto) {
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
@@ -484,7 +604,35 @@ export class InformationSubmissionService {
     return { data, meta: { page, limit, total, totalPages: Math.ceil(total / limit) } };
   }
 
+  // ─────────────────────────────────────────────
+  // GET SUBMISSIONS FOR MISSING PERSON (public, paginated)
+  //
+  // The one genuinely public, anonymous-callable read in this file —
+  // no CurrentUserDto, already status-gated to REVIEWED, and the
+  // select already excludes userId/reviewNote/idempotencyKey/etc., so
+  // there's nothing internal left in the cached shape to leak. Same
+  // read-through pattern as MissingPersonService.findAll/findAllUncached
+  // and PostService.findPublishedPosts/findPublishedPostsUncached: the
+  // cache key is derived from (missingPersonId, query), and the DB path
+  // only runs on a miss.
+  //
+  // Invalidated from review() below, and ONLY there — see the
+  // ALLOWED_STATUS_TRANSITIONS comment above for why entering REVIEWED
+  // is the only transition that can ever change what this returns.
+  // ─────────────────────────────────────────────
+
   async findForMissingPerson(missingPersonId: string, query: ListInformationSubmissionsQueryDto) {
+    return this.cache.wrapInformationSubmissionList(
+      missingPersonId,
+      query as unknown as Record<string, unknown>,
+      () => this.findForMissingPersonUncached(missingPersonId, query),
+    );
+  }
+
+  private async findForMissingPersonUncached(
+    missingPersonId: string,
+    query: ListInformationSubmissionsQueryDto,
+  ) {
     const missingPerson = await this.prisma.missingPerson.findUnique({
       where: { id: missingPersonId },
     });
@@ -527,7 +675,14 @@ export class InformationSubmissionService {
     return { data, meta: { page, limit, total, totalPages: Math.ceil(total / limit) } };
   }
 
-  // Lets the frontend check "did I already submit on this case" before showing the form.
+  // ─────────────────────────────────────────────
+  // GET MY SUBMISSIONS FOR ONE MISSING PERSON
+  // Lets the frontend check "did I already submit on this case"
+  // before showing the submit form, instead of relying on the
+  // self-submission/duplicate error at create time. Owner-scoped,
+  // not public — no cache.
+  // ─────────────────────────────────────────────
+
   async findMineForMissingPerson(userId: string, missingPersonId: string) {
     return this.prisma.informationSubmission.findMany({
       where: { userId, missingPersonId },
@@ -556,7 +711,41 @@ export class InformationSubmissionService {
     return submission;
   }
 
-  // Owner update, only while PENDING; media diffed and validated before the write.
+  // ─────────────────────────────────────────────
+  // UPDATE — OWNER
+  // Only while PENDING — never the REVIEWED status the public cache
+  // holds — so no invalidation needed here.
+  //
+  // Media handling: diffs each media field present in the request
+  // against what's currently on the row. Newly-added filepaths are
+  // validated against MinIO before the write; filepaths dropped
+  // from the new array are deleted from MinIO after the write
+  // commits — same ordering discipline as PostService.updateMyPost.
+  //
+  // FIX (item #13): attachment counts checked against the merged
+  // post-update media shape; mediaTotalBytes recomputed from the
+  // previous total plus/minus added/removed files' sizes.
+  //
+  // FIX (audit review, item #1 — the big one for this method): this
+  // method emitted NO audit row at all, success or failure, despite
+  // being a write to reporter-submitted evidence. Every guard
+  // (not_authorized, submission_not_editable_in_current_status,
+  // no_fields_provided, media validation) now emits a FAILURE/DENIED
+  // row before throwing, and a SUCCESS row is emitted after the
+  // write commits.
+  //
+  // ⚠️ SIGNATURE CHANGE: takes the full CurrentUserDto instead of a
+  // bare userId string, since resolving actorType needs the actor's
+  // roles — same reasoning as create() above. Update the controller
+  // to pass @CurrentUser().
+  //
+  // FIX (audit review, item #4): entityLabel added.
+  //
+  // FIX (audit review, item #5): media churn (added/removed counts,
+  // new total) captured in metadata, same as
+  // ReportService.update()/PostService's equivalent.
+  // ─────────────────────────────────────────────
+
   async update(id: string, user: CurrentUserDto, data: UpdateInformationSubmissionDto) {
     const actorType = resolveActorType(this.getRoles(user));
 
@@ -707,7 +896,28 @@ export class InformationSubmissionService {
     return updated;
   }
 
-  // Owner delete, only while PENDING; purges attached media after the row is gone.
+  // ─────────────────────────────────────────────
+  // DELETE — OWNER
+  // Only while PENDING — never REVIEWED — so no cache invalidation
+  // needed here either, same reasoning as update() above.
+  //
+  // Deletes the DB row, then removes every attached media object
+  // from MinIO — once the row referencing them is gone, an orphaned
+  // object in the bucket serves no purpose. Same ordering as
+  // PostService.deleteMyPost.
+  //
+  // FIX (audit review, item #1): both guards (not_authorized,
+  // only_pending_submissions_can_be_deleted) threw with no row. Now
+  // emit DENIED/FAILURE before throwing.
+  //
+  // FIX (audit review, item #4): entityLabel added — built before the
+  // delete, since the row (and the label's source data) won't exist
+  // afterward.
+  //
+  // FIX (audit review, item #5): count of media objects removed
+  // wasn't captured anywhere — added to metadata.
+  // ─────────────────────────────────────────────
+
   async remove(id: string, user: CurrentUserDto) {
     const actorType = resolveActorType(this.getRoles(user));
 
@@ -778,6 +988,13 @@ export class InformationSubmissionService {
 
     return { message: 'information_submission_deleted' };
   }
+
+  // ─────────────────────────────────────────────
+  // ADMIN — GET ALL (paginated, lightweight — no nested detail)
+  // Admin-only — deliberately left uncached, same as
+  // MissingPersonService.findAllForAdmin / PostService.findAll, so an
+  // admin never acts on stale data.
+  // ─────────────────────────────────────────────
 
   async findAllForAdmin(query: ListInformationSubmissionsQueryDto) {
     const page = query.page ?? 1;
@@ -876,7 +1093,24 @@ export class InformationSubmissionService {
     });
   }
 
-  // Only moves PENDING -> UNDER_REVIEW; terminal decisions go through review().
+  // ─────────────────────────────────────────────
+  // ADMIN — UPDATE STATUS
+  // Only moves PENDING → UNDER_REVIEW — never REVIEWED — so no cache
+  // invalidation needed here.
+  //
+  // FIX (audit review, item #1): the invalid-transition guard threw
+  // with no row. Now emits FAILURE first.
+  //
+  // FIX (audit review, item #4): entityLabel added.
+  //
+  // NOTE: the submission.status === status branch stays a silent
+  // no-op rather than an audited failure — unlike ReportService's
+  // updateStatus, a same-status "transition" here isn't reachable
+  // from more than one caller racing (there's exactly one legal
+  // transition out of PENDING), so it's much more likely to be an
+  // idempotent retry than a conflict worth surfacing.
+  // ─────────────────────────────────────────────
+
   async updateStatus(admin: CurrentUserDto, id: string, status: InformationStatus) {
     const actorType = resolveActorType(this.getRoles(admin));
 
@@ -937,7 +1171,45 @@ export class InformationSubmissionService {
     return updated;
   }
 
-  // Terminal decision, only valid from UNDER_REVIEW; reviewNote required on REJECTED.
+  // ─────────────────────────────────────────────
+  // ADMIN — REVIEW (terminal decision)
+  // Only valid from UNDER_REVIEW. reviewNote required on REJECTED.
+  //
+  // Cache: this is the ONLY method in the file that can move a
+  // submission into REVIEWED — the sole status the public
+  // findForMissingPerson() cache ever serves — so it's the only
+  // place that needs to invalidate that cache. It's a plain
+  // invalidation (not conditional on `status === REVIEWED`) purely
+  // for readability, since REJECTED never appeared in the cache to
+  // begin with; invalidating an entry that was never cached is a
+  // cheap no-op, same reasoning MissingPersonService.updateStatus
+  // gives for invalidating unconditionally on every transition.
+  //
+  // FIX (audit review, item #2): submissionOwnerId was buried inside
+  // `diff`, which should describe the change to the submission's
+  // status — the tipster whose submission this is about the actual
+  // subject of an admin's terminal decision, so it's now the
+  // top-level targetUserId instead.
+  //
+  // FIX (audit review, item #3): reviewNote is the reviewing admin's
+  // actual human-written rationale (mandatory on rejection, optional
+  // on approval) — it was previously only forwarded to the
+  // notification event and never written to the audit trail at all.
+  // Now promoted to the top-level reason column.
+  //
+  // FIX (audit review, item #1): all three guards
+  // (invalid_review_status, invalid_status_transition,
+  // review_note_required_for_rejection) threw with no row. Now emit
+  // FAILURE first. The reviewer's roles are resolved up front so
+  // these early emits have a real actorType rather than a guess.
+  //
+  // FIX (audit review, item #4): entityLabel added.
+  //
+  // FIX (audit review, item #5): missingPersonId added to metadata —
+  // it was already in the notification payload but never in the
+  // audit row itself.
+  // ─────────────────────────────────────────────
+
   async review(
     id: string,
     status: InformationStatus,
@@ -1012,6 +1284,36 @@ export class InformationSubmissionService {
       throw new BadRequestException('review_note_required_for_rejection');
     }
 
+    // G21: REVIEWED is the terminal decision that makes a submission
+    // eligible for RewardService.approveClaim(submissionId) — the step
+    // that turns a tip into a payout. userId is nullable on
+    // InformationSubmission (anonymous/USSD tips per SubmissionChannel),
+    // and there is no other identifying field on the model yet
+    // (contactPhone is proposed in the section-9 schema review but not
+    // migrated), so an anonymous tip cannot currently be verified or paid.
+    // Block REVIEWED rather than let it through and fail later, silently
+    // or otherwise, inside RewardService.
+    if (status === InformationStatus.REVIEWED && !submission.userId) {
+      this.emitAudit({
+        userId: reviewer.id,
+        targetUserId: submission.userId,
+        actorType,
+        action: auditEventForStatus,
+        outcome: AuditOutcome.FAILURE,
+        severity: AuditSeverity.WARNING,
+        entity: 'InformationSubmission',
+        entityId: id,
+        entityLabel: label,
+        diff: {
+          result: 'failure',
+          reason: 'finder_not_verifiable',
+          channel: submission.channel,
+        },
+        metadata: { missingPersonId: submission.missingPersonId },
+      });
+      throw new BadRequestException('finder_not_verifiable');
+    }
+
     const updated = await this.prisma.informationSubmission.update({
       where: { id },
       data: {
@@ -1019,6 +1321,8 @@ export class InformationSubmissionService {
         ...(reviewNote !== undefined ? { reviewNote } : {}),
       },
     });
+
+    await this.cache.invalidateInformationSubmissionList(submission.missingPersonId);
 
     this.emitAudit({
       userId: reviewer.id,

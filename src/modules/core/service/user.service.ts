@@ -5,7 +5,13 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { AuditOutcome, AuditSeverity, OtpChannelEnum, Prisma, UserOtpPurposeEnum } from '@prisma/client';
+import {
+  AuditOutcome,
+  AuditSeverity,
+  OtpChannelEnum,
+  Prisma,
+  UserOtpPurposeEnum,
+} from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -17,6 +23,7 @@ import { RolesEnum } from 'src/common/enums/roles.enum';
 import { OtpUtil } from 'src/common/utils/otp.util';
 import { LockoutUtil } from 'src/common/utils/lockout.util';
 import { MinioService } from 'src/services/minio/minio.service';
+import { CacheService } from 'src/services/redis/cache.service';
 
 import { AuditEventEnum } from 'src/common/enums/shared/audit-events.enum';
 import { AuditEventPayload } from 'src/modules/misc/events/audit.events';
@@ -43,6 +50,7 @@ export class UserService {
     private readonly otpUtil: OtpUtil,
     private readonly lockoutUtil: LockoutUtil,
     private readonly minioService: MinioService,
+    private readonly cache: CacheService,
   ) {}
 
   private emitAudit(payload: AuditEventPayload): void {
@@ -80,7 +88,7 @@ export class UserService {
   }
 
   private isSuperAdmin(roleNames: string[]): boolean {
-    return roleNames.includes(RolesEnum.SUPER_ADMIN as string);
+    return roleNames.includes(RolesEnum.SUPER_ADMIN);
   }
 
   // Profile fields now live on the related UserProfile table (one row per
@@ -213,6 +221,8 @@ export class UserService {
         where: { id: currentUser.id },
         data: { name: data.name.trim() },
       });
+      // `GET /auth/me` is cached and includes the name.
+      await this.cache.invalidateProfile(currentUser.id);
     }
 
     if (profileTouched) {
@@ -257,7 +267,14 @@ export class UserService {
 
     const user = await this.prisma.user.findUnique({
       where: { id: currentUser.id },
-      select: { id: true, name: true, phone: true, email: true, isActive: true, discreetModeEnabled: true },
+      select: {
+        id: true,
+        name: true,
+        phone: true,
+        email: true,
+        isActive: true,
+        discreetModeEnabled: true,
+      },
     });
 
     if (!user) {
@@ -282,9 +299,16 @@ export class UserService {
     if (!data.enabled) {
       const updatedUser = await this.prisma.user.update({
         where: { id: currentUser.id },
-        data: { discreetModeEnabled: false, discreetModePasscodeHash: null, discreetModeUpdatedAt: new Date() },
+        data: {
+          discreetModeEnabled: false,
+          discreetModePasscodeHash: null,
+          discreetModeUpdatedAt: new Date(),
+        },
         select: { id: true, discreetModeEnabled: true, discreetModeUpdatedAt: true },
       });
+
+      // `GET /auth/me` is cached (discreet-mode fields are part of it).
+      await this.cache.invalidateProfile(currentUser.id);
 
       this.emitAudit({
         userId: currentUser.id,
@@ -293,8 +317,15 @@ export class UserService {
         entity: 'User',
         entityId: currentUser.id,
         entityLabel: this.buildUserLabel(user),
-        diff: { result: 'success', previousEnabled: user.discreetModeEnabled, currentEnabled: false },
-        metadata: { passcodeCleared: true, discreetModeUpdatedAt: updatedUser.discreetModeUpdatedAt },
+        diff: {
+          result: 'success',
+          previousEnabled: user.discreetModeEnabled,
+          currentEnabled: false,
+        },
+        metadata: {
+          passcodeCleared: true,
+          discreetModeUpdatedAt: updatedUser.discreetModeUpdatedAt,
+        },
       });
 
       return {
@@ -325,9 +356,16 @@ export class UserService {
 
     const updatedUser = await this.prisma.user.update({
       where: { id: currentUser.id },
-      data: { discreetModeEnabled: true, discreetModePasscodeHash, discreetModeUpdatedAt: new Date() },
+      data: {
+        discreetModeEnabled: true,
+        discreetModePasscodeHash,
+        discreetModeUpdatedAt: new Date(),
+      },
       select: { id: true, discreetModeEnabled: true, discreetModeUpdatedAt: true },
     });
+
+    // `GET /auth/me` is cached (discreet-mode fields are part of it).
+    await this.cache.invalidateProfile(currentUser.id);
 
     this.emitAudit({
       userId: currentUser.id,
@@ -339,7 +377,10 @@ export class UserService {
       entityId: currentUser.id,
       entityLabel: this.buildUserLabel(user),
       diff: { result: 'success', previousEnabled: wasAlreadyEnabled, currentEnabled: true },
-      metadata: { passcodeRotation: wasAlreadyEnabled, discreetModeUpdatedAt: updatedUser.discreetModeUpdatedAt },
+      metadata: {
+        passcodeRotation: wasAlreadyEnabled,
+        discreetModeUpdatedAt: updatedUser.discreetModeUpdatedAt,
+      },
     });
 
     return {
@@ -362,7 +403,14 @@ export class UserService {
 
     const targetUser = await this.prisma.user.findUnique({
       where: { id: targetUserId },
-      select: { id: true, name: true, phone: true, email: true, isActive: true, discreetModeEnabled: true },
+      select: {
+        id: true,
+        name: true,
+        phone: true,
+        email: true,
+        isActive: true,
+        discreetModeEnabled: true,
+      },
     });
 
     if (!targetUser) {
@@ -403,9 +451,16 @@ export class UserService {
     if (!data.enabled) {
       const updatedUser = await this.prisma.user.update({
         where: { id: targetUserId },
-        data: { discreetModeEnabled: false, discreetModePasscodeHash: null, discreetModeUpdatedAt: new Date() },
+        data: {
+          discreetModeEnabled: false,
+          discreetModePasscodeHash: null,
+          discreetModeUpdatedAt: new Date(),
+        },
         select: { id: true, discreetModeEnabled: true, discreetModeUpdatedAt: true },
       });
+
+      // `GET /auth/me` is cached (discreet-mode fields are part of it).
+      await this.cache.invalidateProfile(targetUserId);
 
       this.emitAudit({
         userId: actor.id,
@@ -417,8 +472,16 @@ export class UserService {
         entityId: targetUserId,
         entityLabel: targetLabel,
         reason: reason ?? null,
-        diff: { result: 'success', previousEnabled: targetUser.discreetModeEnabled, currentEnabled: false },
-        metadata: { passcodeCleared: true, triggeredByAdmin: true, discreetModeUpdatedAt: updatedUser.discreetModeUpdatedAt },
+        diff: {
+          result: 'success',
+          previousEnabled: targetUser.discreetModeEnabled,
+          currentEnabled: false,
+        },
+        metadata: {
+          passcodeCleared: true,
+          triggeredByAdmin: true,
+          discreetModeUpdatedAt: updatedUser.discreetModeUpdatedAt,
+        },
       });
 
       return {
@@ -450,9 +513,16 @@ export class UserService {
 
     const updatedUser = await this.prisma.user.update({
       where: { id: targetUserId },
-      data: { discreetModeEnabled: true, discreetModePasscodeHash, discreetModeUpdatedAt: new Date() },
+      data: {
+        discreetModeEnabled: true,
+        discreetModePasscodeHash,
+        discreetModeUpdatedAt: new Date(),
+      },
       select: { id: true, discreetModeEnabled: true, discreetModeUpdatedAt: true },
     });
+
+    // `GET /auth/me` is cached (discreet-mode fields are part of it).
+    await this.cache.invalidateProfile(targetUserId);
 
     this.emitAudit({
       userId: actor.id,
@@ -467,7 +537,11 @@ export class UserService {
       entityLabel: targetLabel,
       reason: reason ?? null,
       diff: { result: 'success', previousEnabled: wasAlreadyEnabled, currentEnabled: true },
-      metadata: { passcodeRotation: wasAlreadyEnabled, triggeredByAdmin: true, discreetModeUpdatedAt: updatedUser.discreetModeUpdatedAt },
+      metadata: {
+        passcodeRotation: wasAlreadyEnabled,
+        triggeredByAdmin: true,
+        discreetModeUpdatedAt: updatedUser.discreetModeUpdatedAt,
+      },
     });
 
     return {
@@ -537,6 +611,9 @@ export class UserService {
         const revoked = await tx.session.deleteMany({ where: { userId: currentUser.id } });
         sessionsRevoked = revoked.count;
       });
+
+      // Postgres sessions are gone; drop anything Redis still holds for this user (retried if Redis is down).
+      await this.cache.purgeUserCache(currentUser.id);
     } catch (err) {
       if (err instanceof ForbiddenException) {
         this.emitAudit({
@@ -662,6 +739,9 @@ export class UserService {
         const revoked = await tx.session.deleteMany({ where: { userId: targetUserId } });
         sessionsRevoked = revoked.count;
       });
+
+      // Postgres sessions are gone; drop anything Redis still holds for this user (retried if Redis is down).
+      await this.cache.purgeUserCache(targetUserId);
     } catch (err) {
       if (err instanceof ForbiddenException) {
         this.emitAudit({
@@ -775,7 +855,11 @@ export class UserService {
 
   // ── ADMIN — FORCE LOGOUT (all sessions) ──
 
-  async forceLogout(actor: CurrentUserDto, targetUserId: string, reason?: string): Promise<{ message: string }> {
+  async forceLogout(
+    actor: CurrentUserDto,
+    targetUserId: string,
+    reason?: string,
+  ): Promise<{ message: string }> {
     const actorType = resolveActorType(this.getRoles(actor));
 
     const targetUser = await this.prisma.user.findUnique({
@@ -796,7 +880,10 @@ export class UserService {
       });
       throw new NotFoundException('user_not_found');
     }
-    const revokedSessions = await this.prisma.session.deleteMany({ where: { userId: targetUserId } });
+    const revokedSessions = await this.prisma.session.deleteMany({
+      where: { userId: targetUserId },
+    });
+    await this.cache.purgeUserCache(targetUserId);
 
     this.emitAudit({
       userId: actor.id,
@@ -826,7 +913,11 @@ export class UserService {
     });
   }
 
-  async revokeSession(actor: CurrentUserDto, targetUserId: string, sessionId: string): Promise<{ message: string }> {
+  async revokeSession(
+    actor: CurrentUserDto,
+    targetUserId: string,
+    sessionId: string,
+  ): Promise<{ message: string }> {
     const actorType = resolveActorType(this.getRoles(actor));
     const isSelfService = actor.id === targetUserId;
 
@@ -851,6 +942,7 @@ export class UserService {
     }
 
     await this.prisma.session.delete({ where: { id: sessionId } });
+    await this.cache.purgeUserCache(targetUserId);
 
     this.emitAudit({
       userId: actor.id,
@@ -870,7 +962,10 @@ export class UserService {
   // New phone held in `pendingPhone` until verified, so login on the
   // old number keeps working mid-flow.
 
-  async changePhoneInitiate(user: CurrentUserDto, data: ChangePhoneInitiateDto): Promise<{ verificationId: string }> {
+  async changePhoneInitiate(
+    user: CurrentUserDto,
+    data: ChangePhoneInitiateDto,
+  ): Promise<{ verificationId: string }> {
     const actorType = resolveActorType(this.getRoles(user));
     const newPhone = this.normalizePhoneOrThrow(data.newPhone);
 
@@ -905,7 +1000,11 @@ export class UserService {
         entity: 'User',
         entityId: user.id,
         entityLabel: this.buildUserLabel(dbUser),
-        diff: { result: 'failure', reason: 'phone_already_registered', context: 'change_phone_initiated' },
+        diff: {
+          result: 'failure',
+          reason: 'phone_already_registered',
+          context: 'change_phone_initiated',
+        },
         metadata: { attemptedPhone: this.maskPhone(newPhone) },
       });
       throw new BadRequestException('phone_already_registered');
@@ -924,7 +1023,11 @@ export class UserService {
           entity: 'User',
           entityId: user.id,
           entityLabel: this.buildUserLabel(dbUser),
-          diff: { result: 'failure', reason: 'phone_already_registered', context: 'change_phone_initiated' },
+          diff: {
+            result: 'failure',
+            reason: 'phone_already_registered',
+            context: 'change_phone_initiated',
+          },
           metadata: { attemptedPhone: this.maskPhone(newPhone), detectedBy: 'unique_constraint' },
         });
         throw new BadRequestException('phone_already_registered');
@@ -957,7 +1060,10 @@ export class UserService {
     return { verificationId };
   }
 
-  async changePhoneVerify(user: CurrentUserDto, data: ChangePhoneVerifyDto): Promise<{ message: string }> {
+  async changePhoneVerify(
+    user: CurrentUserDto,
+    data: ChangePhoneVerifyDto,
+  ): Promise<{ message: string }> {
     const actorType = resolveActorType(this.getRoles(user));
 
     const otpRecord = await this.prisma.userOtp.findUnique({
@@ -1017,7 +1123,7 @@ export class UserService {
       await this.lockoutUtil.lockAccountForOtpAbuse(user.id);
       this.emitAudit({
         targetUserId: user.id,
-        actorType: 'SYSTEM' as unknown as ReturnType<typeof resolveActorType>,
+        actorType: 'SYSTEM',
         action: AuditEventEnum.SECURITY_ALERT,
         outcome: AuditOutcome.DENIED,
         severity: AuditSeverity.WARNING,
@@ -1043,7 +1149,7 @@ export class UserService {
         await this.lockoutUtil.lockAccountForOtpAbuse(user.id);
         this.emitAudit({
           targetUserId: user.id,
-          actorType: 'SYSTEM' as unknown as ReturnType<typeof resolveActorType>,
+          actorType: 'SYSTEM',
           action: AuditEventEnum.SECURITY_ALERT,
           outcome: AuditOutcome.DENIED,
           severity: AuditSeverity.WARNING,
@@ -1075,7 +1181,12 @@ export class UserService {
     try {
       await this.prisma.$transaction(async (tx) => {
         const claimed = await tx.userOtp.updateMany({
-          where: { id: data.verificationId, usedAt: null, attempts: { lt: 5 }, expiresAt: { gt: new Date() } },
+          where: {
+            id: data.verificationId,
+            usedAt: null,
+            attempts: { lt: 5 },
+            expiresAt: { gt: new Date() },
+          },
           data: { usedAt: new Date() },
         });
         if (claimed.count === 0) {
@@ -1098,7 +1209,11 @@ export class UserService {
           entity: 'UserOtp',
           entityId: otpRecord.id,
           entityLabel: 'phone_change OTP',
-          diff: { purpose: 'phone_change', result: 'failure', reason: 'phone_claimed_by_another_account' },
+          diff: {
+            purpose: 'phone_change',
+            result: 'failure',
+            reason: 'phone_claimed_by_another_account',
+          },
         });
         throw new BadRequestException('phone_already_registered');
       }
@@ -1117,6 +1232,9 @@ export class UserService {
       }
       throw error;
     }
+
+    // Cached profile/session still carry the old phone number.
+    await this.cache.purgeUserCache(user.id);
 
     this.emitAudit({
       userId: user.id,
@@ -1270,7 +1388,12 @@ export class UserService {
   // assignRole is a plain upsert (atomic already). revokeRole gets the
   // same transaction treatment as deactivateUser (last-super-admin race).
 
-  async assignRole(actor: CurrentUserDto, targetUserId: string, data: AssignUserRoleDto, reason?: string) {
+  async assignRole(
+    actor: CurrentUserDto,
+    targetUserId: string,
+    data: AssignUserRoleDto,
+    reason?: string,
+  ) {
     const actorType = resolveActorType(this.getRoles(actor));
 
     const targetUser = await this.prisma.user.findUnique({
@@ -1325,6 +1448,11 @@ export class UserService {
       create: { userId: targetUserId, roleId: role.id },
       update: {},
     });
+
+    if (!alreadyHeld) {
+      // Cached session/profile may carry the old role set.
+      await this.cache.purgeUserCache(targetUserId);
+    }
 
     this.emitAudit({
       userId: actor.id,
@@ -1420,6 +1548,9 @@ export class UserService {
           where: { userId_roleId: { userId: targetUserId, roleId: roleToRevoke.id } },
         });
       });
+
+      // A revoked admin role must not survive in a cached session.
+      await this.cache.purgeUserCache(targetUserId);
     } catch (err) {
       if (err instanceof ForbiddenException) {
         this.emitAudit({
@@ -1469,7 +1600,14 @@ export class UserService {
 
     const targetUser = await this.prisma.user.findUnique({
       where: { id: targetUserId },
-      select: { id: true, name: true, phone: true, email: true, lockedUntil: true, failedLoginAttempts: true },
+      select: {
+        id: true,
+        name: true,
+        phone: true,
+        email: true,
+        lockedUntil: true,
+        failedLoginAttempts: true,
+      },
     });
     if (!targetUser) {
       this.emitAudit({
@@ -1507,6 +1645,14 @@ export class UserService {
       data: { lockedUntil: null, failedLoginAttempts: 0 },
     });
 
+    // The failed-attempt counter also lives in Redis (keyed by user id or login identifier). Clear all,
+    // or the next wrong password can re-lock the account straight after an admin unlock.
+    await Promise.all(
+      [targetUser.id, targetUser.phone, targetUser.email]
+        .filter((id): id is string => !!id)
+        .map((id) => this.cache.resetFailedLoginAttempts(id)),
+    );
+
     this.emitAudit({
       userId: actor.id,
       targetUserId,
@@ -1523,7 +1669,11 @@ export class UserService {
         previousLockedUntil: targetUser.lockedUntil,
         currentLockedUntil: null,
       },
-      metadata: { wasStillLocked: targetUser.lockedUntil ? targetUser.lockedUntil.getTime() > Date.now() : false },
+      metadata: {
+        wasStillLocked: targetUser.lockedUntil
+          ? targetUser.lockedUntil.getTime() > Date.now()
+          : false,
+      },
     });
 
     return this.getUserById(targetUserId);
@@ -1544,7 +1694,8 @@ export class UserService {
       ];
     }
     if (query.isActive !== undefined) where.isActive = query.isActive;
-    if (query.discreetModeEnabled !== undefined) where.discreetModeEnabled = query.discreetModeEnabled;
+    if (query.discreetModeEnabled !== undefined)
+      where.discreetModeEnabled = query.discreetModeEnabled;
     if (query.roleId) where.userRoles = { some: { roleId: query.roleId } };
     if (query.registrationStatus === 'pending') where.passwordHash = null;
     else if (query.registrationStatus === 'completed') where.passwordHash = { not: null };
@@ -1592,6 +1743,11 @@ export class UserService {
   // ── ADMIN — DASHBOARD STATS ──
 
   async getDashboardStats() {
+    // Heavy multi-count aggregate: serve from cache for a short TTL (TTL.ADMIN_DASHBOARD_STATS).
+    return this.cache.wrapStats('user-dashboard', () => this.getDashboardStatsUncached());
+  }
+
+  private async getDashboardStatsUncached() {
     const sevenDaysAgo = new Date();
     sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
     const thirtyDaysAgo = new Date();
@@ -1626,7 +1782,9 @@ export class UserService {
         where: { userRoles: { some: { role: { name: RolesEnum.ADMIN } } } },
       }),
       this.prisma.user.count({
-        where: { userRoles: { none: { role: { name: { in: [RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN] } } } } },
+        where: {
+          userRoles: { none: { role: { name: { in: [RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN] } } } },
+        },
       }),
     ]);
 

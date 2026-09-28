@@ -1,48 +1,58 @@
-import { IsEnum, IsNumber, IsOptional, IsString, IsUUID, Min, MaxLength } from 'class-validator';
-
-import { SupportAgreementType, SupportType } from '@prisma/client';
+import { ApiPropertyOptional, ApiProperty } from '@nestjs/swagger';
+import { SupportType, SupportAgreementType } from '@prisma/client';
+import {
+  IsString,
+  IsNumber,
+  IsOptional,
+  IsEnum,
+  Min,
+} from 'class-validator';
 
 export class CreateSupportDto {
-  @IsUUID()
+  @ApiProperty()
+  @IsString()
   victimProfileId: string;
 
+  @ApiPropertyOptional({ enum: SupportType })
   @IsOptional()
   @IsEnum(SupportType)
   type?: SupportType;
 
+  @ApiPropertyOptional({ enum: SupportAgreementType })
   @IsOptional()
   @IsEnum(SupportAgreementType)
   agreementType?: SupportAgreementType;
 
+  @ApiProperty()
   @IsNumber()
-  @Min(0.01)
+  @Min(0)
   amount: number;
 
+  @ApiPropertyOptional()
   @IsOptional()
   @IsNumber()
   @Min(0)
   recipientAmount?: number;
 
+  @ApiPropertyOptional()
   @IsOptional()
   @IsNumber()
   @Min(0)
   organizationAmount?: number;
 
+  @ApiPropertyOptional()
   @IsOptional()
   @IsNumber()
   @Min(0)
   platformAmount?: number;
 
-  // Off-platform proof of transfer (bank reference no., transaction id,
-  // etc). Not verified programmatically — admin checks manually before
-  // moving status to CONFIRMED.
+  @ApiPropertyOptional()
   @IsOptional()
   @IsString()
-  @MaxLength(200)
   transferReference?: string;
 
+  @ApiPropertyOptional()
   @IsOptional()
   @IsString()
-  @MaxLength(500)
   message?: string;
 }

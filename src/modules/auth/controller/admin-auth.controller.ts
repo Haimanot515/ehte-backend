@@ -146,7 +146,7 @@ export class AdminAuthController {
   @Post('change-password/verify')
   @ApiOperation({
     summary:
-      "Step 2 of admin self-service password change: verify the emailed OTP and set the new password",
+      'Step 2 of admin self-service password change: verify the emailed OTP and set the new password',
   })
   async changePasswordVerify(@Body() data: ResetPasswordDto) {
     return this.adminAuthService.adminChangePasswordVerify(data);

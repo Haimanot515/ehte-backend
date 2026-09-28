@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcrypt';
 
@@ -17,9 +17,12 @@ import { RolesEnum } from '../enums/roles.enum';
 // env var is missing from .env — so this seeder never throws just
 // because .env is incomplete. It DOES throw if the RolesEnum.USER
 // role row doesn't exist yet (see below) — that one's load-bearing.
+//
+// NOTE: role lookup now happens BEFORE user creation, so a missing
+// USER role fails fast instead of leaving a roleless user behind.
 
 @Injectable()
-export class UserSeeder implements OnApplicationBootstrap {
+export class UserSeeder {
   private readonly logger = new Logger(UserSeeder.name);
 
   constructor(
@@ -27,7 +30,7 @@ export class UserSeeder implements OnApplicationBootstrap {
     private readonly config: ConfigService,
   ) {}
 
-  async onApplicationBootstrap(): Promise<void> {
+  async run(): Promise<void> {
     const rawPhone = this.config.get<string>('USER_PHONE', '+251900000000');
 
     const phone = rawPhone.trim();
@@ -46,6 +49,18 @@ export class UserSeeder implements OnApplicationBootstrap {
       return;
     }
 
+    const role = await this.prisma.role.findUnique({
+      where: {
+        name: RolesEnum.USER,
+      },
+    });
+
+    if (!role) {
+      throw new Error(
+        `Required role "${RolesEnum.USER}" was not found. Ensure RolesSeeder runs before UserSeeder.`,
+      );
+    }
+
     const hashedPassword = await bcrypt.hash(password, 10);
 
     const user = await this.prisma.user.create({
@@ -60,18 +75,6 @@ export class UserSeeder implements OnApplicationBootstrap {
         isActive: true,
       },
     });
-
-    const role = await this.prisma.role.findUnique({
-      where: {
-        name: RolesEnum.USER,
-      },
-    });
-
-    if (!role) {
-      throw new Error(
-        `Required role "${RolesEnum.USER}" was not found. Ensure RolesSeeder runs before UserSeeder.`,
-      );
-    }
 
     await this.prisma.userRole.create({
       data: {

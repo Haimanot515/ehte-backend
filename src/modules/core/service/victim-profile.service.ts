@@ -1,4 +1,10 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { ConfigService } from '@nestjs/config';
@@ -7,7 +13,6 @@ import {
   AuditOutcome,
   AuditSeverity,
   Prisma,
-  SupportStatus,
   VictimProfile,
   VictimProfileStatus,
 } from '@prisma/client';
@@ -22,6 +27,7 @@ import { AuditEventPayload } from 'src/modules/misc/events/audit.events';
 import { NotificationEventEnum } from 'src/common/enums/shared/notification-events.enum';
 
 import { MinioService } from 'src/services/minio/minio.service';
+import { CacheService } from 'src/services/redis/cache.service';
 
 import {
   CreateVictimProfileDto,
@@ -34,13 +40,11 @@ import {
   UpdateVictimProfileDto,
 } from '../dto/victim-profile.dto';
 
-// Six media-array fields shared by the DTOs and the VictimProfile model.
 const MEDIA_FIELD_NAMES = ['photo', 'video', 'audio', 'pdf', 'document', 'other'] as const;
 type MediaFieldName = (typeof MEDIA_FIELD_NAMES)[number];
 type MediaBearing = Record<MediaFieldName, string[]>;
 type MediaBearingDto = Partial<Record<MediaFieldName, string[] | undefined>>;
 
-// Fields update() may touch — used only to record which fields an edit touched in audit metadata.
 const UPDATABLE_FIELD_NAMES = [
   'name',
   'description',
@@ -67,13 +71,44 @@ type ConflictAuditContext = {
   profile: ProfileAuditRef;
 };
 
-// PUBLISHED/REJECTED are dead ends for the stale-pending sweep.
 const STALE_ELIGIBLE_EXCLUDED_STATUSES: VictimProfileStatus[] = [
   VictimProfileStatus.PUBLISHED,
   VictimProfileStatus.REJECTED,
 ];
 
-// "Money collected" = Support rows with status CONFIRMED only, used here and in SupportService.
+// G22 (billing review, section 4 design rule): money never leaves this
+// service as a JS number. Number() loses precision on large sums and
+// invites float-arithmetic bugs; a decimal string round-trips exactly.
+const money = (d: Prisma.Decimal | number | string | null | undefined): string =>
+  d == null ? '0.00' : new Prisma.Decimal(d).toFixed(2);
+
+// G22: reconcileAllTotals used to run Promise.all over every profile in
+// the table at once — fine at a few hundred rows, a self-inflicted outage
+// once the platform has thousands. Runs `fn` over `items` with at most
+// `size` in flight at a time.
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  size: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let cursor = 0;
+  async function worker() {
+    while (cursor < items.length) {
+      const i = cursor++;
+      results[i] = await fn(items[i]);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(size, items.length) }, worker));
+  return results;
+}
+
+// G11: fields findOne() must never return unless the caller has been
+// through the SUPPORT_PAYMENT_MANAGE-gated bank-details endpoint. Listed
+// explicitly (rather than an exclusion) so a future schema field is safe
+// by default instead of leaking until someone remembers to blocklist it.
+const BANK_DETAIL_FIELDS = ['bankAccountName', 'bankAccountNumber', 'bankName'] as const;
+
 @Injectable()
 export class VictimProfileService {
   constructor(
@@ -81,16 +116,14 @@ export class VictimProfileService {
     private readonly eventEmitter: EventEmitter2,
     private readonly minioService: MinioService,
     private readonly configService: ConfigService,
+    private readonly cache: CacheService,
   ) {}
-
-  // ─── AUDIT HELPERS ───
-  // Bank details are never written to diff/metadata, only whether they changed (booleans).
 
   private emitAudit(payload: AuditEventPayload): void {
     this.eventEmitter.emit(payload.action, payload);
   }
 
-  // Child profiles get a redacted label so a child's name never lands in the audit table.
+  // Child profiles get a redacted label.
   private profileLabel(
     profile: Pick<VictimProfile, 'id' | 'name' | 'involvesChild'>,
   ): string | undefined {
@@ -100,7 +133,6 @@ export class VictimProfileService {
     return profile.name ?? undefined;
   }
 
-  // Returns the profile's creator as targetUserId, unless the actor IS the creator.
   private targetUserFor(
     actor: CurrentUserDto,
     profile: Pick<VictimProfile, 'createdByUserId'>,
@@ -109,7 +141,6 @@ export class VictimProfileService {
     return creatorId && creatorId !== actor.id ? { targetUserId: creatorId } : {};
   }
 
-  // Single place a DENIED/FAILURE audit row is built, so every guard clause is consistent.
   private emitProfileFailure(
     actor: CurrentUserDto,
     action: AuditEventEnum,
@@ -136,12 +167,10 @@ export class VictimProfileService {
         result: outcome === AuditOutcome.DENIED ? 'denied' : 'failure',
         reason,
         ...(opts.diff ?? {}),
-      } as AuditEventPayload['diff'],
-      ...(opts.metadata ? { metadata: opts.metadata as AuditEventPayload['metadata'] } : {}),
+      },
+      ...(opts.metadata ? { metadata: opts.metadata } : {}),
     });
   }
-
-  // ─── MEDIA HELPERS ───
 
   private getMediaBucket(): string {
     return this.configService.get<string>('minio.bucketName') ?? 'ehte-media';
@@ -265,13 +294,10 @@ export class VictimProfileService {
     return profile.involvesChild ? [] : profile.photo;
   }
 
-  // ─── ACCESS CONTROL HELPERS ───
-
   private getRoles(user: CurrentUserDto): string[] {
     return (user as unknown as { roles?: string[] }).roles ?? [];
   }
 
-  // Denied access attempts now write a DENIED/WARNING audit row before throwing.
   private assertAdminCanAccessProfile(
     admin: CurrentUserDto,
     profile: ProfileAuditRef & { claimedByUserId: string | null },
@@ -289,7 +315,6 @@ export class VictimProfileService {
     }
   }
 
-  // Losing the optimistic-concurrency race now emits a FAILURE row before throwing.
   private async conditionalUpdate(
     id: string,
     expectedUpdatedAt: Date,
@@ -314,7 +339,6 @@ export class VictimProfileService {
     return this.prisma.victimProfile.findUniqueOrThrow({ where: { id } });
   }
 
-  // Names of unsatisfied approval gates — used only for FAILURE audit metadata, not allow/deny logic.
   private getMissingApprovalGates(g: {
     involvesChild: boolean;
     isVerified: boolean;
@@ -333,8 +357,6 @@ export class VictimProfileService {
     if (!g.hasBankDetails) missing.push('hasBankDetails');
     return missing;
   }
-
-  // ─── ADMIN — CLAIM / UNCLAIM ───
 
   async claim(admin: CurrentUserDto, id: string) {
     const existing = await this.prisma.victimProfile.findUnique({ where: { id } });
@@ -395,7 +417,6 @@ export class VictimProfileService {
     return profile;
   }
 
-  // Unclaim by SUPER_ADMIN on another admin's claim records that admin as targetUserId.
   async unclaim(admin: CurrentUserDto, id: string) {
     const existing = await this.prisma.victimProfile.findUnique({ where: { id } });
     if (!existing) {
@@ -466,10 +487,11 @@ export class VictimProfileService {
     return profile;
   }
 
-  // ─── ADMIN — GET MEDIA DOWNLOAD URL ───
-  // A key not actually attached to the profile is a DENIED event, not a silent 404.
-
-  async getMediaDownloadUrl(admin: CurrentUserDto, id: string, key: string): Promise<{ url: string }> {
+  async getMediaDownloadUrl(
+    admin: CurrentUserDto,
+    id: string,
+    key: string,
+  ): Promise<{ url: string }> {
     const profile = await this.prisma.victimProfile.findUnique({
       where: { id },
     });
@@ -515,9 +537,6 @@ export class VictimProfileService {
     return { url };
   }
 
-  // ─── PUBLIC — GET MEDIA DOWNLOAD URL ───
-  // Anonymous endpoint — no actor to attribute a row to, so no AuditLog write here.
-
   async getPublicMediaDownloadUrl(id: string, key: string): Promise<{ url: string }> {
     const profile = await this.prisma.victimProfile.findFirst({
       where: {
@@ -548,9 +567,6 @@ export class VictimProfileService {
     const url = await this.minioService.generatePresignedDownloadUrl(key);
     return { url };
   }
-
-  // ─── CREATE ───
-  // Callable by admins and by regular users creating their own profile.
 
   async create(currentUser: CurrentUserDto, data: CreateVictimProfileDto, idempotencyKey?: string) {
     if (idempotencyKey) {
@@ -616,7 +632,6 @@ export class VictimProfileService {
           idempotencyKey: idempotencyKey ?? null,
           mediaTotalBytes: totalBytes,
 
-          // Never client-settable; only SupportService.updateStatus / reconcileProfileTotal change it.
           totalRaised: 0,
         },
       });
@@ -666,9 +681,11 @@ export class VictimProfileService {
     return profile;
   }
 
-  // ─── GET ONE (admin) ───
-  // Full row including bank details, currently un-audited — needs a VICTIM_PROFILE_OPENED event.
-
+  // G11: this used to return every scalar column, bank details included,
+  // to anyone with PROFILE_READ — a much lower bar than SUPPORT_PAYMENT_MANAGE,
+  // which is what's required to *change* those same fields. Bank fields are
+  // now stripped from the object entirely; use findBankDetails() from a
+  // route gated on SUPPORT_PAYMENT_MANAGE when they're actually needed.
   async findOne(id: string) {
     const profile = await this.prisma.victimProfile.findUnique({
       where: { id },
@@ -688,6 +705,31 @@ export class VictimProfileService {
             createdAt: true,
           },
         },
+      },
+    });
+
+    if (!profile) {
+      throw new NotFoundException('victim_profile_not_found');
+    }
+
+    for (const field of BANK_DETAIL_FIELDS) {
+      delete (profile as Record<string, unknown>)[field];
+    }
+
+    return profile;
+  }
+
+  // G11: the SUPPORT_PAYMENT_MANAGE-gated counterpart to findOne(). Call
+  // this from a route that requires the same permission updateBankDetails()
+  // already requires, not from the plain PROFILE_READ :id route.
+  async findBankDetails(id: string) {
+    const profile = await this.prisma.victimProfile.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        bankAccountName: true,
+        bankAccountNumber: true,
+        bankName: true,
       },
     });
 
@@ -728,9 +770,13 @@ export class VictimProfileService {
     };
   }
 
-  // ─── PUBLIC PROFILES — LIST ───
-
   async findPublic(query: FindPublicVictimProfilesQueryDto) {
+    return this.cache.wrapVictimProfileList(query as unknown as Record<string, unknown>, () =>
+      this.findPublicUncached(query),
+    );
+  }
+
+  private async findPublicUncached(query: FindPublicVictimProfilesQueryDto) {
     const page = query.page && query.page > 0 ? query.page : 1;
     const limit = query.limit && query.limit > 0 ? query.limit : 20;
 
@@ -798,9 +844,11 @@ export class VictimProfileService {
     };
   }
 
-  // ─── PUBLIC PROFILES — SINGLE ───
-
   async findOnePublic(id: string) {
+    const cached =
+      await this.cache.getVictimProfile<ReturnType<typeof this.serializePublicProfile>>(id);
+    if (cached !== null) return cached;
+
     const profile = await this.prisma.victimProfile.findFirst({
       where: {
         id,
@@ -836,7 +884,9 @@ export class VictimProfileService {
       throw new NotFoundException('victim_profile_not_found');
     }
 
-    return this.serializePublicProfile(profile);
+    const serialized = this.serializePublicProfile(profile);
+    await this.cache.setVictimProfile(id, serialized);
+    return serialized;
   }
 
   private serializePublicProfile(profile: {
@@ -855,18 +905,15 @@ export class VictimProfileService {
       name: profile.name,
       story: profile.story ?? '',
       supportType: profile.supportType,
-      supportGoal: profile.supportGoal ? Number(profile.supportGoal) : null,
+      supportGoal: profile.supportGoal ? money(profile.supportGoal) : null,
 
-      // Child profiles never expose photos publicly.
       photo: profile.involvesChild ? [] : profile.photo,
 
-      totalRaised: Number(profile.totalRaised),
+      totalRaised: money(profile.totalRaised),
 
       createdAt: profile.createdAt,
     };
   }
-
-  // ─── UPDATE PROFILE ───
 
   async update(admin: CurrentUserDto, id: string, data: UpdateVictimProfileDto) {
     const profile = await this.prisma.victimProfile.findUnique({
@@ -926,7 +973,6 @@ export class VictimProfileService {
         data.bankAccountNumber !== profile.bankAccountNumber) ||
       (data.bankName !== undefined && data.bankName !== profile.bankName);
 
-    // totalRaised is deliberately untouched here — editing content/media has nothing to do with confirmed money.
     const updatedProfile = await this.conditionalUpdate(
       id,
       profile.updatedAt,
@@ -973,6 +1019,7 @@ export class VictimProfileService {
     );
 
     await this.deleteMediaFiles(removed);
+    await this.cache.invalidateVictimProfileEverywhere(id);
 
     this.emitAudit({
       userId: admin.id,
@@ -1006,8 +1053,6 @@ export class VictimProfileService {
     return updatedProfile;
   }
 
-  // ─── DELETE ───
-
   async remove(admin: CurrentUserDto, id: string) {
     const profile = await this.prisma.victimProfile.findUnique({
       where: { id },
@@ -1018,6 +1063,30 @@ export class VictimProfileService {
     }
 
     this.assertAdminCanAccessProfile(admin, profile, AuditEventEnum.VICTIM_PROFILE_DELETED);
+
+    // G8: a PAID payment with an unsettled allocation means real money is
+    // still owed to someone against this profile (recipient, institution or
+    // platform). Deleting the profile out from under it either cascades the
+    // Support row away (losing the split breakdown, G8's original finding)
+    // or — once the section-9 sync migration lands — fails with a DB-level
+    // Restrict error instead of this readable one. Either way, block first.
+    const unsettled = await this.prisma.payment.findFirst({
+      where: {
+        victimProfileId: id,
+        status: 'PAID',
+        allocations: { some: { settlementStatus: 'PENDING' } },
+      },
+      select: { id: true },
+    });
+    if (unsettled) {
+      this.emitProfileFailure(
+        admin,
+        AuditEventEnum.VICTIM_PROFILE_DELETED,
+        profile,
+        'victim_profile_has_unsettled_payments',
+      );
+      throw new ConflictException('victim_profile_has_unsettled_payments');
+    }
 
     const result = await this.prisma.victimProfile.deleteMany({
       where: { id, updatedAt: profile.updatedAt },
@@ -1035,6 +1104,7 @@ export class VictimProfileService {
 
     const mediaKeys = this.collectMediaFields(profile);
     await this.deleteMediaFiles(mediaKeys);
+    await this.cache.invalidateVictimProfileEverywhere(id);
 
     this.emitAudit({
       userId: admin.id,
@@ -1053,7 +1123,7 @@ export class VictimProfileService {
         involvesChild: profile.involvesChild,
         mediaFilesDeleted: mediaKeys.length,
         mediaTotalBytes: profile.mediaTotalBytes,
-        totalRaisedAtDeletion: Number(profile.totalRaised),
+        totalRaisedAtDeletion: money(profile.totalRaised),
       },
     });
 
@@ -1064,8 +1134,6 @@ export class VictimProfileService {
 
     return { message: 'victim_profile_deleted', id };
   }
-
-  // ─── ADMIN — GET ALL ───
 
   async findAllForAdmin(query: FindAllVictimProfilesQueryDto) {
     const page = query.page && query.page > 0 ? query.page : 1;
@@ -1099,8 +1167,6 @@ export class VictimProfileService {
     };
   }
 
-  // ─── ADMIN — STALE / UNCLAIMED-TOO-LONG PROFILES ───
-
   async findStalePending() {
     const staleHours = Number(
       this.configService.get<string>('PROFILE_STALE_PENDING_HOURS') ??
@@ -1133,8 +1199,7 @@ export class VictimProfileService {
     }));
   }
 
-  // ─── ADMIN — DASHBOARD STATISTICS ───
-
+  // Not cached: sharing a single global stats cache key across modules risks cross-overwrite.
   async getStats() {
     const [total, grouped, raised] = await this.prisma.$transaction([
       this.prisma.victimProfile.count(),
@@ -1165,12 +1230,9 @@ export class VictimProfileService {
       published: counts[VictimProfileStatus.PUBLISHED] ?? 0,
       unpublished: counts[VictimProfileStatus.UNPUBLISHED] ?? 0,
       rejected: counts[VictimProfileStatus.REJECTED] ?? 0,
-      totalRaisedAllProfiles: Number(raised._sum.totalRaised ?? 0),
+      totalRaisedAllProfiles: money(raised._sum.totalRaised ?? 0),
     };
   }
-
-  // ─── PUBLIC — PLATFORM-WIDE TOTAL RAISED ───
-  // Scoped strictly to PUBLISHED + isPublished profiles.
 
   async getPublicStats() {
     const raised = await this.prisma.victimProfile.aggregate({
@@ -1182,11 +1244,9 @@ export class VictimProfileService {
     });
 
     return {
-      totalRaisedAllProfiles: Number(raised._sum.totalRaised ?? 0),
+      totalRaisedAllProfiles: money(raised._sum.totalRaised ?? 0),
     };
   }
-
-  // ─── ADMIN — AUDIT HISTORY ───
 
   async getHistory(id: string) {
     const profile = await this.prisma.victimProfile.findUnique({
@@ -1206,8 +1266,6 @@ export class VictimProfileService {
       orderBy: { createdAt: 'desc' },
     });
   }
-
-  // ─── ADMIN — GET APPROVAL/GATE STATUS ───
 
   async getGates(id: string) {
     const profile = await this.prisma.victimProfile.findUnique({
@@ -1295,8 +1353,6 @@ export class VictimProfileService {
     return !!profile.bankAccountName && !!profile.bankAccountNumber && !!profile.bankName;
   }
 
-  // ─── ADMIN — UPDATE APPROVAL GATES ───
-
   async updateGates(admin: CurrentUserDto, id: string, data: UpdateVictimGateDto) {
     const profile = await this.prisma.victimProfile.findUnique({
       where: { id },
@@ -1377,6 +1433,8 @@ export class VictimProfileService {
       { admin, action: AuditEventEnum.VICTIM_PROFILE_GATES_UPDATED, profile },
     );
 
+    await this.cache.invalidateVictimProfileEverywhere(id);
+
     this.emitAudit({
       userId: admin.id,
       ...this.targetUserFor(admin, profile),
@@ -1419,9 +1477,6 @@ export class VictimProfileService {
 
     return updatedProfile;
   }
-
-  // ─── ADMIN — CHILD SAFETY REVIEW ───
-  // Second-admin requirement violation is recorded as DENIED, not a plain FAILURE.
 
   async updateChildSafetyReview(
     admin: CurrentUserDto,
@@ -1518,6 +1573,8 @@ export class VictimProfileService {
         { admin, action: AuditEventEnum.VICTIM_PROFILE_CHILD_SAFETY_REVIEWED, profile },
       );
 
+      await this.cache.invalidateVictimProfileEverywhere(id);
+
       this.emitAudit({
         userId: admin.id,
         ...this.targetUserFor(admin, profile),
@@ -1571,6 +1628,8 @@ export class VictimProfileService {
       { admin, action: AuditEventEnum.VICTIM_PROFILE_CHILD_SAFETY_REVIEW_REVERSED, profile },
     );
 
+    await this.cache.invalidateVictimProfileEverywhere(id);
+
     this.emitAudit({
       userId: admin.id,
       ...this.targetUserFor(admin, profile),
@@ -1598,8 +1657,6 @@ export class VictimProfileService {
 
     return updatedProfile;
   }
-
-  // ─── ADMIN — REVOKE CONSENT ───
 
   async revokeConsent(admin: CurrentUserDto, id: string, data: RevokeConsentDto) {
     const profile = await this.prisma.victimProfile.findUnique({
@@ -1646,6 +1703,8 @@ export class VictimProfileService {
       { admin, action: AuditEventEnum.VICTIM_PROFILE_CONSENT_REVOKED, profile },
     );
 
+    await this.cache.invalidateVictimProfileEverywhere(id);
+
     this.emitAudit({
       userId: admin.id,
       ...this.targetUserFor(admin, profile),
@@ -1675,9 +1734,6 @@ export class VictimProfileService {
     return updatedProfile;
   }
 
-  // ─── ADMIN — UPDATE BANK DETAILS ───
-  // Records only WHICH of the three fields changed, never the values (see AUDIT-DATA POLICY above).
-
   async updateBankDetails(admin: CurrentUserDto, id: string, data: UpdateBankDetailsDto) {
     const profile = await this.prisma.victimProfile.findUnique({
       where: { id },
@@ -1692,6 +1748,20 @@ export class VictimProfileService {
       profile,
       AuditEventEnum.VICTIM_PROFILE_BANK_DETAILS_UPDATED,
     );
+
+    // G12: a minor cannot be the payout account holder. If the profile
+    // involves a child, whoever is filling this form must say who the
+    // account actually belongs to (parent, guardian, or another adult) —
+    // SELF is only valid for a non-child profile.
+    if (profile.involvesChild && data.accountHolderRelationship === 'SELF') {
+      this.emitProfileFailure(
+        admin,
+        AuditEventEnum.VICTIM_PROFILE_BANK_DETAILS_UPDATED,
+        profile,
+        'account_holder_cannot_be_the_child',
+      );
+      throw new BadRequestException('account_holder_cannot_be_the_child');
+    }
 
     const wasApproved = profile.isAdminApproved;
     const isAdminApproved = wasApproved ? false : profile.isAdminApproved;
@@ -1720,6 +1790,34 @@ export class VictimProfileService {
       { admin, action: AuditEventEnum.VICTIM_PROFILE_BANK_DETAILS_UPDATED, profile },
     );
 
+    // G40 (section 9): PayoutDestination is meant to become the only source
+    // of truth for where money goes, but nothing writes to it today except
+    // this transitional dual-write. One-per-profile owner, so upsert on
+    // victimProfileId. isVerified deliberately left false/unset here — G2
+    // requires an approver to verify the destination before it's usable,
+    // not whoever just typed it into this form.
+    await this.prisma.payoutDestination.upsert({
+      where: { victimProfileId: id },
+      create: {
+        rail: 'BANK',
+        bankName: data.bankName,
+        accountNumber: data.bankAccountNumber,
+        accountHolder: data.accountHolderName,
+        victimProfileId: id,
+      },
+      update: {
+        bankName: data.bankName,
+        accountNumber: data.bankAccountNumber,
+        accountHolder: data.accountHolderName,
+        // A changed destination is not the one that was verified.
+        // TODO(section 9 sync migration): also clear verifiedAt/verifiedById
+        // once those columns exist — today isVerified is all there is.
+        isVerified: false,
+      },
+    });
+
+    await this.cache.invalidateVictimProfileEverywhere(id);
+
     this.emitAudit({
       userId: admin.id,
       ...this.targetUserFor(admin, profile),
@@ -1744,6 +1842,13 @@ export class VictimProfileService {
           data.bankAccountNumber !== undefined &&
           data.bankAccountNumber !== profile.bankAccountNumber,
         bankNameChanged: data.bankName !== undefined && data.bankName !== profile.bankName,
+        accountHolderRelationship: data.accountHolderRelationship,
+        // TODO(section 9 sync migration): bankCode has no persisted column
+        // yet on VictimProfile or PayoutDestination — kept here so it's at
+        // least traceable in the audit trail rather than silently dropped,
+        // until the schema catches up and disbursement.service.ts can
+        // validate it against Chapa's banks list (G4).
+        bankCodeProvided: data.bankCode,
       },
     });
 
@@ -1755,8 +1860,6 @@ export class VictimProfileService {
 
     return updatedProfile;
   }
-
-  // ─── ADMIN — PUBLISH ───
 
   async publish(admin: CurrentUserDto, id: string) {
     const profile = await this.prisma.victimProfile.findUnique({
@@ -1813,6 +1916,8 @@ export class VictimProfileService {
       { admin, action: AuditEventEnum.VICTIM_PROFILE_PUBLISHED, profile },
     );
 
+    await this.cache.invalidateVictimProfileEverywhere(id);
+
     this.emitAudit({
       userId: admin.id,
       ...this.targetUserFor(admin, profile),
@@ -1835,8 +1940,6 @@ export class VictimProfileService {
 
     return updatedProfile;
   }
-
-  // ─── ADMIN — UNPUBLISH ───
 
   async unpublish(admin: CurrentUserDto, id: string) {
     const profile = await this.prisma.victimProfile.findUnique({
@@ -1870,6 +1973,8 @@ export class VictimProfileService {
       { admin, action: AuditEventEnum.VICTIM_PROFILE_UNPUBLISHED, profile },
     );
 
+    await this.cache.invalidateVictimProfileEverywhere(id);
+
     this.emitAudit({
       userId: admin.id,
       ...this.targetUserFor(admin, profile),
@@ -1892,8 +1997,6 @@ export class VictimProfileService {
 
     return updatedProfile;
   }
-
-  // ─── ADMIN — REJECT ───
 
   async reject(admin: CurrentUserDto, id: string) {
     const profile = await this.prisma.victimProfile.findUnique({
@@ -1927,6 +2030,8 @@ export class VictimProfileService {
       { admin, action: AuditEventEnum.VICTIM_PROFILE_REJECTED, profile },
     );
 
+    await this.cache.invalidateVictimProfileEverywhere(id);
+
     this.emitAudit({
       userId: admin.id,
       ...this.targetUserFor(admin, profile),
@@ -1949,8 +2054,6 @@ export class VictimProfileService {
 
     return updatedProfile;
   }
-
-  // ─── ADMIN — RESUBMIT AFTER REJECTION ───
 
   async resubmit(admin: CurrentUserDto, id: string) {
     const profile = await this.prisma.victimProfile.findUnique({
@@ -1994,6 +2097,8 @@ export class VictimProfileService {
       { admin, action: AuditEventEnum.VICTIM_PROFILE_RESUBMITTED, profile },
     );
 
+    await this.cache.invalidateVictimProfileEverywhere(id);
+
     this.emitAudit({
       userId: admin.id,
       ...this.targetUserFor(admin, profile),
@@ -2018,26 +2123,31 @@ export class VictimProfileService {
     return updatedProfile;
   }
 
-  // ─── ADMIN — RECONCILE totalRaised (financial-integrity check) ───
-  // Any mismatch writes a row (severity WARNING); a clean, matching profile writes nothing.
-
+  // G22 / design rule (section 4): "compute every total from Payment
+  // (PAID) and PaymentAllocation, never from Support amounts." The old
+  // version summed Support.recipientAmount ?? Support.amount — Support is
+  // a mirror billing writes for its own record-keeping, not the ledger,
+  // and the ?? fallback silently substituted the *gross* pledge whenever
+  // recipientAmount was null, overstating what the recipient actually got.
+  // totalRaised is defined here as gross paid (Payment.amount summed where
+  // status=PAID), matching the "pick one public number" rule and what
+  // FundingQueryService.getPublicProfileFunding computes independently —
+  // the two should never drift apart because they now share one definition.
   async reconcileProfileTotal(admin: CurrentUserDto, id: string, autoCorrect: boolean) {
     const profile = await this.prisma.victimProfile.findUnique({ where: { id } });
     if (!profile) {
       throw new NotFoundException('victim_profile_not_found');
     }
 
-    const supports = await this.prisma.support.findMany({
-      where: { victimProfileId: id, status: SupportStatus.CONFIRMED },
-      select: { amount: true, recipientAmount: true },
+    const agg = await this.prisma.payment.aggregate({
+      where: { victimProfileId: id, status: 'PAID' },
+      _sum: { amount: true },
+      _count: true,
     });
 
-    const liveTotal = supports.reduce(
-      (sum, s) => sum + Number(s.recipientAmount ?? s.amount ?? 0),
-      0,
-    );
-    const cachedTotal = Number(profile.totalRaised);
-    const mismatch = Math.abs(liveTotal - cachedTotal) > 0.01;
+    const liveTotal = new Prisma.Decimal(agg._sum.amount ?? 0);
+    const cachedTotal = new Prisma.Decimal(profile.totalRaised);
+    const mismatch = liveTotal.sub(cachedTotal).abs().gt('0.01');
 
     let corrected = false;
 
@@ -2049,6 +2159,7 @@ export class VictimProfileService {
         { admin, action: AuditEventEnum.VICTIM_PROFILE_TOTAL_RECONCILED, profile },
       );
       corrected = true;
+      await this.cache.invalidateVictimProfileEverywhere(id);
     }
 
     if (mismatch) {
@@ -2062,33 +2173,34 @@ export class VictimProfileService {
         entityLabel: this.profileLabel(profile),
         diff: {
           result: corrected ? 'success' : 'mismatch_detected',
-          previousCachedTotal: cachedTotal,
-          liveTotal,
+          previousCachedTotal: money(cachedTotal),
+          liveTotal: money(liveTotal),
           corrected,
         },
         metadata: {
-          difference: Number((liveTotal - cachedTotal).toFixed(2)),
-          confirmedSupportCount: supports.length,
+          difference: money(liveTotal.sub(cachedTotal)),
+          paidPaymentCount: agg._count,
         },
       });
     }
 
     return {
       victimProfileId: id,
-      cachedTotal,
-      liveTotal,
+      cachedTotal: money(cachedTotal),
+      liveTotal: money(liveTotal),
       mismatch,
       corrected,
     };
   }
 
-  // ─── ADMIN — RECONCILE ALL PROFILES ───
-
+  // G22: was an unbounded Promise.all over every profile in the table —
+  // fine in dev, a self-inflicted DB connection-pool exhaustion once there
+  // are thousands of profiles. Bounded to 10 concurrent reconciliations.
   async reconcileAllTotals(admin: CurrentUserDto, autoCorrect: boolean) {
     const profiles = await this.prisma.victimProfile.findMany({ select: { id: true } });
 
-    const results = await Promise.all(
-      profiles.map((p) => this.reconcileProfileTotal(admin, p.id, autoCorrect)),
+    const results = await mapWithConcurrency(profiles, 10, (p) =>
+      this.reconcileProfileTotal(admin, p.id, autoCorrect),
     );
 
     return results.filter((r) => r.mismatch);

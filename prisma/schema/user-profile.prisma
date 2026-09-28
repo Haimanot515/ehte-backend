@@ -1,13 +1,9 @@
-// user-profile.prisma
-// One row per user, created lazily on first profile edit — most users
-// will have no row until they fill in an address/demographic field.
-
+// One row per user, created lazily on first profile edit
 model UserProfile {
   id     String @id @default(uuid())
   userId String @unique
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  // Address (Ethiopian administrative hierarchy) — free-text, all optional.
   region  String?
   zone    String?
   city    String?
@@ -15,14 +11,13 @@ model UserProfile {
   woreda  String?
   kebele  String?
 
-  // Standard profile fields
   preferredLanguage String?
   dateOfBirth       DateTime?
   gender            String?
   alternatePhone    String?
   occupation        String?
 
-  // MinIO object key, not a public URL — read via a presigned-URL endpoint.
+  // MinIO object key, not a public URL
   profilePictureUrl String?
 
   createdAt DateTime @default(now())

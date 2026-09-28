@@ -403,10 +403,7 @@ export class NotificationController {
   @RequirePermissions(PermissionsEnum.NOTIFICATION_MANAGE)
   @ApiOperation({ summary: 'Admin: mark one of my notifications as read' })
   @ApiParam({ name: 'id', description: 'Notification ID' })
-  async markAdminNotificationAsRead(
-    @Param('id') id: string,
-    @CurrentUser() user: CurrentUserDto,
-  ) {
+  async markAdminNotificationAsRead(@Param('id') id: string, @CurrentUser() user: CurrentUserDto) {
     return this.notificationService.markOneAsRead(id, user);
   }
 

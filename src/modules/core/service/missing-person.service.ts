@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -12,6 +13,7 @@ import {
   MissingPersonStatus,
   MissingPersonType,
   Prisma,
+  RewardClaimStatus,
 } from '@prisma/client';
 
 import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
@@ -27,6 +29,8 @@ import { AuditEventPayload } from 'src/modules/misc/events/audit.events';
 import { NotificationEventEnum } from 'src/common/enums/shared/notification-events.enum';
 
 import { MinioService } from 'src/services/minio/minio.service';
+import { CacheService } from 'src/services/redis/cache.service';
+import { RewardService } from 'src/modules/billing/service/reward.service';
 
 import {
   AdminCreateMissingPersonDto,
@@ -62,9 +66,16 @@ const UPDATABLE_FIELD_NAMES = [
 type MissingPersonAuditRef = Pick<MissingPerson, 'id' | 'name' | 'personType' | 'userId'>;
 
 // Finished cases: never stale, and only REJECTED counts against a user.
+// ASSUMPTION TO VERIFY: EXPIRED/CANCELLED were added to the MissingPersonStatus
+// enum (schema change not included in this pass) with no other reference to
+// either value anywhere in this file, the controller, or notifications — so
+// there's nothing here to confirm the intended semantics against. Treated as
+// terminal, same bucket as REJECTED/FOUND, until confirmed otherwise.
 const TERMINAL_STATUSES: MissingPersonStatus[] = [
   MissingPersonStatus.REJECTED,
   MissingPersonStatus.FOUND,
+  MissingPersonStatus.EXPIRED,
+  MissingPersonStatus.CANCELLED,
 ];
 
 @Injectable()
@@ -74,6 +85,8 @@ export class MissingPersonService {
     private readonly eventEmitter: EventEmitter2,
     private readonly minioService: MinioService,
     private readonly configService: ConfigService,
+    private readonly cache: CacheService,
+    private readonly rewardService: RewardService,
   ) {}
 
   private readonly EDITABLE_STATUSES: MissingPersonStatus[] = [
@@ -82,17 +95,35 @@ export class MissingPersonService {
   ];
 
   // Admin status workflow. PENDING must pass through UNDER_REVIEW first.
+  // ASSUMPTION TO VERIFY (see TERMINAL_STATUSES note above): EXPIRED reachable
+  // from every pre-FOUND state (a case going stale before resolution);
+  // CANCELLED reachable from PENDING/UNDER_REVIEW/MORE_INFORMATION_REQUESTED
+  // only (an APPROVED case is close enough to resolution that closing it
+  // should go through REJECTED/FOUND, which is what actually distinguishes
+  // it for the maybeFlagUserForRejections()/reward-refund paths). Confirm
+  // against the real product requirement before relying on this.
   private readonly ALLOWED_TRANSITIONS: Record<MissingPersonStatus, MissingPersonStatus[]> = {
-    [MissingPersonStatus.PENDING]: [MissingPersonStatus.UNDER_REVIEW],
+    [MissingPersonStatus.PENDING]: [
+      MissingPersonStatus.UNDER_REVIEW,
+      MissingPersonStatus.CANCELLED,
+      MissingPersonStatus.EXPIRED,
+    ],
     [MissingPersonStatus.UNDER_REVIEW]: [
       MissingPersonStatus.MORE_INFORMATION_REQUESTED,
       MissingPersonStatus.APPROVED,
       MissingPersonStatus.REJECTED,
+      MissingPersonStatus.CANCELLED,
+      MissingPersonStatus.EXPIRED,
     ],
-    [MissingPersonStatus.MORE_INFORMATION_REQUESTED]: [],
-    [MissingPersonStatus.APPROVED]: [MissingPersonStatus.FOUND],
+    [MissingPersonStatus.MORE_INFORMATION_REQUESTED]: [
+      MissingPersonStatus.CANCELLED,
+      MissingPersonStatus.EXPIRED,
+    ],
+    [MissingPersonStatus.APPROVED]: [MissingPersonStatus.FOUND, MissingPersonStatus.EXPIRED],
     [MissingPersonStatus.REJECTED]: [],
     [MissingPersonStatus.FOUND]: [],
+    [MissingPersonStatus.EXPIRED]: [],
+    [MissingPersonStatus.CANCELLED]: [],
   };
 
   // Explicit public projection so new model fields never leak by default.
@@ -168,8 +199,8 @@ export class MissingPersonService {
         result: outcome === AuditOutcome.DENIED ? 'denied' : 'failure',
         reason,
         ...(opts.diff ?? {}),
-      } as AuditEventPayload['diff'],
-      ...(opts.metadata ? { metadata: opts.metadata as AuditEventPayload['metadata'] } : {}),
+      },
+      ...(opts.metadata ? { metadata: opts.metadata } : {}),
     });
   }
 
@@ -309,7 +340,11 @@ export class MissingPersonService {
   // Reward amount and details are stored only while rewardOffered is true.
   private buildRewardProposalUpdate(
     incoming: { rewardOffered?: boolean; rewardAmount?: number; rewardDetails?: string },
-    existing?: { rewardOffered: boolean; rewardAmount: number | null; rewardDetails: string | null },
+    existing?: {
+      rewardOffered: boolean;
+      rewardAmount: number | null;
+      rewardDetails: string | null;
+    },
   ): { rewardOffered: boolean; rewardAmount: number | null; rewardDetails: string | null } | null {
     const touched =
       incoming.rewardOffered !== undefined ||
@@ -321,15 +356,23 @@ export class MissingPersonService {
     const base = existing ?? { rewardOffered: false, rewardAmount: null, rewardDetails: null };
 
     const rewardOffered = incoming.rewardOffered ?? base.rewardOffered;
-    const rewardAmount = rewardOffered ? incoming.rewardAmount ?? base.rewardAmount ?? null : null;
-    const rewardDetails = rewardOffered ? incoming.rewardDetails ?? base.rewardDetails ?? null : null;
+    const rewardAmount = rewardOffered
+      ? (incoming.rewardAmount ?? base.rewardAmount ?? null)
+      : null;
+    const rewardDetails = rewardOffered
+      ? (incoming.rewardDetails ?? base.rewardDetails ?? null)
+      : null;
 
     return { rewardOffered, rewardAmount, rewardDetails };
   }
 
   // Hides reward amount and details publicly until an admin approves.
   private maskUnapprovedReward<
-    T extends { rewardApproved: boolean; rewardAmount: number | null; rewardDetails: string | null },
+    T extends {
+      rewardApproved: boolean;
+      rewardAmount: number | null;
+      rewardDetails: string | null;
+    },
   >(record: T): T {
     if (record.rewardApproved) return record;
     return { ...record, rewardAmount: null, rewardDetails: null };
@@ -469,7 +512,7 @@ export class MissingPersonService {
 
     this.emitAudit({
       targetUserId: payload.userId,
-      actorType: 'SYSTEM' as unknown as ReturnType<typeof resolveActorType>,
+      actorType: 'SYSTEM',
       action: AuditEventEnum.MISSING_PERSON_UPDATED,
       entity: 'User',
       entityId: payload.userId,
@@ -505,7 +548,7 @@ export class MissingPersonService {
 
       this.emitAudit({
         targetUserId: userId,
-        actorType: 'SYSTEM' as unknown as ReturnType<typeof resolveActorType>,
+        actorType: 'SYSTEM',
         action: AuditEventEnum.USER_AUTO_FLAGGED,
         entity: 'User',
         entityId: userId,
@@ -517,6 +560,64 @@ export class MissingPersonService {
           result: 'flagged_for_review',
         },
       });
+    }
+  }
+
+  // G6: both reward-edit write paths (owner update() and admin updateReward())
+  // need this same check — once a payer has actually funded the reward
+  // (a PAID Payment of type MISSING_PERSON_REWARD exists for this case),
+  // the terms shown at checkout time cannot change out from under the
+  // escrowed money. Funding itself is already blocked once any PAID
+  // payment exists (PaymentService.initiateRewardFunding), so this is the
+  // other half: block edits, not just top-ups.
+  private async isRewardFunded(missingPersonId: string): Promise<boolean> {
+    const count = await this.prisma.payment.count({
+      where: { missingPersonId, type: 'MISSING_PERSON_REWARD', status: 'PAID' },
+    });
+    return count > 0;
+  }
+
+  // PRD alignment (Sep 2026): RewardClaim is no longer one row per case, and
+  // a case-level refund-due state now lives on MissingPerson.fundingStatus
+  // (see reward-claim.prisma / missing-person.prisma) — not a synthetic
+  // per-case RewardClaim row. Delegate to RewardService.closeWithoutPayout(),
+  // which already rejects any still-open claims and marks fundingStatus
+  // REFUND_DUE; it's a no-op (throws BadRequestException) when there's
+  // nothing to close.
+  private async syncRewardClaimOnClosure(
+    adminId: string,
+    missingPersonId: string,
+    status: MissingPersonStatus,
+  ): Promise<void> {
+    if (status !== MissingPersonStatus.FOUND && status !== MissingPersonStatus.REJECTED) return;
+
+    const funded = await this.isRewardFunded(missingPersonId);
+    if (!funded) return;
+
+    if (status === MissingPersonStatus.FOUND) {
+      // A claim already approved or paid out means the reward is
+      // legitimately spoken for — closeWithoutPayout() must not run here,
+      // since it would flip fundingStatus to REFUND_DUE on money that's
+      // already committed (or already sent) to that informant.
+      const settledForPayout = await this.prisma.rewardClaim.findFirst({
+        where: {
+          missingPersonId,
+          status: { in: [RewardClaimStatus.APPROVED_FOR_REWARD, RewardClaimStatus.PAID_OUT] },
+        },
+        select: { id: true },
+      });
+      if (settledForPayout) return;
+    }
+
+    const reason =
+      status === MissingPersonStatus.REJECTED
+        ? 'case_rejected_after_funding'
+        : 'case_found_with_no_approved_informant';
+
+    try {
+      await this.rewardService.closeWithoutPayout(adminId, missingPersonId, reason);
+    } catch (err) {
+      if (!(err instanceof BadRequestException)) throw err;
     }
   }
 
@@ -539,7 +640,7 @@ export class MissingPersonService {
         'not_case_owner',
         {
           outcome: AuditOutcome.DENIED,
-          targetUserId: missingPerson.userId,
+          targetUserId: missingPerson.userId ?? undefined,
           metadata: { requestedKey: key },
         },
       );
@@ -724,6 +825,147 @@ export class MissingPersonService {
     return missingPerson;
   }
 
+  // ─────────────────────────────────────────────
+  // ADMIN — DASHBOARD STATISTICS
+  // GET /missing-persons/stats
+  //
+  // Same "advanced stats" shape as Report/Post: counts by status and
+  // personType, reward metrics, claimed cases, pending child-safety
+  // dual-control confirmations, resolution rate (FOUND / total),
+  // average time PENDING->APPROVED and APPROVED->FOUND, tip volume
+  // from InformationSubmission (since tips are user-submitted against
+  // these cases), and a 30-day daily creation trend for charting.
+  // Uses $queryRaw for the aggregates Prisma's query builder can't
+  // express (date_trunc grouping, EPOCH-based duration averages) —
+  // same Postgres assumption as the rest of the schema.
+  //
+  // NOTE: a second, simpler getStats() was introduced further down
+  // this file (just before update()) by the azure/dev branch, which
+  // would have collided with this one (duplicate method name). It's
+  // been dropped in favor of this version, since this is the one
+  // both branches already agreed on before that change landed.
+  // ─────────────────────────────────────────────
+  async getStats() {
+    const [
+      total,
+      statusGrouped,
+      typeGrouped,
+      claimedCount,
+      rewardOfferedCount,
+      rewardApprovedCount,
+      pendingChildSafetyConfirmation,
+      totalInformationSubmissions,
+      pendingToApprovedAgg,
+      approvedToFoundAgg,
+      dailyTrend,
+    ] = await this.prisma.$transaction([
+      this.prisma.missingPerson.count(),
+
+      this.prisma.missingPerson.groupBy({
+        by: ['status'],
+        _count: { status: true },
+        orderBy: { status: 'asc' },
+      }),
+
+      this.prisma.missingPerson.groupBy({
+        by: ['personType'],
+        _count: { personType: true },
+        orderBy: { personType: 'asc' },
+      }),
+
+      this.prisma.missingPerson.count({ where: { claimedByUserId: { not: null } } }),
+      this.prisma.missingPerson.count({ where: { rewardOffered: true } }),
+      this.prisma.missingPerson.count({ where: { rewardApproved: true } }),
+
+      this.prisma.missingPerson.count({
+        where: {
+          personType: MissingPersonType.CHILD,
+          childSafetyFirstConfirmedByUserId: { not: null },
+          status: MissingPersonStatus.UNDER_REVIEW,
+        },
+      }),
+
+      this.prisma.informationSubmission.count(),
+
+      this.prisma.$queryRaw<{ avg_hours: number | null }[]>`
+        SELECT AVG(EXTRACT(EPOCH FROM ("updatedAt" - "createdAt")) / 3600) AS avg_hours
+        FROM "MissingPerson"
+        WHERE status = 'APPROVED'
+      `,
+
+      this.prisma.$queryRaw<{ avg_hours: number | null }[]>`
+        SELECT AVG(EXTRACT(EPOCH FROM ("updatedAt" - "createdAt")) / 3600) AS avg_hours
+        FROM "MissingPerson"
+        WHERE status = 'FOUND'
+      `,
+
+      this.prisma.$queryRaw<{ day: Date; count: bigint }[]>`
+        SELECT date_trunc('day', "createdAt") AS day, COUNT(*)::bigint AS count
+        FROM "MissingPerson"
+        WHERE "createdAt" >= NOW() - INTERVAL '30 days'
+        GROUP BY day
+        ORDER BY day ASC
+      `,
+    ]);
+
+    const byStatus = Object.fromEntries(
+      Object.values(MissingPersonStatus).map((status) => [status, 0]),
+    ) as Record<MissingPersonStatus, number>;
+
+    for (const row of statusGrouped) {
+      const c = row._count as { status?: number } | undefined;
+      byStatus[row.status] = c?.status ?? 0;
+    }
+
+    const byPersonType = Object.fromEntries(
+      Object.values(MissingPersonType).map((type) => [type, 0]),
+    ) as Record<MissingPersonType, number>;
+
+    for (const row of typeGrouped) {
+      const c = row._count as { personType?: number } | undefined;
+      byPersonType[row.personType] = c?.personType ?? 0;
+    }
+
+    const rejected = byStatus[MissingPersonStatus.REJECTED] ?? 0;
+    const found = byStatus[MissingPersonStatus.FOUND] ?? 0;
+
+    return {
+      total,
+      byStatus,
+      byPersonType,
+
+      claimedCount,
+      pendingChildSafetyConfirmation,
+
+      reward: {
+        offeredCount: rewardOfferedCount,
+        approvedCount: rewardApprovedCount,
+      },
+
+      rejectionRate: total > 0 ? Number((rejected / total).toFixed(4)) : 0,
+      resolutionRate: total > 0 ? Number((found / total).toFixed(4)) : 0,
+
+      avgApprovalHours:
+        pendingToApprovedAgg[0]?.avg_hours != null
+          ? Number(Number(pendingToApprovedAgg[0].avg_hours).toFixed(2))
+          : null,
+      avgTimeToFoundHours:
+        approvedToFoundAgg[0]?.avg_hours != null
+          ? Number(Number(approvedToFoundAgg[0].avg_hours).toFixed(2))
+          : null,
+
+      informationSubmissions: {
+        total: totalInformationSubmissions,
+        avgPerCase: total > 0 ? Number((totalInformationSubmissions / total).toFixed(2)) : 0,
+      },
+
+      dailyTrend: dailyTrend.map((row) => ({
+        date: row.day.toISOString().slice(0, 10),
+        count: Number(row.count),
+      })),
+    };
+  }
+
   // Admin-created case. Owner is the admin; skips cooldown and pending cap.
   // CHILD cases start UNDER_REVIEW so the two-admin approval still applies.
   async createByAdmin(
@@ -762,6 +1004,11 @@ export class MissingPersonService {
       idempotencyKey,
     );
 
+    // A non-CHILD admin-created case is born APPROVED — it's immediately public.
+    if (status === MissingPersonStatus.APPROVED) {
+      await this.cache.invalidateMissingPersonCaches();
+    }
+
     this.emitAudit({
       userId: admin.id,
       actorType: resolveActorType(admin.roles ?? []),
@@ -799,7 +1046,11 @@ export class MissingPersonService {
     data: CreateMissingPersonDto,
     merged: MediaBearing,
     totalBytes: number,
-    rewardProposal: { rewardOffered: boolean; rewardAmount: number | null; rewardDetails: string | null },
+    rewardProposal: {
+      rewardOffered: boolean;
+      rewardAmount: number | null;
+      rewardDetails: string | null;
+    },
     initial: { status: MissingPersonStatus; rewardApproved: boolean },
     idempotencyKey?: string,
   ) {
@@ -848,6 +1099,11 @@ export class MissingPersonService {
   }
 
   async findOne(id: string) {
+    type PublicMissingPerson = Prisma.MissingPersonGetPayload<{ select: typeof this.publicSelect }>;
+
+    const cached = await this.cache.getMissingPerson<PublicMissingPerson>(id);
+    if (cached !== null) return cached;
+
     const missingPerson = await this.prisma.missingPerson.findUnique({
       where: { id },
       select: this.publicSelect,
@@ -857,10 +1113,18 @@ export class MissingPersonService {
       throw new NotFoundException('missing_person_not_found');
     }
 
-    return this.maskUnapprovedReward(missingPerson);
+    const masked = this.maskUnapprovedReward(missingPerson);
+    await this.cache.setMissingPerson(id, masked);
+    return masked;
   }
 
   async findAll(query: ListMissingPersonsQueryDto) {
+    return this.cache.wrapMissingPersonList(query as unknown as Record<string, unknown>, () =>
+      this.findAllUncached(query),
+    );
+  }
+
+  private async findAllUncached(query: ListMissingPersonsQueryDto) {
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
 
@@ -931,54 +1195,9 @@ export class MissingPersonService {
     }));
   }
 
-    // Admin dashboard stats: totals by status, person type, and reward state.
-  async getStats() {
-    const [total, byStatus, byType, rewardOffered, rewardApproved] = await this.prisma.$transaction([
-      this.prisma.missingPerson.count(),
-      this.prisma.missingPerson.groupBy({
-        by: ['status'],
-        _count: { status: true },
-        orderBy: { status: 'asc' },
-      }),
-      this.prisma.missingPerson.groupBy({
-        by: ['personType'],
-        _count: { personType: true },
-        orderBy: { personType: 'asc' },
-      }),
-      this.prisma.missingPerson.count({ where: { rewardOffered: true } }),
-      this.prisma.missingPerson.count({ where: { rewardApproved: true } }),
-    ]);
-
-    const statusCounts = Object.fromEntries(
-      Object.values(MissingPersonStatus).map((status) => [status, 0]),
-    ) as Record<MissingPersonStatus, number>;
-    for (const row of byStatus) {
-      const rowCount = row._count as { status?: number } | undefined;
-      statusCounts[row.status] = rowCount?.status ?? 0;
-    }
-
-    const typeCounts = Object.fromEntries(
-      Object.values(MissingPersonType).map((type) => [type, 0]),
-    ) as Record<MissingPersonType, number>;
-    for (const row of byType) {
-      const rowCount = row._count as { personType?: number } | undefined;
-      typeCounts[row.personType] = rowCount?.personType ?? 0;
-    }
-
-    return {
-      total,
-      pending: statusCounts[MissingPersonStatus.PENDING] ?? 0,
-      underReview: statusCounts[MissingPersonStatus.UNDER_REVIEW] ?? 0,
-      moreInformationRequested: statusCounts[MissingPersonStatus.MORE_INFORMATION_REQUESTED] ?? 0,
-      approved: statusCounts[MissingPersonStatus.APPROVED] ?? 0,
-      rejected: statusCounts[MissingPersonStatus.REJECTED] ?? 0,
-      found: statusCounts[MissingPersonStatus.FOUND] ?? 0,
-      byType: typeCounts,
-      rewardOfferedCount: rewardOffered,
-      rewardApprovedCount: rewardApproved,
-    };
-  }
-
+  // Only PENDING / MORE_INFORMATION_REQUESTED cases are editable (EDITABLE_STATUSES),
+  // and neither is ever public (findOne/findAll require APPROVED), so nothing this
+  // method touches can already be in the public cache — no invalidation needed here.
   async update(user: CurrentUserDto, id: string, data: UpdateMissingPersonDto) {
     const existing = await this.prisma.missingPerson.findUnique({ where: { id } });
 
@@ -992,7 +1211,7 @@ export class MissingPersonService {
         AuditEventEnum.MISSING_PERSON_UPDATED,
         existing,
         'not_authorized_to_update',
-        { outcome: AuditOutcome.DENIED, targetUserId: existing.userId },
+        { outcome: AuditOutcome.DENIED, targetUserId: existing.userId ?? undefined },
       );
       throw new ForbiddenException('not_authorized_to_update');
     }
@@ -1065,6 +1284,20 @@ export class MissingPersonService {
 
     const rewardUpdate = this.buildRewardProposalUpdate(data, existing);
 
+    // G6: rewardApproved (and therefore funding) is independent of case
+    // status — see updateReward()'s own comment — so EDITABLE_STATUSES
+    // above does not by itself guarantee a funded reward can't reach here.
+    if (rewardUpdate !== null && (await this.isRewardFunded(id))) {
+      this.emitCaseFailure(
+        user,
+        AuditEventEnum.MISSING_PERSON_UPDATED,
+        existing,
+        'reward_terms_locked_once_funded',
+        { metadata: { operation: 'reward_edit_blocked' } },
+      );
+      throw new ConflictException('reward_terms_locked_once_funded');
+    }
+
     // Changing the terms of an approved reward resets its approval.
     const rewardTermsChanged =
       rewardUpdate !== null &&
@@ -1136,6 +1369,7 @@ export class MissingPersonService {
     return updated;
   }
 
+  // Only PENDING cases can be deleted, and PENDING is never public — no invalidation needed.
   async remove(user: CurrentUserDto, id: string) {
     const existing = await this.prisma.missingPerson.findUnique({ where: { id } });
 
@@ -1149,7 +1383,7 @@ export class MissingPersonService {
         AuditEventEnum.MISSING_PERSON_DELETED,
         existing,
         'not_authorized_to_delete',
-        { outcome: AuditOutcome.DENIED, targetUserId: existing.userId },
+        { outcome: AuditOutcome.DENIED, targetUserId: existing.userId ?? undefined },
       );
       throw new ForbiddenException('not_authorized_to_delete');
     }
@@ -1285,6 +1519,7 @@ export class MissingPersonService {
     if (isChildApproval) {
       const safety = await this.ensureChildSafetySatisfied(existing, admin, childSafetyConfirmed);
       if (safety === 'first_confirmation_recorded') {
+        // Not yet APPROVED — nothing public changes, so no cache invalidation here.
         const partial = await this.prisma.missingPerson.findUniqueOrThrow({ where: { id } });
         this.emitAudit({
           userId: admin.id,
@@ -1323,6 +1558,11 @@ export class MissingPersonService {
     }
 
     const updated = await this.prisma.missingPerson.findUniqueOrThrow({ where: { id } });
+
+    // Only transitions into or out of APPROVED change public visibility, but every
+    // transition that reaches here has already passed ALLOWED_TRANSITIONS, so
+    // invalidating unconditionally is simple and cheap (short TTLs, no-op if unused).
+    await this.cache.invalidateMissingPersonEverywhere(id);
 
     this.emitAudit({
       userId: admin.id,
@@ -1382,9 +1622,11 @@ export class MissingPersonService {
       reviewNote,
     });
 
-    if (status === MissingPersonStatus.REJECTED) {
+    if (status === MissingPersonStatus.REJECTED && existing.userId) {
       await this.maybeFlagUserForRejections(existing.userId);
     }
+
+    await this.syncRewardClaimOnClosure(admin.id, id, status);
 
     return updated;
   }
@@ -1401,6 +1643,23 @@ export class MissingPersonService {
 
     if (!existing) {
       throw new NotFoundException('missing_person_not_found');
+    }
+
+    // G6: this is one of two write paths onto rewardApproved/rewardAmount
+    // (the other being RewardService.approveOffer, REWARDS_APPROVE) — once
+    // a PAID payment exists against this case, neither should be able to
+    // move the terms the payer actually funded. autoCorrect-free: there is
+    // no legitimate reason to touch this endpoint post-funding, so it's a
+    // hard block rather than a partial one.
+    if (await this.isRewardFunded(id)) {
+      this.emitCaseFailure(
+        admin,
+        AuditEventEnum.MISSING_PERSON_UPDATED,
+        existing,
+        'reward_terms_locked_once_funded',
+        { metadata: { operation: 'reward_review_blocked' } },
+      );
+      throw new ConflictException('reward_terms_locked_once_funded');
     }
 
     if (rewardApproved && !existing.rewardOffered) {
@@ -1437,6 +1696,10 @@ export class MissingPersonService {
       },
     });
 
+    // rewardApproved/rewardAmount/rewardDetails feed maskUnapprovedReward() on the
+    // public detail/list views, so any change here can change what's shown publicly.
+    await this.cache.invalidateMissingPersonEverywhere(id);
+
     this.emitAudit({
       userId: admin.id,
       ...this.targetUserFor(admin, existing),
@@ -1456,7 +1719,8 @@ export class MissingPersonService {
       },
       metadata: {
         operation: 'reward_review',
-        amountOverriddenByAdmin: rewardAmount !== undefined && rewardAmount !== existing.rewardAmount,
+        amountOverriddenByAdmin:
+          rewardAmount !== undefined && rewardAmount !== existing.rewardAmount,
         detailsOverriddenByAdmin:
           rewardDetails !== undefined && rewardDetails !== existing.rewardDetails,
       },

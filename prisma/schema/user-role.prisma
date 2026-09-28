@@ -1,7 +1,4 @@
-// user-role.prisma
-// assignedBy added: records who granted the role. Previously only assignedAt
-// existed, so "who assigned this" was reconstructable only from audit logs.
-
+// assignedBy records who granted the role
 model UserRole {
   id             String   @id @default(uuid())
   userId         String

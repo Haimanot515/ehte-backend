@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 
 import { PrismaService } from 'src/prisma/prisma.service';
 
@@ -13,7 +13,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 @Injectable()
-export class PermissionsSeeder implements OnApplicationBootstrap {
+export class PermissionsSeeder {
   private readonly logger = new Logger(PermissionsSeeder.name);
 
   constructor(private readonly prisma: PrismaService) {}
@@ -47,7 +47,7 @@ export class PermissionsSeeder implements OnApplicationBootstrap {
     throw lastError;
   }
 
-  async onApplicationBootstrap(): Promise<void> {
+  async run(): Promise<void> {
     const permissions = Object.values(PermissionsEnum);
 
     for (const name of permissions) {
@@ -86,7 +86,7 @@ export class PermissionsSeeder implements OnApplicationBootstrap {
 
     if (!systemRole) {
       throw new Error(
-        `Required role "${RolesEnum.SYSTEM}" was not found. Ensure RolesSeeder runs before PermissionsSeeder.`,
+        `Required role "${RolesEnum.SYSTEM}" was not found. Ensure RolesSeederruns before PermissionsSeeder.`,
       );
     }
 
@@ -150,6 +150,8 @@ export class PermissionsSeeder implements OnApplicationBootstrap {
 
       PermissionsEnum.MEDIA_UPLOAD,
       PermissionsEnum.MEDIA_DELETE,
+
+      PermissionsEnum.APP_ACCESS_QR_READ,
     ];
 
     // Deliberately empty — no automated/service use case defined yet; add when there's a real one.

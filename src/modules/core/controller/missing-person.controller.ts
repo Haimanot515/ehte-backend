@@ -52,6 +52,31 @@ export class MissingPersonController {
     return this.missingPersonService.create(user, data, idempotencyKey);
   }
 
+  // ─────────────────────────────────────────────
+  // ADMIN — DASHBOARD STATISTICS
+  // GET /missing-persons/admin/stats
+  //
+  // Declared before 'admin/:id' so Nest doesn't treat "stats" as a
+  // missing person id — same route-order reasoning as 'admin/stale'
+  // below.
+  //
+  // NOTE: a second, duplicate @Get('admin/stats')/getStats() handler
+  // existed further down this file (near 'admin/stale'), calling the
+  // same service method with a narrower summary ('counts by status
+  // and type'). Two methods with the same name in one class don't
+  // compile, so it's been removed — this is the one kept, since it
+  // matches the richer getStats() shape MissingPersonService actually
+  // returns (byStatus, byPersonType, reward breakdown, dailyTrend, etc).
+  // ─────────────────────────────────────────────
+  @Get('admin/stats')
+  @ApiBearerAuth('access-token')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.DASHBOARD_READ)
+  @ApiOperation({ summary: 'Admin: get missing person statistics for the dashboard' })
+  async getStats() {
+    return this.missingPersonService.getStats();
+  }
+
   // Admin creates a case directly. CHILD cases still need two-admin approval.
   @Post('admin')
   @ApiBearerAuth('access-token')
@@ -121,15 +146,6 @@ export class MissingPersonController {
     return this.missingPersonService.findStalePending();
   }
 
-    @Get('admin/stats')
-  @ApiBearerAuth('access-token')
-  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
-  @RequirePermissions(PermissionsEnum.DASHBOARD_READ)
-  @ApiOperation({ summary: 'Admin: get missing person counts by status and type' })
-  async getStats() {
-    return this.missingPersonService.getStats();
-  }
-
   @Get('admin/:id')
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
@@ -180,10 +196,21 @@ export class MissingPersonController {
     return this.missingPersonService.unclaimMissingPerson(admin, id);
   }
 
+  // G6: this was reachable with MISSING_PERSON_REVIEW alone — the same
+  // permission used to approve/reject the case itself — while
+  // RewardService.approveOffer (the other write path onto these same
+  // fields) requires REWARDS_APPROVE. Requiring both here closes the gap
+  // where a reviewer without reward-approval privilege could still change
+  // or revoke reward terms through this route. The underlying "two write
+  // paths for one field" problem (G6's other half) is fixed on the
+  // service side by MissingPersonService.updateReward()'s funded-lock;
+  // fully consolidating onto RewardService as the single write path is
+  // tracked as a billing-module change, not done here.
   @Patch('admin/:id/reward')
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
-  @RequirePermissions(PermissionsEnum.MISSING_PERSON_REVIEW)
+  @RequirePermissions(PermissionsEnum.MISSING_PERSON_REVIEW, PermissionsEnum.REWARDS_APPROVE)
+  @RequireReauthentication()
   @ApiOperation({ summary: 'Admin: approve or revise the reward for a missing person case' })
   async updateReward(
     @CurrentUser() admin: CurrentUserDto,

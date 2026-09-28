@@ -1,14 +1,4 @@
-import {
-  Body,
-  Controller,
-  Get,
-  Header,
-  Headers,
-  Param,
-  Patch,
-  Post,
-  Query,
-} from '@nestjs/common';
+import { Body, Controller, Get, Header, Headers, Param, Patch, Post, Query } from '@nestjs/common';
 
 import { ApiBearerAuth, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
@@ -92,7 +82,7 @@ export class ReportController {
   @Get('stats')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.DASHBOARD_READ)
-  @ApiOperation({ summary: 'Admin: get report counts by status' })
+  @ApiOperation({ summary: 'Admin: get report statistics for the dashboard' })
   async getStats() {
     return this.reportService.getStats();
   }

@@ -60,4 +60,14 @@ export enum NotificationEventEnum {
   // AUTH (already namespaced before)
   PASSWORD_CHANGED = 'notification.password_changed',
   PASSWORD_RESET = 'notification.password_reset',
+
+  // BILLING
+  PAYMENT_VERIFIED = 'notification.payment_verified',
+  REWARD_CLAIM_APPROVED = 'notification.reward_claim_approved',
+  DISBURSEMENT_PAID_OUT = 'notification.disbursement_paid_out',
+  INSTITUTION_SIGNED = 'INSTITUTION_SIGNED',
+  AGREEMENT_CREATED = 'AGREEMENT_CREATED',
+  AGREEMENT_ACTIVATED = 'AGREEMENT_ACTIVATED',
+  AGREEMENT_RETIRED = 'AGREEMENT_RETIRED',
+  VICTIM_PROFILE_AGREEMENT_ASSIGNED = 'VICTIM_PROFILE_AGREEMENT_ASSIGNED',
 }

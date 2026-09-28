@@ -1,0 +1,13 @@
+enum DisbursementMethod {
+  MANUAL_BANK
+  CHAPA_TRANSFER
+}
+
+enum DisbursementStatus {
+  PENDING_APPROVAL
+  APPROVED
+  PROCESSING
+  PAID_OUT
+  FAILED
+  CANCELLED
+}

@@ -46,7 +46,9 @@ export class MinioAuditArchiveStorage implements AuditArchiveStorage {
       await this.minio.uploadFile(key, body, contentType);
       const stat = await this.minio.statObject(key);
       if (stat.size !== body.length) {
-        throw new Error(`archive_size_mismatch key=${key} expected=${body.length} actual=${stat.size}`);
+        throw new Error(
+          `archive_size_mismatch key=${key} expected=${body.length} actual=${stat.size}`,
+        );
       }
     };
 
@@ -81,8 +83,14 @@ export class MinioAuditArchiveStorage implements AuditArchiveStorage {
           parts,
         };
 
-        await putVerified(manifestKey, Buffer.from(JSON.stringify(manifest, null, 2), 'utf8'), 'application/json');
-        this.logger.log(`Audit archive complete: ${manifestKey} (${totalRows} rows, ${parts.length} parts)`);
+        await putVerified(
+          manifestKey,
+          Buffer.from(JSON.stringify(manifest, null, 2), 'utf8'),
+          'application/json',
+        );
+        this.logger.log(
+          `Audit archive complete: ${manifestKey} (${totalRows} rows, ${parts.length} parts)`,
+        );
 
         return { key: manifestKey };
       },
@@ -92,7 +100,9 @@ export class MinioAuditArchiveStorage implements AuditArchiveStorage {
           try {
             await this.minio.deleteFile(key);
           } catch (err) {
-            this.logger.warn(`Could not remove partial archive object ${key}: ${err instanceof Error ? err.message : String(err)}`);
+            this.logger.warn(
+              `Could not remove partial archive object ${key}: ${err instanceof Error ? err.message : String(err)}`,
+            );
           }
         }
       },

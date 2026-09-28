@@ -21,7 +21,11 @@ export class RequestContextMiddleware implements NestMiddleware {
     // ASSUMPTION: clients send x-client-type: web | mobile. Adjust to what you actually send.
     const client = String(req.headers['x-client-type'] ?? '').toLowerCase();
     const source =
-      client === 'web' ? AuditSource.WEB : client === 'mobile' ? AuditSource.MOBILE : AuditSource.API;
+      client === 'web'
+        ? AuditSource.WEB
+        : client === 'mobile'
+          ? AuditSource.MOBILE
+          : AuditSource.API;
 
     this.context.run(
       {

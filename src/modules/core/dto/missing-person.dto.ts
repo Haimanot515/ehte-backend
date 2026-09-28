@@ -141,7 +141,8 @@ export class AdminCreateMissingPersonDto extends OmitType(CreateMissingPersonDto
   'credential',
 ] as const) {
   @ApiPropertyOptional({
-    description: 'Approve the proposed reward at creation. Requires rewardOffered and rewardAmount.',
+    description:
+      'Approve the proposed reward at creation. Requires rewardOffered and rewardAmount.',
   })
   @IsOptional()
   @IsBoolean()

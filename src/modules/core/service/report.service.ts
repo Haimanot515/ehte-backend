@@ -5,7 +5,13 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 
-import { AuditOutcome, AuditSeverity, InformationRequestStatus, Prisma, ReportStatus } from '@prisma/client';
+import {
+  AuditOutcome,
+  AuditSeverity,
+  InformationRequestStatus,
+  Prisma,
+  ReportStatus,
+} from '@prisma/client';
 
 import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { ConfigService } from '@nestjs/config';
@@ -331,6 +337,9 @@ export class ReportService {
 
     this.emitAudit({
       targetUserId: payload.userId,
+      // ASSUMPTION: resolveActorType only knows about role-bearing
+      // actors; cast until AuditEventPayload's actorType union is
+      // extended with a SYSTEM variant. Same cast PostService uses.
       actorType: 'SYSTEM' as unknown as ReturnType<typeof resolveActorType>,
       action: AuditEventEnum.REPORT_UPDATED,
       entity: 'User',
@@ -366,7 +375,7 @@ export class ReportService {
 
       this.emitAudit({
         targetUserId: userId,
-        actorType: 'SYSTEM' as unknown as ReturnType<typeof resolveActorType>,
+        actorType: 'SYSTEM',
         action: AuditEventEnum.USER_AUTO_FLAGGED,
         entity: 'User',
         entityId: userId,
@@ -779,40 +788,104 @@ export class ReportService {
     }));
   }
 
-  // Dashboard stats: total + per-status breakdown + assignment split
+  // ─────────────────────────────────────────────
+  // ADMIN — DASHBOARD STATISTICS
+  // GET /reports/stats
+  //
+  // Same "advanced stats" shape as the other modules: counts by
+  // status/category, assignment split, escalation count, average
+  // time-to-close for CLOSED reports, and a 30-day daily creation
+  // trend for charting. Uses $queryRaw for the two aggregates Prisma's
+  // query builder can't express (date_trunc grouping, EPOCH-based
+  // duration average) — same DB assumptions (Postgres) as the rest of
+  // the schema.
+  // ─────────────────────────────────────────────
   async getStats() {
-    const [total, grouped, assignedCount] = await this.prisma.$transaction([
+    const [
+      total,
+      statusGrouped,
+      categoryGrouped,
+      assignedCount,
+      unassignedCount,
+      escalatedCount,
+      resolutionAgg,
+      dailyTrend,
+    ] = await this.prisma.$transaction([
       this.prisma.report.count(),
+
       this.prisma.report.groupBy({
         by: ['status'],
         _count: { status: true },
         orderBy: { status: 'asc' },
       }),
+
+      this.prisma.report.groupBy({
+        by: ['category'],
+        _count: { category: true },
+        orderBy: { category: 'asc' },
+      }),
+
       this.prisma.report.count({ where: { assignedToId: { not: null } } }),
+      this.prisma.report.count({ where: { assignedToId: null } }),
+      this.prisma.report.count({ where: { status: ReportStatus.ESCALATED } }),
+
+      this.prisma.$queryRaw<{ avg_hours: number | null }[]>`
+        SELECT AVG(EXTRACT(EPOCH FROM ("updatedAt" - "createdAt")) / 3600) AS avg_hours
+        FROM "Report"
+        WHERE status = 'CLOSED'
+      `,
+
+      this.prisma.$queryRaw<{ day: Date; count: bigint }[]>`
+        SELECT date_trunc('day', "createdAt") AS day, COUNT(*)::bigint AS count
+        FROM "Report"
+        WHERE "createdAt" >= NOW() - INTERVAL '30 days'
+        GROUP BY day
+        ORDER BY day ASC
+      `,
     ]);
 
-    const counts = Object.fromEntries(
+    const byStatus = Object.fromEntries(
       Object.values(ReportStatus).map((status) => [status, 0]),
     ) as Record<ReportStatus, number>;
 
-    for (const row of grouped) {
-      const rowCount = row._count as { status?: number } | undefined;
-      counts[row.status] = rowCount?.status ?? 0;
+    for (const row of statusGrouped) {
+      const c = row._count as { status?: number } | undefined;
+      byStatus[row.status] = c?.status ?? 0;
     }
+
+    const byCategory: Record<string, number> = {};
+    for (const row of categoryGrouped) {
+      const c = row._count as { category?: number } | undefined;
+      byCategory[String(row.category)] = c?.category ?? 0;
+    }
+
+    const rejected = byStatus[ReportStatus.REJECTED] ?? 0;
+    const closed = byStatus[ReportStatus.CLOSED] ?? 0;
 
     return {
       total,
-      pending: counts[ReportStatus.PENDING] ?? 0,
-      received: counts[ReportStatus.RECEIVED] ?? 0,
-      underReview: counts[ReportStatus.UNDER_REVIEW] ?? 0,
-      assigned: counts[ReportStatus.ASSIGNED] ?? 0,
-      inProgress: counts[ReportStatus.IN_PROGRESS] ?? 0,
-      escalated: counts[ReportStatus.ESCALATED] ?? 0,
-      unableToVerify: counts[ReportStatus.UNABLE_TO_VERIFY] ?? 0,
-      closed: counts[ReportStatus.CLOSED] ?? 0,
-      rejected: counts[ReportStatus.REJECTED] ?? 0,
-      assignedToAdmin: assignedCount,
-      unassigned: total - assignedCount,
+      byStatus,
+      byCategory,
+
+      assignment: {
+        assigned: assignedCount,
+        unassigned: unassignedCount,
+      },
+
+      escalatedCount,
+
+      rejectionRate: total > 0 ? Number((rejected / total).toFixed(4)) : 0,
+      closureRate: total > 0 ? Number((closed / total).toFixed(4)) : 0,
+
+      avgResolutionHours:
+        resolutionAgg[0]?.avg_hours != null
+          ? Number(Number(resolutionAgg[0].avg_hours).toFixed(2))
+          : null,
+
+      dailyTrend: dailyTrend.map((row) => ({
+        date: row.day.toISOString().slice(0, 10),
+        count: Number(row.count),
+      })),
     };
   }
 
@@ -849,7 +922,7 @@ export class ReportService {
 
     this.emitAudit({
       userId: admin.id,
-      targetUserId: report.user.id,
+      targetUserId: report.user?.id,
       actorType,
       action: AuditEventEnum.REPORTER_INFORMATION_OPENED,
       entity: 'Report',
@@ -923,7 +996,11 @@ export class ReportService {
         entity: 'Report',
         entityId: reportId,
         entityLabel: existing.caseReference,
-        diff: { result: 'failure', reason: 'report_transition_conflict', attemptedStatus: data.status },
+        diff: {
+          result: 'failure',
+          reason: 'report_transition_conflict',
+          attemptedStatus: data.status,
+        },
       });
       throw new BadRequestException('report_transition_conflict');
     }
@@ -952,7 +1029,7 @@ export class ReportService {
       status: report.status,
     });
 
-    if (data.status === ReportStatus.REJECTED) {
+    if (data.status === ReportStatus.REJECTED && report.userId) {
       await this.maybeFlagUserForRejections(report.userId);
     }
 

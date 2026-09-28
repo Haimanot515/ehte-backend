@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
 
@@ -21,6 +21,7 @@ import { PermissionService } from './service/permission.service';
 import { OtpUtil } from 'src/common/utils/otp.util';
 import { LockoutUtil } from 'src/common/utils/lockout.util';
 import { TokenUtil } from 'src/common/utils/token.util';
+import { SocialAuthUtil } from 'src/common/utils/social-auth.util';
 
 @Module({
   imports: [
@@ -31,6 +32,8 @@ import { TokenUtil } from 'src/common/utils/token.util';
     PassportModule,
 
     JwtModule.registerAsync({
+      imports: [ConfigModule],
+
       inject: [ConfigService],
 
       useFactory: (config: ConfigService) => ({
@@ -53,20 +56,9 @@ import { TokenUtil } from 'src/common/utils/token.util';
     OtpUtil,
     LockoutUtil,
     TokenUtil,
+    SocialAuthUtil,
   ],
 
-  // FIX: OtpUtil and LockoutUtil are now exported too, not just the
-  // services — CoreModule's UserService needs both (change-phone flow
-  // uses OtpUtil; deactivate/reactivate/discreet-mode paths use
-  // LockoutUtil-adjacent checks). TokenUtil stays unexported until
-  // something outside this module actually needs it.
-  exports: [
-    AuthService,
-    AdminAuthService,
-    RoleService,
-    PermissionService,
-    OtpUtil,
-    LockoutUtil,
-  ],
+  exports: [AuthService, AdminAuthService, RoleService, PermissionService, OtpUtil, LockoutUtil],
 })
 export class AuthModule {}

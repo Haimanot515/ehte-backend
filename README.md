@@ -121,8 +121,6 @@ After the configured number of failed attempts, the account is temporarily locke
 Encryption configuration is provided through:
 
 ```env
-ENCRYPTION_KEY=<64-character-hex-key>
-ENCRYPTION_IV=<32-character-hex-iv>
 ```
 
 These values must be generated securely and must not be committed to source control.
