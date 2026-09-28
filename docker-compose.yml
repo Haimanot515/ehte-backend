@@ -1,17 +1,3 @@
-# ============================================================
-# Ehte Backend — DEV
-# Azure checkout on ecs-a447. Project name is pinned so the
-# Azure dir "s" cannot collide with other stacks.
-#
-# Starts API + dedicated ehte_postgres-dev only.
-# Does NOT start MinIO or Redis. Does NOT use any other
-# postgres_* container. Postgres is docker-network only
-# (no host port) so it cannot collide with existing DBs.
-# Secrets come from .env (secure file ehte-dev.env).
-# Nest reads MINIO_ENDPOINT / MINIO_PORT (not *_DOCKER).
-# Deploy attaches the API to shared-minio's existing network
-# (SHARED_MINIO_NETWORK).
-# ============================================================
 name: ehte_backend-dev
 
 services:
@@ -34,6 +20,24 @@ services:
     networks:
       - default
 
+  redis:
+    image: redis:7-alpine
+    container_name: ehte_redis-dev
+    restart: unless-stopped
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?REDIS_PASSWORD must be set in ehte-dev.env}"]
+    volumes:
+      - ehte_redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    networks:
+      - default
+
   api:
     image: ${REGISTRY_HOST:-images.pitrontech.et}/ehte_backend:dev-latest
     container_name: ehte_backend-dev
@@ -45,19 +49,28 @@ services:
       PORT: "3000"
       APP_URL: https://api.eheta.dev.pitrontech.et
       ADMIN_APP_URL: https://admin.eheta.dev.pitrontech.et
-      # Override placeholder DATABASE_URL in the secure file.
       DATABASE_URL: ${DATABASE_URL}
       DIRECT_URL: ${DIRECT_URL:-${DATABASE_URL}}
-      # App Joi schema requires these names. Env file only has *_DOCKER.
       MINIO_ENDPOINT: ${MINIO_ENDPOINT:-shared-minio}
       MINIO_PORT: ${MINIO_PORT:-9000}
       MINIO_USE_SSL: "false"
+      # Dev only: plain redis on the private docker network, do not copy to production
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      REDIS_DB: "0"
+      REDIS_URL: redis://default:${REDIS_PASSWORD}@redis:6379
+      REDIS_SECURITY_URL: redis://default:${REDIS_PASSWORD}@redis:6379/1
+      REDIS_ALLOW_INSECURE: "true"
+      REDIS_ALLOW_PLAINTEXT: "true"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
       - "127.0.0.1:4430:3000"
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     networks:
       - default
@@ -71,3 +84,5 @@ networks:
 volumes:
   ehte_postgres_data:
     name: ehte_postgres_data
+  ehte_redis_data:
+    name: ehte_redis_data
