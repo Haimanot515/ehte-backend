@@ -1729,6 +1729,7 @@ export class VictimProfileService {
     this.eventEmitter.emit(NotificationEventEnum.VICTIM_PROFILE_CONSENT_REVOKED, {
       userId: profile.createdByUserId,
       victimProfileId: id,
+      actorId: admin.id,
     });
 
     return updatedProfile;
@@ -1856,6 +1857,7 @@ export class VictimProfileService {
       userId: profile.createdByUserId,
       victimProfileId: id,
       reapprovalRequired: wasApproved,
+      actorId: admin.id,
     });
 
     return updatedProfile;
@@ -2118,6 +2120,7 @@ export class VictimProfileService {
       userId: profile.createdByUserId,
       victimProfileId: id,
       status,
+      actorId: admin.id,
     });
 
     return updatedProfile;

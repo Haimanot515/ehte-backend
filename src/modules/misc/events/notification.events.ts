@@ -23,6 +23,7 @@ export interface ReportMoreInformationRequestedEvent {
 export interface NewReportEvent {
   reportId: string;
   caseReference: string;
+  userId?: string;
 }
 
 // NEW — backs NotificationListener.handleHighPriorityReport().
@@ -284,17 +285,10 @@ export interface VictimProfileResubmittedEvent {
 // handler's field usage to match.
 // ─────────────────────────────────────────────
 
-// TODO: confirm emit site and payload shape. Best guess: emitted by
-// InformationSubmissionService.create() (or a missing-person-scoped
-// equivalent) to tell admins new information came in on a case and
-// needs review — mirroring the NEW_REPORT/NEW_POST/
-// NEW_MISSING_PERSON_REQUEST admin-broadcast pattern rather than
-// notifying a specific user. If it turns out to target the missing
-// person's original submitter instead, this needs a `userId` field
-// and the handler needs to switch from createForAdmins to create().
 export interface NewMissingPersonInformationEvent {
   missingPersonId: string;
-  informationSubmissionId?: string;
+  informationSubmissionId: string;
+  userId: string;
 }
 
 // TODO: confirm emit site and payload shape. Best guess: security-

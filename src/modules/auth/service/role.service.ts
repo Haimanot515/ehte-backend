@@ -22,10 +22,7 @@ import { resolveActorType } from 'src/common/utils/actor-type.util';
 
 import { AuditEventEnum } from 'src/common/enums/shared/audit-events.enum';
 import { AuditEventPayload } from 'src/modules/misc/events/audit.events';
-import { RolesEnum } from 'src/common/enums/roles.enum';
-
-// Protection is now data-driven via role.isProtected. This array is a fallback only.
-const PROTECTED_ROLE_NAMES: string[] = [RolesEnum.SUPER_ADMIN, RolesEnum.ADMIN, RolesEnum.SYSTEM];
+import { isProtectedRole } from '../util/role-protection.util';
 
 @Injectable()
 export class RoleService {
@@ -43,7 +40,7 @@ export class RoleService {
   }
 
   private isProtected(role: { name: string; isProtected?: boolean }): boolean {
-    return role.isProtected === true || PROTECTED_ROLE_NAMES.includes(role.name);
+    return isProtectedRole(role);
   }
 
   async findAll(query: FetchQuery): Promise<PaginatedResult<Role>> {
@@ -281,8 +278,15 @@ export class RoleService {
         result: 'success',
         previousName: role.name,
         currentName: updatedRole.name,
+        previousDescription: role.description ?? null,
+        currentDescription: updatedRole.description ?? null,
       },
-      metadata: { changed: role.name !== updatedRole.name },
+      metadata: {
+        changed:
+          role.name !== updatedRole.name || (role.description ?? null) !== (updatedRole.description ?? null),
+        nameChanged: role.name !== updatedRole.name,
+        descriptionChanged: (role.description ?? null) !== (updatedRole.description ?? null),
+      },
     });
 
     return updatedRole;

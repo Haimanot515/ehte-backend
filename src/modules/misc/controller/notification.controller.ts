@@ -9,22 +9,31 @@ import {
   Patch,
   Post,
   Query,
+  Res,
   Sse,
 } from '@nestjs/common';
+import type { Response } from 'express';
 import { Observable } from 'rxjs';
 
 import { ApiBearerAuth, ApiOperation, ApiParam, ApiQuery, ApiTags } from '@nestjs/swagger';
 
+import { ActorType } from '@prisma/client';
+
 import { NotificationService } from '../service/notification.service';
 
 import {
+  AllNotificationsQueryDto,
   BroadcastNotificationDto,
   BroadcastQueryDto,
   CreateNotificationDto,
   CreateNotificationTemplateDto,
+  EventCategoriesQueryDto,
+  EventsFeedQueryDto,
   FailedDeliveriesQueryDto,
   MarkBulkReadDto,
   NotificationQueryDto,
+  NotificationSummaryQueryDto,
+  UserNotificationEventsQueryDto,
   RegisterDeviceDto,
   RetryDeliveriesDto,
   SentNotificationsQueryDto,
@@ -237,6 +246,78 @@ export class NotificationController {
     return this.notificationService.getSentByAdmin(user, query);
   }
 
+  @Get('admin/all')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.NOTIFICATION_MANAGE)
+  @ApiOperation({
+    summary: 'Admin: every notification emitted by the system',
+    description:
+      'Not limited to the caller. Filter by recipientId, actorId, type, priority, entity, ' +
+      'entityId, isRead and a from/to date range. Newest first.',
+  })
+  async getAllNotifications(@Query() query: AllNotificationsQueryDto) {
+    return this.notificationService.getAllNotifications(query);
+  }
+
+  @Get('admin/unread-count/by-type')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.NOTIFICATION_READ)
+  @ApiOperation({ summary: 'Admin: my unread counts grouped by type (dashboard tab badges)' })
+  async getAdminUnreadCountByType(@CurrentUser() user: CurrentUserDto) {
+    return this.notificationService.getMyUnreadCountByType(user);
+  }
+
+  @Sse('admin/stream')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.NOTIFICATION_MANAGE)
+  @ApiOperation({
+    summary: 'Admin: live feed of new notifications across the company (Server-Sent Events)',
+    description:
+      'Emits a small event whenever notifications are created. Re-query GET /notifications/admin/all ' +
+      'to load them. Per process: with several instances this needs Redis pub/sub.',
+  })
+  adminStream(): Observable<MessageEvent> {
+    return this.notificationService.streamAllEvents();
+  }
+
+  @Get('admin/all/summary')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.NOTIFICATION_MANAGE)
+  @ApiOperation({
+    summary: 'Admin: company-wide notification overview',
+    description:
+      'Totals, read and unread, system versus user caused, counts by type, priority and ' +
+      'entity, and the ten most active actors. Default window is 30 days, maximum 90.',
+  })
+  async getAllNotificationsSummary(@Query() query: NotificationSummaryQueryDto) {
+    return this.notificationService.getNotificationSummary(query);
+  }
+
+  @Get('admin/all/export')
+  @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.NOTIFICATION_USER_DATA_EXPORT)
+  @ApiOperation({
+    summary: 'Super admin: export every notification matching the filters as CSV',
+    description:
+      'Same filters as GET /notifications/admin/all. Audited. Capped at 50,000 rows; ' +
+      'the X-Export-Truncated header says whether the cap was hit.',
+  })
+  async exportAllNotifications(
+    @Query() query: AllNotificationsQueryDto,
+    @CurrentUser() admin: CurrentUserDto,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const { csv, truncated, rowCount } = await this.notificationService.exportAllNotificationsCsv(
+      query,
+      admin,
+    );
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="notifications.csv"');
+    res.setHeader('X-Export-Truncated', String(truncated));
+    res.setHeader('X-Export-Row-Count', String(rowCount));
+    return csv;
+  }
+
   @Get('admin/stats')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.NOTIFICATION_READ)
@@ -336,6 +417,103 @@ export class NotificationController {
   @ApiParam({ name: 'id', description: 'Broadcast ID' })
   async cancelBroadcast(@Param('id') id: string, @CurrentUser() user: CurrentUserDto) {
     return this.notificationService.cancelBroadcast(id, user);
+  }
+
+  @Get('admin/all/:id')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.NOTIFICATION_MANAGE)
+  @ApiOperation({
+    summary: 'Admin: any notification by id, with delivery results per channel',
+    description: 'Not limited to the caller. Use it to answer "did this user get it".',
+  })
+  @ApiParam({ name: 'id', description: 'Notification ID' })
+  async getAnyNotification(@Param('id') id: string) {
+    return this.notificationService.getAnyNotificationById(id);
+  }
+
+  @Get('admin/events/categories')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_READ)
+  @ApiOperation({
+    summary: 'Admin: event counts by who caused them (user, admin, super admin, system)',
+    description: 'Audit events and notifications per category. Default 30 days, maximum 90.',
+  })
+  async getEventCategories(@Query() query: EventCategoriesQueryDto) {
+    return this.notificationService.getEventCategories(query);
+  }
+
+  @Get('admin/events/users')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_READ)
+  @ApiOperation({
+    summary: 'Admin: events performed by regular users',
+    description: 'Audit-log feed. Supports every audit filter (action, entity, userId, dates, q).',
+  })
+  async getUserEventsFeed(@Query() query: EventsFeedQueryDto, @CurrentUser() viewer: CurrentUserDto) {
+    return this.notificationService.getEventsByActorType(ActorType.USER, query, viewer);
+  }
+
+  @Get('admin/events/admins')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_READ)
+  @ApiOperation({ summary: 'Admin: events performed by admins' })
+  async getAdminEventsFeed(
+    @Query() query: EventsFeedQueryDto,
+    @CurrentUser() viewer: CurrentUserDto,
+  ) {
+    return this.notificationService.getEventsByActorType(ActorType.ADMIN, query, viewer);
+  }
+
+  @Get('admin/events/super-admins')
+  @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_READ)
+  @ApiOperation({ summary: 'Super admin: events performed by super admins' })
+  async getSuperAdminEventsFeed(
+    @Query() query: EventsFeedQueryDto,
+    @CurrentUser() viewer: CurrentUserDto,
+  ) {
+    return this.notificationService.getEventsByActorType(ActorType.SUPER_ADMIN, query, viewer);
+  }
+
+  @Get('admin/events/system')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_READ)
+  @ApiOperation({ summary: 'Admin: events performed by the system (jobs, automation)' })
+  async getSystemEventsFeed(
+    @Query() query: EventsFeedQueryDto,
+    @CurrentUser() viewer: CurrentUserDto,
+  ) {
+    return this.notificationService.getEventsByActorType(ActorType.SYSTEM, query, viewer);
+  }
+
+  @Get('admin/user/:userId/settings')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.NOTIFICATION_MANAGE)
+  @ApiOperation({
+    summary: 'Admin: one user notification preferences, devices and unread count',
+    description: 'For delivery support. Device tokens are shortened to their last 6 characters.',
+  })
+  @ApiParam({ name: 'userId', description: 'User ID' })
+  async getUserSettings(@Param('userId') userId: string) {
+    return this.notificationService.getUserNotificationSettings(userId);
+  }
+
+  @Get('admin/user/:userId/events')
+  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.NOTIFICATION_MANAGE)
+  @ApiOperation({
+    summary: 'Admin: events one user caused and notifications sent to them',
+    description:
+      'direction = caused | received | both (default). Same filters, search and sorting as ' +
+      'GET /notifications/admin/all. For every action the user took, including ones that raise no ' +
+      'notification, use GET /audit-logs/user/:userId.',
+  })
+  @ApiParam({ name: 'userId', description: 'User ID' })
+  async getUserEvents(
+    @Param('userId') userId: string,
+    @Query() query: UserNotificationEventsQueryDto,
+  ) {
+    return this.notificationService.getUserNotificationEvents(userId, query);
   }
 
   // Data-subject requests (SUPER_ADMIN only): export or erase one user's

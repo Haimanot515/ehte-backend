@@ -12,6 +12,7 @@ import { PermissionsEnum } from 'src/common/enums/permissions.enum';
 import {
   AdminActionReasonDto,
   AdminUpdateDiscreetModeDto,
+  AdminUpdateUserDto,
   AssignUserRoleDto,
   ChangePhoneInitiateDto,
   ChangePhoneVerifyDto,
@@ -147,6 +148,21 @@ export class UserController {
     return this.userService.getUserById(id);
   }
 
+  // Fix a user's name/address/demographic details. Never touches role, email,
+  // phone or active status: those have their own guarded routes.
+  @Patch(':id')
+  @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.USER_UPDATE)
+  @ApiOperation({ summary: "Update a user's profile details (admin)" })
+  @ApiParam({ name: 'id', description: 'Id of the user whose profile is being updated' })
+  async adminUpdateUser(
+    @CurrentUser() actor: CurrentUserDto,
+    @Param('id') id: string,
+    @Body() data: AdminUpdateUserDto,
+  ) {
+    return this.userService.adminUpdateUser(actor, id, data, data.reason);
+  }
+
   @Get(':id/audit-log')
   @Roles(RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.USER_READ)
@@ -179,11 +195,17 @@ export class UserController {
     return this.userService.revokeSession(actor, id, sessionId);
   }
 
+  // NOT the way to create an admin. ADMIN goes through the email-verified
+  // promote flow (POST /admin/auth/promote). This route only escalates an
+  // existing, verified ADMIN to SUPER_ADMIN, and re-auth is required.
   @Patch(':id/role')
   @Roles(RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.ROLE_UPDATE)
-  @ApiOperation({ summary: "Grant an admin or super_admin role to a user's account" })
-  @ApiParam({ name: 'id', description: 'Id of the user being granted the role' })
+  @RequireReauthentication()
+  @ApiOperation({
+    summary: 'Escalate an existing verified ADMIN to SUPER_ADMIN (does not create admins)',
+  })
+  @ApiParam({ name: 'id', description: 'Id of the admin being made super_admin' })
   async assignRole(
     @CurrentUser() actor: CurrentUserDto,
     @Param('id') id: string,

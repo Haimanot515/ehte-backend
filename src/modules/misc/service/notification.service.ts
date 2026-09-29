@@ -38,9 +38,15 @@ import {
   NotificationQueryDto,
   RegisterDeviceDto,
   SentNotificationsQueryDto,
+  AllNotificationsQueryDto,
+  NotificationSummaryQueryDto,
+  UserNotificationEventsQueryDto,
+  EventsFeedQueryDto,
+  EventCategoriesQueryDto,
   UpdateNotificationPreferencesDto,
   UpdateNotificationTemplateDto,
 } from '../dto/notification.dto';
+import { GetAuditLogsDto } from '../dto/audit-log.dto';
 import { AuditLogService } from './audit-log.service';
 import {
   NOTIFICATION_CHANNEL_PROVIDERS,
@@ -194,6 +200,8 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
 
   /** Live SSE connections. Per process: with several instances use Redis pub/sub instead. */
   private readonly streams = new Map<string, Set<Subject<MessageEvent>>>();
+
+  private readonly firehose = new Subject<MessageEvent>();
 
   private timer: NodeJS.Timeout | null = null;
   private ticking = false;
@@ -683,7 +691,24 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
+  /** Company-level live feed: one small event per batch of new notifications, then re-query admin/all. */
+  streamAllEvents(): Observable<MessageEvent> {
+    return new Observable<MessageEvent>((subscriber) => {
+      const heartbeat = interval(STREAM_HEARTBEAT_MS).pipe(
+        map((): MessageEvent => ({ data: { kind: 'heartbeat' } })),
+      );
+      const subscription = merge(this.firehose, heartbeat).subscribe(subscriber);
+      subscriber.next({ data: { kind: 'connected' } });
+      return () => subscription.unsubscribe();
+    });
+  }
+
   private publish(userIds: string[]) {
+    if (this.firehose.observed) {
+      this.firehose.next({
+        data: { kind: 'notifications', recipients: userIds.length, at: new Date().toISOString() },
+      });
+    }
     if (this.streams.size === 0) return;
     for (const id of userIds) {
       const set = this.streams.get(id);
@@ -1085,6 +1110,336 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
       ...result,
       data: result.data.map((n) => ({ ...n, recipientName: names.get(n.userId) ?? null })),
     };
+  }
+
+  /** Every notification the system has emitted, for ADMIN and SUPER_ADMIN. Not scoped to the caller. */
+  async getAllNotifications(query: AllNotificationsQueryDto) {
+    const result = await this.paginateNotifications(
+      this.allWhere(query),
+      query,
+      true,
+      query.sort ?? 'desc',
+    );
+
+    const ids = [...new Set(result.data.map((n) => n.userId))];
+    const users = ids.length
+      ? await this.prisma.user.findMany({
+          where: { id: { in: ids } },
+          select: { id: true, name: true },
+        })
+      : [];
+    const names = new Map(users.map((u) => [u.id, u.name]));
+
+    return {
+      ...result,
+      data: result.data.map((n) => ({
+        ...n,
+        recipientName: names.get(n.userId) ?? null,
+        isSystemGenerated: !n.actorId,
+      })),
+    };
+  }
+
+  /** What one user did (caused) and what was sent to them (received). ADMIN and SUPER_ADMIN. */
+  async getUserNotificationEvents(userId: string, query: UserNotificationEventsQueryDto) {
+    const exists = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, name: true },
+    });
+    if (!exists) throw new NotFoundException('User not found');
+
+    const direction = query.direction ?? 'both';
+    const scope: Prisma.NotificationWhereInput =
+      direction === 'caused'
+        ? { actorId: userId }
+        : direction === 'received'
+          ? { userId }
+          : { OR: [{ actorId: userId }, { userId }] };
+
+    const result = await this.paginateNotifications(
+      { AND: [this.allWhere(query as AllNotificationsQueryDto), scope] },
+      query,
+      true,
+      query.sort ?? 'desc',
+    );
+
+    const ids = [...new Set(result.data.map((n) => n.userId))];
+    const users = await this.prisma.user.findMany({
+      where: { id: { in: ids } },
+      select: { id: true, name: true },
+    });
+    const names = new Map(users.map((u) => [u.id, u.name]));
+
+    return {
+      user: exists,
+      direction,
+      ...result,
+      data: result.data.map((n) => ({
+        ...n,
+        recipientName: names.get(n.userId) ?? null,
+        relation: n.actorId === userId ? 'caused' : 'received',
+      })),
+    };
+  }
+
+  /** Everything one class of actor did, from the audit log (covers actions that raise no notification). */
+  async getEventsByActorType(
+    actorType: ActorType,
+    query: EventsFeedQueryDto,
+    viewer: CurrentUserDto,
+  ) {
+    return this.auditLog.findAll({ ...query, actorType } as GetAuditLogsDto, viewer);
+  }
+
+  async getEventCategories(query: EventCategoriesQueryDto) {
+    const to = query.to ? new Date(query.to) : new Date();
+    const from = query.from ? new Date(query.from) : new Date(to.getTime() - 30 * 86_400_000);
+    if (from >= to) throw new BadRequestException('from_must_be_before_to');
+    if (to.getTime() - from.getTime() > 90 * 86_400_000) {
+      throw new BadRequestException('range_too_large_max_90_days');
+    }
+
+    const auditWhere: Prisma.AuditLogWhereInput = { createdAt: { gte: from, lte: to } };
+    const notifWhere: Prisma.NotificationWhereInput = { createdAt: { gte: from, lte: to } };
+
+    const [audit, adminN, superN, systemN, userN] = await Promise.all([
+      this.prisma.auditLog.groupBy({
+        by: ['actorType'],
+        where: auditWhere,
+        _count: { _all: true },
+      }),
+      this.prisma.notification.count({ where: { ...notifWhere, actorRole: 'ADMIN' } }),
+      this.prisma.notification.count({ where: { ...notifWhere, actorRole: 'SUPER_ADMIN' } }),
+      this.prisma.notification.count({ where: { ...notifWhere, actorId: null } }),
+      this.prisma.notification.count({
+        where: {
+          ...notifWhere,
+          actorId: { not: null },
+          OR: [{ actorRole: null }, { actorRole: { notIn: ['ADMIN', 'SUPER_ADMIN'] } }],
+        },
+      }),
+    ]);
+
+    const auditCount = (type: string) =>
+      audit.find((g) => String(g.actorType) === type)?._count._all ?? 0;
+
+    return {
+      from: from.toISOString(),
+      to: to.toISOString(),
+      categories: [
+        { category: 'USER', auditEvents: auditCount('USER'), notifications: userN },
+        { category: 'ADMIN', auditEvents: auditCount('ADMIN'), notifications: adminN },
+        {
+          category: 'SUPER_ADMIN',
+          auditEvents: auditCount('SUPER_ADMIN'),
+          notifications: superN,
+        },
+        { category: 'SYSTEM', auditEvents: auditCount('SYSTEM'), notifications: systemN },
+      ],
+    };
+  }
+
+  /** Any notification by id, with how each channel delivery went. ADMIN and SUPER_ADMIN. */
+  async getAnyNotificationById(id: string) {
+    const notification = await this.prisma.notification.findUnique({ where: { id } });
+    if (!notification) throw new NotFoundException('Notification not found');
+
+    const [deliveries, recipient] = await Promise.all([
+      this.prisma.notificationDelivery.findMany({
+        where: { notificationId: id },
+        orderBy: { createdAt: 'asc' },
+      }),
+      this.prisma.user.findUnique({
+        where: { id: notification.userId },
+        select: { id: true, name: true },
+      }),
+    ]);
+
+    return {
+      ...notification,
+      recipient,
+      actor:
+        notification.actorId || notification.actorName
+          ? { name: notification.actorName ?? null, role: notification.actorRole ?? null }
+          : null,
+      isSystemGenerated: !notification.actorId,
+      deliveries,
+    };
+  }
+
+  /** One user's notification settings and devices, for support. Device tokens are shortened. */
+  async getUserNotificationSettings(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, name: true },
+    });
+    if (!user) throw new NotFoundException('User not found');
+
+    const [preferences, devices, unread] = await Promise.all([
+      this.getMyPreferences({ id: userId } as CurrentUserDto),
+      this.prisma.deviceToken.findMany({
+        where: { userId },
+        orderBy: { lastSeenAt: 'desc' },
+      }),
+      this.prisma.notification.count({ where: this.activeWhere(userId, { readAt: null }) }),
+    ]);
+
+    return {
+      user,
+      unreadCount: unread,
+      preferences,
+      devices: devices.map((d) => ({
+        platform: d.platform,
+        tokenSuffix: d.token.slice(-6),
+        lastSeenAt: d.lastSeenAt,
+        createdAt: d.createdAt,
+      })),
+    };
+  }
+
+  async getNotificationSummary(query: NotificationSummaryQueryDto) {
+    const to = query.to ? new Date(query.to) : new Date();
+    const from = query.from ? new Date(query.from) : new Date(to.getTime() - 30 * 86_400_000);
+    if (from >= to) throw new BadRequestException('from_must_be_before_to');
+    if (to.getTime() - from.getTime() > 90 * 86_400_000) {
+      throw new BadRequestException('range_too_large_max_90_days');
+    }
+
+    const where: Prisma.NotificationWhereInput = {
+      createdAt: { gte: from, lte: to },
+      ...(query.type && { type: query.type }),
+      ...(query.entity && { entity: query.entity }),
+    };
+
+    const [total, unread, systemGenerated, byType, byPriority, byEntity, topActorGroups] =
+      await Promise.all([
+        this.prisma.notification.count({ where }),
+        this.prisma.notification.count({ where: { ...where, readAt: null } }),
+        this.prisma.notification.count({ where: { ...where, actorId: null } }),
+        this.prisma.notification.groupBy({ by: ['type'], where, _count: { _all: true } }),
+        this.prisma.notification.groupBy({ by: ['priority'], where, _count: { _all: true } }),
+        this.prisma.notification.groupBy({ by: ['entity'], where, _count: { _all: true } }),
+        this.prisma.notification.groupBy({
+          by: ['actorId'],
+          where: { ...where, actorId: { not: null } },
+          _count: { _all: true },
+          orderBy: { _count: { actorId: 'desc' } },
+          take: 10,
+        }),
+      ]);
+
+    const actorIds = topActorGroups.map((g) => g.actorId).filter((id): id is string => !!id);
+    const actors = actorIds.length
+      ? await this.prisma.user.findMany({
+          where: { id: { in: actorIds } },
+          select: { id: true, name: true },
+        })
+      : [];
+    const actorNames = new Map(actors.map((u) => [u.id, u.name]));
+
+    const sorted = <T extends { _count: { _all: number } }>(rows: T[]) =>
+      [...rows].sort((a, b) => b._count._all - a._count._all);
+
+    return {
+      from: from.toISOString(),
+      to: to.toISOString(),
+      total,
+      unread,
+      read: total - unread,
+      systemGenerated,
+      userGenerated: total - systemGenerated,
+      byType: sorted(byType).map((g) => ({ type: g.type, count: g._count._all })),
+      byPriority: sorted(byPriority).map((g) => ({ priority: g.priority, count: g._count._all })),
+      byEntity: sorted(byEntity).map((g) => ({ entity: g.entity, count: g._count._all })),
+      topActors: topActorGroups.map((g) => ({
+        actorId: g.actorId,
+        name: actorNames.get(g.actorId as string) ?? null,
+        count: g._count._all,
+      })),
+    };
+  }
+
+  async exportAllNotificationsCsv(query: AllNotificationsQueryDto, admin: CurrentUserDto) {
+    const rows = await this.prisma.notification.findMany({
+      where: this.allWhere(query),
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: MAX_EXPORT_ROWS + 1,
+      select: {
+        id: true,
+        createdAt: true,
+        type: true,
+        priority: true,
+        entity: true,
+        entityId: true,
+        userId: true,
+        actorId: true,
+        actorName: true,
+        actorRole: true,
+        title: true,
+        readAt: true,
+      },
+    });
+
+    const truncated = rows.length > MAX_EXPORT_ROWS;
+    const data = truncated ? rows.slice(0, MAX_EXPORT_ROWS) : rows;
+
+    await this.audit(
+      admin,
+      {
+        action: AuditEventEnum.NOTIFICATION_USER_DATA_EXPORTED,
+        entity: 'Notification',
+        severity: AuditSeverity.WARNING,
+        metadata: {
+          scope: 'all',
+          rowCount: data.length,
+          truncated,
+          filters: { ...query, cursor: undefined, page: undefined, limit: undefined },
+        },
+      },
+      true,
+    );
+
+    const cell = (value: unknown): string => {
+      if (value === null || value === undefined) return '';
+      let text = value instanceof Date ? value.toISOString() : String(value);
+      if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`;
+      return `"${text.replace(/"/g, '""')}"`;
+    };
+
+    const header = [
+      'id',
+      'createdAt',
+      'type',
+      'priority',
+      'entity',
+      'entityId',
+      'recipientId',
+      'actorId',
+      'actorName',
+      'actorRole',
+      'title',
+      'readAt',
+    ];
+    const lines = data.map((n) =>
+      [
+        n.id,
+        n.createdAt,
+        n.type,
+        n.priority,
+        n.entity,
+        n.entityId,
+        n.userId,
+        n.actorId,
+        n.actorName,
+        n.actorRole,
+        n.title,
+        n.readAt,
+      ]
+        .map(cell)
+        .join(','),
+    );
+
+    return { csv: [header.join(','), ...lines].join('\r\n'), truncated, rowCount: data.length };
   }
 
   /** Last 24h delivery success per channel, queue depth, failures and broadcasts in flight. */
@@ -1919,6 +2274,48 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
+  private allWhere(query: AllNotificationsQueryDto): Prisma.NotificationWhereInput {
+    const and: Prisma.NotificationWhereInput[] = [];
+    if (query.includeExpired === false) {
+      and.push({ OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }] });
+    }
+    if (query.q) {
+      and.push({
+        OR: [
+          { title: { contains: query.q, mode: 'insensitive' } },
+          { body: { contains: query.q, mode: 'insensitive' } },
+          { actorName: { contains: query.q, mode: 'insensitive' } },
+        ],
+      });
+    }
+
+    if (query.category === 'SYSTEM') {
+      and.push({ actorId: null });
+    } else if (query.category === 'ADMIN' || query.category === 'SUPER_ADMIN') {
+      and.push({ actorRole: query.category });
+    } else if (query.category === 'USER') {
+      and.push({ actorId: { not: null } });
+      and.push({ OR: [{ actorRole: null }, { actorRole: { notIn: ['ADMIN', 'SUPER_ADMIN'] } }] });
+    }
+
+    return {
+      ...(query.recipientId && { userId: query.recipientId }),
+      ...(query.actorId && { actorId: query.actorId }),
+      ...(query.type && { type: query.type }),
+      ...(query.priority && { priority: query.priority }),
+      ...(query.entity && { entity: query.entity }),
+      ...(query.entityId && { entityId: query.entityId }),
+      ...(query.isRead !== undefined && { readAt: query.isRead ? { not: null } : null }),
+      ...((query.from || query.to) && {
+        createdAt: {
+          ...(query.from && { gte: new Date(query.from) }),
+          ...(query.to && { lte: new Date(query.to) }),
+        },
+      }),
+      ...(and.length && { AND: and }),
+    };
+  }
+
   private myFilters(
     userId: string,
     query: NotificationQueryDto,
@@ -1960,11 +2357,12 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     where: Prisma.NotificationWhereInput,
     dto: PagingInput,
     _raw = false,
+    direction: 'asc' | 'desc' = 'desc',
   ) {
     const limit = Math.min(Math.max(dto.limit ?? DEFAULT_LIMIT, 1), MAX_LIMIT);
     const orderBy: Prisma.NotificationOrderByWithRelationInput[] = [
-      { createdAt: 'desc' },
-      { id: 'desc' },
+      { createdAt: direction },
+      { id: direction },
     ];
 
     if (!dto.cursor && dto.page !== undefined) {

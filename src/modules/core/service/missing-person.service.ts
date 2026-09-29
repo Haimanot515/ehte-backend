@@ -820,6 +820,7 @@ export class MissingPersonService {
 
     this.eventEmitter.emit(NotificationEventEnum.NEW_MISSING_PERSON_REQUEST, {
       missingPersonId: missingPerson.id,
+      userId: user.id,
     });
 
     return missingPerson;
@@ -1034,6 +1035,7 @@ export class MissingPersonService {
     if (status !== MissingPersonStatus.APPROVED) {
       this.eventEmitter.emit(NotificationEventEnum.NEW_MISSING_PERSON_REQUEST, {
         missingPersonId: missingPerson.id,
+        userId: admin.id,
       });
     }
 

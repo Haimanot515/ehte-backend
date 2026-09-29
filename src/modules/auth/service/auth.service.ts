@@ -25,6 +25,7 @@ import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
 import { normalizePhoneNumber } from 'src/common/utils/phone.util';
 import { resolveActorType } from 'src/common/utils/actor-type.util';
 import { RolesEnum } from 'src/common/enums/roles.enum';
+import { hasStaffRole } from '../util/role-protection.util';
 
 import { OtpUtil } from 'src/common/utils/otp.util';
 import { LockoutUtil } from 'src/common/utils/lockout.util';
@@ -74,7 +75,6 @@ type ForgotPasswordResult = {
 
 export type SocialProvider = 'google' | 'facebook' | 'apple';
 
-const ADMIN_ROLES = [RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN];
 
 type UserRoleWithPermissions = {
   role: {
@@ -169,8 +169,9 @@ export class AuthService {
     return phone;
   }
 
+  // Kept in sync with AdminAuthService: any role other than USER / SYSTEM is "staff".
   private hasAdminRole(roles: string[]): boolean {
-    return roles.some((role) => ADMIN_ROLES.includes(role as RolesEnum));
+    return hasStaffRole(roles);
   }
 
   private derivePermissions(userRoles: UserRoleWithPermissions[]): string[] {

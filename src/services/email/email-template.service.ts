@@ -13,6 +13,28 @@ import {
   renderAdminRegistrationEmailText,
 } from './templates/admin-registration-email.template';
 
+import {
+  renderPromotionEmailSubject,
+  renderPromotionEmailHtml,
+} from './templates/promotion-email.template';
+
+import {
+  EmailChangeVerificationTemplateParams,
+  renderEmailChangeVerificationSubject,
+  renderEmailChangeVerificationHtml,
+} from './templates/email-change-verification.template';
+
+interface AdminRegistrationParams {
+  registrationLink: string;
+  expiresInHours: number;
+  recipientName?: string;
+}
+
+interface PromotionParams {
+  promotionLink: string;
+  expiresInHours: number;
+}
+
 @Injectable()
 export class EmailTemplateService {
   private readonly appName: string;
@@ -54,11 +76,27 @@ export class EmailTemplateService {
     return renderAdminRegistrationEmailSubject();
   }
 
-  adminRegistrationHtml(params: { registrationLink: string; expiresInHours: number }): string {
+  adminRegistrationHtml(params: AdminRegistrationParams): string {
     return renderAdminRegistrationEmailHtml(params);
   }
 
-  adminRegistrationText(params: { registrationLink: string; expiresInHours: number }): string {
+  adminRegistrationText(params: AdminRegistrationParams): string {
     return renderAdminRegistrationEmailText(params);
+  }
+
+  promotionSubject(): string {
+    return renderPromotionEmailSubject();
+  }
+
+  promotionHtml(params: PromotionParams): string {
+    return renderPromotionEmailHtml(params);
+  }
+
+  emailChangeSubject(): string {
+    return renderEmailChangeVerificationSubject();
+  }
+
+  emailChangeHtml(params: EmailChangeVerificationTemplateParams): string {
+    return renderEmailChangeVerificationHtml(params);
   }
 }

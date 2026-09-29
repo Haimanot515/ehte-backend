@@ -172,6 +172,7 @@ export class NotificationListener {
       body: `A new report ${event.caseReference} has been submitted and needs review.`,
       entity: 'Report',
       entityId: event.reportId,
+      actorId: event.userId,
       actionUrl: URLS.report(event.reportId),
     });
   }
@@ -413,17 +414,21 @@ export class NotificationListener {
     );
   }
 
-  // TODO: confirm emit site (see notification.events.ts). Best guess: admin-facing.
   @OnEvent(NotificationEventEnum.NEW_MISSING_PERSON_INFORMATION)
   async handleNewMissingPersonInformation(event: NewMissingPersonInformationEvent) {
-    await this.toAdmins('NEW_MISSING_PERSON_INFORMATION', {
-      type: NotificationType.NEW_MISSING_PERSON_INFORMATION,
-      title: 'New Information Submitted',
-      body: 'New information has been submitted on a missing person case and needs review.',
-      entity: 'MissingPerson',
-      entityId: event.missingPersonId,
-      actionUrl: URLS.missingPerson(event.missingPersonId),
-    });
+    await this.toAdmins(
+      'NEW_MISSING_PERSON_INFORMATION',
+      {
+        type: NotificationType.NEW_MISSING_PERSON_INFORMATION,
+        title: 'New Information Submitted',
+        body: 'New information has been submitted on a missing person case and needs review.',
+        entity: 'InformationSubmission',
+        entityId: event.informationSubmissionId,
+        actorId: event.userId,
+        actionUrl: URLS.informationSubmission(event.informationSubmissionId),
+      },
+      event.userId,
+    );
   }
 
   // ───────────────────────────────────────────
