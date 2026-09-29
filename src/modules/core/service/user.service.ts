@@ -31,6 +31,7 @@ import { AuditEventPayload } from 'src/modules/misc/events/audit.events';
 
 import {
   AdminUpdateDiscreetModeDto,
+  AdminUpdateUserDto,
   AssignUserRoleDto,
   ChangePhoneInitiateDto,
   ChangePhoneVerifyDto,
@@ -256,6 +257,85 @@ export class UserService {
         currentName: updatedUser.name ?? null,
         profileUpdated: profileTouched,
       },
+    });
+
+    return this.shapeProfile(updatedUser);
+  }
+
+  // ── UPDATE PROFILE (ADMIN) ──
+  // Same safe fields as updateMe. Role/email/phone/isActive are not touched.
+
+  async adminUpdateUser(
+    actor: CurrentUserDto,
+    targetUserId: string,
+    data: AdminUpdateUserDto,
+    reason?: string,
+  ) {
+    const actorType = resolveActorType(this.getRoles(actor));
+
+    const target = await this.prisma.user.findUnique({ where: { id: targetUserId } });
+    if (!target) {
+      this.emitAudit({
+        userId: actor.id,
+        targetUserId,
+        actorType,
+        action: AuditEventEnum.USER_UPDATED,
+        outcome: AuditOutcome.FAILURE,
+        severity: AuditSeverity.WARNING,
+        entity: 'User',
+        entityId: targetUserId,
+        diff: { result: 'failure', reason: 'user_not_found' },
+      });
+      throw new NotFoundException('user_not_found');
+    }
+
+    const profileData = this.buildProfileUpsertData(data);
+    const profileTouched = Object.keys(profileData).length > 0;
+    const nameTouched = data.name !== undefined;
+
+    if (!nameTouched && !profileTouched) {
+      throw new BadRequestException('no_changes_provided');
+    }
+
+    if (nameTouched) {
+      await this.prisma.user.update({
+        where: { id: targetUserId },
+        data: { name: data.name!.trim() },
+      });
+    }
+
+    if (profileTouched) {
+      await this.prisma.userProfile.upsert({
+        where: { userId: targetUserId },
+        create: { userId: targetUserId, ...profileData },
+        update: profileData,
+      });
+    }
+
+    // Cached `GET /auth/me` for that user may carry the old values.
+    await this.cache.invalidateProfile(targetUserId);
+
+    const updatedUser = await this.prisma.user.findUniqueOrThrow({
+      where: { id: targetUserId },
+      select: this.fullProfileSelect,
+    });
+
+    this.emitAudit({
+      userId: actor.id,
+      targetUserId,
+      actorType,
+      action: AuditEventEnum.USER_UPDATED,
+      entity: 'User',
+      entityId: targetUserId,
+      entityLabel: this.buildUserLabel(updatedUser),
+      reason: reason ?? null,
+      diff: {
+        result: 'success',
+        previousName: target.name ?? null,
+        currentName: updatedUser.name ?? null,
+        profileUpdated: profileTouched,
+      },
+      metadata: { editedByAdmin: true },
     });
 
     return this.shapeProfile(updatedUser);
@@ -1398,8 +1478,10 @@ export class UserService {
   }
 
   // ── ADMIN — ASSIGN / REVOKE ROLE ──
-  // assignRole is a plain upsert (atomic already). revokeRole gets the
-  // same transaction treatment as deactivateUser (last-super-admin race).
+  // assignRole only escalates a verified ADMIN to SUPER_ADMIN (ADMIN itself is
+  // granted solely by AdminAuthService.promoteUserVerify after the email link).
+  // revokeRole gets the same transaction treatment as deactivateUser
+  // (last-super-admin race).
 
   async assignRole(
     actor: CurrentUserDto,
@@ -1409,6 +1491,10 @@ export class UserService {
   ) {
     const actorType = resolveActorType(this.getRoles(actor));
 
+    if ((data.role as string) !== RolesEnum.SUPER_ADMIN) {
+      throw new BadRequestException('use_admin_promote_flow_for_admin');
+    }
+
     const targetUser = await this.prisma.user.findUnique({
       where: { id: targetUserId },
       select: {
@@ -1417,6 +1503,7 @@ export class UserService {
         phone: true,
         email: true,
         isActive: true,
+        isEmailVerified: true,
         userRoles: { select: { role: { select: { id: true, name: true } } } },
       },
     });
@@ -1436,6 +1523,33 @@ export class UserService {
     }
     const targetLabel = this.buildUserLabel(targetUser);
     const previousRoles = targetUser.userRoles.map((userRole) => userRole.role.name);
+
+    // Eligibility: must be active, email-verified, and ALREADY an admin, i.e.
+    // someone who went through the email-link promotion.
+    const ineligibleReason = !targetUser.isActive
+      ? 'user_inactive'
+      : !targetUser.isEmailVerified
+        ? 'email_not_verified'
+        : !previousRoles.includes(RolesEnum.ADMIN)
+          ? 'user_must_be_admin_first'
+          : null;
+    if (ineligibleReason) {
+      this.emitAudit({
+        userId: actor.id,
+        targetUserId,
+        actorType,
+        action: AuditEventEnum.USER_ROLE_ASSIGNED,
+        outcome: AuditOutcome.FAILURE,
+        severity: AuditSeverity.WARNING,
+        entity: 'User',
+        entityId: targetUserId,
+        entityLabel: targetLabel,
+        reason: reason ?? null,
+        diff: { result: 'failure', reason: ineligibleReason, attemptedRole: data.role },
+        metadata: { previousRoles },
+      });
+      throw new BadRequestException(ineligibleReason);
+    }
 
     const role = await this.prisma.role.findUnique({ where: { name: data.role } });
     if (!role) {
