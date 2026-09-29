@@ -13,10 +13,13 @@ import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { RolesEnum } from 'src/common/enums/roles.enum';
 import { RequirePermissions } from 'src/common/decorators/require-permissions.decorator';
+import { RequireReauthentication } from 'src/common/decorators/reauth.decorator';
 import { PermissionsEnum } from 'src/common/enums/permissions.enum';
 
 import { CreateRoleDto, UpdateRoleDto } from '../dto/role.dto';
 
+// Mutating routes (POST/PATCH/DELETE) require re-authentication: send the admin's current
+// `password` in the JSON body; the guard strips it before the DTO is built.
 @Controller('roles')
 @ApiTags('Roles')
 @ApiBearerAuth('access-token')
@@ -54,6 +57,7 @@ export class RoleController {
   @Post()
   @Roles(RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.ROLE_CREATE)
+  @RequireReauthentication()
   @ApiOperation({ summary: 'Create a new role' })
   async create(@CurrentUser() actor: CurrentUserDto, @Body() data: CreateRoleDto) {
     return await this.service.create(actor, data);
@@ -63,6 +67,7 @@ export class RoleController {
   @Patch(':id')
   @Roles(RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.ROLE_UPDATE)
+  @RequireReauthentication()
   @ApiOperation({ summary: 'Rename or re-describe a role' })
   @ApiParam({ name: 'id', type: 'string' })
   async update(
@@ -76,6 +81,7 @@ export class RoleController {
   @Delete(':id')
   @Roles(RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.ROLE_DELETE)
+  @RequireReauthentication()
   @ApiOperation({ summary: 'Delete a role (must be unused and unprotected)' })
   @ApiParam({ name: 'id', type: 'string' })
   async remove(@CurrentUser() actor: CurrentUserDto, @Param('id') id: string) {

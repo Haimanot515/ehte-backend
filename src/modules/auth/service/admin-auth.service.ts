@@ -25,6 +25,7 @@ import { normalizePhoneNumber } from 'src/common/utils/phone.util';
 import { normalizeEmail } from 'src/common/utils/email.util';
 import { resolveActorType } from 'src/common/utils/actor-type.util';
 import { RolesEnum } from 'src/common/enums/roles.enum';
+import { hasStaffRole, NON_INVITABLE_ROLE_NAMES } from '../util/role-protection.util';
 
 import { OtpUtil } from 'src/common/utils/otp.util';
 import { LockoutUtil } from 'src/common/utils/lockout.util';
@@ -79,8 +80,6 @@ type TokenPair = {
 const REGISTRATION_TOKEN_EXPIRES_MINUTES = 60 * 24;
 const PROMOTION_TOKEN_EXPIRES_MINUTES = 60 * 24;
 const EMAIL_CHANGE_TOKEN_EXPIRES_MINUTES = 60;
-
-const ADMIN_ROLES = [RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN];
 
 // Cast until AuditEventPayload's actorType union gains a SYSTEM variant, same as ReportService/PostService
 const SYSTEM_ACTOR_TYPE = 'SYSTEM' as unknown as ReturnType<typeof resolveActorType>;
@@ -186,8 +185,11 @@ export class AdminAuthService {
     });
   }
 
+  // GAP FIX #4: was hard-coded to [ADMIN, SUPER_ADMIN], which locked custom roles
+  // (created via POST /roles) out of admin login and every admin password flow.
+  // "Admin" now means "staff": any role other than USER / SYSTEM.
   private hasAdminRole(roles: string[]): boolean {
-    return roles.some((role) => ADMIN_ROLES.includes(role as RolesEnum));
+    return hasStaffRole(roles);
   }
 
   private derivePermissions(userRoles: UserRoleWithPermissions[]): string[] {
@@ -251,8 +253,10 @@ export class AdminAuthService {
 
     const email = this.normalizeEmailOrThrow(data.email);
 
-    const invitableRoles = [RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN];
-    if (data.roles.some((role) => !invitableRoles.includes(role))) {
+    // Any configured role may be granted except USER / SYSTEM (an account with those
+    // would never be able to use the email-based admin login). Existence is checked
+    // against the role table below.
+    if (data.roles.some((role) => NON_INVITABLE_ROLE_NAMES.includes(role))) {
       this.emitAudit({
         userId: creator.id,
         actorType,
@@ -266,6 +270,30 @@ export class AdminAuthService {
         metadata: { attemptedRoles: data.roles, attemptedEmail: email },
       });
       throw new BadRequestException('only_admin_roles_may_be_registered');
+    }
+
+    const roleRecords = await this.prisma.role.findMany({
+      where: { name: { in: data.roles } },
+    });
+
+    if (roleRecords.length !== new Set(data.roles).size) {
+      this.emitAudit({
+        userId: creator.id,
+        actorType,
+        action: AuditEventEnum.ADMIN_REGISTERED,
+        outcome: AuditOutcome.FAILURE,
+        severity: AuditSeverity.WARNING,
+        entity: 'User',
+        entityId: null,
+        entityLabel: data.name,
+        diff: { result: 'failure', reason: 'one_or_more_roles_not_configured' },
+        metadata: {
+          requestedRoles: data.roles,
+          configuredRoles: roleRecords.map((role) => role.name),
+          attemptedEmail: email,
+        },
+      });
+      throw new BadRequestException('one_or_more_roles_not_configured');
     }
 
     const existingUser = await this.prisma.user.findUnique({
@@ -291,6 +319,16 @@ export class AdminAuthService {
         throw new BadRequestException('email_already_registered');
       }
 
+      // GAP FIX: a re-invite used to silently keep the OLD roles and ignore data.roles.
+      // The account is still inactive with no password, so replacing roles is safe.
+      const previousRoles = existingUser.userRoles.map((userRole) => userRole.role.name);
+      await this.prisma.$transaction([
+        this.prisma.userRole.deleteMany({ where: { userId: existingUser.id } }),
+        this.prisma.userRole.createMany({
+          data: roleRecords.map((role) => ({ userId: existingUser.id, roleId: role.id })),
+        }),
+      ]);
+
       await this.issueRegistrationInvite(existingUser.id, email);
 
       this.emitAudit({
@@ -304,34 +342,12 @@ export class AdminAuthService {
         diff: {
           result: 'success',
           context: 'registration_resent_via_register_endpoint',
+          previousRoles,
+          currentRoles: roleRecords.map((role) => role.name),
         },
       });
 
       return { adminId: existingUser.id, message: 'admin_registered' };
-    }
-
-    const roleRecords = await this.prisma.role.findMany({
-      where: { name: { in: data.roles } },
-    });
-
-    if (roleRecords.length !== new Set(data.roles).size) {
-      this.emitAudit({
-        userId: creator.id,
-        actorType,
-        action: AuditEventEnum.ADMIN_REGISTERED,
-        outcome: AuditOutcome.FAILURE,
-        severity: AuditSeverity.WARNING,
-        entity: 'User',
-        entityId: null,
-        entityLabel: data.name,
-        diff: { result: 'failure', reason: 'one_or_more_roles_not_configured' },
-        metadata: {
-          requestedRoles: data.roles,
-          configuredRoles: roleRecords.map((role) => role.name),
-          attemptedEmail: email,
-        },
-      });
-      throw new BadRequestException('one_or_more_roles_not_configured');
     }
 
     let admin: { id: string };

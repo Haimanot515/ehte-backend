@@ -1,4 +1,13 @@
-import { Body, Controller, Delete, Get, Param, Post, Put } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  ParseEnumPipe,
+  Post,
+  Put,
+} from '@nestjs/common';
 
 import { ApiBearerAuth, ApiOperation, ApiParam, ApiTags } from '@nestjs/swagger';
 
@@ -11,6 +20,7 @@ import { Roles } from 'src/common/decorators/roles.decorator';
 import { RolesEnum } from 'src/common/enums/roles.enum';
 
 import { RequirePermissions } from 'src/common/decorators/require-permissions.decorator';
+import { RequireReauthentication } from 'src/common/decorators/reauth.decorator';
 import { PermissionsEnum } from 'src/common/enums/permissions.enum';
 
 import {
@@ -20,6 +30,11 @@ import {
 } from '../dto/permission.dto';
 
 // Every route here is admin-only by design — no self-service "/my-permissions" route exists.
+//
+// All mutating routes (POST/PUT/DELETE) require re-authentication: the client must send the
+// admin's current `password` in the JSON body (the guard reads and strips it before the DTO
+// is built). DELETE bodies are stripped by some proxies, so prefer POST roles/:roleId/revoke-many
+// over DELETE roles/:roleId/:permissionName.
 
 @Controller('permissions')
 @ApiTags('Permissions')
@@ -41,7 +56,7 @@ export class PermissionController {
   @RequirePermissions(PermissionsEnum.PERMISSION_READ)
   @ApiOperation({ summary: 'List all roles that currently have a given permission' })
   @ApiParam({ name: 'permissionName', enum: PermissionsEnum })
-  async findRolesForPermission(@Param('permissionName') permissionName: PermissionsEnum) {
+  async findRolesForPermission(@Param('permissionName', new ParseEnumPipe(PermissionsEnum)) permissionName: PermissionsEnum) {
     return this.service.findRolesForPermission(permissionName);
   }
 
@@ -68,6 +83,7 @@ export class PermissionController {
   @Post('roles/:roleId')
   @Roles(RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.PERMISSION_ASSIGN)
+  @RequireReauthentication()
   @ApiOperation({ summary: 'Assign one or more permissions to a role' })
   @ApiParam({ name: 'roleId', type: 'string' })
   async assignToRole(
@@ -82,6 +98,7 @@ export class PermissionController {
   @Post('roles/:roleId/revoke-many')
   @Roles(RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.PERMISSION_REVOKE)
+  @RequireReauthentication()
   @ApiOperation({ summary: 'Revoke multiple permissions from a role in one call' })
   @ApiParam({ name: 'roleId', type: 'string' })
   async revokeManyFromRole(
@@ -96,6 +113,7 @@ export class PermissionController {
   @Put('roles/:roleId')
   @Roles(RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.PERMISSION_MANAGE)
+  @RequireReauthentication()
   @ApiOperation({ summary: "Replace a role's entire permission list in one call" })
   @ApiParam({ name: 'roleId', type: 'string' })
   async setForRole(
@@ -109,13 +127,14 @@ export class PermissionController {
   @Delete('roles/:roleId/:permissionName')
   @Roles(RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.PERMISSION_REVOKE)
+  @RequireReauthentication()
   @ApiOperation({ summary: 'Revoke a permission from a role' })
   @ApiParam({ name: 'roleId', type: 'string' })
   @ApiParam({ name: 'permissionName', enum: PermissionsEnum })
   async revokeFromRole(
     @CurrentUser() actor: CurrentUserDto,
     @Param('roleId') roleId: string,
-    @Param('permissionName') permissionName: PermissionsEnum,
+    @Param('permissionName', new ParseEnumPipe(PermissionsEnum)) permissionName: PermissionsEnum,
   ) {
     return this.service.revokeFromRole(actor, roleId, permissionName);
   }

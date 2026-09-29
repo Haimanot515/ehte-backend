@@ -2,9 +2,9 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 import {
   ArrayNotEmpty,
+  ArrayUnique,
   IsArray,
   IsEmail,
-  IsIn,
   IsNotEmpty,
   IsString,
   MaxLength,
@@ -73,16 +73,18 @@ export class AdminRegisterDto {
 
   @ApiProperty({
     description:
-      'Roles to grant the new admin — must be ADMIN or SUPER_ADMIN. Any other value ' +
-      'would create an account with no phone and no admin role, which could never log in anywhere.',
+      'Names of existing roles to grant the new admin (ADMIN, SUPER_ADMIN, or any custom role ' +
+      'created via POST /roles). USER and SYSTEM are rejected. Each name must exist in the role table.',
     example: [RolesEnum.ADMIN],
-    enum: [RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN],
     isArray: true,
+    type: String,
   })
   @IsArray()
   @ArrayNotEmpty()
-  @IsIn([RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN], { each: true })
-  roles: RolesEnum[];
+  @ArrayUnique()
+  @IsString({ each: true })
+  @IsNotEmpty({ each: true })
+  roles: string[];
 }
 
 // ─────────────────────────────────────────────
