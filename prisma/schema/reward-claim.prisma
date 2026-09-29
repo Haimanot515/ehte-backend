@@ -72,6 +72,14 @@ model RewardClaim {
   missingPerson MissingPerson @relation(fields: [missingPersonId], references: [id], onDelete: Cascade)
   disbursements Disbursement[]
 
+  informationSubmission InformationSubmission? @relation(fields: [informationSubmissionId], references: [id], onDelete: SetNull)
+  informantUser         User?                  @relation("RewardClaimInformant", fields: [informantUserId], references: [id], onDelete: SetNull)
+  agreement             Agreement?             @relation(fields: [agreementId], references: [id])
+  duplicateOfClaim      RewardClaim?           @relation("RewardClaimDuplicate", fields: [duplicateOfClaimId], references: [id], onDelete: SetNull)
+  duplicateClaims       RewardClaim[]          @relation("RewardClaimDuplicate")
+  reviewedBy            User?                  @relation("RewardClaimReviewedBy", fields: [reviewedById], references: [id], onDelete: Restrict)
+  approvedBy            User?                  @relation("RewardClaimApprovedBy", fields: [approvedById], references: [id], onDelete: Restrict)
+
   // One claim per confidential submission — the same tip cannot be claimed twice.
   @@unique([missingPersonId, informationSubmissionId])
   @@index([missingPersonId, status])

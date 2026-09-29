@@ -61,6 +61,9 @@ model Disbursement {
   allocation        PaymentAllocation  @relation(fields: [allocationId], references: [id], onDelete: Restrict)
   rewardClaim       RewardClaim?       @relation(fields: [rewardClaimId], references: [id])
   payoutDestination PayoutDestination? @relation(fields: [payoutDestinationId], references: [id])
+  createdBy         User               @relation("DisbursementCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  approvedBy        User?              @relation("DisbursementApprovedBy", fields: [approvedById], references: [id], onDelete: Restrict)
+  executedBy        User?              @relation("DisbursementExecutedBy", fields: [executedById], references: [id], onDelete: Restrict)
 
   @@index([status])
   @@index([allocationId])

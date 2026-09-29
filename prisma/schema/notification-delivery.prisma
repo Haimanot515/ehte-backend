@@ -79,6 +79,8 @@ model NotificationBroadcast {
   updatedAt      DateTime             @default(now()) @updatedAt
 
   notifications Notification[]
+  createdBy     User?                 @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  template      NotificationTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
 
   @@index([status, scheduledAt])
   @@index([createdById, createdAt])
@@ -95,6 +97,8 @@ model NotificationTemplate {
   createdById String?
   createdAt   DateTime         @default(now())
   updatedAt   DateTime         @default(now()) @updatedAt
+
+  broadcasts NotificationBroadcast[]
 
   @@unique([type, language])
   @@map("notification_template")

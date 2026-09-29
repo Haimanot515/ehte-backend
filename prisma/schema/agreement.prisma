@@ -41,6 +41,9 @@ model Agreement {
   supports       Support[]
   victimProfiles VictimProfile[]
   missingPersons MissingPerson[]
+  rewardClaims   RewardClaim[]
+  approvedBy     User?            @relation("AgreementApprovedBy", fields: [approvedById], references: [id], onDelete: SetNull)
+  retiredBy      User?            @relation("AgreementRetiredBy", fields: [retiredById], references: [id], onDelete: SetNull)
 
   // @@unique below turns concurrent createDraft() version races into a P2002 that
   // AgreementService.createAgreementWithUniqueVersion() catches and retries on.
@@ -66,6 +69,7 @@ model AllocationRule {
 
   agreement   Agreement    @relation(fields: [agreementId], references: [id], onDelete: Restrict)
   institution Institution? @relation(fields: [institutionId], references: [id])
+  allocations PaymentAllocation[]
 
   // RECIPIENT (support) / REWARD_BENEFICIARY-as-remainder (reward pool) is never
   // stored as a rule: it is always total - sum(other rules) for that paymentType.

@@ -114,6 +114,7 @@ model PaymentAllocation {
 
   payment       Payment        @relation(fields: [paymentId], references: [id], onDelete: Restrict)
   institution   Institution?   @relation(fields: [institutionId], references: [id])
+  rule          AllocationRule? @relation(fields: [ruleId], references: [id], onDelete: Restrict)
   disbursements Disbursement[]
 
   @@index([paymentId])

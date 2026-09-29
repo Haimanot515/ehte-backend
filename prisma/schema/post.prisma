@@ -29,7 +29,9 @@ model Post {
 
   ownerSuspendedAt DateTime?
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user                            User  @relation("PostOwner", fields: [userId], references: [id], onDelete: Cascade)
+  claimedByUser                   User? @relation("PostClaimedBy", fields: [claimedByUserId], references: [id], onDelete: SetNull)
+  childSafetyFirstConfirmedByUser User? @relation("PostChildSafetyFirst", fields: [childSafetyFirstConfirmedByUserId], references: [id], onDelete: SetNull)
 
   @@unique([userId, idempotencyKey])
   @@index([userId])

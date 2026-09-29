@@ -79,7 +79,10 @@ model MissingPerson {
 
   informationSubmissions InformationSubmission[]
   rewardClaims           RewardClaim[]
-  user                   User?                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user                   User?                   @relation("MissingPersonOwner", fields: [userId], references: [id], onDelete: Cascade)
+  sponsorUser            User?                   @relation("MissingPersonSponsor", fields: [sponsorUserId], references: [id], onDelete: SetNull)
+  claimedByUser          User?                   @relation("MissingPersonClaimedBy", fields: [claimedByUserId], references: [id], onDelete: SetNull)
+  childSafetyFirstConfirmedByUser User?          @relation("MissingPersonChildSafetyFirst", fields: [childSafetyFirstConfirmedByUserId], references: [id], onDelete: SetNull)
   agreement              Agreement?              @relation(fields: [agreementId], references: [id])
   // Reward-funding and posting-fee payments that reference this case.
   payments               Payment[]

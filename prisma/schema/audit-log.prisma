@@ -71,7 +71,8 @@ model AuditLog {
   legalHold    Boolean   @default(false)
   anonymizedAt DateTime?
 
-  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+  user       User? @relation("AuditLogActor", fields: [userId], references: [id], onDelete: SetNull)
+  targetUser User? @relation("AuditLogTarget", fields: [targetUserId], references: [id], onDelete: SetNull)
 
   @@index([userId, createdAt])
   @@index([createdAt])
@@ -95,6 +96,8 @@ model AuditExport {
   truncated    Boolean  @default(false)
   createdAt    DateTime @default(now())
 
+  exportedBy User? @relation(fields: [exportedById], references: [id], onDelete: SetNull)
+
   @@index([createdAt])
   @@map("audit_export")
 }
@@ -105,6 +108,8 @@ model AuditSavedFilter {
   name      String
   filter    Json
   createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, name])
   @@map("audit_saved_filter")
@@ -125,6 +130,8 @@ model AuditAlert {
   createdById     String?
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt
+
+  createdBy User? @relation(fields: [createdById], references: [id], onDelete: SetNull)
 
   @@map("audit_alert")
 }
@@ -148,6 +155,8 @@ model AuditPurgeRun {
   error         String?
   createdAt     DateTime  @default(now())
   finishedAt    DateTime?
+
+  requestedBy User? @relation(fields: [requestedById], references: [id], onDelete: SetNull)
 
   @@map("audit_purge_run")
 }
