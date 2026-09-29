@@ -1,34 +1,3 @@
-// src/modules/billing/service/reward.service.ts
-//
-// Owns the reward OFFER (rewardOffered/rewardApproved/rewardDetails, still on
-// MissingPerson), the funding method and funded/reserved balance (section 7 /
-// 17-19), the per-informant RewardClaim lifecycle (section 11 / 16 / 20), and
-// reward splitting among approved informants (section 12).
-//
-// PRD alignment (Sep 2026): RewardClaim moved from one row per case to many
-// rows per case (see reward-claim.prisma). A claim is no longer auto-created
-// when a reward payment settles — it is created explicitly once an admin
-// escalates a specific InformationSubmission into a claim (createClaimFromSubmission),
-// matching section 10-11: "each submission is a separate claim/information record".
-// MissingPerson.fundedAmount/fundingStatus track the reward pool's funding state
-// directly; onPaymentPaid() updates those instead of upserting a RewardClaim row.
-//
-// ASSUMPTION TO VERIFY: MissingPersonService likely owns rewardOffered/rewardApproved
-// changes for the offer itself — reconcile before merging so two places don't write
-// the same columns (unchanged from the original note here).
-// ASSUMPTION TO VERIFY (confirmed against the real audit-events.enum.ts, Sep 2026):
-// REWARD_APPROVED / REWARD_REJECTED / REWARD_FUNDED / REWARD_CLOSED already exist —
-// REWARD_CLOSED is reused for closeWithoutPayout() rather than adding a duplicate.
-// Six members genuinely don't exist yet and need adding to the "BILLING — REWARDS"
-// section: REWARD_FUNDING_METHOD_SET, REWARD_WEIGHTS_SET, REWARD_CLAIM_CREATED,
-// REWARD_CLAIM_SCORED, REWARD_CLAIM_DECIDED, REWARD_SPLIT_DECIDED.
-// ASSUMPTION TO VERIFY: RewardClaimApprovedEvent (notification.events.ts) and
-// the PermissionsEnum members used in disbursement.controller.ts
-// (REWARDS_VERIFY_CLAIM alongside the existing REWARDS_APPROVE) weren't in
-// the files provided for this pass — carried over from the pre-existing
-// single-claim approveClaim() flow's naming, verify they still exist / add
-// them the same way.
-
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 import { Prisma, RewardClaimStatus, RewardFundingStatus } from '@prisma/client';
@@ -60,8 +29,6 @@ export class RewardService {
     private readonly prisma: PrismaService,
     private readonly events: BillingEventsService,
   ) {}
-
-  // ── Admin: approve/reject the reward OFFER (may belong in MissingPersonService — see note above) ──
 
   async approveOffer(adminId: string, missingPersonId: string) {
     const mp = await this.prisma.missingPerson.findUnique({
@@ -107,13 +74,6 @@ export class RewardService {
     });
   }
 
-  // ── Sponsor/admin: funding method (section 7 / 17-19) ────────────────────
-
-  /**
-   * Must be set before the reward can be funded. Changing it once funding has
-   * started is refused — switching a PREPAID case to PROMISE_TO_PAY (or back)
-   * after money has moved would strand the reserved/funded bookkeeping.
-   */
   async setFundingMethod(actorId: string, missingPersonId: string, dto: SetFundingMethodDto) {
     const mp = await this.prisma.missingPerson.findUnique({
       where: { id: missingPersonId },
@@ -138,7 +98,6 @@ export class RewardService {
     });
   }
 
-  /** Section 11: admin-selected weights for this case, must sum to exactly 100. */
   async setEvaluationWeights(adminId: string, missingPersonId: string, dto: SetEvaluationWeightsDto) {
     const sum = dto.timeWeight + dto.evidenceWeight + dto.credibilityWeight;
     if (sum !== EVALUATION_WEIGHTS_TOTAL) {
@@ -167,9 +126,6 @@ export class RewardService {
     });
   }
 
-  // ── Admin: per-informant claim lifecycle (section 10-11 / 16 / 20) ───────
-
-  /** Escalates one confidential submission into a claim the admin can score and decide. */
   async createClaimFromSubmission(adminId: string, missingPersonId: string, informationSubmissionId: string) {
     const submission = await this.prisma.informationSubmission.findFirst({
       where: { id: informationSubmissionId, missingPersonId },
@@ -200,11 +156,6 @@ export class RewardService {
     return claim;
   }
 
-  /**
-   * Scores a claim against the case's configured weights (section 11 / 16).
-   * Weights are copied onto the claim at scoring time so a later change to the
-   * case's weights never silently reweights an already-scored claim.
-   */
   async scoreClaim(adminId: string, claimId: string, dto: ScoreClaimDto) {
     const claim = await this.prisma.rewardClaim.findUnique({ where: { id: claimId } });
     if (!claim) throw new NotFoundException('reward_claim_not_found');
@@ -247,7 +198,6 @@ export class RewardService {
     });
   }
 
-  /** Section 20: VALID / INVALID / DUPLICATE / ALREADY_KNOWN / INELIGIBLE, always with a reason. */
   async decideClaim(adminId: string, claimId: string, dto: DecideClaimDto) {
     const claim = await this.prisma.rewardClaim.findUnique({ where: { id: claimId } });
     if (!claim) throw new NotFoundException('reward_claim_not_found');
@@ -286,15 +236,6 @@ export class RewardService {
     }
   }
 
-  /**
-   * Section 12 / 13-14: splits the funded reward pool across every VALID claim
-   * named in dto.splits. Percentages are of the informant pool (REWARD_BENEFICIARY
-   * allocation lines), not of the gross reward, and must total exactly 100 —
-   * matching section 12's "Informant percentages must total 100%". Every named
-   * claim must be VALID and not already split; any VALID claim on the case that
-   * is NOT named in dto.splits gets 0% (the admin decided it, even if valid,
-   * does not share the pool) and is moved to REJECTED with that reason recorded.
-   */
   async splitReward(adminId: string, missingPersonId: string, dto: SplitRewardDto) {
     const totalPct = dto.splits.reduce((sum, s) => sum + s.percentage, 0);
     if (totalPct !== 100) throw new BadRequestException('Informant percentages must total 100%');
@@ -346,8 +287,7 @@ export class RewardService {
           },
         });
       }
-      // Any other VALID claim on this case not named in the split forfeits its
-      // share — the admin's split is the complete, final decision for the pool.
+
       await tx.rewardClaim.updateMany({
         where: { missingPersonId, status: 'VALID', id: { notIn: claimIds } },
         data: { status: 'REJECTED', decisionReason: 'not_included_in_reward_split' },
@@ -363,7 +303,6 @@ export class RewardService {
     });
   }
 
-  /** Case closed with no valid claim, or the offer is withdrawn after funding (section 21). */
   async closeWithoutPayout(adminId: string, missingPersonId: string, reason: string) {
     const mp = await this.prisma.missingPerson.findUnique({
       where: { id: missingPersonId },
@@ -402,45 +341,52 @@ export class RewardService {
     });
   }
 
-  /**
-   * Reacts to a settled reward-funding payment. Updates the funded/reserved
-   * balance and funding status directly on MissingPerson — no RewardClaim row
-   * is created here anymore (see file header). Idempotent: re-running this for
-   * an already-counted payment would double-count, so PaymentService must only
-   * ever emit BILLING_PAYMENT_PAID once per payment (it already guards this via
-   * the PENDING -> PAID transition's updateMany count check).
-   */
   @OnEvent(BILLING_PAYMENT_PAID)
   async onPaymentPaid(e: BillingPaymentPaid): Promise<void> {
     if (!e.missingPersonId) return;
+    const missingPersonId = e.missingPersonId;
     const payment = await this.prisma.payment.findUnique({
       where: { id: e.paymentId },
-      select: { amount: true, type: true },
+      select: { amount: true, type: true, fulfilledAt: true },
     });
-    if (!payment || payment.type !== 'MISSING_PERSON_REWARD') return;
+    if (!payment || payment.type !== 'MISSING_PERSON_REWARD' || payment.fulfilledAt) return;
 
-    const mp = await this.prisma.missingPerson.findUnique({
-      where: { id: e.missingPersonId },
-      select: { rewardAmount: true, fundingMethod: true, fundedAmount: true, reservedAmount: true },
-    });
-    if (!mp) return;
+    const fundingStatus = await this.prisma.$transaction(
+      async (tx): Promise<RewardFundingStatus | null> => {
+        const mp = await tx.missingPerson.findUnique({
+          where: { id: missingPersonId },
+          select: { rewardAmount: true, fundingMethod: true, fundedAmount: true, reservedAmount: true },
+        });
+        if (!mp) return null;
 
-    const fundedAmount = mp.fundedAmount.add(payment.amount);
-    const reservedAmount =
-      mp.fundingMethod === 'PREPAID' ? mp.reservedAmount.add(payment.amount) : mp.reservedAmount;
-    const target = new Prisma.Decimal(mp.rewardAmount ?? 0);
-    let fundingStatus: RewardFundingStatus = 'PARTIALLY_FUNDED';
-    if (target.gt(0) && fundedAmount.gte(target)) fundingStatus = 'FULLY_FUNDED';
+        // fulfilledAt is claimed in the same transaction as the funding update, so a repeated event does nothing
+        const { count } = await tx.payment.updateMany({
+          where: { id: e.paymentId, fulfilledAt: null },
+          data: { fulfilledAt: new Date() },
+        });
+        if (count === 0) return null;
 
-    await this.prisma.missingPerson.update({
-      where: { id: e.missingPersonId },
-      data: { fundedAmount, reservedAmount, fundingStatus },
-    });
+        const fundedAmount = mp.fundedAmount.add(payment.amount);
+        const reservedAmount =
+          mp.fundingMethod === 'PREPAID' ? mp.reservedAmount.add(payment.amount) : mp.reservedAmount;
+        const target = new Prisma.Decimal(mp.rewardAmount ?? 0);
+        let status: RewardFundingStatus = 'PARTIALLY_FUNDED';
+        if (target.gt(0) && fundedAmount.gte(target)) status = 'FULLY_FUNDED';
+
+        await tx.missingPerson.update({
+          where: { id: missingPersonId },
+          data: { fundedAmount, reservedAmount, fundingStatus: status },
+        });
+        return status;
+      },
+    );
+    if (!fundingStatus) return;
+
     await this.events.log({
-      actorId: null, // system: triggered by a settled Chapa payment, not an admin action
+      actorId: null,
       action: AuditEventEnum.REWARD_FUNDED,
       entityType: 'MissingPerson',
-      entityId: e.missingPersonId,
+      entityId: missingPersonId,
       metadata: { paymentId: e.paymentId, fundingStatus },
     });
   }

@@ -78,7 +78,7 @@ model Payment {
   refundStatus String?
   refundAmount Decimal? @db.Decimal(14, 2)
   refundReason String?
-
+  fulfilledAt DateTime?
   paidAt    DateTime?
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
