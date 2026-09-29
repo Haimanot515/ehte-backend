@@ -483,6 +483,7 @@ export class ReportService {
     this.eventEmitter.emit(NotificationEventEnum.NEW_REPORT, {
       reportId: report.id,
       caseReference: report.caseReference,
+      userId: user.id,
     });
 
     return report;

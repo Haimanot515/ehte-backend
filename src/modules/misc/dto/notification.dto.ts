@@ -1,4 +1,4 @@
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional, OmitType } from '@nestjs/swagger';
 
 import {
   ArrayMaxSize,
@@ -25,9 +25,14 @@ import { Transform, Type } from 'class-transformer';
 
 import { NotificationPriority, NotificationType } from '@prisma/client';
 
+import { GetAuditLogsDto } from './audit-log.dto';
+
 // ─────────────────────────────────────────────
 // Shared constants
 // ─────────────────────────────────────────────
+
+export const EVENT_CATEGORIES = ['USER', 'ADMIN', 'SUPER_ADMIN', 'SYSTEM'] as const;
+export type EventCategoryValue = (typeof EVENT_CATEGORIES)[number];
 
 export const NOTIFICATION_AUDIENCES = ['ADMINS', 'ALL_USERS'] as const;
 export type NotificationAudienceValue = (typeof NOTIFICATION_AUDIENCES)[number];
@@ -220,6 +225,133 @@ export class SentNotificationsQueryDto extends NotificationPagingDto {
   @IsOptional()
   @IsEnum(NotificationPriority)
   priority?: NotificationPriority;
+}
+
+export class AllNotificationsQueryDto extends NotificationPagingDto {
+  @ApiPropertyOptional({ description: 'Only notifications delivered to this user.' })
+  @IsOptional()
+  @IsUUID()
+  recipientId?: string;
+
+  @ApiPropertyOptional({ description: 'Only notifications caused by this user.' })
+  @IsOptional()
+  @IsUUID()
+  actorId?: string;
+
+  @ApiPropertyOptional({ enum: NotificationType })
+  @IsOptional()
+  @IsEnum(NotificationType)
+  type?: NotificationType;
+
+  @ApiPropertyOptional({ enum: NotificationPriority })
+  @IsOptional()
+  @IsEnum(NotificationPriority)
+  priority?: NotificationPriority;
+
+  @ApiPropertyOptional({ example: 'Report' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  entity?: string;
+
+  @ApiPropertyOptional({ description: 'Only notifications about this record.' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  entityId?: string;
+
+  @ApiPropertyOptional({ description: 'true = read only, false = unread only' })
+  @IsOptional()
+  @Transform(parseBoolean)
+  @IsBoolean()
+  isRead?: boolean;
+
+  @ApiPropertyOptional({ example: '2026-09-01T00:00:00.000Z' })
+  @IsOptional()
+  @IsISO8601()
+  from?: string;
+
+  @ApiPropertyOptional({ example: '2026-09-30T23:59:59.999Z' })
+  @IsOptional()
+  @IsISO8601()
+  to?: string;
+
+  @ApiPropertyOptional({
+    enum: EVENT_CATEGORIES,
+    description: 'Who caused it: USER, ADMIN, SUPER_ADMIN, or SYSTEM (no actor).',
+  })
+  @IsOptional()
+  @IsIn(EVENT_CATEGORIES)
+  category?: EventCategoryValue;
+
+  @ApiPropertyOptional({ description: 'Search title, body and actor name.' })
+  @IsOptional()
+  @IsString()
+  @MinLength(2)
+  @MaxLength(100)
+  q?: string;
+
+  @ApiPropertyOptional({ enum: ['asc', 'desc'], default: 'desc' })
+  @IsOptional()
+  @IsIn(['asc', 'desc'])
+  sort?: 'asc' | 'desc';
+
+  @ApiPropertyOptional({ description: 'false hides expired notifications. Default true.' })
+  @IsOptional()
+  @Transform(parseBoolean)
+  @IsBoolean()
+  includeExpired?: boolean;
+}
+
+export class UserNotificationEventsQueryDto extends OmitType(AllNotificationsQueryDto, [
+  'recipientId',
+  'actorId',
+] as const) {
+  @ApiPropertyOptional({
+    enum: ['caused', 'received', 'both'],
+    default: 'both',
+    description: 'caused = events this user triggered, received = notifications sent to them.',
+  })
+  @IsOptional()
+  @IsIn(['caused', 'received', 'both'])
+  direction?: 'caused' | 'received' | 'both';
+}
+
+export class EventsFeedQueryDto extends OmitType(GetAuditLogsDto, ['actorType'] as const) {}
+
+export class EventCategoriesQueryDto {
+  @ApiPropertyOptional({ description: 'Default: 30 days before now. Window is at most 90 days.' })
+  @IsOptional()
+  @IsISO8601()
+  from?: string;
+
+  @ApiPropertyOptional({ description: 'Default: now.' })
+  @IsOptional()
+  @IsISO8601()
+  to?: string;
+}
+
+export class NotificationSummaryQueryDto {
+  @ApiPropertyOptional({ description: 'Default: 30 days before now. Window is at most 90 days.' })
+  @IsOptional()
+  @IsISO8601()
+  from?: string;
+
+  @ApiPropertyOptional({ description: 'Default: now.' })
+  @IsOptional()
+  @IsISO8601()
+  to?: string;
+
+  @ApiPropertyOptional({ enum: NotificationType })
+  @IsOptional()
+  @IsEnum(NotificationType)
+  type?: NotificationType;
+
+  @ApiPropertyOptional({ example: 'Report' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  entity?: string;
 }
 
 // ─────────────────────────────────────────────

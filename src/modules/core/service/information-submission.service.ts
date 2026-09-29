@@ -572,6 +572,12 @@ export class InformationSubmissionService {
       },
     });
 
+    this.eventEmitter.emit(NotificationEventEnum.NEW_MISSING_PERSON_INFORMATION, {
+      missingPersonId,
+      informationSubmissionId: submission.id,
+      userId: user.id,
+    });
+
     return submission;
   }
 

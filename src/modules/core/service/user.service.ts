@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import { NotificationEventEnum } from 'src/common/enums/shared/notification-events.enum';
 import {
   AuditOutcome,
   AuditSeverity,
@@ -898,6 +899,13 @@ export class UserService {
       metadata: { scope: 'all_sessions', sessionsRevoked: revokedSessions.count },
     });
 
+    if (actor.id !== targetUserId) {
+      this.eventEmitter.emit(NotificationEventEnum.SECURITY_ALERT, {
+        userId: targetUserId,
+        reason: 'sessions_revoked_by_admin',
+      });
+    }
+
     return { message: 'sessions_revoked' };
   }
 
@@ -1248,6 +1256,11 @@ export class UserService {
         previousPhoneMasked: this.maskPhone(otpRecord.user.phone),
         newPhoneMasked: this.maskPhone(newPhone),
       },
+    });
+
+    this.eventEmitter.emit(NotificationEventEnum.SECURITY_ALERT, {
+      userId: user.id,
+      reason: 'phone_changed',
     });
 
     return { message: 'phone_number_changed' };
