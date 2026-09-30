@@ -1,3 +1,4 @@
+import { MediaUpload, PROFILE_PICTURE_FIELDS } from 'src/common/decorators/media-upload.decorator';
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiParam, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
@@ -107,6 +108,7 @@ export class UserController {
   }
 
   @Patch('me/profile-picture')
+  @MediaUpload(UpdateProfilePictureDto, PROFILE_PICTURE_FIELDS)
   @ApiOperation({ summary: 'Set/replace my profile picture (after uploading to MinIO)' })
   async updateMyProfilePicture(
     @CurrentUser() user: CurrentUserDto,

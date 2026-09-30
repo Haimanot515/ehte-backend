@@ -1,3 +1,4 @@
+import { MediaUpload, RESPONSE_FILES_FIELDS } from 'src/common/decorators/media-upload.decorator';
 import { Body, Controller, Get, Header, Headers, Param, Patch, Post, Query } from '@nestjs/common';
 
 import { ApiBearerAuth, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
@@ -34,6 +35,7 @@ export class ReportController {
   // Accepts an optional Idempotency-Key so a dropped-response retry
   // returns the original report instead of creating a duplicate
   @Post()
+  @MediaUpload(CreateReportDto)
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @RequireReauthentication()
   @ApiOperation({ summary: 'Submit a new report' })
@@ -120,6 +122,7 @@ export class ReportController {
   }
 
   @Patch(':id')
+  @MediaUpload(UpdateReportDto)
   @ApiOperation({ summary: 'Update a pending report' })
   async update(
     @CurrentUser() user: CurrentUserDto,
@@ -210,6 +213,7 @@ export class ReportController {
   }
 
   @Post(':id/information-requests/:requestId/respond')
+  @MediaUpload(RespondToInformationRequestDto, RESPONSE_FILES_FIELDS)
   @ApiOperation({ summary: 'Respond to an admin information request (reporter)' })
   async respondToInformationRequest(
     @CurrentUser() user: CurrentUserDto,

@@ -1,3 +1,4 @@
+import { MediaUpload } from 'src/common/decorators/media-upload.decorator';
 import { Body, Controller, Delete, Get, Headers, Param, Patch, Post, Query } from '@nestjs/common';
 
 import { ApiBearerAuth, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
@@ -33,6 +34,7 @@ export class InformationSubmissionController {
 
   // POST /information-submissions/missing-person/:missingPersonId
   @Post('missing-person/:missingPersonId')
+  @MediaUpload(CreateInformationSubmissionDto)
   @ApiOperation({ summary: 'Submit information about a missing person' })
   async create(
     @Param('missingPersonId') missingPersonId: string,
@@ -107,6 +109,7 @@ export class InformationSubmissionController {
 
   // PATCH /information-submissions/:id — only while PENDING (enforced in service).
   @Patch(':id')
+  @MediaUpload(UpdateInformationSubmissionDto)
   @ApiOperation({ summary: 'Update my information submission' })
   async update(
     @Param('id') id: string,

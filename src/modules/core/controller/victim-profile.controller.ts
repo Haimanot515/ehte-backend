@@ -1,3 +1,4 @@
+import { MediaUpload } from 'src/common/decorators/media-upload.decorator';
 import { Body, Controller, Delete, Get, Headers, Param, Patch, Post, Query } from '@nestjs/common';
 
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
@@ -35,6 +36,7 @@ export class VictimProfileController {
 
   // Open to self-submission by regular users as well as admins.
   @Post()
+  @MediaUpload(CreateVictimProfileDto)
   @Roles(RolesEnum.USER, RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.PROFILE_CREATE)
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
@@ -184,6 +186,7 @@ export class VictimProfileController {
   }
 
   @Patch(':id')
+  @MediaUpload(UpdateVictimProfileDto)
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.PROFILE_UPDATE)
   @ApiBearerAuth('access-token')

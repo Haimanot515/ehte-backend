@@ -1,3 +1,4 @@
+import { MediaUpload } from 'src/common/decorators/media-upload.decorator';
 import {
   Body,
   Controller,
@@ -44,6 +45,7 @@ export class PostController {
 
   // POST /posts — authenticated user, requires re-auth.
   @Post()
+  @MediaUpload(CreatePostDto)
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @RequireReauthentication()
   @ApiBearerAuth('access-token')
@@ -84,6 +86,7 @@ export class PostController {
 
   // PATCH /posts/me/:id — allowed only while DRAFT or CHANGES_REQUESTED.
   @Patch('me/:id')
+  @MediaUpload(UpdatePostDto)
   @ApiBearerAuth('access-token')
   @ApiOperation({
     summary: 'Edit own post before/after review',
@@ -164,6 +167,7 @@ export class PostController {
 
   // POST /posts/official — admin-authored, distinct from POST /posts.
   @Post('official')
+  @MediaUpload(AdminCreatePostDto)
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.POST_CREATE_OFFICIAL)

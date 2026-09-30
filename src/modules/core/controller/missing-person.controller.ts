@@ -1,3 +1,4 @@
+import { MediaUpload } from 'src/common/decorators/media-upload.decorator';
 import {
   Body,
   Controller,
@@ -41,6 +42,7 @@ export class MissingPersonController {
   constructor(private readonly missingPersonService: MissingPersonService) {}
 
   @Post()
+  @MediaUpload(CreateMissingPersonDto)
   @ApiBearerAuth('access-token')
   @RequireReauthentication()
   @ApiOperation({ summary: 'Submit a missing person report' })
@@ -79,6 +81,7 @@ export class MissingPersonController {
 
   // Admin creates a case directly. CHILD cases still need two-admin approval.
   @Post('admin')
+  @MediaUpload(AdminCreateMissingPersonDto)
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.MISSING_PERSON_REVIEW)
@@ -243,6 +246,7 @@ export class MissingPersonController {
   }
 
   @Patch(':id')
+  @MediaUpload(UpdateMissingPersonDto)
   @ApiBearerAuth('access-token')
   @RequireReauthentication()
   @ApiOperation({ summary: 'Update my missing person submission' })
