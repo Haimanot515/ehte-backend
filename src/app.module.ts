@@ -114,6 +114,11 @@ const REDIS_URL_SCHEMES = { scheme: ['redis', 'rediss'] };
         PORT: Joi.number().default(3000),
         APP_NAME: Joi.string().default('Ehte'),
 
+        // Public HTTPS PNG shown in the header of every email. Optional: when
+        // unset, EmailTemplateService uses its built-in default logo URL.
+        // https only, because mail apps block insecure images.
+        EMAIL_LOGO_URL: Joi.string().uri({ scheme: ['https'] }).optional().allow(''),
+
         CORS_ORIGIN: Joi.string().required(),
         CORS_CREDENTIALS: Joi.boolean().default(true),
 

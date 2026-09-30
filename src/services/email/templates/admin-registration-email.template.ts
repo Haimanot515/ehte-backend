@@ -1,7 +1,10 @@
+import { renderBrandMark } from './email-logo';
+
 interface AdminRegistrationEmailParams {
   registrationLink: string;
   expiresInHours: number;
   recipientName?: string;
+  logoUrl?: string;
 }
 
 const brand = {
@@ -94,6 +97,7 @@ export function renderAdminRegistrationEmailHtml({
   registrationLink,
   expiresInHours,
   recipientName,
+  logoUrl,
 }: AdminRegistrationEmailParams): string {
   const safeLink = escapeHtml(registrationLink);
   const safeExpiry = escapeHtml(formatExpiry(expiresInHours));
@@ -133,8 +137,8 @@ export function renderAdminRegistrationEmailHtml({
               <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
                 <tr>
                   <td class="px bg-hero" style="background-color:${brand.hero};padding:32px 36px 34px;">
-                    <span style="font-size:20px;font-weight:700;letter-spacing:-0.02em;color:#ffffff;">Ehte</span>
-                    <span style="display:inline-block;margin-left:10px;padding:3px 10px;border-radius:999px;background-color:rgba(255,255,255,0.16);color:#ffffff;font-size:11px;font-weight:600;letter-spacing:0.05em;text-transform:uppercase;vertical-align:2px;">Admin invitation</span>
+                    ${renderBrandMark(logoUrl, 'Ehte')}
+                    <span style="display:inline-block;margin-left:10px;padding:3px 10px;border-radius:999px;background-color:rgba(255,255,255,0.16);color:#ffffff;font-size:11px;font-weight:600;letter-spacing:0.05em;text-transform:uppercase;vertical-align:middle;">Admin invitation</span>
                     <h1 class="hero-title" style="margin:26px 0 8px;font-size:28px;line-height:1.25;font-weight:700;letter-spacing:-0.02em;color:#ffffff;">
                       Welcome to the Ehte admin team
                     </h1>
