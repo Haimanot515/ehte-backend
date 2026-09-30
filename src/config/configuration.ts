@@ -206,6 +206,10 @@ export default () => ({
     currency: process.env.SUPPORT_CURRENCY || 'ETB',
 
     enabled: process.env.SUPPORT_ENABLED !== 'false',
+
+    // Days an unanswered non-financial offer stays PENDING before SupportService.expireStaleOffers()
+    // cancels it and tells the supporter.
+    offerExpiryDays: parseInt(process.env.SUPPORT_OFFER_EXPIRY_DAYS ?? '14', 10),
   },
 
   missingPersons: {
@@ -235,7 +239,7 @@ export default () => ({
     // reconcileStale()).
     expiryHours: parseInt(process.env.PAYMENT_EXPIRY_HOURS ?? '24', 10),
 
-    // Age band PaymentService.repairUnconfirmedSupports() operates within:
+    // Age band PaymentService.repairUnfulfilledPayments() operates within:
     // only attempts a repair once a paidAt is at least minAgeMinutes old,
     // and gives up once it's older than maxAgeDays.
     repair: {
@@ -243,7 +247,7 @@ export default () => ({
       maxAgeDays: parseInt(process.env.PAYMENT_REPAIR_MAX_AGE_DAYS ?? '7', 10),
     },
 
-    // Intended cadence for both reconcileStale() and repairUnconfirmedSupports().
+    // Intended cadence for both reconcileStale() and repairUnfulfilledPayments().
     // Both are currently static @Cron(CronExpression.EVERY_10_MINUTES) decorators,
     // so this value is not yet actually read by the schedule — it documents the
     // intended interval pending a SchedulerRegistry.addCronJob() refactor.

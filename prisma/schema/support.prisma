@@ -12,6 +12,20 @@ enum SupportStatus {
   FAILED
 }
 
+// What a non-financial supporter is offering. OTHER requires a note.
+enum SupportCategory {
+  FOOD
+  WATER
+  CLOTHES
+  SHELTER
+  MEDICAL_ITEMS
+  TRANSPORT
+  EDUCATION_MATERIALS
+  VOLUNTEER_TIME
+  PROFESSIONAL_HELP
+  OTHER
+}
+
 enum SupportAgreementType {
   DIRECT
   PARTNER_ORGANIZATION
@@ -29,6 +43,19 @@ model Support {
   createdAt         DateTime             @default(now())
   updatedAt         DateTime             @updatedAt
   transferReference String?
+
+  // Non-financial offers only: the ticked checklist items (empty for financial supports).
+  categories SupportCategory[]
+
+  // Stored once so the victim notification and the public list use the same rule.
+  // Default is anonymous; the supporter ticks a box to show their name.
+  anonymous Boolean @default(true)
+
+  // Non-financial only: the supporter agrees the team may pass their contact details on.
+  contactMayBeShared Boolean @default(false)
+
+  // Non-financial only: set when the (claimed) victim confirms they received the help.
+  victimConfirmedReceiptAt DateTime?
 
   agreementId        String?
   agreementVersion   Int?

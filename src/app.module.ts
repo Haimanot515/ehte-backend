@@ -248,6 +248,9 @@ const REDIS_URL_SCHEMES = { scheme: ['redis', 'rediss'] };
         }),
         PAYMENTS_MIN_SUPPORT_ETB: Joi.number().default(10),
 
+        // Days before an unanswered non-financial support offer is auto-cancelled.
+        SUPPORT_OFFER_EXPIRY_DAYS: Joi.number().integer().min(1).default(14),
+
         CHAPA_SECRET_KEY: Joi.string().when('PAYMENTS_ENABLED', {
           is: true,
           then: Joi.required(),
@@ -272,7 +275,7 @@ const REDIS_URL_SCHEMES = { scheme: ['redis', 'rediss'] };
         PAYMENT_REPAIR_MIN_AGE_MINUTES: Joi.number().default(2),
         PAYMENT_REPAIR_MAX_AGE_DAYS: Joi.number().default(7),
 
-        // Drives both reconcileStale() and repairUnconfirmedSupports() cron
+        // Drives both reconcileStale() and repairUnfulfilledPayments() cron
         // cadences (currently still static @Cron decorators — see PaymentService
         // notes; this key makes the interval *readable* pending a
         // SchedulerRegistry.addCronJob() refactor for true dynamic scheduling).

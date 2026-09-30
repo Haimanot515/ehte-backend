@@ -17,6 +17,7 @@ import { AuditEventEnum } from '../../../common/enums/shared/audit-events.enum';
 import { NotificationEventEnum } from '../../../common/enums/shared/notification-events.enum';
 import { PaymentVerifiedEvent } from '../../misc/events/notification.events';
 import { ReviewDecision, ResolveReviewDto } from '../dto/billing-report.dto';
+import { MyPaymentsQueryDto } from '../dto/payment.dto';
 import { POSTING_FEE_GATE_STATUSES } from '../billing.constants';
 
 export type Payer = { id: string; email?: string | null };
@@ -42,62 +43,36 @@ export class PaymentService {
     this.fallbackEmail = config.get<string>('chapa.fallbackEmail', '');
   }
 
-  previewSupport(profileId: string, amount: string) {
-    return this.allocation.preview(PaymentType.SUPPORT, this.parseAmount(amount), profileId);
+  // Shows the split for a support amount on a victim profile, before any payment exists.
+  previewSupport(victimProfileId: string, amount: string) {
+    return this.allocation.preview(PaymentType.SUPPORT, this.parseAmount(amount), victimProfileId);
   }
 
-  async initiateSupportCheckout(payer: Payer, supportId: string) {
+  // Financial support has no pledge and no Support row at this stage. Only a PENDING Payment is
+  // created; the Support is created after Chapa confirms the money (see SupportService.onPaymentPaid).
+  async initiateSupportCheckout(
+    payer: Payer,
+    victimProfileId: string,
+    amountRaw: string,
+    anonymous = true,
+  ) {
     this.assertEnabled('payments.enabled');
 
-    const support = await this.prisma.support.findFirst({
-      where: { id: supportId, userId: payer.id, status: 'PENDING' },
-      select: {
-        id: true,
-        type: true,
-        victimProfileId: true,
-        amount: true,
-        allocationSnapshot: true,
-      },
-    });
-    if (support && support.type !== 'FINANCIAL') {
-      throw new BadRequestException('Only financial support can be paid online');
-    }
-    if (!support?.allocationSnapshot) throw new NotFoundException('No payable support found');
-
-    const preview = support.allocationSnapshot as unknown as AllocationPreview;
-    const amount = new Prisma.Decimal(support.amount ?? 0);
-    if (!amount.equals(new Prisma.Decimal(preview.total))) {
-      throw new ConflictException('Support amount does not match its recorded allocation');
-    }
+    const amount = this.parseAmount(amountRaw);
     if (amount.lt(this.minSupport)) {
       throw new BadRequestException(`Minimum support amount is ${this.minSupport} ETB`);
     }
 
-    const existing = await this.prisma.payment.findFirst({
-      where: {
-        supportId,
-        OR: [
-          { status: 'PAID' },
-          { status: 'PENDING', createdAt: { gt: new Date(Date.now() - 30 * 60_000) } },
-        ],
-      },
-      select: { status: true },
-    });
-    if (existing) {
-      throw new ConflictException(
-        existing.status === 'PAID'
-          ? 'This support is already paid'
-          : 'A payment for this support is already in progress',
-      );
-    }
+    // Throws unless the profile is published, has an active agreement and can be paid out.
+    const preview = await this.allocation.preview(PaymentType.SUPPORT, amount, victimProfileId);
 
     return this.startCheckout({
       type: PaymentType.SUPPORT,
-      amount,
+      amount: new Prisma.Decimal(preview.total),
       payer,
       preview,
-      victimProfileId: support.victimProfileId,
-      supportId: support.id,
+      victimProfileId,
+      supportAnonymous: anonymous,
     });
   }
 
@@ -213,6 +188,7 @@ export class PaymentService {
     victimProfileId?: string;
     supportId?: string;
     missingPersonId?: string;
+    supportAnonymous?: boolean;
   }) {
     const email = args.payer.email ?? this.fallbackEmail;
     if (!this.returnUrl || !this.appUrl || !email) {
@@ -229,6 +205,7 @@ export class PaymentService {
         victimProfileId: args.victimProfileId,
         supportId: args.supportId,
         missingPersonId: args.missingPersonId,
+        supportAnonymous: args.supportAnonymous ?? true,
         agreementId: args.preview.agreementId,
         agreementVersion: args.preview.agreementVersion,
         allocationSnapshot: args.preview,
@@ -389,7 +366,14 @@ export class PaymentService {
     const status = await this.reconcile(txRef);
     const p = await this.prisma.payment.findUniqueOrThrow({
       where: { txRef },
-      select: { type: true, amount: true, currency: true, allocationSnapshot: true },
+      select: {
+        type: true,
+        amount: true,
+        currency: true,
+        allocationSnapshot: true,
+        supportId: true,
+        fulfilledAt: true,
+      },
     });
     return {
       status,
@@ -397,7 +381,56 @@ export class PaymentService {
       amount: p.amount,
       currency: p.currency,
       allocation: p.allocationSnapshot,
+      // For a PAID support payment: false means "Payment received, confirming" until the Support exists.
+      supportRecorded: p.type === PaymentType.SUPPORT ? !!p.supportId : null,
+      supportId: p.supportId,
     };
+  }
+
+  // The payer's own payments, including pending, failed and expired ones that never became a Support.
+  // A support payment that is not PAID can be retried by calling the support checkout again.
+  async listMine(userId: string, query: MyPaymentsQueryDto) {
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 20;
+    const where: Prisma.PaymentWhereInput = {
+      payerUserId: userId,
+      ...(query.status ? { status: query.status } : {}),
+    };
+
+    const [total, rows] = await this.prisma.$transaction([
+      this.prisma.payment.count({ where }),
+      this.prisma.payment.findMany({
+        where,
+        select: {
+          id: true,
+          txRef: true,
+          type: true,
+          status: true,
+          amount: true,
+          currency: true,
+          victimProfileId: true,
+          supportId: true,
+          supportAnonymous: true,
+          fulfilledAt: true,
+          paidAt: true,
+          createdAt: true,
+        },
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+    ]);
+
+    const items = rows.map((p) => ({
+      ...p,
+      retryable:
+        p.type === PaymentType.SUPPORT &&
+        (p.status === 'FAILED' || p.status === 'EXPIRED' || p.status === 'PENDING'),
+      awaitingSupportRecord:
+        p.type === PaymentType.SUPPORT && p.status === 'PAID' && !p.supportId,
+    }));
+
+    return { total, page, limit, items };
   }
 
   async resolveReview(adminId: string, paymentId: string, dto: ResolveReviewDto) {
@@ -542,38 +575,6 @@ export class PaymentService {
   }
 
   @Cron(CronExpression.EVERY_10_MINUTES)
-  async repairUnconfirmedSupports(): Promise<void> {
-    const paid = await this.prisma.payment.findMany({
-      where: {
-        status: 'PAID',
-        supportId: { not: null },
-        paidAt: {
-          lt: new Date(Date.now() - 2 * 60_000),
-          gt: new Date(Date.now() - 7 * 86_400_000),
-        },
-      },
-      select: { id: true, supportId: true },
-      take: 200,
-    });
-    if (paid.length === 0) return;
-
-    const pending = await this.prisma.support.findMany({
-      where: { id: { in: paid.map((p) => p.supportId as string) }, status: 'PENDING' },
-      select: { id: true },
-    });
-    const pendingIds = new Set(pending.map((s) => s.id));
-    for (const p of paid) {
-      if (p.supportId && pendingIds.has(p.supportId)) {
-        await this.events.paymentPaid({
-          paymentId: p.id,
-          supportId: p.supportId,
-          missingPersonId: null,
-        });
-      }
-    }
-  }
-
-  @Cron(CronExpression.EVERY_10_MINUTES)
   async repairUnfulfilledPayments(): Promise<void> {
     const paidAt = {
       lt: new Date(Date.now() - 2 * 60_000),
@@ -592,6 +593,31 @@ export class PaymentService {
         supportId: null,
         missingPersonId: p.missingPersonId,
       });
+    }
+
+    // Support payments are re-emitted while fulfilledAt is null, which SupportService.onPaymentPaid sets
+    // in the same transaction that creates the Support. Payments linked to a support by the old
+    // pledge flow (supportId set) are left alone.
+    const supportPayments = await this.prisma.payment.findMany({
+      where: {
+        status: 'PAID',
+        type: PaymentType.SUPPORT,
+        fulfilledAt: null,
+        supportId: null,
+        paidAt,
+      },
+      select: { id: true, paidAt: true },
+      take: 200,
+    });
+    for (const p of supportPayments) {
+      await this.events.paymentPaid({ paymentId: p.id, supportId: null, missingPersonId: null });
+    }
+
+    const stuckCount = supportPayments.filter(
+      (p) => p.paidAt && p.paidAt.getTime() < Date.now() - 30 * 60_000,
+    ).length;
+    if (stuckCount > 0) {
+      this.logger.warn(`${stuckCount} paid support payment(s) still have no Support after 30 minutes`);
     }
 
     // Posting fees are re-emitted while the object still has no paid, waived or not required fee status
