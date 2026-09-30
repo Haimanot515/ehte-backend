@@ -9,9 +9,11 @@ import { SmsModule } from 'src/services/sms/sms.module';
 
 import { AuditLogController } from './controller/audit-log.controller';
 import { NotificationController } from './controller/notification.controller';
+import { ExplorerController } from './controller/explorer.controller';
 
 import { AuditLogService } from './service/audit-log.service';
 import { NotificationService } from './service/notification.service';
+import { ExplorerService } from './service/explorer.service';
 import { AUDIT_ARCHIVE_STORAGE } from './service/audit-archive.storage';
 import { MinioAuditArchiveStorage } from './service/minio-audit-archive.storage';
 import { NOTIFICATION_CHANNEL_PROVIDERS } from './service/notification-channel.provider';
@@ -25,11 +27,12 @@ import { NotificationListener } from './listeners/notification.listener';
 @Module({
   imports: [PrismaModule, EventEmitterModule, MinioModule, FirebaseModule, EmailModule, SmsModule],
 
-  controllers: [AuditLogController, NotificationController],
+  controllers: [AuditLogController, NotificationController, ExplorerController],
 
   providers: [
     AuditLogService,
     NotificationService,
+    ExplorerService,
     AuditLogListener,
     NotificationListener,
     { provide: AUDIT_ARCHIVE_STORAGE, useClass: MinioAuditArchiveStorage },

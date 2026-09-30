@@ -52,6 +52,9 @@ model VictimProfile {
   agreementId String?
 
   agreement         Agreement?         @relation(fields: [agreementId], references: [id])
+  createdByUser                   User? @relation("VictimProfileCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  claimedByUser                   User? @relation("VictimProfileClaimedBy", fields: [claimedByUserId], references: [id], onDelete: SetNull)
+  childSafetyFirstConfirmedByUser User? @relation("VictimProfileChildSafetyFirst", fields: [childSafetyFirstConfirmedByUserId], references: [id], onDelete: SetNull)
   supports          Support[]
   payments          Payment[]
   payoutDestination PayoutDestination? // was: payoutDestinations PayoutDestination[]

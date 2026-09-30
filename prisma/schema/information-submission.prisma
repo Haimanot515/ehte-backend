@@ -32,6 +32,7 @@ model InformationSubmission {
 
   missingPerson MissingPerson @relation(fields: [missingPersonId], references: [id], onDelete: Cascade)
   user          User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  rewardClaims  RewardClaim[]
 
   // Running total of attached media bytes, computed from statObject() results.
   @@unique([userId, idempotencyKey])

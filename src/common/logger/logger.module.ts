@@ -22,6 +22,40 @@ import { randomUUID } from 'crypto';
         autoLogging: true,
 
         genReqId: (req) => (req.headers['x-request-id'] as string) || randomUUID(),
+
+        // Never write credentials to logs (Dozzle, files, log shippers).
+        redact: {
+          paths: [
+            'req.headers.authorization',
+            'req.headers.cookie',
+            'req.headers["x-api-key"]',
+            'res.headers["set-cookie"]',
+            'req.body.password',
+            'req.body.currentPassword',
+            'req.body.newPassword',
+            'req.body.refreshToken',
+            'req.body.otp',
+          ],
+          censor: '[REDACTED]',
+        },
+
+        // Log only what is useful instead of dumping every header.
+        serializers: {
+          req: (req) => ({
+            id: req.id,
+            method: req.method,
+            url: req.url,
+            remoteAddress: req.remoteAddress,
+          }),
+          res: (res) => ({ statusCode: res.statusCode }),
+        },
+
+        // 4xx -> warn, 5xx/errors -> error (they were all logged at info level).
+        customLogLevel: (_req, res, err) => {
+          if (err || res.statusCode >= 500) return 'error';
+          if (res.statusCode >= 400) return 'warn';
+          return 'info';
+        },
       },
     }),
   ],

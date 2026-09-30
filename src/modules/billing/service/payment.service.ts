@@ -1,6 +1,3 @@
-// Collection side. Same shape as PurchaseService in the other project:
-// initiate -> Chapa checkout -> webhook/confirm -> verify -> fulfil
-
 import {
   BadRequestException,
   ConflictException,
@@ -20,6 +17,7 @@ import { AuditEventEnum } from '../../../common/enums/shared/audit-events.enum';
 import { NotificationEventEnum } from '../../../common/enums/shared/notification-events.enum';
 import { PaymentVerifiedEvent } from '../../misc/events/notification.events';
 import { ReviewDecision, ResolveReviewDto } from '../dto/billing-report.dto';
+import { POSTING_FEE_GATE_STATUSES } from '../billing.constants';
 
 export type Payer = { id: string; email?: string | null };
 
@@ -48,8 +46,6 @@ export class PaymentService {
     return this.allocation.preview(PaymentType.SUPPORT, this.parseAmount(amount), profileId);
   }
 
-  // SupportService stored the split it showed the payer in
-  // Support.allocationSnapshot, so what they saw is exactly what is charged.
   async initiateSupportCheckout(payer: Payer, supportId: string) {
     this.assertEnabled('payments.enabled');
 
@@ -105,8 +101,6 @@ export class PaymentService {
     });
   }
 
-  // missingPersonId, not a rewardId: the reward offer, amount and approval
-  // all live on MissingPerson itself. Only the case requester can fund it.
   async initiateRewardFunding(payer: Payer, missingPersonId: string) {
     this.assertEnabled('payments.rewardsEnabled');
     const mp = await this.prisma.missingPerson.findFirst({
@@ -144,12 +138,6 @@ export class PaymentService {
     });
   }
 
-  // Section 5 / 8 / 27: posting/promotion fee, always separate from SUPPORT and
-  // MISSING_PERSON_REWARD payments. Publication must be blocked until this
-  // settles PAID — the object service (VictimProfileService / MissingPersonService,
-  // not provided in this pass) should flip postingFeeStatus to PAID on the same
-  // BILLING_PAYMENT_PAID event PaymentService already emits, mirroring how
-  // RewardService listens for reward funding.
   async initiatePostingFeeCheckout(
     payer: Payer,
     objectType: 'VICTIM_PROFILE' | 'MISSING_PERSON',
@@ -217,8 +205,6 @@ export class PaymentService {
     });
   }
 
-  // Row created before Chapa can ever call back, so a webhook never sees an
-  // unknown tx_ref.
   private async startCheckout(args: {
     type: PaymentType;
     amount: Prisma.Decimal;
@@ -249,14 +235,7 @@ export class PaymentService {
         previewShownAt: new Date(),
       },
     });
-    // FIX: payment creation itself had no audit row — every other Payment
-    // status this file reaches (MISMATCH, PAID, FAILED, EXPIRED) is logged;
-    // the very first step wasn't. No events.notify() here: the payer just
-    // triggered this themselves by clicking pay, so a notification back to
-    // them would be redundant — same reasoning DisbursementService.create()
-    // uses for staying audit-only.
-    // ASSUMPTION TO VERIFY: AuditEventEnum.PAYMENT_INITIATED does not exist
-    // yet either — add it alongside PAYMENT_FAILED/PAYMENT_EXPIRED.
+
     await this.events.log({
       actorId: args.payer.id,
       action: AuditEventEnum.PAYMENT_INITIATED,
@@ -283,12 +262,7 @@ export class PaymentService {
         where: { id: payment.id, status: 'PENDING' },
         data: { status: 'FAILED' },
       });
-      // FIX: second FAILED transition in this file with no audit row —
-      // same gap as reconcile()'s FAILED branch, different trigger (Chapa
-      // rejected the checkout init call itself, not a later verify). actorId
-      // is the payer here (their checkout attempt is what failed), unlike
-      // reconcile()'s FAILED branch where actorId is null (async webhook/cron
-      // path with no direct user in the loop).
+
       await this.events.log({
         actorId: args.payer.id,
         action: AuditEventEnum.PAYMENT_FAILED,
@@ -323,16 +297,7 @@ export class PaymentService {
         where: { id: payment.id, status: 'PENDING' },
         data: { status: 'FAILED' },
       });
-      // FIX: this branch previously updated status with no audit row at all —
-      // the PAYMENT_MISMATCH branch right below it, and the PAYMENT_PAID
-      // branch further down, both log via events.log(); FAILED was the only
-      // terminal outcome of reconcile() that left no trace. actorId: null
-      // follows the same system-actor convention already used for
-      // PAYMENT_MISMATCH just below (this is Chapa reporting the failure,
-      // not an admin action).
-      // ASSUMPTION TO VERIFY: AuditEventEnum.PAYMENT_FAILED does not exist
-      // in this codebase's enum yet (checked — no other call site references
-      // it). Add it to audit-events.enum.ts before this compiles.
+
       await this.events.log({
         actorId: null,
         action: AuditEventEnum.PAYMENT_FAILED,
@@ -346,7 +311,6 @@ export class PaymentService {
     }
     if (remote.status !== 'success') return 'PENDING';
 
-    // Never trust the webhook: amount/currency must match what we stored.
     if (!this.chapa.paidAmountMatches(remote, payment)) {
       await this.prisma.payment.updateMany({
         where: { id: payment.id, status: 'PENDING' },
@@ -388,15 +352,6 @@ export class PaymentService {
         })),
       });
 
-      // FIX: this used to upsert a RewardClaim keyed on missingPersonId, back
-      // when RewardClaim was one row per case. Now that a case can have many
-      // claims (one per informant, see reward-claim.prisma), there is no
-      // single row to upsert here — RewardService.onPaymentPaid(), which
-      // already listens on BILLING_PAYMENT_PAID below, is the only place that
-      // updates MissingPerson.fundedAmount/fundingStatus. Posting-fee
-      // payments (VICTIM_PROFILE_POSTING_FEE / MISSING_PERSON_POSTING_FEE)
-      // are handled the same way, via their own listeners on the object
-      // services — nothing to do here either.
       return true;
     });
 
@@ -413,9 +368,7 @@ export class PaymentService {
         supportId: payment.supportId,
         missingPersonId: payment.missingPersonId,
       });
-      // Amount deliberately left out of the notification body/payload —
-      // same convention as PostService/AuthService keeping financial
-      // specifics out of user-facing notification content.
+
       this.events.notify<PaymentVerifiedEvent>(NotificationEventEnum.PAYMENT_VERIFIED, {
         userId: payment.payerUserId,
         paymentId: payment.id,
@@ -447,16 +400,6 @@ export class PaymentService {
     };
   }
 
-  // ADMIN — G9 REVIEW RESOLUTION. reconcile()'s mismatch branch parks a
-  // payment at REVIEW_REQUIRED and stops; nothing before this method ever
-  // moves it back out of that state. resolveReview() is that missing exit:
-  // an admin either rejects it (same FAILED transition reconcile() takes on
-  // a hard failure) or approves it (same PAID transition reconcile() takes
-  // on a clean match — allocations from the stored snapshot, paymentPaid
-  // event, PAYMENT_VERIFIED notification).
-  // CONFIRMED (Sep 2026): AuditEventEnum.PAYMENT_REVIEW_RESOLVED exists. Still
-  // assumes ResolveReviewDto/ReviewDecision in billing-report.dto.ts are the
-  // final contract; adjust this method to match if that shape changes.
   async resolveReview(adminId: string, paymentId: string, dto: ResolveReviewDto) {
     const payment = await this.prisma.payment.findUnique({ where: { id: paymentId } });
     if (!payment) throw new NotFoundException('Payment not found');
@@ -483,12 +426,40 @@ export class PaymentService {
       return { status: 'FAILED' as PaymentStatus };
     }
 
+    let remote;
+    try {
+      remote = await this.chapa.verify(payment.txRef);
+    } catch (err) {
+      this.logger.warn(`Verify failed for ${payment.txRef}: ${String(err)}`);
+      throw new ServiceUnavailableException('Could not verify this payment with Chapa. Try again shortly.');
+    }
+    if (remote.status !== 'success') {
+      throw new ConflictException('Chapa does not report this payment as successful');
+    }
+    if (String(remote.currency).toUpperCase() !== String(payment.currency).toUpperCase()) {
+      throw new BadRequestException({ code: 'paid_currency_mismatch' });
+    }
+    const received = new Prisma.Decimal(remote.amount);
+    if (received.lt(payment.amount)) {
+      throw new BadRequestException({
+        code: 'paid_amount_short',
+        expected: payment.amount.toFixed(2),
+        received: received.toFixed(2),
+      });
+    }
+    const excess = received.sub(payment.amount);
+
     const snapshot = payment.allocationSnapshot as unknown as AllocationPreview;
 
     const won = await this.prisma.$transaction(async (tx) => {
       const { count } = await tx.payment.updateMany({
         where: { id: payment.id, status: 'REVIEW_REQUIRED' },
-        data: { status: 'PAID', paidAt: new Date() },
+        data: {
+          status: 'PAID',
+          paidAt: new Date(),
+          chapaReference: remote.reference ?? null,
+          chapaFee: remote.charge ? new Prisma.Decimal(remote.charge) : null,
+        },
       });
       if (count === 0) return false;
 
@@ -502,8 +473,6 @@ export class PaymentService {
         })),
       });
 
-      // See the matching note in reconcile() above: no RewardClaim upsert
-      // here anymore, RewardService.onPaymentPaid() owns the funding update.
       return true;
     });
 
@@ -514,7 +483,12 @@ export class PaymentService {
       action: AuditEventEnum.PAYMENT_REVIEW_RESOLVED,
       entityType: 'Payment',
       entityId: payment.id,
-      metadata: { decision: dto.decision, reason: dto.reason },
+      metadata: {
+        decision: dto.decision,
+        reason: dto.reason,
+        received: received.toFixed(2),
+        excess: excess.toFixed(2),
+      },
     });
     await this.events.paymentPaid({
       paymentId: payment.id,
@@ -545,22 +519,12 @@ export class PaymentService {
           where: { txRef: p.txRef, status: 'PENDING' },
           data: { status: 'EXPIRED' },
         });
-        // FIX: silently expired a stale payment with no audit row — the only
-        // other cron in this module that mutates state without a human actor
-        // (syncProcessing's stale-flag branch in disbursement.service.ts)
-        // still logs via events.log(). actorId: null, same system-actor
-        // convention used for PAYMENT_FAILED/PAYMENT_MISMATCH above.
-        // ASSUMPTION TO VERIFY: AuditEventEnum.PAYMENT_EXPIRED does not exist
-        // yet either — add it alongside PAYMENT_FAILED.
+
         if (count > 0) {
           await this.events.log({
             actorId: null,
             action: AuditEventEnum.PAYMENT_EXPIRED,
-            // WARNING severity, no `outcome` — expiry isn't a failed
-            // operation the way FAILED/MISMATCH are (nothing was attempted
-            // and rejected), it's a routine timeout on an abandoned
-            // checkout. Still worth flagging for visibility, so it keeps
-            // severity but not FAILURE.
+
             severity: AuditSeverity.WARNING,
             entityType: 'Payment',
             entityId: p.id,
@@ -577,8 +541,6 @@ export class PaymentService {
     }
   }
 
-  // Repair: a payment is PAID but its Support is still PENDING (event lost
-  // or handler failed). Re-emit until SupportService confirms it.
   @Cron(CronExpression.EVERY_10_MINUTES)
   async repairUnconfirmedSupports(): Promise<void> {
     const paid = await this.prisma.payment.findMany({
@@ -611,6 +573,80 @@ export class PaymentService {
     }
   }
 
+  @Cron(CronExpression.EVERY_10_MINUTES)
+  async repairUnfulfilledPayments(): Promise<void> {
+    const paidAt = {
+      lt: new Date(Date.now() - 2 * 60_000),
+      gt: new Date(Date.now() - 7 * 86_400_000),
+    };
+
+    // Rewards are re-emitted only while fulfilledAt is null, which onPaymentPaid sets in the same transaction as the funding update
+    const rewards = await this.prisma.payment.findMany({
+      where: { status: 'PAID', type: PaymentType.MISSING_PERSON_REWARD, fulfilledAt: null, paidAt },
+      select: { id: true, missingPersonId: true },
+      take: 200,
+    });
+    for (const p of rewards) {
+      await this.events.paymentPaid({
+        paymentId: p.id,
+        supportId: null,
+        missingPersonId: p.missingPersonId,
+      });
+    }
+
+    // Posting fees are re-emitted while the object still has no paid, waived or not required fee status
+    const fees = await this.prisma.payment.findMany({
+      where: {
+        status: 'PAID',
+        type: {
+          in: [PaymentType.VICTIM_PROFILE_POSTING_FEE, PaymentType.MISSING_PERSON_POSTING_FEE],
+        },
+        paidAt,
+      },
+      select: { id: true, type: true, victimProfileId: true, missingPersonId: true },
+      take: 200,
+    });
+    if (fees.length === 0) return;
+
+    const gate = [...POSTING_FEE_GATE_STATUSES];
+    const profileIds = fees.flatMap((p) =>
+      p.type === PaymentType.VICTIM_PROFILE_POSTING_FEE && p.victimProfileId
+        ? [p.victimProfileId]
+        : [],
+    );
+    const personIds = fees.flatMap((p) =>
+      p.type === PaymentType.MISSING_PERSON_POSTING_FEE && p.missingPersonId
+        ? [p.missingPersonId]
+        : [],
+    );
+
+    const [profiles, persons] = await Promise.all([
+      this.prisma.victimProfile.findMany({
+        where: { id: { in: profileIds }, postingFeeStatus: { notIn: gate } },
+        select: { id: true },
+      }),
+      this.prisma.missingPerson.findMany({
+        where: { id: { in: personIds }, postingFeeStatus: { notIn: gate } },
+        select: { id: true },
+      }),
+    ]);
+    const openProfiles = new Set(profiles.map((x) => x.id));
+    const openPersons = new Set(persons.map((x) => x.id));
+
+    for (const p of fees) {
+      const open =
+        p.type === PaymentType.VICTIM_PROFILE_POSTING_FEE
+          ? !!p.victimProfileId && openProfiles.has(p.victimProfileId)
+          : !!p.missingPersonId && openPersons.has(p.missingPersonId);
+      if (!open) continue;
+      await this.events.paymentPaid({
+        paymentId: p.id,
+        supportId: null,
+        missingPersonId: p.missingPersonId,
+      });
+    }
+  }
+
   private parseAmount(raw: string): Prisma.Decimal {
     if (!/^\d+(\.\d{1,2})?$/.test(raw)) {
       throw new BadRequestException('Invalid amount');
@@ -620,9 +656,6 @@ export class PaymentService {
     return amount;
   }
 
-  // ADMIN — DASHBOARD STATISTICS. Counts/totals by status and type, Chapa
-  // fees taken, REVIEW_REQUIRED mismatches, allocation totals by party type,
-  // average time PENDING->PAID, and a 30-day daily volume trend.
   async getStats() {
     const [
       total,
@@ -728,4 +761,4 @@ export class PaymentService {
       })),
     };
   }
-} 
+}

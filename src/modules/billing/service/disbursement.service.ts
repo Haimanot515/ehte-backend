@@ -1,20 +1,10 @@
-// src/modules/billing/services/disbursement.service.ts
-//
-// Money leaving Ehte: to the approved recipient, the responsible organization,
-// Pitron's platform share, or a reward finder.
-//
-// Rules:
-//   - one admin creates, a DIFFERENT admin approves (four-eyes)
-//   - bank details are supplied at execute time and are NOT stored
-//   - reward payouts require reward.status = CLAIM_APPROVED
-//   - every step is audited
-
 import {
   BadRequestException,
   ForbiddenException,
   Injectable,
   Logger,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
@@ -27,11 +17,9 @@ import { NotificationEventEnum } from '../../../common/enums/shared/notification
 import { DisbursementPaidOutEvent } from '../../misc/events/notification.events';
 
 export type ExecuteInput = {
-  // CHAPA_TRANSFER
   accountName?: string;
   accountNumber?: string;
   bankCode?: string;
-  // MANUAL_BANK
   externalReference?: string;
 };
 
@@ -46,26 +34,10 @@ export class DisbursementService {
     private readonly configService: ConfigService,
   ) {}
 
-  /**
-   * How long a disbursement may sit in PROCESSING before syncProcessing()
-   * flags it instead of silently retrying forever. NOT a retry count — no
-   * automatic retry exists yet (see DISBURSEMENT_MAX_RETRY_ATTEMPTS note
-   * below, still unimplemented pending an idempotency check on
-   * ChapaService.transfer()).
-   */
   private get processingTimeoutMinutes(): number {
     return this.configService.get<number>('disbursement.processingTimeoutMinutes', 60);
   }
 
-  /**
-   * rewardClaimId is required for a REWARD_BENEFICIARY allocation once the case
-   * has more than one approved informant (section 12): the allocation holds the
-   * WHOLE informant pool, and each informant is paid out from it separately.
-   * The disbursement amount is then the claim's own rewardAmount, not the
-   * allocation's full amount, and several disbursements can exist against the
-   * same allocation as long as their amounts never exceed it (section 25:
-   * "a financial claim must not be successfully disbursed twice").
-   */
   async create(
     adminId: string,
     allocationId: string,
@@ -86,7 +58,7 @@ export class DisbursementService {
       if (allocation.disbursements.some((d) => !['FAILED', 'CANCELLED'].includes(d.status))) {
         throw new BadRequestException('A disbursement already exists for this allocation');
       }
-      await this.loadPayableRecipient(allocation.payment.victimProfileId); // fail early
+      await this.loadPayableRecipient(allocation.payment.victimProfileId);
     }
 
     let amount = allocation.amount;
@@ -144,11 +116,6 @@ export class DisbursementService {
     const d = await this.prisma.disbursement.findUnique({ where: { id } });
     if (!d) throw new NotFoundException('Disbursement not found');
     if (d.createdById === adminId) {
-      // FIX: the four-eyes violation itself — the exact thing this guard
-      // exists to catch — threw with no audit row at all. Same gap
-      // ReportService.assertAdminCanAccessReport() closes: write a DENIED
-      // row before throwing, so an admin repeatedly trying to self-approve
-      // leaves a trace instead of just bouncing off a 403.
       await this.events.log({
         actorId: adminId,
         action: AuditEventEnum.DISBURSEMENT_APPROVED,
@@ -166,10 +133,6 @@ export class DisbursementService {
       data: { status: 'APPROVED', approvedById: adminId },
     });
     if (count === 0) {
-      // FIX: same class of gap as the four-eyes check above — a lost
-      // optimistic-concurrency race (someone else approved/executed first)
-      // threw with no audit row, unlike the equivalent
-      // report_transition_conflict guards elsewhere in this module.
       await this.events.log({
         actorId: adminId,
         action: AuditEventEnum.DISBURSEMENT_APPROVED,
@@ -189,7 +152,26 @@ export class DisbursementService {
     });
   }
 
-  /** Banks and their Chapa codes, for the admin to pick from at payout time. */
+  async cancel(adminId: string, id: string, reason: string) {
+    const d = await this.prisma.disbursement.findUnique({ where: { id }, select: { status: true } });
+    if (!d) throw new NotFoundException('Disbursement not found');
+
+    const { count } = await this.prisma.disbursement.updateMany({
+      where: { id, status: { in: ['PENDING_APPROVAL', 'APPROVED'] } },
+      data: { status: 'CANCELLED' },
+    });
+    if (count === 0) {
+      throw new BadRequestException(`A disbursement that is ${d.status} cannot be cancelled`);
+    }
+    await this.events.log({
+      actorId: adminId,
+      action: AuditEventEnum.DISBURSEMENT_CANCELLED,
+      entityType: 'Disbursement',
+      entityId: id,
+      reason,
+    });
+  }
+
   listBanks() {
     return this.chapa.getBanks();
   }
@@ -201,10 +183,8 @@ export class DisbursementService {
     });
     if (!d) throw new NotFoundException('Disbursement not found');
 
-    // Resolve the destination BEFORE changing any state: a failed check must not burn the disbursement.
     let account: { accountName: string; accountNumber: string } | null = null;
     if (d.allocation.partyType === 'RECIPIENT') {
-      // The destination is the bank account on the approved profile, never something typed in the request.
       const p = await this.loadPayableRecipient(d.allocation.payment.victimProfileId);
       account = {
         accountName: p.bankAccountName as string,
@@ -220,7 +200,6 @@ export class DisbursementService {
       throw new BadRequestException('externalReference (bank slip) is required');
     }
 
-    // Gate: only one execute can move APPROVED -> PROCESSING.
     const { count } = await this.prisma.disbursement.updateMany({
       where: { id, status: 'APPROVED' },
       data: { status: 'PROCESSING', executedById: adminId, executedAt: new Date() },
@@ -236,7 +215,6 @@ export class DisbursementService {
           amount: d.amount,
           reference: d.reference,
         });
-        // Stays PROCESSING until syncProcessing() sees it succeed.
       } else {
         const outcome = await this.prisma.$transaction(async (tx) => {
           await tx.disbursement.update({
@@ -250,6 +228,20 @@ export class DisbursementService {
         }
       }
     } catch (err) {
+      if (d.method === 'CHAPA_TRANSFER' && !this.isDefiniteRejection(err)) {
+        // Unknown outcome: stay PROCESSING so syncProcessing verifies by reference and no second payout is created
+        await this.events.log({
+          actorId: adminId,
+          action: AuditEventEnum.SECURITY_ALERT,
+          severity: AuditSeverity.WARNING,
+          entityType: 'Disbursement',
+          entityId: id,
+          metadata: { reason: 'transfer_outcome_unknown' },
+        });
+        throw new ServiceUnavailableException(
+          'Transfer outcome is unknown and will be checked automatically. Do not create another disbursement.',
+        );
+      }
       await this.prisma.disbursement.update({
         where: { id },
         data: { status: 'FAILED', failureReason: String((err as Error).message).slice(0, 200) },
@@ -265,7 +257,6 @@ export class DisbursementService {
       throw err;
     }
 
-    // Audit policy: bank details are never written to audit rows, not even the last digits.
     await this.events.log({
       actorId: adminId,
       action: AuditEventEnum.DISBURSEMENT_EXECUTED,
@@ -280,12 +271,18 @@ export class DisbursementService {
     });
   }
 
-  /**
-   * A recipient payout is only allowed while the profile still passes every approval gate.
-   * Editing a profile, changing bank details or revoking consent resets isAdminApproved, so
-   * money collected earlier is held until an admin re-approves. Publication is NOT required
-   * (a fundraiser can end and be unpublished before the money is paid out).
-   */
+  // Only an explicit 4xx from Chapa proves the transfer was not accepted; timeouts, 5xx and network errors may have gone through
+  private isDefiniteRejection(err: unknown): boolean {
+    const e = err as {
+      status?: number;
+      response?: { status?: number };
+      getStatus?: () => number;
+    };
+    const status =
+      typeof e.getStatus === 'function' ? e.getStatus() : (e.response?.status ?? e.status);
+    return typeof status === 'number' && status >= 400 && status < 500 && status !== 408 && status !== 429;
+  }
+
   private async loadPayableRecipient(profileId: string | null) {
     if (!profileId) throw new BadRequestException('recipient_profile_missing');
     const p = await this.prisma.victimProfile.findUnique({
@@ -321,8 +318,6 @@ export class DisbursementService {
     return p;
   }
 
-  // ── Cron: settle Chapa transfers that were accepted but not yet final ─────
-
   @Cron(CronExpression.EVERY_10_MINUTES)
   async syncProcessing(): Promise<void> {
     const pending = await this.prisma.disbursement.findMany({
@@ -340,14 +335,6 @@ export class DisbursementService {
         if (remote.status === 'success') {
           const outcome = await this.prisma.$transaction((tx) => this.markPaidOut(tx, d.id));
           if (outcome.paid) {
-            // FIX: this branch settles CHAPA_TRANSFER payouts from the cron,
-            // parallel to the MANUAL_BANK branch of execute() above — but was
-            // missing the events.log() call that branch has, so a payout
-            // settled here fired a user notification with no audit trail
-            // entry at all. actorId: null follows BillingEventsService.log's
-            // existing system-actor convention (null -> ActorType.SYSTEM),
-            // same as how webhook-triggered billing events are already
-            // logged elsewhere in this module.
             await this.events.log({
               actorId: null,
               action: AuditEventEnum.DISBURSEMENT_EXECUTED,
@@ -367,27 +354,14 @@ export class DisbursementService {
           continue;
         }
 
-        // Still pending at Chapa (or an unrecognized status string). Not a
-        // failure by itself, but flag it once it's been stuck too long so an
-        // admin can look rather than it sitting PROCESSING indefinitely.
         this.flagIfStale(d, timeoutMs, now, remote.status);
       } catch (err) {
         this.logger.warn(`Transfer sync failed for ${d.id}: ${String(err)}`);
-        // A failed *check* also counts toward staleness — an unreachable
-        // Chapa endpoint shouldn't quietly hide a stuck disbursement.
         this.flagIfStale(d, timeoutMs, now, 'sync_error');
       }
     }
   }
 
-  /**
-   * Emits a SECURITY_ALERT audit event the first time a PROCESSING
-   * disbursement crosses processingTimeoutMinutes. Does NOT change the
-   * disbursement's status (no STALLED/TIMED_OUT state exists in the schema
-   * yet) and does NOT retry or cancel anything — this is visibility only.
-   * Runs every cron tick past the threshold, so downstream alerting should
-   * dedupe on entityId if repeat notifications aren't wanted.
-   */
   private flagIfStale(
     d: { id: string; executedAt: Date | null; createdById: string },
     timeoutMs: number,
@@ -405,9 +379,6 @@ export class DisbursementService {
     void this.events.log({
       actorId: d.createdById,
       action: AuditEventEnum.SECURITY_ALERT,
-      // Same reasoning as PAYMENT_EXPIRED in payment.service.ts: severity
-      // only, no `outcome` — nothing was attempted-and-rejected here, it's
-      // a stuck-state flag for an admin to look at, not a failed operation.
       severity: AuditSeverity.WARNING,
       entityType: 'Disbursement',
       entityId: d.id,
@@ -420,11 +391,6 @@ export class DisbursementService {
     });
   }
 
-  // ── Shared completion, always inside a transaction ────────────────────────
-  //
-  // Returns what the caller needs to fire the PAID_OUT notification AFTER
-  // the transaction commits — never emit from inside a transaction that
-  // might still roll back.
   private async markPaidOut(
     tx: Prisma.TransactionClient,
     id: string,
@@ -445,10 +411,6 @@ export class DisbursementService {
       include: { allocation: { include: { payment: true, disbursements: true } } },
     });
 
-    // A reward payout may be one of several disbursements against the same
-    // allocation (split among informants) — the allocation only moves to the
-    // fully PAID_OUT settlement status once every committed disbursement has
-    // settled; until then it stays PARTIALLY_PAID_OUT (section 25).
     const paidOutTotal = d.allocation.disbursements
       .filter((x) => x.id === d.id || x.status === 'PAID_OUT')
       .reduce((sum, x) => sum.add(x.amount), new Prisma.Decimal(0));
@@ -473,12 +435,6 @@ export class DisbursementService {
     };
   }
 
-  // Resolves who to notify for a PAID_OUT disbursement and fires it. Only
-  // REWARD_BENEFICIARY is resolvable today, via the same
-  // InformationSubmission.userId path used in RewardService.approveClaim —
-  // same unconfirmed-field-name caveat applies. RECIPIENT payouts go to a
-  // VictimProfile, which isn't loaded here; wire that once the profile's
-  // owning userId is confirmed, rather than guessing a join.
   private async notifyPaidOut(
     disbursementId: string,
     partyType?: string,
@@ -487,10 +443,6 @@ export class DisbursementService {
   ) {
     if (partyType !== 'REWARD_BENEFICIARY' || !rewardClaimId) return;
 
-    // rewardClaimId now identifies exactly which informant this specific
-    // disbursement paid (a case can have several, see reward-claim.prisma) —
-    // no more missingPersonId-keyed lookup, which only ever worked for a
-    // single-informant case.
     const claim = await this.prisma.rewardClaim.findUnique({
       where: { id: rewardClaimId },
       select: { informantUserId: true },

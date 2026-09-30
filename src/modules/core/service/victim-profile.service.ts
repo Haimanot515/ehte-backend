@@ -318,7 +318,7 @@ export class VictimProfileService {
   private async conditionalUpdate(
     id: string,
     expectedUpdatedAt: Date,
-    data: Prisma.VictimProfileUpdateManyMutationInput,
+    data: Prisma.VictimProfileUncheckedUpdateManyInput,
     audit: ConflictAuditContext,
   ): Promise<VictimProfile> {
     const result = await this.prisma.victimProfile.updateMany({

@@ -72,6 +72,10 @@ const ADMIN_ROLE_NAMES = [RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN];
 // Retry cap for case-reference generation on a unique constraint collision
 const CASE_REFERENCE_MAX_ATTEMPTS = 5;
 
+// Actual Postgres table name for the Report model (schema.prisma: @@map("report")).
+// $queryRaw bypasses Prisma's model->table mapping, so raw SQL must use this name.
+const REPORT_TABLE = Prisma.raw('report');
+
 // Six media-array fields shared by CreateReportDto/UpdateReportDto and Report
 const MEDIA_FIELD_NAMES = ['photo', 'video', 'audio', 'pdf', 'document', 'other'] as const;
 type MediaFieldName = (typeof MEDIA_FIELD_NAMES)[number];
@@ -800,6 +804,9 @@ export class ReportService {
   // query builder can't express (date_trunc grouping, EPOCH-based
   // duration average) — same DB assumptions (Postgres) as the rest of
   // the schema.
+  //
+  // NOTE: $queryRaw does not apply @@map, so the raw SQL below uses
+  // REPORT_TABLE ("report"), the real table name.
   // ─────────────────────────────────────────────
   async getStats() {
     const [
@@ -832,13 +839,13 @@ export class ReportService {
 
       this.prisma.$queryRaw<{ avg_hours: number | null }[]>`
         SELECT AVG(EXTRACT(EPOCH FROM ("updatedAt" - "createdAt")) / 3600) AS avg_hours
-        FROM "Report"
+        FROM ${REPORT_TABLE}
         WHERE status = 'CLOSED'
       `,
 
       this.prisma.$queryRaw<{ day: Date; count: bigint }[]>`
         SELECT date_trunc('day', "createdAt") AS day, COUNT(*)::bigint AS count
-        FROM "Report"
+        FROM ${REPORT_TABLE}
         WHERE "createdAt" >= NOW() - INTERVAL '30 days'
         GROUP BY day
         ORDER BY day ASC

@@ -27,11 +27,12 @@ model User {
 
   pendingPhone String?
 
-  auditLogs            AuditLog[]
+  auditLogs            AuditLog[]                 @relation("AuditLogActor")
+  auditLogsAsTarget    AuditLog[]                 @relation("AuditLogTarget")
   informationReports   InformationSubmission[]
-  missingPersons       MissingPerson[]
+  missingPersons       MissingPerson[]            @relation("MissingPersonOwner")
   notifications        Notification[]
-  posts                Post[]
+  posts                Post[]                     @relation("PostOwner")
   assignedReports      Report[]                   @relation("ReportAssignee")
   reports              Report[]                   @relation("ReportReporter")
   requestedInformation ReportInformationRequest[] @relation("InfoRequestRequestedBy")
@@ -48,6 +49,28 @@ model User {
   notificationPreferences NotificationPreference[]
 
   profile UserProfile?
+
+  sponsoredMissingPersons        MissingPerson[] @relation("MissingPersonSponsor")
+  claimedMissingPersons          MissingPerson[] @relation("MissingPersonClaimedBy")
+  firstConfirmedMissingPersons   MissingPerson[] @relation("MissingPersonChildSafetyFirst")
+  claimedPosts                   Post[]          @relation("PostClaimedBy")
+  firstConfirmedPosts            Post[]          @relation("PostChildSafetyFirst")
+  createdVictimProfiles          VictimProfile[] @relation("VictimProfileCreatedBy")
+  claimedVictimProfiles          VictimProfile[] @relation("VictimProfileClaimedBy")
+  firstConfirmedVictimProfiles   VictimProfile[] @relation("VictimProfileChildSafetyFirst")
+  informantRewardClaims          RewardClaim[]   @relation("RewardClaimInformant")
+  reviewedRewardClaims           RewardClaim[]   @relation("RewardClaimReviewedBy")
+  approvedRewardClaims           RewardClaim[]   @relation("RewardClaimApprovedBy")
+  createdDisbursements           Disbursement[]  @relation("DisbursementCreatedBy")
+  approvedDisbursements          Disbursement[]  @relation("DisbursementApprovedBy")
+  executedDisbursements          Disbursement[]  @relation("DisbursementExecutedBy")
+  approvedAgreements             Agreement[]     @relation("AgreementApprovedBy")
+  retiredAgreements              Agreement[]     @relation("AgreementRetiredBy")
+  createdBroadcasts              NotificationBroadcast[]
+  createdAuditAlerts             AuditAlert[]
+  auditSavedFilters              AuditSavedFilter[]
+  auditExports                   AuditExport[]
+  requestedAuditPurgeRuns        AuditPurgeRun[]
 
   @@map("user")
 }

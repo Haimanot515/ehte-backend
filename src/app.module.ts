@@ -58,6 +58,14 @@ import { PermissionsSeeder } from './common/seed/permissions.seeder';
 import { SeedOrchestratorService } from './common/seed/seed-orchestrator.service';
 
 /**
+ * Metadata key prefix @nestjs/throttler uses for @Throttle({ <name>: {...} }).
+ * The decorator stores its settings under THROTTLER_LIMIT + <throttler name>
+ * on the handler or class. Kept local to avoid depending on a deep import.
+ * (v5/v6 value is 'THROTTLER:LIMIT' — verify if you upgrade the package.)
+ */
+const THROTTLER_LIMIT_PREFIX = 'THROTTLER:LIMIT';
+
+/**
  * Production Redis URL rules (applied to REDIS_URL and REDIS_SECURITY_URL):
  *  - must carry a password (redis://:password@host:port), and
  *  - must use TLS (rediss://), unless REDIS_ALLOW_INSECURE=true.
@@ -371,13 +379,21 @@ const REDIS_URL_SCHEMES = { scheme: ['redis', 'rediss'] };
             // Named profile for payment-initiating routes (checkout, reward
             // funding). Activated on a route via @Throttle({ checkout: {} }).
             //
-            // VERIFY: in current @nestjs/throttler versions every named
-            // throttler runs on every route unless skipped, so this 5/60s
-            // limit may be applying app-wide. Check for
-            // @SkipThrottle({ checkout: true }) on non-payment controllers.
+            // In @nestjs/throttler every named throttler runs on every route
+            // unless skipped, so without skipIf this 5/60s limit applied
+            // app-wide (and was causing 429s on /permissions, /posts, etc.).
+            // skipIf now makes it run ONLY where a handler or controller has
+            // opted in with @Throttle({ checkout: ... }).
             name: 'checkout',
             ttl: config.get<number>('PAYMENT_CHECKOUT_RATE_LIMIT_TTL_SECONDS', 60) * 1000,
             limit: config.get<number>('PAYMENT_CHECKOUT_RATE_LIMIT', 5),
+            skipIf: (context) => {
+              const key = `${THROTTLER_LIMIT_PREFIX}checkout`;
+              const optedIn =
+                Reflect.getMetadata(key, context.getHandler()) !== undefined ||
+                Reflect.getMetadata(key, context.getClass()) !== undefined;
+              return !optedIn;
+            },
           },
         ],
         // Shared counters across instances (was unset, so ThrottlerGuard used

@@ -1,11 +1,3 @@
-// src/modules/billing/controller/disbursement.controller.ts   (admin: payouts)
-//
-// Four-eyes: the admin who creates a disbursement cannot approve it.
-// Give create / approve / execute to different roles where staffing allows.
-//
-// Reward-offer and per-informant-claim endpoints moved to reward.controller.ts
-// so each controller resolves to exactly one Swagger tag.
-
 import { Body, Controller, Get, Param, Post } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { RequirePermissions } from '../../../common/decorators/require-permissions.decorator';
@@ -16,11 +8,12 @@ import { RolesEnum } from '../../../common/enums/roles.enum';
 import { PermissionsEnum as P } from '../../../common/enums/permissions.enum';
 import { DisbursementService } from '../service/disbursement.service';
 import { CreateDisbursementDto, ExecuteDisbursementDto } from '../dto/disbursement.dto';
+import { ReasonDto } from '../dto/payment.dto';
 
 @ApiTags('Disbursements')
 @ApiBearerAuth('access-token')
 @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
-@Controller('admin/billing') // guards are global (AppModule)
+@Controller('admin/billing')
 export class DisbursementController {
   constructor(private readonly disbursements: DisbursementService) {}
 
@@ -58,5 +51,12 @@ export class DisbursementController {
     @Body() dto: ExecuteDisbursementDto,
   ) {
     return this.disbursements.execute(a.id, id, dto);
+  }
+
+  @RequirePermissions(P.DISBURSEMENTS_APPROVE)
+  @Post('disbursements/:id/cancel')
+  @ApiOperation({ summary: 'Admin: cancel a disbursement that has not been executed' })
+  cancel(@CurrentUser() a: CurrentUserDto, @Param('id') id: string, @Body() dto: ReasonDto) {
+    return this.disbursements.cancel(a.id, id, dto.reason);
   }
 }

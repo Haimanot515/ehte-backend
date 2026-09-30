@@ -78,7 +78,7 @@ model Payment {
   refundStatus String?
   refundAmount Decimal? @db.Decimal(14, 2)
   refundReason String?
-
+  fulfilledAt DateTime?
   paidAt    DateTime?
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
@@ -114,6 +114,7 @@ model PaymentAllocation {
 
   payment       Payment        @relation(fields: [paymentId], references: [id], onDelete: Restrict)
   institution   Institution?   @relation(fields: [institutionId], references: [id])
+  rule          AllocationRule? @relation(fields: [ruleId], references: [id], onDelete: Restrict)
   disbursements Disbursement[]
 
   @@index([paymentId])
