@@ -691,7 +691,7 @@ export class VictimProfileService {
       where: { id },
       include: {
         supports: {
-          where: { status: 'CONFIRMED' },
+          where: { status: { in: ['CONFIRMED', 'COMPLETED'] }, type: 'FINANCIAL' },
           select: {
             id: true,
             type: true,
@@ -753,15 +753,15 @@ export class VictimProfileService {
     const supports = await this.prisma.support.findMany({
       where: {
         victimProfileId: id,
-        status: 'CONFIRMED',
+        status: { in: ['CONFIRMED', 'COMPLETED'] },
       },
       orderBy: { createdAt: 'desc' },
     });
 
-    const totalReceived = supports.reduce(
-      (sum, support) => sum + Number(support.recipientAmount ?? support.amount ?? 0),
-      0,
-    );
+    // Only financial supports carry money; non-financial offers never count toward the total.
+    const totalReceived = supports
+      .filter((support) => support.type === 'FINANCIAL')
+      .reduce((sum, support) => sum + Number(support.recipientAmount ?? support.amount ?? 0), 0);
 
     return {
       totalReceived,
@@ -2126,24 +2126,28 @@ export class VictimProfileService {
     return updatedProfile;
   }
 
-  // G22 / design rule (section 4): "compute every total from Payment
-  // (PAID) and PaymentAllocation, never from Support amounts." The old
-  // version summed Support.recipientAmount ?? Support.amount — Support is
-  // a mirror billing writes for its own record-keeping, not the ledger,
-  // and the ?? fallback silently substituted the *gross* pledge whenever
-  // recipientAmount was null, overstating what the recipient actually got.
-  // totalRaised is defined here as gross paid (Payment.amount summed where
-  // status=PAID), matching the "pick one public number" rule and what
-  // FundingQueryService.getPublicProfileFunding computes independently —
-  // the two should never drift apart because they now share one definition.
+  // G22 / design rule (section 4): compute every total from Payment (PAID) and PaymentAllocation,
+  // never from Support amounts. totalRaised is the recipient's share of paid SUPPORT payments (the
+  // same number SupportService adds when a financial support is created, and the number the victim
+  // sees in their notification). Posting-fee and reward payments never count, and neither does a
+  // support an admin has cancelled. A paid payment whose Support does not exist yet is not counted
+  // until it is fulfilled. Non-financial offers have no payment, so they never count.
   async reconcileProfileTotal(admin: CurrentUserDto, id: string, autoCorrect: boolean) {
     const profile = await this.prisma.victimProfile.findUnique({ where: { id } });
     if (!profile) {
       throw new NotFoundException('victim_profile_not_found');
     }
 
-    const agg = await this.prisma.payment.aggregate({
-      where: { victimProfileId: id, status: 'PAID' },
+    const agg = await this.prisma.paymentAllocation.aggregate({
+      where: {
+        partyType: 'RECIPIENT',
+        payment: {
+          victimProfileId: id,
+          type: 'SUPPORT',
+          status: 'PAID',
+          support: { status: { not: 'CANCELLED' } },
+        },
+      },
       _sum: { amount: true },
       _count: true,
     });

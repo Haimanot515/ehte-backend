@@ -57,6 +57,10 @@ model Payment {
   // is our own dedupe key for retried create-payment requests from the same client action.
   idempotencyKey String?
 
+  // Financial support only: the "support anonymously" choice made at checkout.
+  // Copied onto Support.anonymous when the payment is fulfilled.
+  supportAnonymous Boolean @default(true)
+
   payerUserId     String
   victimProfileId String?
   supportId       String?

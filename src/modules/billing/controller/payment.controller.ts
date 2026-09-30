@@ -9,10 +9,7 @@ import { Roles } from 'src/common/decorators/roles.decorator';
 import { RolesEnum } from 'src/common/enums/roles.enum';
 import { RequirePermissions } from 'src/common/decorators/require-permissions.decorator';
 import { PermissionsEnum } from 'src/common/enums/permissions.enum';
-
-// DRAFT: this controller was not provided, so it is written to match
-// SupportController's conventions. Verify base path, route names, and
-// param routes against the real file before merging.
+import { MyPaymentsQueryDto, SupportCheckoutDto } from '../dto/payment.dto';
 
 @ApiTags('Payments')
 @ApiBearerAuth('access-token')
@@ -29,22 +26,41 @@ export class PaymentController {
     return this.paymentService.getStats();
   }
 
-  @Get('support/:supportId/preview')
-  @ApiOperation({ summary: 'Preview the allocation split for a support amount' })
-  async previewSupport(
-    @Param('supportId') supportId: string,
-    @Query('amount') amount: string,
-  ) {
-    return this.paymentService.previewSupport(supportId, amount);
+  // The payer's own payments, including pending, failed and expired ones. Declared before ':txRef/status'.
+  @Get('mine')
+  @ApiOperation({ summary: 'List my payments, including pending, failed and expired ones' })
+  async listMine(@CurrentUser() user: CurrentUserDto, @Query() query: MyPaymentsQueryDto) {
+    return this.paymentService.listMine(user.id, query);
   }
 
-  @Post('support/:supportId/checkout')
-  @ApiOperation({ summary: 'Start a Chapa checkout for an existing support pledge' })
+  // The path segment is the victim profile id (there is no support before the payment succeeds).
+  @Get('support/:victimProfileId/preview')
+  @ApiOperation({ summary: 'Preview the allocation split for a support amount on a victim profile' })
+  async previewSupport(
+    @Param('victimProfileId') victimProfileId: string,
+    @Query('amount') amount: string,
+  ) {
+    return this.paymentService.previewSupport(victimProfileId, amount);
+  }
+
+  @Post('victim-profile/:victimProfileId/support-checkout')
+  @ApiOperation({
+    summary: 'Start a Chapa checkout to financially support a victim profile',
+    description:
+      'Send the amount and the anonymous choice. The server checks the profile, works out the split ' +
+      'and creates a PENDING payment. No Support exists until Chapa confirms the money.',
+  })
   async initiateSupportCheckout(
     @CurrentUser() user: CurrentUserDto,
-    @Param('supportId') supportId: string,
+    @Param('victimProfileId') victimProfileId: string,
+    @Body() body: SupportCheckoutDto,
   ) {
-    return this.paymentService.initiateSupportCheckout(user, supportId);
+    return this.paymentService.initiateSupportCheckout(
+      user,
+      victimProfileId,
+      body.amount,
+      body.anonymous ?? true,
+    );
   }
 
   @Post('missing-person/:missingPersonId/reward-checkout')

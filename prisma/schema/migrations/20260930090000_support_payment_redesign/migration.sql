@@ -1,0 +1,17 @@
+-- CreateEnum
+CREATE TYPE "SupportCategory" AS ENUM ('FOOD', 'WATER', 'CLOTHES', 'SHELTER', 'MEDICAL_ITEMS', 'TRANSPORT', 'EDUCATION_MATERIALS', 'VOLUNTEER_TIME', 'PROFESSIONAL_HELP', 'OTHER');
+
+-- AlterEnum
+ALTER TYPE "NotificationType" ADD VALUE 'SUPPORT_RECEIVED';
+ALTER TYPE "NotificationType" ADD VALUE 'SUPPORT_OFFER_CONFIRMED';
+ALTER TYPE "NotificationType" ADD VALUE 'SUPPORT_OFFER_COMPLETED';
+ALTER TYPE "NotificationType" ADD VALUE 'SUPPORT_OFFER_EXPIRED';
+
+-- AlterTable
+ALTER TABLE "Support" ADD COLUMN     "categories" "SupportCategory"[],
+ADD COLUMN     "anonymous" BOOLEAN NOT NULL DEFAULT true,
+ADD COLUMN     "contactMayBeShared" BOOLEAN NOT NULL DEFAULT false,
+ADD COLUMN     "victimConfirmedReceiptAt" TIMESTAMP(3);
+
+-- AlterTable
+ALTER TABLE "payments" ADD COLUMN     "supportAnonymous" BOOLEAN NOT NULL DEFAULT true;

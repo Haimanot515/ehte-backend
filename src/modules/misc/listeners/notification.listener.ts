@@ -21,6 +21,9 @@ import {
   PostUnpublishedEvent,
   MissingPersonRequestUpdatedEvent,
   SupportPaymentConfirmedEvent,
+  SupportReceivedEvent,
+  SupportOfferVictimEvent,
+  SupportOfferExpiredEvent,
   PasswordChangedEvent,
   PasswordResetEvent,
   NewMissingPersonRequestEvent,
@@ -73,6 +76,32 @@ const URLS = {
   agreement: (id: string) => `/admin/billing/agreements/${id}`,
   victimProfileAgreement: (profileId: string) => `/admin/billing/profiles/${profileId}/agreement`,
 };
+
+const SUPPORT_CATEGORY_LABELS: Record<string, string> = {
+  FOOD: 'food',
+  WATER: 'water',
+  CLOTHES: 'clothes',
+  SHELTER: 'shelter',
+  MEDICAL_ITEMS: 'medical items',
+  TRANSPORT: 'transport',
+  EDUCATION_MATERIALS: 'education materials',
+  VOLUNTEER_TIME: 'volunteer time',
+  PROFESSIONAL_HELP: 'professional help',
+  OTHER: 'other support',
+};
+
+// "food", "food and clothes", "food, water and clothes"
+function joinCategoryLabels(categories: string[]): string {
+  const labels = categories.map((c) => SUPPORT_CATEGORY_LABELS[c] ?? c.toLowerCase());
+  if (labels.length <= 1) return labels[0] ?? 'support';
+  return `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}`;
+}
+
+// "3200.00" -> "3,200 ETB", "500.50" -> "500.5 ETB"
+function formatEtb(amount: string): string {
+  const n = Number(amount);
+  return `${n.toLocaleString('en-US', { maximumFractionDigits: 2 })} ETB`;
+}
 
 // Turns domain events into notifications. Bodies stay generic — free-text
 // notes and financial specifics are never copied in; open the linked page.
@@ -435,6 +464,7 @@ export class NotificationListener {
   // SUPPORT
   // ───────────────────────────────────────────
 
+  // Now sent only when a supporter submits a non-financial offer (financial support has no pledge step).
   // Uses the same payload shape as SUPPORT_PAYMENT_CONFIRMED ({ userId, supportId, amount? }).
   @OnEvent(NotificationEventEnum.SUPPORT_PLEDGE_CREATED)
   async handleSupportPledgeCreated(event: SupportPaymentConfirmedEvent) {
@@ -443,8 +473,8 @@ export class NotificationListener {
       event.userId,
       {
         type: NotificationType.SUPPORT_PLEDGE_CREATED,
-        title: 'Support Pledge Received',
-        body: 'Your support pledge was received. It will be confirmed once the payment is verified.',
+        title: 'Support Offer Received',
+        body: 'Your offer of support was received. Our team will review it and contact you.',
         entity: 'Support',
         entityId: event.supportId,
         actionUrl: URLS.support(event.supportId),
@@ -453,9 +483,9 @@ export class NotificationListener {
     );
   }
 
-  // Amount is deliberately left out of the body — financial specifics never
-  // go into a notification (same rule as admin review notes above). Open
-  // My Support / the linked page to see the confirmed amount.
+  // Supporter-facing. Amount is left out of the body; open the linked page for details.
+  // Sent when an admin accepts a non-financial offer (financial supports are confirmed by payment,
+  // and the payer already gets PAYMENT_VERIFIED).
   @OnEvent(NotificationEventEnum.SUPPORT_PAYMENT_CONFIRMED)
   async handleSupportPaymentConfirmed(event: SupportPaymentConfirmedEvent) {
     await this.toUser(
@@ -463,13 +493,89 @@ export class NotificationListener {
       event.userId,
       {
         type: NotificationType.SUPPORT_PAYMENT_CONFIRMED,
-        title: 'Support Payment Confirmed',
-        body: 'Your support payment has been confirmed.',
+        title: 'Support Confirmed',
+        body: 'Your support has been confirmed.',
         entity: 'Support',
         entityId: event.supportId,
         actionUrl: URLS.support(event.supportId),
       },
       `SUPPORT_PAYMENT_CONFIRMED:${event.supportId}`,
+    );
+  }
+
+  // Victim-facing. The design requires the amount in this message (recipient share and running total).
+  // Only claimedByUserId is passed as userId by the caller, so unclaimed profiles get nothing here.
+  @OnEvent(NotificationEventEnum.SUPPORT_RECEIVED)
+  async handleSupportReceived(event: SupportReceivedEvent) {
+    const who = event.supporterName ?? 'Someone';
+    await this.toUser(
+      'SUPPORT_RECEIVED',
+      event.userId,
+      {
+        type: NotificationType.SUPPORT_RECEIVED,
+        title: 'You Received Support',
+        body: `${who} has supported you with ${formatEtb(event.recipientAmount)}. Your total support so far is ${formatEtb(event.totalRaised)}.`,
+        entity: 'VictimProfile',
+        entityId: event.victimProfileId,
+        actionUrl: URLS.victimProfile(event.victimProfileId),
+        data: { supportId: event.supportId, anonymous: event.supporterName === null },
+      },
+      `SUPPORT_RECEIVED:${event.supportId}`,
+    );
+  }
+
+  @OnEvent(NotificationEventEnum.SUPPORT_OFFER_CONFIRMED)
+  async handleSupportOfferConfirmed(event: SupportOfferVictimEvent) {
+    const who = event.supporterName ?? 'Someone';
+    await this.toUser(
+      'SUPPORT_OFFER_CONFIRMED',
+      event.userId,
+      {
+        type: NotificationType.SUPPORT_OFFER_CONFIRMED,
+        title: 'Someone Offered You Help',
+        body: `${who} has offered help with ${joinCategoryLabels(event.categories)}. Our team will contact you to arrange it.`,
+        entity: 'VictimProfile',
+        entityId: event.victimProfileId,
+        actionUrl: URLS.victimProfile(event.victimProfileId),
+        data: { supportId: event.supportId, categories: event.categories },
+      },
+      `SUPPORT_OFFER_CONFIRMED:${event.supportId}`,
+    );
+  }
+
+  @OnEvent(NotificationEventEnum.SUPPORT_OFFER_COMPLETED)
+  async handleSupportOfferCompleted(event: SupportOfferVictimEvent) {
+    const who = event.supporterName ?? 'Someone';
+    await this.toUser(
+      'SUPPORT_OFFER_COMPLETED',
+      event.userId,
+      {
+        type: NotificationType.SUPPORT_OFFER_COMPLETED,
+        title: 'Help Delivered',
+        body: `The help with ${joinCategoryLabels(event.categories)} offered by ${who.toLowerCase()} has been marked as delivered. Please confirm if you received it.`,
+        entity: 'VictimProfile',
+        entityId: event.victimProfileId,
+        actionUrl: URLS.victimProfile(event.victimProfileId),
+        data: { supportId: event.supportId, categories: event.categories },
+      },
+      `SUPPORT_OFFER_COMPLETED:${event.supportId}`,
+    );
+  }
+
+  @OnEvent(NotificationEventEnum.SUPPORT_OFFER_EXPIRED)
+  async handleSupportOfferExpired(event: SupportOfferExpiredEvent) {
+    await this.toUser(
+      'SUPPORT_OFFER_EXPIRED',
+      event.userId,
+      {
+        type: NotificationType.SUPPORT_OFFER_EXPIRED,
+        title: 'Support Offer Cancelled',
+        body: `Your offer of support was cancelled because it was not answered within ${event.expiryDays} days. You are welcome to offer again.`,
+        entity: 'Support',
+        entityId: event.supportId,
+        actionUrl: URLS.support(event.supportId),
+      },
+      `SUPPORT_OFFER_EXPIRED:${event.supportId}`,
     );
   }
 

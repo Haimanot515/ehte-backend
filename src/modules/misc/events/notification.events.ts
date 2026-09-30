@@ -102,6 +102,35 @@ export interface SupportPaymentConfirmedEvent {
   amount?: string | number;
 }
 
+// Victim-facing: userId is the profile's claimedByUserId (never createdByUserId).
+export interface SupportReceivedEvent {
+  userId: string;
+  supportId: string;
+  victimProfileId: string;
+  // Name of the supporter, or null when they chose to stay anonymous.
+  supporterName: string | null;
+  // The recipient's share (not the gross amount the supporter paid).
+  recipientAmount: string;
+  // Profile total raised, read in the same transaction that added recipientAmount.
+  totalRaised: string;
+}
+
+// Victim-facing, non-financial: sent when an admin confirms and again when it is completed.
+export interface SupportOfferVictimEvent {
+  userId: string;
+  supportId: string;
+  victimProfileId: string;
+  supporterName: string | null;
+  categories: string[];
+}
+
+// Supporter-facing: an unanswered non-financial offer was auto-cancelled.
+export interface SupportOfferExpiredEvent {
+  userId: string;
+  supportId: string;
+  expiryDays: number;
+}
+
 // ─────────────────────────────────────────────
 // MISSING PERSON (status-transition events)
 // ─────────────────────────────────────────────

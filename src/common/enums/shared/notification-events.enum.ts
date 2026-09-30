@@ -32,10 +32,19 @@ export enum NotificationEventEnum {
   INFORMATION_SUBMISSION_REVIEWED = 'notification.information_submission_reviewed',
   INFORMATION_SUBMISSION_REJECTED = 'notification.information_submission_rejected',
 
-  // Emitted by SupportService.create() (status PENDING).
+  // Emitted by SupportService.create() when a non-financial offer is submitted (status PENDING).
   // SUPPORT_PAYMENT_CONFIRMED is reserved for the CONFIRMED transition only.
   SUPPORT_PLEDGE_CREATED = 'notification.support_pledge_created',
   SUPPORT_PAYMENT_CONFIRMED = 'notification.support_payment_confirmed',
+
+  // Victim-facing support messages. Only the claiming user (claimedByUserId) is ever notified.
+  // SUPPORT_RECEIVED: a financial support was created after Chapa confirmed the payment.
+  // SUPPORT_OFFER_CONFIRMED / _COMPLETED: an admin moved a non-financial offer forward.
+  // SUPPORT_OFFER_EXPIRED goes to the supporter when an unanswered offer is auto-cancelled.
+  SUPPORT_RECEIVED = 'notification.support_received',
+  SUPPORT_OFFER_CONFIRMED = 'notification.support_offer_confirmed',
+  SUPPORT_OFFER_COMPLETED = 'notification.support_offer_completed',
+  SUPPORT_OFFER_EXPIRED = 'notification.support_offer_expired',
 
   NEW_REPORT = 'notification.new_report',
   HIGH_PRIORITY_REPORT = 'notification.high_priority_report',
