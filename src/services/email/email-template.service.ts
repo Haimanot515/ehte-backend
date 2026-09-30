@@ -24,6 +24,16 @@ import {
   renderEmailChangeVerificationHtml,
 } from './templates/email-change-verification.template';
 
+import {
+  ProfileEmailStatus,
+  renderProfileEmailSubject,
+  renderProfileEmailHtml,
+  renderProfileEmailText,
+} from './templates/profile-email.template';
+
+const DEFAULT_EMAIL_LOGO_URL =
+  'https://res.cloudinary.com/dq3jkpys8/image/upload/v1790761570/ehte-logo-email-white_gavenx.png';
+
 interface AdminRegistrationParams {
   registrationLink: string;
   expiresInHours: number;
@@ -35,15 +45,27 @@ interface PromotionParams {
   expiresInHours: number;
 }
 
+interface ProfileParams {
+  status: ProfileEmailStatus;
+  recipientName?: string;
+  caseReference?: string;
+  adminNote?: string;
+}
+
 @Injectable()
 export class EmailTemplateService {
   private readonly appName: string;
   private readonly appUrl: string;
+  private readonly logoUrl: string;
 
   constructor(private readonly configService: ConfigService) {
     this.appName = this.configService.get<string>('app.name', 'Ehte');
 
     this.appUrl = this.configService.get<string>('app.url', 'https://ehte.org');
+
+    // Public HTTPS PNG used in every email header.
+    // Set EMAIL_LOGO_URL in .env to override; otherwise the Cloudinary default is used.
+    this.logoUrl = this.configService.get<string>('app.emailLogoUrl') || DEFAULT_EMAIL_LOGO_URL;
   }
 
   getAppName(): string {
@@ -54,6 +76,10 @@ export class EmailTemplateService {
     return this.appUrl;
   }
 
+  getLogoUrl(): string {
+    return this.logoUrl;
+  }
+
   otpSubject(): string {
     return renderOtpEmailSubject();
   }
@@ -62,6 +88,7 @@ export class EmailTemplateService {
     return renderOtpEmailHtml({
       otp,
       expiresInMinutes,
+      logoUrl: this.logoUrl,
     });
   }
 
@@ -77,7 +104,7 @@ export class EmailTemplateService {
   }
 
   adminRegistrationHtml(params: AdminRegistrationParams): string {
-    return renderAdminRegistrationEmailHtml(params);
+    return renderAdminRegistrationEmailHtml({ ...params, logoUrl: this.logoUrl });
   }
 
   adminRegistrationText(params: AdminRegistrationParams): string {
@@ -89,7 +116,7 @@ export class EmailTemplateService {
   }
 
   promotionHtml(params: PromotionParams): string {
-    return renderPromotionEmailHtml(params);
+    return renderPromotionEmailHtml({ ...params, logoUrl: this.logoUrl });
   }
 
   emailChangeSubject(): string {
@@ -97,6 +124,18 @@ export class EmailTemplateService {
   }
 
   emailChangeHtml(params: EmailChangeVerificationTemplateParams): string {
-    return renderEmailChangeVerificationHtml(params);
+    return renderEmailChangeVerificationHtml({ ...params, logoUrl: this.logoUrl });
+  }
+
+  profileSubject(status: ProfileEmailStatus): string {
+    return renderProfileEmailSubject(status);
+  }
+
+  profileHtml(params: ProfileParams): string {
+    return renderProfileEmailHtml({ ...params, appUrl: this.appUrl, logoUrl: this.logoUrl });
+  }
+
+  profileText(params: ProfileParams): string {
+    return renderProfileEmailText({ ...params, appUrl: this.appUrl, logoUrl: this.logoUrl });
   }
 }

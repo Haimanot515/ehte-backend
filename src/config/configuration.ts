@@ -24,6 +24,11 @@ export default () => ({
       process.env.APP_URL ||
       `http://localhost:${Number(process.env.PORT) || 3000}`,
 
+    // Public HTTPS PNG shown in the header of every email (read by
+    // EmailTemplateService). Optional: when unset or empty, the service falls
+    // back to its built-in default logo URL (Cloudinary).
+    emailLogoUrl: process.env.EMAIL_LOGO_URL || undefined,
+
     // Enables dev-only OTP console logging. MUST be false in production.
     debug: process.env.APP_DEBUG === 'true',
   },

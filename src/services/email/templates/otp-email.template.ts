@@ -1,6 +1,9 @@
+import { renderBrandMark } from './email-logo';
+
 interface OtpEmailParams {
   otp: string;
   expiresInMinutes: number;
+  logoUrl?: string;
 }
 
 const brand = {
@@ -67,7 +70,7 @@ export function renderOtpEmailSubject(): string {
   return 'Your Ehte verification code';
 }
 
-export function renderOtpEmailHtml({ otp, expiresInMinutes }: OtpEmailParams): string {
+export function renderOtpEmailHtml({ otp, expiresInMinutes, logoUrl }: OtpEmailParams): string {
   const safeOtp = escapeHtml(otp);
   const safeExpiry = escapeHtml(formatMinutes(expiresInMinutes));
 
@@ -97,8 +100,8 @@ export function renderOtpEmailHtml({ otp, expiresInMinutes }: OtpEmailParams): s
               <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
                 <tr>
                   <td class="px bg-hero" style="background-color:${brand.hero};padding:32px 36px 34px;">
-                    <span style="font-size:20px;font-weight:700;letter-spacing:-0.02em;color:#ffffff;">Ehte</span>
-                    <span style="display:inline-block;margin-left:10px;padding:3px 10px;border-radius:999px;background-color:rgba(255,255,255,0.16);color:#ffffff;font-size:11px;font-weight:600;letter-spacing:0.05em;text-transform:uppercase;vertical-align:2px;">Verification</span>
+                    ${renderBrandMark(logoUrl, 'Ehte')}
+                    <span style="display:inline-block;margin-left:10px;padding:3px 10px;border-radius:999px;background-color:rgba(255,255,255,0.16);color:#ffffff;font-size:11px;font-weight:600;letter-spacing:0.05em;text-transform:uppercase;vertical-align:middle;">Verification</span>
                     <h1 class="hero-title" style="margin:26px 0 8px;font-size:28px;line-height:1.25;font-weight:700;letter-spacing:-0.02em;color:#ffffff;">
                       Your verification code
                     </h1>
