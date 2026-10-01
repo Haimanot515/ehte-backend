@@ -276,10 +276,10 @@ export class CreateAuditAlertDto {
   @MaxLength(100)
   name!: string;
 
-  @ApiPropertyOptional({ default: true })
+  @ApiPropertyOptional()
   @IsOptional()
   @IsBoolean()
-  enabled?: boolean = true;
+  enabled?: boolean;
 
   @ApiPropertyOptional({ example: 'LOGIN_FAILED', description: 'Match this action.' })
   @IsOptional()
@@ -317,14 +317,13 @@ export class CreateAuditAlertDto {
 
   @ApiPropertyOptional({
     example: 60,
-    default: 60,
     description: 'Minimum minutes between firings.',
   })
   @IsOptional()
   @IsInt()
   @Min(0)
   @Max(10_080)
-  cooldownMinutes?: number = 60;
+  cooldownMinutes?: number;
 }
 
 export class UpdateAuditAlertDto extends PartialType(CreateAuditAlertDto) {}
