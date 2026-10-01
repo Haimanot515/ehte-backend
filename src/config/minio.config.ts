@@ -1,7 +1,9 @@
 import { registerAs } from '@nestjs/config';
 
 export default registerAs('minio', () => ({
-  publicUrl: process.env.MINIO_PUBLIC_URL ?? 'http://localhost:9010',
+  // Browser-facing MinIO origin used to sign presigned URLs (e.g.
+  // https://minio.example.com). Unset => sign with the internal endpoint.
+  publicUrl: process.env.MINIO_PUBLIC_URL || undefined,
 
   endpoint: process.env.MINIO_ENDPOINT ?? 'localhost',
 

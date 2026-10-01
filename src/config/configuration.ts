@@ -141,6 +141,10 @@ export default () => ({
     // Production: 443. Local: 9000.
     port: Number(process.env.MINIO_PORT || 9000),
 
+    // Browser-facing origin used to sign presigned URLs, e.g. https://minio.example.com.
+    // Needed when MINIO_ENDPOINT is an internal docker hostname (shared-minio).
+    publicUrl: process.env.MINIO_PUBLIC_URL || undefined,
+
     accessKey: process.env.MINIO_ACCESS_KEY,
 
     secretKey: process.env.MINIO_SECRET_KEY,
