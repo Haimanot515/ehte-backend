@@ -188,6 +188,8 @@ const REDIS_URL_SCHEMES = { scheme: ['redis', 'rediss'] };
 
         MINIO_ENDPOINT: Joi.string().required(),
         MINIO_PORT: Joi.number().default(9000),
+        // Optional: public https origin the browser uses to reach MinIO (presigned URLs).
+        MINIO_PUBLIC_URL: Joi.string().uri({ scheme: ['http', 'https'] }).optional(),
         MINIO_ACCESS_KEY: Joi.string().required(),
         MINIO_SECRET_KEY: Joi.string().required(),
         MINIO_BUCKET_NAME: Joi.string().required(),

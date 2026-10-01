@@ -172,6 +172,10 @@ Most endpoints require a valid JWT access token.
 Use the **Authorize** button and enter:
 
 \`Bearer <access_token>\`
+
+## Re-authentication
+
+Sensitive endpoints require re-authentication. Fill in the **X-Reauth-Credential** header with your account password (or Discreet Mode passcode, if enabled). JSON endpoints also accept it as \`credential\` in the body.
 `,
       )
       .setVersion('1.0.0')

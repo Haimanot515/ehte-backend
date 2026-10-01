@@ -222,6 +222,7 @@ export class AuditLogService {
   async record(payload: AuditEventPayload): Promise<AuditLog> {
     const ctx = this.requestContext.get();
     const isSystem = payload.actorType === ActorType.SYSTEM;
+    const isFailedLogin = payload.action === AuditEventEnum.LOGIN_FAILED;
     // System actions don't inherit the HTTP caller's network details
     const net = isSystem ? undefined : ctx;
 
@@ -234,8 +235,14 @@ export class AuditLogService {
       targetUserId: payload.targetUserId ?? null,
 
       action: payload.action,
-      outcome: payload.outcome ?? AuditOutcome.SUCCESS,
-      severity: payload.severity ?? AuditSeverity.INFO,
+      outcome:
+        isFailedLogin && (!payload.outcome || payload.outcome === AuditOutcome.SUCCESS)
+          ? AuditOutcome.FAILURE
+          : (payload.outcome ?? AuditOutcome.SUCCESS),
+      severity:
+        isFailedLogin && (!payload.severity || payload.severity === AuditSeverity.INFO)
+          ? AuditSeverity.WARNING
+          : (payload.severity ?? AuditSeverity.INFO),
       reason: payload.reason ?? null,
 
       entity: payload.entity,
@@ -628,6 +635,7 @@ export class AuditLogService {
         lastFailureMessage: this.lastFailureMessage,
       },
       archiveConfigured: Boolean(this.archive),
+      purgeConfigured: (process.env.AUDIT_PURGE_TOKEN_SECRET?.length ?? 0) >= 32,
     };
   }
 

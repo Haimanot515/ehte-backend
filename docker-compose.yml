@@ -54,6 +54,7 @@ services:
       MINIO_ENDPOINT: ${MINIO_ENDPOINT:-shared-minio}
       MINIO_PORT: ${MINIO_PORT:-9000}
       MINIO_USE_SSL: "false"
+      MINIO_PUBLIC_URL: ${MINIO_PUBLIC_URL:?MINIO_PUBLIC_URL must be set in ehte-dev.env}
       # Dev only: plain redis on the private docker network, do not copy to production
       REDIS_HOST: redis
       REDIS_PORT: "6379"

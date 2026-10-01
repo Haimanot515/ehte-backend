@@ -8,7 +8,14 @@ import type { Express } from 'express';
 @Injectable()
 export class MinioService implements OnModuleInit {
   private readonly logger = new Logger(MinioService.name);
+  // Internal client: all server-side traffic (put/stat/remove/bucket checks)
+  // goes over the docker network, e.g. http://shared-minio:9000.
   private client: Minio.Client;
+  // Presign-only client: signs URLs for the BROWSER. SigV4 signs the Host
+  // header, so a URL signed for shared-minio:9000 can't be rewritten to the
+  // public host afterwards — it has to be signed with the public host from
+  // the start. Falls back to `client` when MINIO_PUBLIC_URL is unset.
+  private presignClient: Minio.Client;
   private bucket: string;
   // FIX: was read from process.env.DURATION_OF_PRE_SIGNED_DOCUMENT directly
   // inside each presign method, bypassing ConfigService/Joi entirely — a
@@ -57,6 +64,7 @@ export class MinioService implements OnModuleInit {
         accessKey,
         secretKey,
       });
+      this.presignClient = this.buildPresignClient(accessKey, secretKey);
       this.logger.log('MinIO client initialized');
 
       await this.ensureBucket(this.bucket);
@@ -72,6 +80,35 @@ export class MinioService implements OnModuleInit {
         `Failed to initialize MinIO: code=${e?.code ?? 'unknown'} status=${e?.statusCode ?? 'unknown'} message=${e?.message ?? 'unknown'}`,
       );
     }
+  }
+
+  // Builds the client used only to sign browser-facing URLs. Signing is a
+  // local computation (region is set explicitly, so the SDK never makes a
+  // network call), which means the public host does not have to be reachable
+  // from inside the container.
+  private buildPresignClient(accessKey: string, secretKey: string): Minio.Client {
+    const publicUrl = this.configService.get<string>('minio.publicUrl');
+    if (!publicUrl) {
+      return this.client;
+    }
+
+    const url = new URL(publicUrl);
+    if (url.pathname !== '/' && url.pathname !== '') {
+      this.logger.warn(
+        `MINIO_PUBLIC_URL has a path (${url.pathname}); the MinIO SDK only signs host-rooted URLs, so the path is ignored.`,
+      );
+    }
+    const useSSL = url.protocol === 'https:';
+
+    this.logger.log(`Presigned URLs will be signed for ${url.protocol}//${url.host}`);
+    return new Minio.Client({
+      endPoint: url.hostname,
+      port: url.port ? Number(url.port) : useSSL ? 443 : 80,
+      useSSL,
+      region: this.configService.get<string>('minio.region') ?? 'us-east-1',
+      accessKey,
+      secretKey,
+    });
   }
 
   private assertClient(): void {
@@ -132,7 +169,7 @@ export class MinioService implements OnModuleInit {
 
   async getUrl(key: string, expirySeconds: number = 24 * 60 * 60): Promise<string> {
     this.assertClient();
-    return this.client.presignedGetObject(this.bucket, key, expirySeconds);
+    return this.presignClient.presignedGetObject(this.bucket, key, expirySeconds);
   }
 
   async deleteFile(key: string): Promise<void> {
@@ -187,7 +224,7 @@ export class MinioService implements OnModuleInit {
   }): Promise<{ presignedUrl: string; file: Record<string, string | undefined> }> {
     this.assertClient();
     const key = this.buildObjectKey(fileInfo.originalname, fileInfo.folder ?? 'uploads');
-    const presignedUrl = await this.client.presignedPutObject(
+    const presignedUrl = await this.presignClient.presignedPutObject(
       this.bucket,
       key,
       this.presignDurationSeconds,
@@ -206,6 +243,6 @@ export class MinioService implements OnModuleInit {
 
   async generatePresignedDownloadUrl(key: string): Promise<string> {
     this.assertClient();
-    return this.client.presignedGetObject(this.bucket, key, this.presignDurationSeconds);
+    return this.presignClient.presignedGetObject(this.bucket, key, this.presignDurationSeconds);
   }
 }
