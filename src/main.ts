@@ -104,19 +104,14 @@ async function bootstrap() {
   app.use(compression());
 
   app.use(json({ limit: '10mb' }));
- 
- 
- 
- 
- 
- 
   app.use(urlencoded({ extended: true, limit: '10mb' }));
 
   app.enableCors({
     origin: corsOrigin,
     credentials: corsCredentials,
-  
-    app.useGlobalPipes(
+  });
+
+  app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
       forbidNonWhitelisted: true,
