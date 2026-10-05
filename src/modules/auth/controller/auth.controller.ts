@@ -96,10 +96,6 @@ export class AuthController {
     return this.authService.login(data);
   }
 
-  // SOCIAL LOGIN — GOOGLE. Covers signup and login: first sign-in creates the
-  // account, a repeat one just logs in. Same throttle band as password login since
-  // it's also an unauthenticated, credential-adjacent endpoint.
-
   @AllowAnonymous()
   @Throttle({ default: { limit: 5, ttl: 60000 } })
   @Post('social/google')
@@ -184,11 +180,6 @@ export class AuthController {
   ) {
     return this.authService.me(user);
   }
-
-  // CHANGE PASSWORD (STEP 1) — "know it, want to change it" flow: authenticated USER
-  // verifies their current password; an OTP is then texted to their own registered
-  // phone number. USER accounts only — admin accounts use AdminAuthController's
-  // email-OTP equivalent (POST /admin/auth/change-password/initiate) instead.
 
   @Throttle({ default: { limit: 5, ttl: 60000 } })
   @Post('change-password/initiate')

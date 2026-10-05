@@ -50,10 +50,6 @@ export enum InformationStatsInterval {
   MONTH = 'month',
 }
 
-// ─────────────────────────────────────────────
-// CREATE
-// ─────────────────────────────────────────────
-
 export class CreateInformationSubmissionDto {
   @IsString()
   @MinLength(5)
@@ -65,10 +61,6 @@ export class CreateInformationSubmissionDto {
   @MaxLength(500)
   location?: string;
 
-  // FIX: these are MinIO filepaths returned by POST /media/upload-url
-  // (same convention as CreatePostDto), not public URLs — @IsUrl was
-  // rejecting every legitimate filepath. Switched to @IsString, same
-  // as Post/Report/VictimProfile.
   @IsOptional()
   @IsArray()
   @ArrayMaxSize(MAX_MEDIA_ITEMS)
@@ -107,12 +99,6 @@ export class CreateInformationSubmissionDto {
   @IsString({ each: true })
   other?: string[];
 }
-
-// ─────────────────────────────────────────────
-// UPDATE
-// Same field set as CREATE, all optional. Only usable while
-// PENDING (enforced in the service).
-// ─────────────────────────────────────────────
 
 export class UpdateInformationSubmissionDto {
   @IsOptional()
@@ -163,23 +149,10 @@ export class UpdateInformationSubmissionDto {
   other?: string[];
 }
 
-// ─────────────────────────────────────────────
-// ADMIN — MOVE TO UNDER_REVIEW (admin/:id/status)
-// The only status this endpoint may set is UNDER_REVIEW — the
-// terminal REVIEWED/REJECTED decision goes through review()
-// instead, which requires a reviewNote on REJECTED.
-// ─────────────────────────────────────────────
-
 export class UpdateInformationSubmissionStatusDto {
   @IsEnum(InformationStatus)
   status: InformationStatus;
 }
-
-// ─────────────────────────────────────────────
-// ADMIN — REVIEW (admin/:id/review)
-// reviewNote is required by the service when status is REJECTED
-// (conditional on the value of `status`, so validated there).
-// ─────────────────────────────────────────────
 
 export class ReviewInformationSubmissionDto {
   @IsEnum(InformationStatus)
@@ -190,10 +163,6 @@ export class ReviewInformationSubmissionDto {
   @MaxLength(2000)
   reviewNote?: string;
 }
-
-// ─────────────────────────────────────────────
-// LIST QUERY (pagination)
-// ─────────────────────────────────────────────
 
 export class ListInformationSubmissionsQueryDto {
   @IsOptional()

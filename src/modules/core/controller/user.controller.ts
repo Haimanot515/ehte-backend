@@ -647,9 +647,6 @@ export class UserController {
     return this.userService.revokeSession(actor, id, sessionId);
   }
 
-  // NOT the way to create an admin. ADMIN goes through the email-verified
-  // promote flow (POST /admin/auth/promote). This route only escalates an
-  // existing, verified ADMIN to SUPER_ADMIN, and re-auth is required.
   @Patch(':id/role')
   @Roles(RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.ROLE_UPDATE)

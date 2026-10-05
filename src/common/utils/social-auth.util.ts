@@ -19,9 +19,6 @@ export class SocialAuthUtil {
     this.googleClient = new OAuth2Client(this.configService.get<string>('google.clientId'));
   }
 
-  // Verifies a Google ID token's signature, issuer, expiry and audience against our
-  // own client ID. This is what makes it safe to trust the email inside it — never
-  // trust an email the client sends us directly instead of one pulled from here.
   async verifyGoogleIdToken(idToken: string): Promise<SocialProfile> {
     const audience = this.configService.getOrThrow<string>('google.clientId');
 
@@ -48,11 +45,6 @@ export class SocialAuthUtil {
     };
   }
 
-  // Facebook access tokens need TWO checks, not one:
-  // 1) /debug_token, using our own app-id|app-secret, confirms the token was issued
-  //    FOR OUR APP. Skipping this lets anyone hand us a valid token minted for some
-  //    other Facebook app and impersonate whoever it belongs to.
-  // 2) /me, using the token itself, fetches the profile it's actually scoped to.
   async verifyFacebookAccessToken(accessToken: string): Promise<SocialProfile> {
     const appId = this.configService.getOrThrow<string>('facebook.appId');
     const appSecret = this.configService.getOrThrow<string>('facebook.appSecret');
@@ -91,9 +83,6 @@ export class SocialAuthUtil {
     }
 
     if (!profile?.id || !profile.email) {
-      // Facebook only returns `email` in this response when the account has one and
-      // it's verified. Our auth model assumes every user has an email, so we require
-      // it rather than creating an email-less account.
       throw new UnauthorizedException('facebook_email_required');
     }
 
@@ -105,17 +94,6 @@ export class SocialAuthUtil {
     };
   }
 
-  // Apple's ID token, like Google's, is a signed JWT — verify-apple-id-token
-  // verifies its signature against Apple's own public keys, checks `iss` and
-  // `exp`, and checks `aud` against the clientId we pass. Two things specific
-  // to Apple, not a copy-paste of the Google path:
-  // - `clientId` here is your Services ID (web/Android) or app bundle ID
-  //   (native iOS) — NOT the same value as google.clientId.
-  // - Apple only ever sends the user's name ONCE, on their very first-ever
-  //   authorization, and it arrives from the client SDK as plain request data
-  //   — not inside the token. `nameFromClient` lets the controller pass that
-  //   through; on every later sign-in it'll be undefined and we just keep
-  //   whatever name we already stored.
   async verifyAppleIdToken(idToken: string, nameFromClient?: string): Promise<SocialProfile> {
     const clientId = this.configService.getOrThrow<string>('apple.clientId');
 

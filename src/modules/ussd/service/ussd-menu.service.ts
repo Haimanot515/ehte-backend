@@ -7,9 +7,6 @@ import { UssdMissingPersonService } from './ussd-missing-person.service';
 import { UssdInformationSubmissionService } from './ussd-information-submission.service';
 import { RedisService } from '../../../services/redis/redis.service';
 
-// Matches the actual ReportCategory enum in prisma/schema/report.prisma — NOT the PRD's
-// prose category list ("Violence against women", "Domestic violence", etc.), which was never
-// wired into the schema. Display labels are mine; enum values on the right are what's real.
 const REPORT_CATEGORIES: Array<{ label: string; value: ReportCategory }> = [
   { label: 'Harassment', value: ReportCategory.HARASSMENT },
   { label: 'Abuse', value: ReportCategory.ABUSE },
@@ -143,10 +140,6 @@ export class UssdMenuService {
     }
   }
 
-  // ═══════════════════════════════════════════
-  // REPORT AN INCIDENT
-  // ═══════════════════════════════════════════
-
   private async fromReportCategory(
     state: UssdSessionState,
     input: string,
@@ -199,10 +192,6 @@ export class UssdMenuService {
     return { continueSession: false, text: 'Report cancelled.' };
   }
 
-  // ═══════════════════════════════════════════
-  // CHECK REPORT STATUS
-  // ═══════════════════════════════════════════
-
   private async fromStatusInputRef(
     state: UssdSessionState,
     input: string,
@@ -231,10 +220,6 @@ export class UssdMenuService {
     }
     return { continueSession: false, text: `Status for ${report.caseReference}: ${report.status}` };
   }
-
-  // ═══════════════════════════════════════════
-  // REPORT A MISSING PERSON
-  // ═══════════════════════════════════════════
 
   private async fromMissingPersonType(
     state: UssdSessionState,
@@ -323,10 +308,6 @@ export class UssdMenuService {
     return { continueSession: false, text: 'Missing person report cancelled.' };
   }
 
-  // ═══════════════════════════════════════════
-  // PROVIDE INFORMATION ABOUT A MISSING PERSON
-  // ═══════════════════════════════════════════
-
   private async fromInfoMissingPersonId(
     state: UssdSessionState,
     input: string,
@@ -388,10 +369,6 @@ export class UssdMenuService {
     await this.sessions.end(state.sessionId);
     return { continueSession: false, text: 'Cancelled.' };
   }
-
-  // ═══════════════════════════════════════════
-  // HELPERS
-  // ═══════════════════════════════════════════
 
   /** Returns true if the caller is still within the attempt limit; false once exceeded. */
   private async checkAndIncrementThrottle(

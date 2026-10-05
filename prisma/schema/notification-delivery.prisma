@@ -134,9 +134,6 @@ model NotificationIdempotencyKey {
   @@map("notification_idempotency_key")
 }
 
-// ─────────────────────────────────────────────
-// Own-notification controls (NF-07 to NF-09, NF-20 to NF-22)
-// ─────────────────────────────────────────────
 
 /// One row per user while snoozed. Non-security notifications still land in the inbox
 /// but are not sent by push, email or SMS until `until` passes.
@@ -168,9 +165,6 @@ model NotificationEntityMute {
   @@map("notification_entity_mute")
 }
 
-// ─────────────────────────────────────────────
-// Delivery operations (NF-40, NF-41, NF-59 to NF-63)
-// ─────────────────────────────────────────────
 
 /// Addresses and numbers a provider reported as bounced or blocked.
 /// channel: EMAIL | SMS. status: ACTIVE | CLEARED.

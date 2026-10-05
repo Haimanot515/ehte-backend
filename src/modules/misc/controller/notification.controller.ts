@@ -85,10 +85,6 @@ import { PermissionsEnum } from 'src/common/enums/permissions.enum';
 export class NotificationController {
   constructor(private readonly notificationService: NotificationService) {}
 
-  // ═════════════════════════════════════════════
-  // 1. USER LITERAL ROUTES (any authenticated user, own rows only)
-  // ═════════════════════════════════════════════
-
   @Get()
   @ApiOperation({ summary: 'Get my notifications' })
   @ApiQuery({ name: 'type', required: false })
@@ -191,11 +187,6 @@ export class NotificationController {
     return this.notificationService.deleteAllMyRead(user);
   }
 
-  // ─────────────────────────────────────────────
-  // 1b. NEW USER ROUTES (NF-01 to NF-22), own notifications only.
-  // All literal paths: they must stay above 'GET :id', 'DELETE :id' and 'PATCH :id/...'.
-  // ─────────────────────────────────────────────
-
   @Get('types')
   @ApiOperation({
     summary: 'List notification types for a preferences screen',
@@ -272,7 +263,8 @@ export class NotificationController {
     @CurrentUser() user: CurrentUserDto,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const { csv, truncated, rowCount } = await this.notificationService.exportMyNotificationsCsv(user);
+    const { csv, truncated, rowCount } =
+      await this.notificationService.exportMyNotificationsCsv(user);
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', 'attachment; filename="my-notifications.csv"');
     res.setHeader('X-Export-Truncated', String(truncated));
@@ -342,7 +334,9 @@ export class NotificationController {
   }
 
   @Patch('entity/:entity/:entityId/read')
-  @ApiOperation({ summary: 'Mark everything about one record as read (e.g. when a report is opened)' })
+  @ApiOperation({
+    summary: 'Mark everything about one record as read (e.g. when a report is opened)',
+  })
   @ApiParam({ name: 'entity', example: 'Report' })
   @ApiParam({ name: 'entityId' })
   async markEntityAsRead(
@@ -379,10 +373,6 @@ export class NotificationController {
   ) {
     return this.notificationService.unmuteEntity(user, entity, entityId);
   }
-
-  // ═════════════════════════════════════════════
-  // 2. ADMIN LITERAL ROUTES (ADMIN / SUPER_ADMIN)
-  // ═════════════════════════════════════════════
 
   /**
    * POST /notifications/admin
@@ -637,10 +627,6 @@ export class NotificationController {
     return this.notificationService.cancelBroadcast(id, user);
   }
 
-  // ─────────────────────────────────────────────
-  // NEW company-wide routes (NF-50 to NF-57). Above 'admin/all/:id' so these words are not read as ids.
-  // ─────────────────────────────────────────────
-
   @Get('admin/all/by-recipient')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.NOTIFICATION_MANAGE)
@@ -684,14 +670,20 @@ export class NotificationController {
     summary: 'Super admin: start a background export beyond the 50,000-row CSV cap',
     description: 'Same filters as GET /notifications/admin/all (pass them in the body). Audited.',
   })
-  async startAllExportJob(@Body() dto: NotificationExportJobDto, @CurrentUser() admin: CurrentUserDto) {
+  async startAllExportJob(
+    @Body() dto: NotificationExportJobDto,
+    @CurrentUser() admin: CurrentUserDto,
+  ) {
     return this.notificationService.startAllExportJob(dto, admin);
   }
 
   @Get('admin/all/export-jobs')
   @Roles(RolesEnum.SUPER_ADMIN)
   @ApiOperation({ summary: 'Super admin: my export jobs' })
-  async listAllExportJobs(@Query() query: NotificationPagingDto, @CurrentUser() admin: CurrentUserDto) {
+  async listAllExportJobs(
+    @Query() query: NotificationPagingDto,
+    @CurrentUser() admin: CurrentUserDto,
+  ) {
     return this.notificationService.listAllExportJobs(admin, query);
   }
 
@@ -699,7 +691,10 @@ export class NotificationController {
   @Roles(RolesEnum.SUPER_ADMIN)
   @ApiOperation({ summary: 'Super admin: export job progress' })
   @ApiParam({ name: 'id', description: 'Export job ID' })
-  async getAllExportJob(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() admin: CurrentUserDto) {
+  async getAllExportJob(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() admin: CurrentUserDto,
+  ) {
     return this.notificationService.getAllExportJob(id, admin);
   }
 
@@ -710,7 +705,10 @@ export class NotificationController {
     description: 'Links work for 5 minutes. Ask again for fresh ones.',
   })
   @ApiParam({ name: 'id', description: 'Export job ID' })
-  async downloadAllExportJob(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() admin: CurrentUserDto) {
+  async downloadAllExportJob(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() admin: CurrentUserDto,
+  ) {
     return this.notificationService.getAllExportJobDownload(id, admin);
   }
 
@@ -744,7 +742,10 @@ export class NotificationController {
     summary: 'Admin: events performed by regular users',
     description: 'Audit-log feed. Supports every audit filter (action, entity, userId, dates, q).',
   })
-  async getUserEventsFeed(@Query() query: EventsFeedQueryDto, @CurrentUser() viewer: CurrentUserDto) {
+  async getUserEventsFeed(
+    @Query() query: EventsFeedQueryDto,
+    @CurrentUser() viewer: CurrentUserDto,
+  ) {
     return this.notificationService.getEventsByActorType(ActorType.USER, query, viewer);
   }
 
@@ -811,10 +812,6 @@ export class NotificationController {
     return this.notificationService.getUserNotificationEvents(userId, query);
   }
 
-  // Data-subject requests (SUPER_ADMIN only): export or erase one user's
-  // notifications. Both are audited by the service and each has its own
-  // dedicated permission.
-
   @Get('admin/user/:userId/export')
   @Roles(RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.NOTIFICATION_USER_DATA_EXPORT)
@@ -858,11 +855,6 @@ export class NotificationController {
     return this.notificationService.markAllAsRead(user);
   }
 
-  // ─────────────────────────────────────────────
-  // NEW ADMIN ROUTES (NF-23 to NF-49, NF-58 to NF-63).
-  // All literal paths: they sit above the admin ':id' routes below on purpose.
-  // ─────────────────────────────────────────────
-
   // ── Templates and broadcasts ─────────────────
 
   @Get('admin/types')
@@ -877,7 +869,9 @@ export class NotificationController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.NOTIFICATION_READ)
   @HttpCode(200)
-  @ApiOperation({ summary: 'Admin: render a template (or loose text) with sample variables. Sends nothing.' })
+  @ApiOperation({
+    summary: 'Admin: render a template (or loose text) with sample variables. Sends nothing.',
+  })
   async previewTemplate(@Body() dto: PreviewTemplateDto) {
     return this.notificationService.previewTemplate(dto);
   }
@@ -896,7 +890,10 @@ export class NotificationController {
   @RequirePermissions(PermissionsEnum.NOTIFICATION_MANAGE)
   @ApiOperation({ summary: 'Admin: retire a template (soft: nothing is deleted)' })
   @ApiParam({ name: 'id', description: 'Template ID' })
-  async retireTemplate(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: CurrentUserDto) {
+  async retireTemplate(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: CurrentUserDto,
+  ) {
     return this.notificationService.retireTemplate(id, user);
   }
 
@@ -905,7 +902,10 @@ export class NotificationController {
   @RequirePermissions(PermissionsEnum.NOTIFICATION_MANAGE)
   @ApiOperation({ summary: 'Admin: bring a retired template back' })
   @ApiParam({ name: 'id', description: 'Template ID' })
-  async activateTemplate(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: CurrentUserDto) {
+  async activateTemplate(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: CurrentUserDto,
+  ) {
     return this.notificationService.activateTemplate(id, user);
   }
 
@@ -915,7 +915,10 @@ export class NotificationController {
   @HttpCode(200)
   @ApiOperation({ summary: 'Admin: requeue a failed or partly failed broadcast' })
   @ApiParam({ name: 'id', description: 'Broadcast ID' })
-  async retryBroadcast(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: CurrentUserDto) {
+  async retryBroadcast(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: CurrentUserDto,
+  ) {
     return this.notificationService.retryBroadcast(id, user);
   }
 
@@ -957,7 +960,10 @@ export class NotificationController {
     description: 'The person who created the broadcast cannot approve it.',
   })
   @ApiParam({ name: 'id', description: 'Broadcast ID' })
-  async approveBroadcast(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: CurrentUserDto) {
+  async approveBroadcast(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: CurrentUserDto,
+  ) {
     return this.notificationService.approveBroadcast(id, user);
   }
 
@@ -965,7 +971,9 @@ export class NotificationController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.NOTIFICATION_BROADCAST_APPROVE)
   @HttpCode(200)
-  @ApiOperation({ summary: 'Admin: reject a broadcast that is awaiting approval (reason required)' })
+  @ApiOperation({
+    summary: 'Admin: reject a broadcast that is awaiting approval (reason required)',
+  })
   @ApiParam({ name: 'id', description: 'Broadcast ID' })
   async rejectBroadcast(
     @Param('id', ParseUUIDPipe) id: string,
@@ -981,7 +989,8 @@ export class NotificationController {
   @HttpCode(200)
   @ApiOperation({
     summary: 'Admin: halt a broadcast that is already sending',
-    description: 'Cancel only works before a broadcast starts. Inbox copies already created are kept.',
+    description:
+      'Cancel only works before a broadcast starts. Inbox copies already created are kept.',
   })
   @ApiParam({ name: 'id', description: 'Broadcast ID' })
   async stopBroadcast(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: CurrentUserDto) {
@@ -1047,7 +1056,9 @@ export class NotificationController {
   @Get('admin/bounces')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.NOTIFICATION_MANAGE)
-  @ApiOperation({ summary: 'Admin: bounced or blocked addresses and numbers (masked), with reason' })
+  @ApiOperation({
+    summary: 'Admin: bounced or blocked addresses and numbers (masked), with reason',
+  })
   async listBounces(@Query() query: BouncesQueryDto) {
     return this.notificationService.listBounces(query);
   }
@@ -1111,7 +1122,10 @@ export class NotificationController {
   @Patch('admin/bulk/unread')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @ApiOperation({ summary: 'Admin: mark multiple of my notifications as unread' })
-  async markBulkAdminAsUnread(@Body() dto: BulkNotificationIdsDto, @CurrentUser() user: CurrentUserDto) {
+  async markBulkAdminAsUnread(
+    @Body() dto: BulkNotificationIdsDto,
+    @CurrentUser() user: CurrentUserDto,
+  ) {
     return this.notificationService.markBulkAsUnread(dto.ids, user);
   }
 
@@ -1125,7 +1139,10 @@ export class NotificationController {
   @Patch('admin/read-by-type')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @ApiOperation({ summary: 'Admin: mark all of one type as read' })
-  async markAdminAllOfTypeAsRead(@Body() dto: MarkReadByTypeDto, @CurrentUser() user: CurrentUserDto) {
+  async markAdminAllOfTypeAsRead(
+    @Body() dto: MarkReadByTypeDto,
+    @CurrentUser() user: CurrentUserDto,
+  ) {
     return this.notificationService.markAllOfTypeAsRead(dto.type, user);
   }
 
@@ -1180,7 +1197,9 @@ export class NotificationController {
   @Roles(RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.NOTIFICATION_MAINTAIN)
   @HttpCode(200)
-  @ApiOperation({ summary: 'Super admin: pause a channel during a provider outage (reason required)' })
+  @ApiOperation({
+    summary: 'Super admin: pause a channel during a provider outage (reason required)',
+  })
   async pauseQueueChannel(@Body() dto: QueuePauseDto, @CurrentUser() admin: CurrentUserDto) {
     return this.notificationService.pauseQueueChannel(dto, admin);
   }
@@ -1193,10 +1212,6 @@ export class NotificationController {
   async resumeQueueChannel(@Body() dto: QueueResumeDto, @CurrentUser() admin: CurrentUserDto) {
     return this.notificationService.resumeQueueChannel(dto, admin);
   }
-
-  // ═════════════════════════════════════════════
-  // 3. ADMIN PARAMETERISED ROUTES
-  // ═════════════════════════════════════════════
 
   @Get('admin/:id')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
@@ -1236,10 +1251,6 @@ export class NotificationController {
   async deleteAdminNotification(@Param('id') id: string, @CurrentUser() user: CurrentUserDto) {
     return this.notificationService.deleteMyNotification(id, user);
   }
-
-  // ═════════════════════════════════════════════
-  // 4. USER PARAMETERISED ROUTES (declared last on purpose)
-  // ═════════════════════════════════════════════
 
   @Get(':id')
   @ApiOperation({

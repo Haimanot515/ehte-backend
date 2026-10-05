@@ -1,11 +1,3 @@
-// src/modules/billing/service/reward-admin.service.ts
-//
-// Reward claim queue and reviews (BL-66 to BL-73, BL-75, BL-76).
-// BL-74 (extend the claim window) is not included: it needs a claim deadline
-// column on MissingPerson, which does not exist yet.
-//
-// Informant identity is never returned from list or detail views. Only
-// revealInformant() returns it, and each reveal is audited.
 import {
   BadRequestException,
   ConflictException,

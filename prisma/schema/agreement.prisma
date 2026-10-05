@@ -21,16 +21,9 @@ model Agreement {
   approvedById  String?
   createdAt     DateTime             @default(now())
 
-  // Section 14 / 27 / 28: policies are attached to the agreement version they were
-  // accepted under, not edited in place — a new agreement version is required to
-  // change them, same as any other commercial term.
   refundPolicy       String?
   cancellationPolicy String?
 
-  // Section 3 / 28: retirement must capture a reason and be attributable; an
-  // impact review (assigned/published profiles, pending payments, open reward
-  // cases) is computed on demand by AgreementService.retire() rather than stored,
-  // since it is a point-in-time report, not a fact about the agreement itself.
   retirementReason String?
   retiredById      String?
   retiredAt        DateTime?
@@ -51,12 +44,6 @@ model Agreement {
   @@map("agreements")
 }
 
-// RuleLines. A rule's paymentType determines which financial direction it belongs
-// to (section 33): SUPPORT = Victim Profile Payment allocation, MISSING_PERSON_REWARD
-// = Reward allocation, *_POSTING_FEE = Posting/Promotion Fee allocation. Keeping them
-// as PaymentType variants (rather than a separate "businessDomain" column) means
-// AllocationService's existing per-paymentType rule lookup already isolates the three
-// directions without extra branching.
 model AllocationRule {
   id            String      @id @default(uuid())
   agreementId   String

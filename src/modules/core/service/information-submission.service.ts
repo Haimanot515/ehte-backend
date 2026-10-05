@@ -57,28 +57,6 @@ type MediaFieldName = (typeof MEDIA_FIELD_NAMES)[number];
 type MediaBearing = Record<MediaFieldName, string[]>;
 type MediaBearingDto = Partial<Record<MediaFieldName, string[] | undefined>>;
 
-// ⚠️ ASSUMPTIONS ON THE AUDIT ENUM
-//
-// Two action names are referenced below that this file didn't
-// previously import: AuditEventEnum.INFORMATION_SUBMISSION_UPDATED
-// and AuditEventEnum.INFORMATION_SUBMISSION_MEDIA_DOWNLOADED. Every
-// other service in this codebase follows a <Entity>_<VERB> naming
-// convention for its audit actions (REPORT_UPDATED, REPORT_MEDIA_
-// DOWNLOADED, USER_UPDATED, SUPPORT_CANCELLED, ...), so these are
-// assumed to exist or to be trivial additions to the shared enum. If
-// they don't exist yet, add them there rather than repurposing an
-// unrelated action name — reusing e.g. INFORMATION_SUBMITTED for an
-// edit would make "who submitted this" and "who edited this" show up
-// as the same action in a history view.
-//
-// ⚠️ ASSUMPTION ON THE CACHE SERVICE
-//
-// Same convention as MissingPersonService/PostService: getX/setX for
-// a single cached row, wrapXList for a paginated/filterable list, and
-// invalidateXList (rather than invalidateXEverywhere) since — unlike
-// Post/MissingPerson — no single-submission public read exists here
-// to invalidate, only the list.
-
 @Injectable()
 export class InformationSubmissionService {
   constructor(
@@ -88,24 +66,6 @@ export class InformationSubmissionService {
     private readonly configService: ConfigService,
     private readonly cache: CacheService,
   ) {}
-
-  // ─────────────────────────────────────────────
-  // Admin workflow.
-  //
-  //   PENDING → UNDER_REVIEW           (updateStatus)
-  //   UNDER_REVIEW → REVIEWED|REJECTED (review — terminal)
-  //   REVIEWED → (final)
-  //   REJECTED → (final)
-  //
-  // Both REVIEWED and REJECTED are terminal — there is no transition
-  // back out of either. That matters for caching below: since
-  // REVIEWED is the only status findForMissingPerson() ever serves,
-  // and nothing can ever leave REVIEWED once it gets there, a
-  // submission can only ever enter the cached public list once and
-  // never has to be invalidated OUT of it — unlike Post (PUBLISHED
-  // <-> UNPUBLISHED) or MissingPerson, which both need bidirectional
-  // invalidation.
-  // ─────────────────────────────────────────────
 
   private readonly ALLOWED_STATUS_TRANSITIONS: Record<InformationStatus, InformationStatus[]> = {
     [InformationStatus.PENDING]: [InformationStatus.UNDER_REVIEW],
@@ -333,20 +293,6 @@ export class InformationSubmissionService {
     return { url };
   }
 
-  // ─────────────────────────────────────────────
-  // PUBLIC — MEDIA DOWNLOAD URL
-  // GET /information-submissions/public/:id/media?key=...
-  //
-  // Media on a submission is only reachable once it has been
-  // REVIEWED. A submission that exists but isn't reviewed yet
-  // 404s here, not a different error shape.
-  //
-  // Deliberately NOT read through the cache: like
-  // Post.getPublicMediaDownloadUrl, this is a narrow per-key lookup
-  // rather than the whole public row, and MinIO presigned URLs are
-  // already short-lived and cheap to mint.
-  // ─────────────────────────────────────────────
-
   async getPublicMediaDownloadUrl(id: string, key: string): Promise<{ url: string }> {
     const submission = await this.prisma.informationSubmission.findFirst({
       where: {
@@ -376,67 +322,6 @@ export class InformationSubmissionService {
     const url = await this.minioService.generatePresignedDownloadUrl(key);
     return { url };
   }
-
-  // ─────────────────────────────────────────────
-  // CREATE INFORMATION
-  // Only allowed against APPROVED (publicly visible) cases, and
-  // not by the person who filed the missing-person report itself.
-  //
-  // A freshly created submission is always PENDING — never REVIEWED,
-  // the only status the public cache holds — so there's nothing to
-  // invalidate here.
-  //
-  // FIX (item #1): per-user cooldown between submissions, plus a
-  // cap on how many of a user's submissions can sit in
-  // PENDING/UNDER_REVIEW at once — collapsed into one step here
-  // since Information Submission has no separate draft→submit
-  // flow the way Post does.
-  //
-  // FIX (item #5): optional Idempotency-Key lets a client safely
-  // retry a create call after a dropped response — a repeat with
-  // the same key returns the original submission instead of
-  // creating a duplicate.
-  //
-  // FIX (item #13): attachment counts checked before any MinIO
-  // round trips; total size persisted as mediaTotalBytes.
-  //
-  // FIX (audit review, item #1): actorType was hardcoded to
-  // resolveActorType(['USER']) rather than resolved from the actual
-  // submitter's roles — a plain typo-shaped bug (every other create()
-  // in this codebase resolves from the real actor). It's now resolved
-  // properly, which requires the actor's roles, so this method now
-  // takes the full CurrentUserDto instead of a bare userId.
-  //
-  // ⚠️ SIGNATURE CHANGE: create(user: CurrentUserDto, ...) instead of
-  // create(userId: string, ...). Update the controller accordingly.
-  //
-  // FIX (audit review, item #1, continued): every guard below —
-  // not-approved, self-submission, rate limit, max-pending, media
-  // validation — threw with no audit row. The not-approved and
-  // self-submission guards run after the MissingPerson is loaded, so
-  // both now emit against entity: 'MissingPerson' (there's no
-  // InformationSubmission row yet to attach to). Deliberately NOT
-  // fixed: missing_person_not_found itself, and the rate-limit/max-
-  // pending/media-validation failures, for the same reason
-  // ReportService.create() leaves its pre-creation guards unaudited —
-  // no natural entity to hang the row on without a schema/product
-  // decision on nullable entityIds.
-  //
-  // FIX (audit review, item #2): cannot_submit_information_on_own_report
-  // is a user attempting to act on THEIR OWN missing-person report by
-  // routing through the tip pathway — the missing person's owner
-  // (i.e. the actor themselves here) is recorded as targetUserId for
-  // consistency with how every other "acting on a record tied to a
-  // user" case is audited elsewhere, even though actor and subject
-  // are the same person in this specific case.
-  //
-  // FIX (audit review, item #4): entityLabel added, via the
-  // already-loaded missingPerson's name.
-  //
-  // FIX (audit review, item #5): missingPersonId, attachment count,
-  // and mediaTotalBytes are the investigative context worth keeping
-  // and weren't captured before — moved into metadata.
-  // ─────────────────────────────────────────────
 
   private async enforceCreateRateLimit(userId: string): Promise<void> {
     const cooldownSeconds = Number(
@@ -601,11 +486,6 @@ export class InformationSubmissionService {
     return submission;
   }
 
-  // ─────────────────────────────────────────────
-  // GET MY SUBMISSIONS (paginated)
-  // Owner-scoped, not public — no cache.
-  // ─────────────────────────────────────────────
-
   async findMine(userId: string, query: ListInformationSubmissionsQueryDto) {
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
@@ -633,24 +513,6 @@ export class InformationSubmissionService {
 
     return { data, meta: { page, limit, total, totalPages: Math.ceil(total / limit) } };
   }
-
-  // ─────────────────────────────────────────────
-  // GET SUBMISSIONS FOR MISSING PERSON (public, paginated)
-  //
-  // The one genuinely public, anonymous-callable read in this file —
-  // no CurrentUserDto, already status-gated to REVIEWED, and the
-  // select already excludes userId/reviewNote/idempotencyKey/etc., so
-  // there's nothing internal left in the cached shape to leak. Same
-  // read-through pattern as MissingPersonService.findAll/findAllUncached
-  // and PostService.findPublishedPosts/findPublishedPostsUncached: the
-  // cache key is derived from (missingPersonId, query), and the DB path
-  // only runs on a miss.
-  //
-  // Invalidated from review() below, and ONLY there — see the
-  // ALLOWED_STATUS_TRANSITIONS comment above for why entering REVIEWED
-  // is the only transition that can ever change what this returns.
-  // (Soft delete / restore below also invalidate it.)
-  // ─────────────────────────────────────────────
 
   async findForMissingPerson(missingPersonId: string, query: ListInformationSubmissionsQueryDto) {
     return this.cache.wrapInformationSubmissionList(
@@ -707,14 +569,6 @@ export class InformationSubmissionService {
     return { data, meta: { page, limit, total, totalPages: Math.ceil(total / limit) } };
   }
 
-  // ─────────────────────────────────────────────
-  // GET MY SUBMISSIONS FOR ONE MISSING PERSON
-  // Lets the frontend check "did I already submit on this case"
-  // before showing the submit form, instead of relying on the
-  // self-submission/duplicate error at create time. Owner-scoped,
-  // not public — no cache.
-  // ─────────────────────────────────────────────
-
   async findMineForMissingPerson(userId: string, missingPersonId: string) {
     return this.prisma.informationSubmission.findMany({
       where: { userId, missingPersonId, deletedAt: null }, // NEW (soft delete)
@@ -742,41 +596,6 @@ export class InformationSubmissionService {
 
     return submission;
   }
-
-  // ─────────────────────────────────────────────
-  // UPDATE — OWNER
-  // Only while PENDING — never the REVIEWED status the public cache
-  // holds — so no invalidation needed here.
-  //
-  // Media handling: diffs each media field present in the request
-  // against what's currently on the row. Newly-added filepaths are
-  // validated against MinIO before the write; filepaths dropped
-  // from the new array are deleted from MinIO after the write
-  // commits — same ordering discipline as PostService.updateMyPost.
-  //
-  // FIX (item #13): attachment counts checked against the merged
-  // post-update media shape; mediaTotalBytes recomputed from the
-  // previous total plus/minus added/removed files' sizes.
-  //
-  // FIX (audit review, item #1 — the big one for this method): this
-  // method emitted NO audit row at all, success or failure, despite
-  // being a write to reporter-submitted evidence. Every guard
-  // (not_authorized, submission_not_editable_in_current_status,
-  // no_fields_provided, media validation) now emits a FAILURE/DENIED
-  // row before throwing, and a SUCCESS row is emitted after the
-  // write commits.
-  //
-  // ⚠️ SIGNATURE CHANGE: takes the full CurrentUserDto instead of a
-  // bare userId string, since resolving actorType needs the actor's
-  // roles — same reasoning as create() above. Update the controller
-  // to pass @CurrentUser().
-  //
-  // FIX (audit review, item #4): entityLabel added.
-  //
-  // FIX (audit review, item #5): media churn (added/removed counts,
-  // new total) captured in metadata, same as
-  // ReportService.update()/PostService's equivalent.
-  // ─────────────────────────────────────────────
 
   async update(id: string, user: CurrentUserDto, data: UpdateInformationSubmissionDto) {
     const actorType = resolveActorType(this.getRoles(user));
@@ -928,28 +747,6 @@ export class InformationSubmissionService {
     return updated;
   }
 
-  // ─────────────────────────────────────────────
-  // DELETE — OWNER
-  // Only while PENDING — never REVIEWED — so no cache invalidation
-  // needed here either, same reasoning as update() above.
-  //
-  // Deletes the DB row, then removes every attached media object
-  // from MinIO — once the row referencing them is gone, an orphaned
-  // object in the bucket serves no purpose. Same ordering as
-  // PostService.deleteMyPost.
-  //
-  // FIX (audit review, item #1): both guards (not_authorized,
-  // only_pending_submissions_can_be_deleted) threw with no row. Now
-  // emit DENIED/FAILURE before throwing.
-  //
-  // FIX (audit review, item #4): entityLabel added — built before the
-  // delete, since the row (and the label's source data) won't exist
-  // afterward.
-  //
-  // FIX (audit review, item #5): count of media objects removed
-  // wasn't captured anywhere — added to metadata.
-  // ─────────────────────────────────────────────
-
   async remove(id: string, user: CurrentUserDto) {
     const actorType = resolveActorType(this.getRoles(user));
 
@@ -1020,13 +817,6 @@ export class InformationSubmissionService {
 
     return { message: 'information_submission_deleted' };
   }
-
-  // ─────────────────────────────────────────────
-  // ADMIN — GET ALL (paginated, lightweight — no nested detail)
-  // Admin-only — deliberately left uncached, same as
-  // MissingPersonService.findAllForAdmin / PostService.findAll, so an
-  // admin never acts on stale data.
-  // ─────────────────────────────────────────────
 
   async findAllForAdmin(query: ListInformationSubmissionsQueryDto) {
     const page = query.page ?? 1;
@@ -1130,24 +920,6 @@ export class InformationSubmissionService {
     });
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — UPDATE STATUS
-  // Only moves PENDING → UNDER_REVIEW — never REVIEWED — so no cache
-  // invalidation needed here.
-  //
-  // FIX (audit review, item #1): the invalid-transition guard threw
-  // with no row. Now emits FAILURE first.
-  //
-  // FIX (audit review, item #4): entityLabel added.
-  //
-  // NOTE: the submission.status === status branch stays a silent
-  // no-op rather than an audited failure — unlike ReportService's
-  // updateStatus, a same-status "transition" here isn't reachable
-  // from more than one caller racing (there's exactly one legal
-  // transition out of PENDING), so it's much more likely to be an
-  // idempotent retry than a conflict worth surfacing.
-  // ─────────────────────────────────────────────
-
   async updateStatus(admin: CurrentUserDto, id: string, status: InformationStatus) {
     const actorType = resolveActorType(this.getRoles(admin));
 
@@ -1207,45 +979,6 @@ export class InformationSubmissionService {
 
     return updated;
   }
-
-  // ─────────────────────────────────────────────
-  // ADMIN — REVIEW (terminal decision)
-  // Only valid from UNDER_REVIEW. reviewNote required on REJECTED.
-  //
-  // Cache: this is the ONLY method in the file that can move a
-  // submission into REVIEWED — the sole status the public
-  // findForMissingPerson() cache ever serves — so it's the only
-  // place that needs to invalidate that cache. It's a plain
-  // invalidation (not conditional on `status === REVIEWED`) purely
-  // for readability, since REJECTED never appeared in the cache to
-  // begin with; invalidating an entry that was never cached is a
-  // cheap no-op, same reasoning MissingPersonService.updateStatus
-  // gives for invalidating unconditionally on every transition.
-  //
-  // FIX (audit review, item #2): submissionOwnerId was buried inside
-  // `diff`, which should describe the change to the submission's
-  // status — the tipster whose submission this is about the actual
-  // subject of an admin's terminal decision, so it's now the
-  // top-level targetUserId instead.
-  //
-  // FIX (audit review, item #3): reviewNote is the reviewing admin's
-  // actual human-written rationale (mandatory on rejection, optional
-  // on approval) — it was previously only forwarded to the
-  // notification event and never written to the audit trail at all.
-  // Now promoted to the top-level reason column.
-  //
-  // FIX (audit review, item #1): all three guards
-  // (invalid_review_status, invalid_status_transition,
-  // review_note_required_for_rejection) threw with no row. Now emit
-  // FAILURE first. The reviewer's roles are resolved up front so
-  // these early emits have a real actorType rather than a guess.
-  //
-  // FIX (audit review, item #4): entityLabel added.
-  //
-  // FIX (audit review, item #5): missingPersonId added to metadata —
-  // it was already in the notification payload but never in the
-  // audit row itself.
-  // ─────────────────────────────────────────────
 
   async review(
     id: string,
@@ -1321,15 +1054,6 @@ export class InformationSubmissionService {
       throw new BadRequestException('review_note_required_for_rejection');
     }
 
-    // G21: REVIEWED is the terminal decision that makes a submission
-    // eligible for RewardService.approveClaim(submissionId) — the step
-    // that turns a tip into a payout. userId is nullable on
-    // InformationSubmission (anonymous/USSD tips per SubmissionChannel),
-    // and there is no other identifying field on the model yet
-    // (contactPhone is proposed in the section-9 schema review but not
-    // migrated), so an anonymous tip cannot currently be verified or paid.
-    // Block REVIEWED rather than let it through and fail later, silently
-    // or otherwise, inside RewardService.
     if (status === InformationStatus.REVIEWED && !submission.userId) {
       this.emitAudit({
         userId: reviewer.id,
@@ -1394,15 +1118,6 @@ export class InformationSubmissionService {
     return updated;
   }
 
-  // ═════════════════════════════════════════════════════════════════
-  // NEW — everything below this line is new. Nothing above was changed
-  // apart from the imports and the `NEW (soft delete)` filters.
-  // ═════════════════════════════════════════════════════════════════
-
-  // ─────────────────────────────────────────────
-  // SHARED HELPERS (new)
-  // ─────────────────────────────────────────────
-
   private readonly OPEN_STATUSES: InformationStatus[] = [
     InformationStatus.PENDING,
     InformationStatus.UNDER_REVIEW,
@@ -1422,7 +1137,8 @@ export class InformationSubmissionService {
 
   // Emitted when an admin asks for a face/region blur. A worker is expected to listen for it,
   // write the redacted copy to MinIO and set InformationAttachment.redactedKey/redactionStatus.
-  static readonly MEDIA_REDACTION_REQUESTED_EVENT = 'information-submission.media.redaction-requested';
+  static readonly MEDIA_REDACTION_REQUESTED_EVENT =
+    'information-submission.media.redaction-requested';
 
   private isSuperAdmin(user: CurrentUserDto): boolean {
     return this.getRoles(user).includes(RolesEnum.SUPER_ADMIN);
@@ -1444,9 +1160,7 @@ export class InformationSubmissionService {
 
   // Prisma needs DbNull/JsonNull rather than null for nullable Json columns.
   private toJson(value: unknown): Prisma.InputJsonValue | typeof Prisma.DbNull {
-    return value === undefined || value === null
-      ? Prisma.DbNull
-      : (value as Prisma.InputJsonValue);
+    return value === undefined || value === null ? Prisma.DbNull : (value as Prisma.InputJsonValue);
   }
 
   // Not deleted, or 404.
@@ -1488,7 +1202,10 @@ export class InformationSubmissionService {
   }
 
   // A tip assigned to another reviewer can only be decided by them or a super admin.
-  private assertNotLockedByOther(submission: { assignedToId: string | null }, admin: CurrentUserDto) {
+  private assertNotLockedByOther(
+    submission: { assignedToId: string | null },
+    admin: CurrentUserDto,
+  ) {
     if (
       submission.assignedToId &&
       submission.assignedToId !== admin.id &&
@@ -1579,7 +1296,9 @@ export class InformationSubmissionService {
     return row?.createdAt ?? fallback ?? null;
   }
 
-  private async userNameMap(ids: Array<string | null | undefined>): Promise<Map<string, string | null>> {
+  private async userNameMap(
+    ids: Array<string | null | undefined>,
+  ): Promise<Map<string, string | null>> {
     const unique = [...new Set(ids.filter((v): v is string => !!v))];
     if (!unique.length) return new Map();
     const users = await this.prisma.user.findMany({
@@ -1589,7 +1308,9 @@ export class InformationSubmissionService {
     return new Map(users.map((u) => [u.id, u.name]));
   }
 
-  private async caseNameMap(ids: string[]): Promise<Map<string, { name: string | null; personType: string }>> {
+  private async caseNameMap(
+    ids: string[],
+  ): Promise<Map<string, { name: string | null; personType: string }>> {
     const unique = [...new Set(ids)];
     if (!unique.length) return new Map();
     const cases = await this.prisma.missingPerson.findMany({
@@ -1668,19 +1389,13 @@ export class InformationSubmissionService {
       where: { submissionId: existing.id, key },
     });
 
-    await this.deleteMediaFiles([key, ...(attachment?.redactedKey ? [attachment.redactedKey] : [])]);
+    await this.deleteMediaFiles([
+      key,
+      ...(attachment?.redactedKey ? [attachment.redactedKey] : []),
+    ]);
 
     return { field, size };
   }
-
-  // ─────────────────────────────────────────────
-  // INFORMANT — SUMMARY / UNSEEN UPDATES
-  //
-  // "Unseen" = status differs from informantSeenStatus, or a question/message
-  // was added after informantSeenAt. Comparing two columns is why this is raw SQL.
-  // Status changes are detected from the column itself, so tips decided by any
-  // code path (review(), updateStatus(), markDuplicate()...) show up.
-  // ─────────────────────────────────────────────
 
   async countMyUnreadUpdates(user: CurrentUserDto): Promise<{ count: number }> {
     const rows = await this.prisma.$queryRaw<Array<{ count: number }>>(Prisma.sql`
@@ -1753,17 +1468,6 @@ export class InformationSubmissionService {
     return { id, seen: true };
   }
 
-  // ─────────────────────────────────────────────
-  // INFORMANT — TIMELINE
-  //
-  // Three sources, merged by time:
-  //   1. the submission itself
-  //   2. InformationTimelineEvent rows (questions, answers, messages, evidence, appeal)
-  //   3. status changes, read from the audit trail (action + reason column)
-  // Admin-only things (assignment, priority, credibility, escalation, read state)
-  // are never included.
-  // ─────────────────────────────────────────────
-
   async getMyTimeline(user: CurrentUserDto, id: string) {
     const submission = await this.findOwnedOrThrow(
       user,
@@ -1796,7 +1500,12 @@ export class InformationSubmissionService {
     ]);
 
     const entries = [
-      { type: 'SUBMITTED', at: submission.createdAt, status: InformationStatus.PENDING, message: null as string | null },
+      {
+        type: 'SUBMITTED',
+        at: submission.createdAt,
+        status: InformationStatus.PENDING,
+        message: null as string | null,
+      },
       ...statusRows.map((row) => ({
         type: 'STATUS_CHANGED',
         at: row.createdAt,
@@ -1824,14 +1533,6 @@ export class InformationSubmissionService {
       select: { id: true, question: true, createdAt: true },
     });
   }
-
-  // ─────────────────────────────────────────────
-  // INFORMANT — ANSWER A QUESTION
-  //
-  // questionId is optional: without it the oldest open question is answered.
-  // The answer is claimed with an updateMany guarded on answeredAt IS NULL, so two
-  // quick submissions can't both answer the same question.
-  // ─────────────────────────────────────────────
 
   async respond(user: CurrentUserDto, id: string, data: RespondToInformationQuestionDto) {
     const submission = await this.findOwnedOrThrow(
@@ -1905,14 +1606,6 @@ export class InformationSubmissionService {
 
     return { message: 'answer_recorded', questionId: question.id };
   }
-
-  // ─────────────────────────────────────────────
-  // INFORMANT — ADD EVIDENCE AFTER SUBMITTING
-  //
-  // Allowed while the tip is PENDING or UNDER_REVIEW. Same validation as create():
-  // counts against the merged result, files must exist in MinIO, total size capped.
-  // Resending a key the tip already has is ignored; sending only such keys is a 400.
-  // ─────────────────────────────────────────────
 
   async addEvidence(user: CurrentUserDto, id: string, data: AddInformationEvidenceDto) {
     const existing = await this.findOwnedOrThrow(
@@ -2057,14 +1750,6 @@ export class InformationSubmissionService {
     return { message: 'media_removed', key };
   }
 
-  // ─────────────────────────────────────────────
-  // INFORMANT — OUTCOME (no case details)
-  //
-  // `helped` is only true when a linked reward claim reached VALID or later, and
-  // false when every linked claim was judged INVALID/INELIGIBLE. Otherwise null
-  // (not known yet). No case name, no reviewNote, nothing about other tips.
-  // ─────────────────────────────────────────────
-
   async getMyOutcome(user: CurrentUserDto, id: string) {
     const submission = await this.findOwnedOrThrow(
       user,
@@ -2179,14 +1864,6 @@ export class InformationSubmissionService {
     };
   }
 
-  // ─────────────────────────────────────────────
-  // INFORMANT — APPEAL A REJECTION
-  //
-  // One appeal per tip (unique on submissionId). The tip stays REJECTED — it is a
-  // terminal status — so the appeal is a record for the review team, not a transition.
-  // Window: INFORMATION_SUBMISSION_APPEAL_WINDOW_DAYS (default 14) from the rejection.
-  // ─────────────────────────────────────────────
-
   async appealRejection(user: CurrentUserDto, id: string, data: AppealInformationRejectionDto) {
     const submission = await this.findOwnedOrThrow(
       user,
@@ -2201,7 +1878,11 @@ export class InformationSubmissionService {
         submission,
         outcome: AuditOutcome.FAILURE,
         severity: AuditSeverity.WARNING,
-        diff: { result: 'failure', reason: 'only_rejected_submissions_can_be_appealed', currentStatus: submission.status },
+        diff: {
+          result: 'failure',
+          reason: 'only_rejected_submissions_can_be_appealed',
+          currentStatus: submission.status,
+        },
       });
       throw new BadRequestException('only_rejected_submissions_can_be_appealed');
     }
@@ -2272,15 +1953,6 @@ export class InformationSubmissionService {
 
     return { id: appeal.id, status: appeal.status, createdAt: appeal.createdAt };
   }
-
-  // ─────────────────────────────────────────────
-  // ADMIN — READ STATE
-  //
-  // Per admin, like ReportAdminRead: a row in information_admin_read means "this admin
-  // has read this tip". Unread = no row for that admin. Deleted tips never count.
-  // Informant activity (answer, evidence, appeal) deletes the rows, so the tip pops
-  // back to unread for everyone.
-  // ─────────────────────────────────────────────
 
   private unreadWhere(
     adminId: string,
@@ -2448,10 +2120,6 @@ export class InformationSubmissionService {
     return { total, read: total - unread, unread };
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — BY CASE
-  // ─────────────────────────────────────────────
-
   async listByCase(admin: CurrentUserDto, query: InformationPaginationQueryDto) {
     const { page, limit, skip } = this.pageArgs(query);
 
@@ -2528,18 +2196,12 @@ export class InformationSubmissionService {
       this.prisma.informationSubmission.count({ where }),
     ]);
 
-    const data = rows.map(({ adminReads, ...rest }) => ({ ...rest, isRead: adminReads.length > 0 }));
+    const data = rows.map(({ adminReads, ...rest }) => ({
+      ...rest,
+      isRead: adminReads.length > 0,
+    }));
     return { data, meta: this.pageMeta(page, limit, total) };
   }
-
-  // ─────────────────────────────────────────────
-  // ADMIN — BY INFORMANT
-  //
-  // The list and summary below return an informant id and counts only — no name, no
-  // phone — so they are safe with MISSING_PERSON_INFO_READ alone. Seeing who the person
-  // is needs INFORMANT_IDENTITY_READ (+ re-authentication), and every such access is
-  // written to information_identity_access.
-  // ─────────────────────────────────────────────
 
   async listByInformant(admin: CurrentUserDto, query: InformationPaginationQueryDto) {
     const { page, limit, skip } = this.pageArgs(query);
@@ -2581,9 +2243,6 @@ export class InformationSubmissionService {
     };
   }
 
-  // Informants with several tips rejected on the merits. Duplicate / already-known closures
-  // are counted separately because they are not "false" tips.
-  // Config: INFORMATION_SUBMISSION_REPEAT_REJECTION_THRESHOLD (3), ..._WINDOW_DAYS (90).
   async listRepeatRejections(query: InformationPaginationQueryDto) {
     const { page, limit, skip } = this.pageArgs(query);
 
@@ -2685,9 +2344,6 @@ export class InformationSubmissionService {
     return { informant, data, meta: this.pageMeta(page, limit, total) };
   }
 
-  // Totals by status plus a reliability label, with no identity. reliability.score is
-  // reviewed / (reviewed + rejected on the merits); duplicates and already-known tips are
-  // excluded from the score. Fewer than 3 decided tips = INSUFFICIENT_DATA.
   async getInformantSummary(_admin: CurrentUserDto, informantId: string) {
     const rows = await this.prisma.informationSubmission.groupBy({
       by: ['status', 'resolution'],
@@ -2742,15 +2398,6 @@ export class InformationSubmissionService {
       reliability: { score, label, decided },
     };
   }
-
-  // ─────────────────────────────────────────────
-  // ADMIN — REVEAL INFORMANT (one tip, with a reason)
-  //
-  // Not cached, never stored in the audit row: only who looked, when, why and for which
-  // tip. Every call is its own information_identity_access row. This does NOT limit an
-  // admin to a single reveal per tip — it makes each one visible to super admins through
-  // getIdentityAccessLog(). previousReveals is returned so a repeat is obvious.
-  // ─────────────────────────────────────────────
 
   async revealInformant(admin: CurrentUserDto, id: string, reason: string) {
     const submission = await this.findLiveOrThrow(id);
@@ -2879,23 +2526,11 @@ export class InformationSubmissionService {
     };
   }
 
-  // Not wired to an endpoint. findOneForAdmin(id) doesn't receive the admin, so the detail
-  // page view can't be logged from inside it. To log it, pass @CurrentUser() into that
-  // controller handler and call this first.
   async recordAdminView(admin: CurrentUserDto, id: string): Promise<void> {
     await this.prisma.informationAccessLog.create({
       data: { submissionId: id, adminId: admin.id, action: 'VIEWED' },
     });
   }
-
-  // ─────────────────────────────────────────────
-  // ADMIN — CLAIM / ASSIGN
-  //
-  // A claim is a self-assignment of an unassigned tip. Once a tip has an assignee, only
-  // that admin (or a super admin) can decide it through the actions below. review() and
-  // updateStatus() above are unchanged and do not check the assignee; the bulk and
-  // duplicate/already-known actions here do.
-  // ─────────────────────────────────────────────
 
   private async assertAssignableAdmin(adminId: string) {
     const target = await this.prisma.user.findFirst({
@@ -2971,7 +2606,10 @@ export class InformationSubmissionService {
       actor: admin,
       action: AuditEventEnum.INFORMATION_SUBMISSION_UNCLAIMED,
       submission,
-      metadata: { missingPersonId: submission.missingPersonId, previousAssignee: submission.assignedToId },
+      metadata: {
+        missingPersonId: submission.missingPersonId,
+        previousAssignee: submission.assignedToId,
+      },
     });
 
     return updated;
@@ -3042,7 +2680,10 @@ export class InformationSubmissionService {
       actor: admin,
       action: AuditEventEnum.INFORMATION_SUBMISSION_UNASSIGNED,
       submission,
-      metadata: { missingPersonId: submission.missingPersonId, previousAssignee: submission.assignedToId },
+      metadata: {
+        missingPersonId: submission.missingPersonId,
+        previousAssignee: submission.assignedToId,
+      },
     });
 
     return updated;
@@ -3052,15 +2693,6 @@ export class InformationSubmissionService {
     await this.assertAssignableAdmin(adminId);
     return this.runBulk(ids, (id) => this.assignInternal(admin, id, adminId));
   }
-
-  // ─────────────────────────────────────────────
-  // ADMIN — BULK DECISIONS
-  //
-  // Each id goes through the unchanged review(), so validation, cache invalidation,
-  // audit rows and informant notifications are exactly what a single review does.
-  // The only addition is the assignee check. A tip still in PENDING is reported as a
-  // per-id failure (invalid_status_transition) — move it to UNDER_REVIEW first.
-  // ─────────────────────────────────────────────
 
   private async reviewOne(
     admin: CurrentUserDto,
@@ -3087,14 +2719,6 @@ export class InformationSubmissionService {
       this.reviewOne(admin, id, InformationStatus.REJECTED, reviewNote),
     );
   }
-
-  // ─────────────────────────────────────────────
-  // ADMIN — ASK / MESSAGE THE INFORMANT
-  //
-  // Both need a known informant (anonymous/USSD tips have none) and both show up in the
-  // informant's timeline and unseen-update count. At most
-  // INFORMATION_SUBMISSION_MAX_OPEN_QUESTIONS (3) questions can be open on one tip.
-  // ─────────────────────────────────────────────
 
   async requestInformation(admin: CurrentUserDto, id: string, question: string) {
     const submission = await this.findLiveOrThrow(id);
@@ -3186,10 +2810,6 @@ export class InformationSubmissionService {
     return { id: event.id, createdAt: event.createdAt };
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — TRIAGE: PRIORITY, CREDIBILITY, ESCALATION
-  // ─────────────────────────────────────────────
-
   async setPriority(admin: CurrentUserDto, id: string, priority: string) {
     const submission = await this.findLiveOrThrow(id);
     const next = priority as PrismaInformationPriority;
@@ -3260,9 +2880,6 @@ export class InformationSubmissionService {
     return updated;
   }
 
-  // Urgent sighting. Raises (never lowers) the tip's priority, stores the escalation,
-  // makes the tip unread for every admin and emits an ESCALATED notification event for
-  // whatever referral flow listens to it.
   async escalate(admin: CurrentUserDto, id: string, data: EscalateInformationDto) {
     const submission = await this.findLiveOrThrow(id);
 
@@ -3287,9 +2904,12 @@ export class InformationSubmissionService {
     ]);
 
     if (raise) {
-      await this.recordRevisions(id, admin.id, [
-        { field: 'priority', oldValue: submission.priority, newValue: newPriority },
-      ], note);
+      await this.recordRevisions(
+        id,
+        admin.id,
+        [{ field: 'priority', oldValue: submission.priority, newValue: newPriority }],
+        note,
+      );
     }
 
     this.auditAction({
@@ -3313,16 +2933,6 @@ export class InformationSubmissionService {
 
     return { escalation, priority: newPriority };
   }
-
-  // ─────────────────────────────────────────────
-  // ADMIN — CLOSE AS DUPLICATE / ALREADY KNOWN
-  //
-  // Both end as status REJECTED with `resolution` set, from PENDING or UNDER_REVIEW.
-  // They emit the same INFORMATION_REJECTED audit action and informant notification as a
-  // normal rejection, so the informant timeline, public cache (REJECTED is never cached)
-  // and notification listeners need no special case. The informant is never told which
-  // other tip it duplicates.
-  // ─────────────────────────────────────────────
 
   private async closeWithResolution(
     admin: CurrentUserDto,
@@ -3383,7 +2993,9 @@ export class InformationSubmissionService {
       [
         { field: 'status', oldValue: submission.status, newValue: InformationStatus.REJECTED },
         { field: 'resolution', oldValue: null, newValue: resolution },
-        ...(duplicateOfId ? [{ field: 'duplicateOfId', oldValue: null, newValue: duplicateOfId }] : []),
+        ...(duplicateOfId
+          ? [{ field: 'duplicateOfId', oldValue: null, newValue: duplicateOfId }]
+          : []),
       ],
       note,
     );
@@ -3424,12 +3036,6 @@ export class InformationSubmissionService {
   async markAlreadyKnown(admin: CurrentUserDto, id: string, reason?: string) {
     return this.closeWithResolution(admin, id, 'ALREADY_KNOWN', { reason });
   }
-
-  // ─────────────────────────────────────────────
-  // ADMIN — WHAT CAN HAPPEN NEXT
-  // ALLOWED_STATUS_TRANSITIONS above only covers updateStatus(); the terminal decision is
-  // its own endpoint, so this merges both and says which endpoint performs each move.
-  // ─────────────────────────────────────────────
 
   async getTransitions(id: string) {
     const submission = await this.prisma.informationSubmission.findUnique({
@@ -3480,14 +3086,6 @@ export class InformationSubmissionService {
       allowed,
     };
   }
-
-  // ─────────────────────────────────────────────
-  // ADMIN — RELATED TIPS
-  // Same case, other tips, ranked by word overlap (Jaccard) over information + location.
-  // Unicode-aware tokenising and no stop-word list, so it works for Amharic and English
-  // alike. Plain JS over at most 300 recent tips on the case; swap for pg_trgm if a case
-  // ever has far more. No informant identity in the result.
-  // ─────────────────────────────────────────────
 
   private tokenize(text: string): Set<string> {
     return new Set(
@@ -3546,13 +3144,6 @@ export class InformationSubmissionService {
       .slice(0, 10);
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — FIELD-LEVEL HISTORY
-  // Covers changes made through the actions in this section (assignment, priority,
-  // credibility, resolution, media). Edits the owner makes through update() above are
-  // not recorded here until update() calls recordRevisions().
-  // ─────────────────────────────────────────────
-
   async getRevisions(id: string, query: InformationPaginationQueryDto) {
     const exists = await this.prisma.informationSubmission.findUnique({
       where: { id },
@@ -3591,24 +3182,11 @@ export class InformationSubmissionService {
     };
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — ATTACHMENTS
-  //
-  // Files live only as string arrays on the submission, so per-file metadata is kept in
-  // information_attachment and filled in lazily: the first listing stats any file that has
-  // no row yet (size, content type, etag) and creates it; rows for files no longer on the
-  // tip are dropped. scanStatus and sha256 are written by a scanning worker — until then
-  // scanStatus is PENDING and `hash` falls back to the MinIO etag (not a sha256 for
-  // multipart uploads).
-  // ─────────────────────────────────────────────
-
   private fieldOfKey(entity: MediaBearing, key: string): MediaFieldName | undefined {
     return MEDIA_FIELD_NAMES.find((f) => entity[f].includes(key));
   }
 
-  private async syncAttachmentRows(
-    submission: MediaBearing & { id: string },
-  ): Promise<void> {
+  private async syncAttachmentRows(submission: MediaBearing & { id: string }): Promise<void> {
     const keys = this.collectMediaFields(submission);
 
     await this.prisma.informationAttachment.deleteMany({
@@ -3624,9 +3202,7 @@ export class InformationSubmissionService {
     const missing = keys.filter((k) => !knownKeys.has(k));
     if (!missing.length) return;
 
-    const stats = await Promise.allSettled(
-      missing.map((key) => this.minioService.statObject(key)),
-    );
+    const stats = await Promise.allSettled(missing.map((key) => this.minioService.statObject(key)));
 
     await this.prisma.informationAttachment.createMany({
       data: missing.map((key, i) => {
@@ -3707,20 +3283,6 @@ export class InformationSubmissionService {
 
     return { message: 'media_removed', key };
   }
-
-  // ─────────────────────────────────────────────
-  // ADMIN — REDACT A FILE
-  //
-  // This records the request and emits MEDIA_REDACTION_REQUESTED_EVENT. It does NOT blur
-  // pixels itself: that needs an image/video worker, which wasn't part of what I was given.
-  // The worker should write a redacted copy to MinIO and then set
-  // information_attachment.redactedKey + redactionStatus = COMPLETED (or FAILED).
-  // The original is kept, so a legal hold doesn't block a request. Until the download
-  // endpoints are taught to prefer redactedKey, they keep serving the original.
-  //
-  // The DTO has no region coordinates, so BLUR_REGION can be requested but the worker has
-  // nothing to locate the region with — add them to RedactInformationMediaDto if you need it.
-  // ─────────────────────────────────────────────
 
   async redactMedia(
     admin: CurrentUserDto,
@@ -3843,16 +3405,6 @@ export class InformationSubmissionService {
     };
   }
 
-  // ─────────────────────────────────────────────
-  // SUPER ADMIN — RETENTION: LEGAL HOLD, SOFT DELETE, RESTORE, TRASH, ANONYMIZE
-  //
-  // Legal hold blocks removeByAdmin(), anonymize() and admin file removal. It does NOT
-  // block the owner's own remove()/update() above — those are unchanged.
-  //
-  // Soft delete keeps the row and its files so it can be restored; nothing here purges.
-  // It always invalidates the public list cache, since a REVIEWED tip leaves it.
-  // ─────────────────────────────────────────────
-
   async setLegalHold(admin: CurrentUserDto, id: string, legalHold: boolean, reason: string) {
     const submission = await this.prisma.informationSubmission.findUnique({ where: { id } });
     if (!submission) {
@@ -3871,7 +3423,12 @@ export class InformationSubmissionService {
     const updated = await this.prisma.informationSubmission.update({
       where: { id },
       data: legalHold
-        ? { legalHold: true, legalHoldReason: text, legalHoldAt: new Date(), legalHoldById: admin.id }
+        ? {
+            legalHold: true,
+            legalHoldReason: text,
+            legalHoldAt: new Date(),
+            legalHoldById: admin.id,
+          }
         : { legalHold: false, legalHoldReason: null, legalHoldAt: null, legalHoldById: null },
     });
 
@@ -3973,25 +3530,13 @@ export class InformationSubmissionService {
     return {
       data: rows.map((r) => ({
         ...r,
-        deletedBy: r.deletedById ? { id: r.deletedById, name: names.get(r.deletedById) ?? null } : null,
+        deletedBy: r.deletedById
+          ? { id: r.deletedById, name: names.get(r.deletedById) ?? null }
+          : null,
       })),
       meta: this.pageMeta(page, limit, total),
     };
   }
-
-  // ─────────────────────────────────────────────
-  // SUPER ADMIN — ANONYMIZE
-  //
-  // For a closed tip: detaches the informant (userId → null) and clears the idempotency
-  // key, the informant's appeal user id, and the informant id in this tip's timeline,
-  // revision and identity-access rows. Blocked while a legal hold is on, and while a reward
-  // claim on the tip is still active or paid (payout needs the informant).
-  //
-  // What it does NOT touch: the free text (information, location, answers) — it can contain
-  // names — the audit_log rows (hash-chained, so editing them breaks the chain), and
-  // reward_claims.informantUserId. The audit row for this action deliberately carries no
-  // target user, so it doesn't re-link the tip to the person.
-  // ─────────────────────────────────────────────
 
   async anonymize(admin: CurrentUserDto, id: string, reason: string) {
     const submission = await this.findLiveOrThrow(id);
@@ -4072,14 +3617,6 @@ export class InformationSubmissionService {
     return updated;
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — SEARCH, FACETS, FILTER OPTIONS
-  //
-  // Search is case-insensitive substring matching (ILIKE) over the tip text, location,
-  // review note, case name, and an exact id match. It is not ranked full-text search; add a
-  // tsvector/pg_trgm index if volume makes this slow. Informant identity is never searched.
-  // ─────────────────────────────────────────────
-
   async searchForAdmin(admin: CurrentUserDto, query: AdminSearchInformationSubmissionsQueryDto) {
     const { page, limit, skip } = this.pageArgs(query);
     const q = query.q.trim();
@@ -4111,7 +3648,10 @@ export class InformationSubmissionService {
       this.prisma.informationSubmission.count({ where }),
     ]);
 
-    const data = rows.map(({ adminReads, ...rest }) => ({ ...rest, isRead: adminReads.length > 0 }));
+    const data = rows.map(({ adminReads, ...rest }) => ({
+      ...rest,
+      isRead: adminReads.length > 0,
+    }));
     return { data, meta: this.pageMeta(page, limit, total), q };
   }
 
@@ -4119,10 +3659,26 @@ export class InformationSubmissionService {
     const base = { deletedAt: null };
     const [byStatus, byPriority, byCredibility, byChannel, byResolution, unassigned, assigned] =
       await Promise.all([
-        this.prisma.informationSubmission.groupBy({ by: ['status'], where: base, _count: { _all: true } }),
-        this.prisma.informationSubmission.groupBy({ by: ['priority'], where: base, _count: { _all: true } }),
-        this.prisma.informationSubmission.groupBy({ by: ['credibility'], where: base, _count: { _all: true } }),
-        this.prisma.informationSubmission.groupBy({ by: ['channel'], where: base, _count: { _all: true } }),
+        this.prisma.informationSubmission.groupBy({
+          by: ['status'],
+          where: base,
+          _count: { _all: true },
+        }),
+        this.prisma.informationSubmission.groupBy({
+          by: ['priority'],
+          where: base,
+          _count: { _all: true },
+        }),
+        this.prisma.informationSubmission.groupBy({
+          by: ['credibility'],
+          where: base,
+          _count: { _all: true },
+        }),
+        this.prisma.informationSubmission.groupBy({
+          by: ['channel'],
+          where: base,
+          _count: { _all: true },
+        }),
         this.prisma.informationSubmission.groupBy({
           by: ['resolution'],
           where: { ...base, resolution: { not: null } },
@@ -4139,8 +3695,10 @@ export class InformationSubmissionService {
       ]);
 
     const names = await this.userNameMap(assigned.map((a) => a.assignedToId));
-    const toMap = <T extends string>(rows: Array<Record<string, unknown> & { _count: { _all: number } }>, key: string) =>
-      Object.fromEntries(rows.map((r) => [String(r[key] as T), r._count._all]));
+    const toMap = <T extends string>(
+      rows: Array<Record<string, unknown> & { _count: { _all: number } }>,
+      key: string,
+    ) => Object.fromEntries(rows.map((r) => [String(r[key] as T), r._count._all]));
 
     return {
       status: toMap(byStatus, 'status'),
@@ -4198,19 +3756,8 @@ export class InformationSubmissionService {
     };
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — CSV EXPORT
-  //
-  // No informant identity and no informant id. Rows are capped at
-  // INFORMATION_SUBMISSION_EXPORT_MAX_ROWS (default 5000) and `truncated` says when the cap
-  // cut the result short. Cells starting with = + - @ are prefixed with ' so a spreadsheet
-  // won't run them as formulas. Every export writes an audit_export row and an audit event.
-  // ─────────────────────────────────────────────
-
   private exportMaxRows(): number {
-    return Number(
-      this.configService.get<string>('INFORMATION_SUBMISSION_EXPORT_MAX_ROWS') ?? 5000,
-    );
+    return Number(this.configService.get<string>('INFORMATION_SUBMISSION_EXPORT_MAX_ROWS') ?? 5000);
   }
 
   private csvCell(value: unknown): string {
@@ -4244,9 +3791,21 @@ export class InformationSubmissionService {
     const where = this.exportWhere(filters);
 
     const header = [
-      'id', 'createdAt', 'status', 'priority', 'credibility', 'resolution', 'channel',
-      'missingPersonId', 'missingPersonName', 'location', 'information', 'reviewNote',
-      'assignedToId', 'attachmentCount', 'mediaTotalBytes',
+      'id',
+      'createdAt',
+      'status',
+      'priority',
+      'credibility',
+      'resolution',
+      'channel',
+      'missingPersonId',
+      'missingPersonName',
+      'location',
+      'information',
+      'reviewNote',
+      'assignedToId',
+      'attachmentCount',
+      'mediaTotalBytes',
     ];
     const lines: string[] = [header.join(',')];
 
@@ -4271,9 +3830,21 @@ export class InformationSubmissionService {
         }
         lines.push(
           [
-            s.id, s.createdAt, s.status, s.priority, s.credibility, s.resolution, s.channel,
-            s.missingPersonId, s.missingPerson?.name, s.location, s.information, s.reviewNote,
-            s.assignedToId, this.collectMediaFields(s).length, s.mediaTotalBytes,
+            s.id,
+            s.createdAt,
+            s.status,
+            s.priority,
+            s.credibility,
+            s.resolution,
+            s.channel,
+            s.missingPersonId,
+            s.missingPerson?.name,
+            s.location,
+            s.information,
+            s.reviewNote,
+            s.assignedToId,
+            this.collectMediaFields(s).length,
+            s.mediaTotalBytes,
           ]
             .map((v) => this.csvCell(v))
             .join(','),
@@ -4328,15 +3899,6 @@ export class InformationSubmissionService {
       csv,
     };
   }
-
-  // ─────────────────────────────────────────────
-  // ADMIN — BACKGROUND EXPORT JOBS
-  //
-  // The job runs in this process right after the request returns (no queue), so a restart
-  // mid-run leaves the row RUNNING; getExportJob() reports such a row as FAILED after 30
-  // minutes. If you have a queue (BullMQ etc.), call runExportJob(id) from its processor
-  // instead of the fire-and-forget below.
-  // ─────────────────────────────────────────────
 
   private async storeExportFile(key: string, body: Buffer): Promise<void> {
     await this.minioService.uploadFile(key, body, 'text/csv; charset=utf-8');
@@ -4478,15 +4040,6 @@ export class InformationSubmissionService {
     return { url, expiresAt: job.expiresAt };
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — STATS
-  //
-  // Filters (all optional): from/to on createdAt, status, missingPersonId, assignedTo.
-  // Soft-deleted tips are always excluded. Decision times are read from the audit trail
-  // (first INFORMATION_UNDER_REVIEW, REVIEWED/REJECTED rows) so they're right for tips
-  // decided through any code path, but they depend on the audit listener having persisted.
-  // ─────────────────────────────────────────────
-
   private statsWhere(q: InformationStatsQueryDto): Prisma.InformationSubmissionWhereInput {
     return {
       deletedAt: null,
@@ -4522,7 +4075,9 @@ export class InformationSubmissionService {
   }
 
   private round(n: number | null | undefined, digits = 1): number | null {
-    return n === null || n === undefined ? null : Math.round(Number(n) * 10 ** digits) / 10 ** digits;
+    return n === null || n === undefined
+      ? null
+      : Math.round(Number(n) * 10 ** digits) / 10 ** digits;
   }
 
   async getStatsTimeline(query: InformationStatsTimelineQueryDto) {
@@ -4757,7 +4312,12 @@ export class InformationSubmissionService {
 
   // Questions asked in the period: how many were answered and how fast (hours).
   async getStatsResponseTime(query: InformationStatsQueryDto) {
-    const submissionWhere = this.statsWhere({ ...query, status: undefined, from: undefined, to: undefined });
+    const submissionWhere = this.statsWhere({
+      ...query,
+      status: undefined,
+      from: undefined,
+      to: undefined,
+    });
 
     const questions = await this.prisma.informationQuestion.findMany({
       where: {
@@ -4804,7 +4364,12 @@ export class InformationSubmissionService {
     const rejected = AuditEventEnum.INFORMATION_REJECTED as string;
 
     const rows = await this.prisma.$queryRaw<
-      Array<{ adminId: string; reviewed: number; rejected: number; avgHoursToDecision: number | null }>
+      Array<{
+        adminId: string;
+        reviewed: number;
+        rejected: number;
+        avgHoursToDecision: number | null;
+      }>
     >(Prisma.sql`
       SELECT a."userId" AS "adminId",
              (COUNT(*) FILTER (WHERE a.action = ${reviewed}))::int AS reviewed,
@@ -4852,23 +4417,31 @@ export class InformationSubmissionService {
   async getStatsOverview(query: InformationStatsQueryDto) {
     const base = this.statsWhere({ ...query, status: undefined });
 
-    const [totals, aging, usefulness, reviewTime, unassignedOpen, urgentOpen, openQuestions, pendingAppeals] =
-      await Promise.all([
-        this.getStats(),
-        this.getStatsAging(query),
-        this.getStatsUsefulness(query),
-        this.getStatsReviewTime(query),
-        this.prisma.informationSubmission.count({
-          where: { ...base, assignedToId: null, status: { in: this.OPEN_STATUSES } },
-        }),
-        this.prisma.informationSubmission.count({
-          where: { ...base, priority: 'URGENT', status: { in: this.OPEN_STATUSES } },
-        }),
-        this.prisma.informationQuestion.count({
-          where: { answeredAt: null, submission: { deletedAt: null } },
-        }),
-        this.prisma.informationAppeal.count({ where: { status: 'PENDING' } }),
-      ]);
+    const [
+      totals,
+      aging,
+      usefulness,
+      reviewTime,
+      unassignedOpen,
+      urgentOpen,
+      openQuestions,
+      pendingAppeals,
+    ] = await Promise.all([
+      this.getStats(),
+      this.getStatsAging(query),
+      this.getStatsUsefulness(query),
+      this.getStatsReviewTime(query),
+      this.prisma.informationSubmission.count({
+        where: { ...base, assignedToId: null, status: { in: this.OPEN_STATUSES } },
+      }),
+      this.prisma.informationSubmission.count({
+        where: { ...base, priority: 'URGENT', status: { in: this.OPEN_STATUSES } },
+      }),
+      this.prisma.informationQuestion.count({
+        where: { answeredAt: null, submission: { deletedAt: null } },
+      }),
+      this.prisma.informationAppeal.count({ where: { status: 'PENDING' } }),
+    ]);
 
     return {
       totals,

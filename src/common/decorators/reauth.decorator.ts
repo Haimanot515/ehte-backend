@@ -3,9 +3,6 @@ import { ApiHeader, ApiUnauthorizedResponse } from '@nestjs/swagger';
 
 export const REQUIRE_REAUTH_KEY = 'requireReauth';
 
-// Header the ReauthGuard reads the credential from. Works for every HTTP method
-// (GET/DELETE have no body) and for multipart uploads, where the guard runs before
-// the body is parsed. The guard also still accepts body.credential on JSON bodies.
 export const REAUTH_CREDENTIAL_HEADER = 'X-Reauth-Credential';
 
 // Marks an endpoint as requiring re-authentication AND documents the credential

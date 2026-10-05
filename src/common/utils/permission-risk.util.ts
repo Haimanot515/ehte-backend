@@ -1,10 +1,5 @@
 import { PermissionsEnum as P } from 'src/common/enums/permissions.enum';
 
-// Shared by PermissionService (AR-53, AR-54) and RoleService (two-person approval, AR-29, AR-34, AR-56).
-// Both lists are exact permission names from PermissionsEnum, so nothing is guessed from wording.
-// When you add a permission that moves money, reveals identity, deletes data or changes who can do
-// what, add it here. The TypeScript compiler will catch a renamed or removed permission.
-
 // ── Tier 1: flagged "sensitive" in GET /permissions/sensitive (AR-53) ──
 // A role holding any of these deserves a second look in an access review.
 const SENSITIVE: ReadonlySet<string> = new Set<string>([
@@ -67,9 +62,6 @@ const SENSITIVE: ReadonlySet<string> = new Set<string>([
   P.SECURITY_SETTINGS_UPDATE,
 ]);
 
-// ── Tier 2: a role holding any of these needs two-person approval to be given to someone ──
-// Narrower on purpose: money movement, identity reveal, erasure, and anything that changes who
-// holds power. Everything else in tier 1 can be assigned directly with a reason and re-auth.
 const TWO_PERSON_APPROVAL: ReadonlySet<string> = new Set<string>([
   P.REPORT_REVEAL_REPORTER,
   P.PROFILE_BANK_DETAILS_MANAGE,
@@ -169,7 +161,7 @@ export type DutyConflict = { rule: string; permissions: [string, string]; why: s
 export function findDutyConflicts(permissionNames: Iterable<string>): DutyConflict[] {
   const held = new Set(permissionNames);
 
-  return DUTY_RULES.filter(({ permissions }) => held.has(permissions[0]) && held.has(permissions[1])).map(
-    ({ id, permissions, why }) => ({ rule: id, permissions, why }),
-  );
+  return DUTY_RULES.filter(
+    ({ permissions }) => held.has(permissions[0]) && held.has(permissions[1]),
+  ).map(({ id, permissions, why }) => ({ rule: id, permissions, why }));
 }

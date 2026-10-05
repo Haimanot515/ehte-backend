@@ -1,13 +1,6 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { IsNotEmpty, IsString } from 'class-validator';
 
-// NOTE: `key` is passed as a query param rather than a route param
-// (`:key`) deliberately. Object keys contain slashes —
-// `victim-profiles/photos/<uuid>.jpg` — and a plain Express/Nest
-// `:key` path segment does not span multiple `/`-delimited segments.
-// A route param here would silently truncate the key at the first
-// slash. Query params don't have that problem and need no
-// encode/decode handling on either side.
 export class MediaKeyQueryDto {
   @ApiProperty({
     description:

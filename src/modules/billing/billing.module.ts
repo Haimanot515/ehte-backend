@@ -1,8 +1,3 @@
-// src/modules/billing/billing.module.ts
-//
-// Assumes PrismaModule and ConfigModule are global, and that EventEmitterModule.forRoot()
-// and ScheduleModule.forRoot() are registered once in AppModule.
-
 import { Module } from '@nestjs/common';
 import { ChapaModule } from '../../services/chapa/chapa.module';
 import { PayerBillingController } from './controller/payer-billing.controller';
@@ -33,9 +28,6 @@ import { BillingReportAdminService } from './service/billing-report-admin.servic
 
 @Module({
   imports: [ChapaModule],
-  // ORDER MATTERS. The new controllers come first so their literal paths
-  // (payments/mine/summary, disbursements/bulk/approve, agreements/expiring,
-  // payments/by-payer, ...) are matched before the existing `:id` routes.
   controllers: [
     PayerBillingController,
     PaymentAdminController,
@@ -65,6 +57,12 @@ import { BillingReportAdminService } from './service/billing-report-admin.servic
     RewardAdminService,
     BillingReportAdminService,
   ],
-  exports: [AllocationService, PaymentService, RewardService, BillingEventsService, FundingQueryService],
+  exports: [
+    AllocationService,
+    PaymentService,
+    RewardService,
+    BillingEventsService,
+    FundingQueryService,
+  ],
 })
 export class BillingModule {}

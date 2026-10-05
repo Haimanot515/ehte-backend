@@ -144,9 +144,6 @@ model Report {
   @@map("report")
 }
 
-// ─────────────────────────────────────────────
-// Information requests (extended)
-// ─────────────────────────────────────────────
 
 model ReportInformationRequest {
   id              String                   @id @default(uuid())
@@ -181,9 +178,6 @@ model ReportInformationRequest {
   @@map("report_information_request")
 }
 
-// ─────────────────────────────────────────────
-// Evidence and chain of custody
-// ─────────────────────────────────────────────
 
 model ReportEvidence {
   id         String             @id @default(uuid())
@@ -233,9 +227,6 @@ model ReportEvidenceCustody {
   @@map("report_evidence_custody")
 }
 
-// ─────────────────────────────────────────────
-// Conversation, history, revisions
-// ─────────────────────────────────────────────
 
 model ReportMessage {
   id         String    @id @default(uuid())
@@ -315,9 +306,6 @@ model ReportEscalation {
   @@map("report_escalation")
 }
 
-// ─────────────────────────────────────────────
-// Reporter requests, feedback and drafts
-// ─────────────────────────────────────────────
 
 model ReportReopenRequest {
   id            String    @id @default(uuid())
@@ -383,9 +371,6 @@ model ReportDraft {
   @@map("report_draft")
 }
 
-// ─────────────────────────────────────────────
-// Admin workflow
-// ─────────────────────────────────────────────
 
 // A row exists = this admin has read the report
 model ReportAdminRead {
@@ -509,9 +494,6 @@ model ReportMerge {
   @@map("report_merge")
 }
 
-// ─────────────────────────────────────────────
-// Sensitive access
-// ─────────────────────────────────────────────
 
 model ReportAccessGrant {
   id          String    @id @default(uuid())
@@ -565,9 +547,6 @@ model ReportReporterReveal {
   @@map("report_reporter_reveal")
 }
 
-// ─────────────────────────────────────────────
-// Email and export
-// ─────────────────────────────────────────────
 
 model ReportEmail {
   id          String               @id @default(uuid())
@@ -609,9 +588,6 @@ model ReportExportJob {
   @@map("report_export_job")
 }
 
-// ─────────────────────────────────────────────
-// Enums
-// ─────────────────────────────────────────────
 
 enum ReportCategory {
   HARASSMENT

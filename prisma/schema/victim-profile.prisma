@@ -51,9 +51,6 @@ model VictimProfile {
 
   agreementId String?
 
-  // ───────────────────────────────────────────────────────────────
-  // NEW (VP-01 .. VP-102 service pass)
-  // ───────────────────────────────────────────────────────────────
 
   // Creator-facing review message (change request text or rejection reason).
   reviewNote    String?

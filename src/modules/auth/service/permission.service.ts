@@ -173,19 +173,6 @@ export class PermissionService {
     return permissions;
   }
 
-  // GAP FIX #2: permissions are baked into the JWT at login, so a change to a
-  // role used to have no effect until the token expired.
-  //
-  //  - revokeSessions=true  (something was REMOVED): delete every session of
-  //    every holder, so their refresh token dies and the next login/refresh
-  //    rebuilds permissions from the DB. Sessions are deleted (not marked
-  //    revokedAt) because AuthService.refresh() treats a revokedAt session as
-  //    a stolen-token replay and raises a false SECURITY_ALERT.
-  //  - revokeSessions=false (only ADDED): just purge the Redis profile/session
-  //    cache; holders pick the new permission up on next refresh.
-  //
-  // Failures here must not undo a committed permission change, so they are
-  // logged and reported in the audit metadata instead of thrown.
   private async invalidateRoleHolders(
     roleId: string,
     revokeSessions: boolean,
@@ -380,11 +367,7 @@ export class PermissionService {
     roleId: string,
     data: RevokePermissionsDto,
   ): Promise<Permission[]> {
-    const role = await this.loadRoleOrThrow(
-      actor,
-      roleId,
-      AuditEventEnum.PERMISSIONS_BULK_REVOKED,
-    );
+    const role = await this.loadRoleOrThrow(actor, roleId, AuditEventEnum.PERMISSIONS_BULK_REVOKED);
 
     this.assertPermissionsEditable(
       actor,
@@ -431,9 +414,6 @@ export class PermissionService {
     return this.findForRole(roleId);
   }
 
-  // Replace the role's entire permission list in ONE serializable transaction.
-  // GAP FIX: the current-state read used to happen outside the transaction, so
-  // two concurrent PUTs computed diffs from stale data (last write silently won).
   async setForRole(
     actor: CurrentUserDto,
     roleId: string,
@@ -619,10 +599,6 @@ export class PermissionService {
 
     return { message: 'permission_revoked' };
   }
-
-  // ═══════════════════════════════════════════════════════════════════════
-  // NEW (AR-47 … AR-55, AR-81). Everything above is unchanged.
-  // ═══════════════════════════════════════════════════════════════════════
 
   private groupOf(name: string): string {
     const cut = name.indexOf('_');

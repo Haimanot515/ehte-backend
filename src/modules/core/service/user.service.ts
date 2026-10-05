@@ -71,12 +71,6 @@ import {
   UserStatsTimelineQueryDto,
 } from '../dto/user.dto';
 
-// ASSUMPTIONS: UserOtpPurposeEnum needs a `phone_change` member (see
-// schema-additions.prisma). Session is assumed to have `createdAt`.
-// The new methods at the bottom also assume the models/fields listed in the
-// "NEW" section; they are reached through `this.db` so the file compiles
-// before the schema is aligned.
-
 const DELETION_GRACE_DAYS = 30;
 const EXPORT_ROW_CAP = 5000;
 const EXPORT_JOB_ROW_CAP = 50000;
@@ -198,9 +192,6 @@ export class UserService {
     },
   } as const;
 
-  // `profile` is optional here on purpose: listUsers()'s select omits it
-  // entirely (bulk address data is out of scope for that endpoint), so
-  // this only merges profile fields when the caller actually selected them.
   private shapeProfile<
     T extends {
       userRoles: { role: { id: string; name: string } }[];
@@ -215,9 +206,6 @@ export class UserService {
     return { ...userData, ...(profile ?? this.emptyProfileFields), roles };
   }
 
-  // Maps only the fields actually present in an UpdateUserDto into a
-  // Prisma UserProfile data object — same defined-check pattern updateMe
-  // already used before the profile table split.
   private buildProfileUpsertData(data: UpdateUserDto): Record<string, unknown> {
     return {
       ...(data.region !== undefined && { region: data.region.trim() }),
@@ -685,10 +673,6 @@ export class UserService {
     };
   }
 
-  // ── DEACTIVATE ACCOUNT (self-service) ──
-  // Now blocks a last-active super admin from deactivating themselves,
-  // atomically via transaction — closes the same race as deactivateUser below.
-
   async deactivateMe(currentUser: CurrentUserDto): Promise<{ message: string }> {
     const actorType = resolveActorType(this.getRoles(currentUser));
 
@@ -792,10 +776,6 @@ export class UserService {
 
     return { message: 'account_deactivated' };
   }
-
-  // ── ADMIN — DEACTIVATE USER ──
-  // Last-super-admin count check and write now share one transaction
-  // (conditional updateMany), closing a two-admin-racing TOCTOU gap.
 
   async deactivateUser(actor: CurrentUserDto, targetUserId: string, reason?: string) {
     const actorType = resolveActorType(this.getRoles(actor));
@@ -1042,10 +1022,6 @@ export class UserService {
     return { message: 'sessions_revoked' };
   }
 
-  // ── SESSIONS — list / revoke one ──
-  // Self and admin share these; targetUserId is only recorded when it
-  // differs from the actor (i.e. only on the admin path).
-
   async listSessions(userId: string) {
     return this.prisma.session.findMany({
       where: { userId, revokedAt: null },
@@ -1098,10 +1074,6 @@ export class UserService {
 
     return { message: 'session_revoked' };
   }
-
-  // ── CHANGE PHONE (self-service, OTP-gated) ──
-  // New phone held in `pendingPhone` until verified, so login on the
-  // old number keeps working mid-flow.
 
   async changePhoneInitiate(
     user: CurrentUserDto,
@@ -1399,10 +1371,6 @@ export class UserService {
     return { message: 'phone_number_changed' };
   }
 
-  // ── PROFILE PICTURE ──
-  // Stores only the MinIO key, not a public URL — same convention as
-  // Report/Post media; reads go through a presigned URL.
-
   private async validateProfilePictureFile(filepath: string): Promise<void> {
     const exists = await this.minioService.objectExists(filepath);
     if (!exists) {
@@ -1529,12 +1497,6 @@ export class UserService {
 
     return { message: 'profile_picture_removed' };
   }
-
-  // ── ADMIN — ASSIGN / REVOKE ROLE ──
-  // assignRole only escalates a verified ADMIN to SUPER_ADMIN (ADMIN itself is
-  // granted solely by AdminAuthService.promoteUserVerify after the email link).
-  // revokeRole gets the same transaction treatment as deactivateUser
-  // (last-super-admin race).
 
   async assignRole(
     actor: CurrentUserDto,
@@ -1986,12 +1948,6 @@ export class UserService {
     };
   }
 
-  // ══════════════════════════════════════════════════════════════════
-  // NEW — shared helpers
-  // Needs the schema additions: UserDeletionRequest, UserRestriction, UserWarning, UserConsent,
-  // UserExportJob, AbuseReport, and User.legalHold/deletedAt/anonymizedAt.
-  // ══════════════════════════════════════════════════════════════════
-
   private readonly logger = new Logger(UserService.name);
 
   // Untyped client for the assumed models/fields above; swap to this.prisma once the schema matches.
@@ -2116,7 +2072,9 @@ export class UserService {
     try {
       return await this.db[model].findMany(args);
     } catch (err) {
-      this.logger.warn(`findMany on "${model}" failed: ${err instanceof Error ? err.message : err}`);
+      this.logger.warn(
+        `findMany on "${model}" failed: ${err instanceof Error ? err.message : err}`,
+      );
       return [];
     }
   }
@@ -2144,7 +2102,8 @@ export class UserService {
   private async buildSummary(userId: string): Promise<Record<string, number>> {
     const entries = await Promise.all(
       Object.entries(USER_CONTENT_SOURCES).map(
-        async ([key, [model, field]]) => [key, await this.countFor(model, { [field]: userId })] as const,
+        async ([key, [model, field]]) =>
+          [key, await this.countFor(model, { [field]: userId })] as const,
       ),
     );
     return Object.fromEntries(entries);
@@ -2307,10 +2266,6 @@ export class UserService {
     return { csv: lines.join('\n'), rowCount: lines.length - 1, truncated };
   }
 
-  // ══════════════════════════════════════════════════════════════════
-  // NEW — self-service (US-01 .. US-14)
-  // ══════════════════════════════════════════════════════════════════
-
   async getMyDataExport(currentUser: CurrentUserDto) {
     const userId = currentUser.id;
     const user = await this.getMe(currentUser);
@@ -2326,7 +2281,11 @@ export class UserService {
         this.listFor('userConsent', { where: { userId }, orderBy: { createdAt: 'desc' } }),
         this.linkedProviders(userId).then((r) => r.providers),
         this.listFor('userDeletionRequest', { where: { userId }, orderBy: { createdAt: 'desc' } }),
-        this.listFor('notification', { where: { userId }, orderBy: { createdAt: 'desc' }, take: 1000 }),
+        this.listFor('notification', {
+          where: { userId },
+          orderBy: { createdAt: 'desc' },
+          take: 1000,
+        }),
         this.buildSummary(userId),
       ]);
 
@@ -2425,9 +2384,15 @@ export class UserService {
     });
     await this.cache.purgeUserCache(currentUser.id);
 
-    this.auditUser(currentUser, currentUser.id, AuditEventEnum.USER_SESSIONS_REVOKED, 'other_sessions', {
-      metadata: { scope: 'other_sessions', sessionsRevoked: revoked.count, selfService: true },
-    });
+    this.auditUser(
+      currentUser,
+      currentUser.id,
+      AuditEventEnum.USER_SESSIONS_REVOKED,
+      'other_sessions',
+      {
+        metadata: { scope: 'other_sessions', sessionsRevoked: revoked.count, selfService: true },
+      },
+    );
     return { message: 'other_sessions_revoked', sessionsRevoked: revoked.count };
   }
 
@@ -2435,7 +2400,12 @@ export class UserService {
     const { page, limit, skip } = this.paging(query);
     const where = { userId };
     const [rows, total] = await this.prisma.$transaction([
-      this.prisma.loginAttempt.findMany({ where, orderBy: { createdAt: 'desc' }, skip, take: limit }),
+      this.prisma.loginAttempt.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit,
+      }),
       this.prisma.loginAttempt.count({ where }),
     ]);
     // Never return ipAddress or the raw userAgent (discreet mode); device label and city/country only.
@@ -2489,7 +2459,10 @@ export class UserService {
     return { accounts: providers.map((provider) => ({ provider })), hasPassword };
   }
 
-  async unlinkMyAccount(currentUser: CurrentUserDto, provider: string): Promise<{ message: string }> {
+  async unlinkMyAccount(
+    currentUser: CurrentUserDto,
+    provider: string,
+  ): Promise<{ message: string }> {
     const name = provider.toLowerCase();
     if (!LINKED_PROVIDERS.includes(name)) throw new BadRequestException('unsupported_provider');
 
@@ -2557,15 +2530,17 @@ export class UserService {
       OtpChannelEnum.sms,
     );
 
-    this.auditUser(currentUser, currentUser.id, AuditEventEnum.USER_UPDATED, 'change_phone_otp_resent', {
-      diff: { newPhoneMasked: this.maskPhone(otp.user.pendingPhone) },
-    });
+    this.auditUser(
+      currentUser,
+      currentUser.id,
+      AuditEventEnum.USER_UPDATED,
+      'change_phone_otp_resent',
+      {
+        diff: { newPhoneMasked: this.maskPhone(otp.user.pendingPhone) },
+      },
+    );
     return { verificationId };
   }
-
-  // ══════════════════════════════════════════════════════════════════
-  // NEW — admin lists and queues (US-30 .. US-33, US-40, US-41, US-46, US-48)
-  // ══════════════════════════════════════════════════════════════════
 
   async listRestricted(actor: CurrentUserDto, query: UsersPagedQueryDto) {
     const { page, limit, skip } = this.paging(query);
@@ -2634,7 +2609,10 @@ export class UserService {
       : [];
     const lastLogin = new Map(last.map((l) => [l.userId, l._max.createdAt]));
     return {
-      data: rows.map((r) => ({ ...this.shapeListed(actor, r), lastLoginAt: lastLogin.get(r.id) ?? null })),
+      data: rows.map((r) => ({
+        ...this.shapeListed(actor, r),
+        lastLoginAt: lastLogin.get(r.id) ?? null,
+      })),
       meta: { ...this.pageMeta(page, limit, total), days },
     };
   }
@@ -2683,7 +2661,10 @@ export class UserService {
       this.logger.warn(`device duplicate scan failed: ${err instanceof Error ? err.message : err}`);
     }
 
-    return { byName: { data: byName, meta: this.pageMeta(page, limit, allGroups.length) }, byDevice };
+    return {
+      byName: { data: byName, meta: this.pageMeta(page, limit, allGroups.length) },
+      byDevice,
+    };
   }
 
   async getPossibleDuplicates(actor: CurrentUserDto, userId: string) {
@@ -2706,7 +2687,10 @@ export class UserService {
         })
       : [];
 
-    const devices = await this.listFor('deviceToken', { where: { userId }, select: { token: true } });
+    const devices = await this.listFor('deviceToken', {
+      where: { userId },
+      select: { token: true },
+    });
     const deviceIds = devices.map((d) => d.token).filter(Boolean);
     const shared = deviceIds.length
       ? await this.listFor('deviceToken', {
@@ -2719,7 +2703,9 @@ export class UserService {
     return candidates.map((c) => ({
       ...this.shapeListed(actor, c),
       reasons: [
-        ...(target.name && c.name?.toLowerCase() === String(target.name).toLowerCase() ? ['same_name'] : []),
+        ...(target.name && c.name?.toLowerCase() === String(target.name).toLowerCase()
+          ? ['same_name']
+          : []),
         ...(phoneTail && c.phone?.endsWith(phoneTail) ? ['similar_phone'] : []),
         ...(sharedIds.has(c.id) ? ['shared_device'] : []),
       ],
@@ -2755,7 +2741,11 @@ export class UserService {
     };
   }
 
-  async decideDeleteRequest(actor: CurrentUserDto, requestId: string, data: DecideDeletionRequestDto) {
+  async decideDeleteRequest(
+    actor: CurrentUserDto,
+    requestId: string,
+    data: DecideDeletionRequestDto,
+  ) {
     const request = await this.db.userDeletionRequest.findUnique({ where: { id: requestId } });
     if (!request) throw new NotFoundException('deletion_request_not_found');
     if (!OPEN_DELETION_STATUSES.includes(request.status)) {
@@ -2772,7 +2762,8 @@ export class UserService {
 
     const patch: Record<string, unknown> = {};
     if (data.decision === DeletionDecision.APPROVE) patch.status = DeletionRequestStatus.APPROVED;
-    else if (data.decision === DeletionDecision.DECLINE) patch.status = DeletionRequestStatus.DECLINED;
+    else if (data.decision === DeletionDecision.DECLINE)
+      patch.status = DeletionRequestStatus.DECLINED;
     else {
       const until = data.delayUntil ? new Date(data.delayUntil) : null;
       if (!until || until.getTime() <= Date.now()) {
@@ -2795,10 +2786,6 @@ export class UserService {
     });
     return updated;
   }
-
-  // ══════════════════════════════════════════════════════════════════
-  // NEW — search, facets, export (US-54 .. US-60)
-  // ══════════════════════════════════════════════════════════════════
 
   async searchUsers(actor: CurrentUserDto, query: UserSearchQueryDto) {
     const { page, limit, skip } = this.paging(query);
@@ -2878,7 +2865,13 @@ export class UserService {
       severity: AuditSeverity.WARNING,
       diff: { rowCount, truncated, masked: !this.canSeePii(actor), filters: query },
     });
-    return { filename: `users-${new Date().toISOString().slice(0, 10)}.csv`, contentType: 'text/csv', rowCount, truncated, csv };
+    return {
+      filename: `users-${new Date().toISOString().slice(0, 10)}.csv`,
+      contentType: 'text/csv',
+      rowCount,
+      truncated,
+      csv,
+    };
   }
 
   async createUserExportJob(actor: CurrentUserDto, data: UserExportQueryDto) {
@@ -2901,7 +2894,11 @@ export class UserService {
   private async runExportJob(jobId: string, actor: CurrentUserDto, data: UserExportQueryDto) {
     try {
       await this.db.userExportJob.update({ where: { id: jobId }, data: { status: 'RUNNING' } });
-      const { csv, rowCount, truncated } = await this.buildUsersCsv(actor, data, EXPORT_JOB_ROW_CAP);
+      const { csv, rowCount, truncated } = await this.buildUsersCsv(
+        actor,
+        data,
+        EXPORT_JOB_ROW_CAP,
+      );
       await this.db.userExportJob.update({
         where: { id: jobId },
         data: { status: 'DONE', resultCsv: csv, rowCount, truncated, finishedAt: new Date() },
@@ -2957,12 +2954,6 @@ export class UserService {
     };
   }
 
-  // ══════════════════════════════════════════════════════════════════
-  // NEW — bulk actions (US-34 .. US-39)
-  // Each user goes through the single-user method, so audits and
-  // last-super-admin checks behave exactly as on the single routes.
-  // ══════════════════════════════════════════════════════════════════
-
   async bulkForceLogout(actor: CurrentUserDto, data: BulkUserIdsDto) {
     return this.runBulk(actor, data.userIds, (id) => this.forceLogout(actor, id, data.reason));
   }
@@ -2990,10 +2981,6 @@ export class UserService {
     return this.runBulk(actor, userIds, (id) => this.createRestriction(actor, id, restriction));
   }
 
-  // ══════════════════════════════════════════════════════════════════
-  // NEW — statistics (US-61 .. US-70)
-  // ══════════════════════════════════════════════════════════════════
-
   async getUserStatsTimeline(actor: CurrentUserDto, query: UserStatsTimelineQueryDto) {
     const { from, to } = this.rangeOf(query, 30);
     const interval = query.interval ?? StatsInterval.DAY;
@@ -3002,7 +2989,15 @@ export class UserService {
       select: { createdAt: true },
       take: 200_000,
     });
-    return { from, to, interval, series: this.bucketDates(rows.map((r) => r.createdAt), interval) };
+    return {
+      from,
+      to,
+      interval,
+      series: this.bucketDates(
+        rows.map((r) => r.createdAt),
+        interval,
+      ),
+    };
   }
 
   async getUserStatsActive(actor: CurrentUserDto, query: UserStatsQueryDto) {
@@ -3071,7 +3066,11 @@ export class UserService {
         .then((rows) => rows.length),
       this.db.user.count({ where: { ...where, isPhoneVerified: true } }),
       this.prisma.user.count({
-        where: { ...where, isActive: true, loginAttempts: { some: { result: LoginResultEnum.SUCCESS } } },
+        where: {
+          ...where,
+          isActive: true,
+          loginAttempts: { some: { result: LoginResultEnum.SUCCESS } },
+        },
       }),
     ]);
     const rate = (n: number) => (started ? Number((n / started).toFixed(3)) : 0);
@@ -3089,9 +3088,16 @@ export class UserService {
 
   async getUserStatsRetention(actor: CurrentUserDto, query: UserStatsQueryDto) {
     const { from, to } = this.rangeOf(query, 120);
-    const userWhere: Prisma.UserWhereInput = { ...this.statsWhere(query), createdAt: { gte: from, lte: to } };
+    const userWhere: Prisma.UserWhereInput = {
+      ...this.statsWhere(query),
+      createdAt: { gte: from, lte: to },
+    };
     const [users, lastSeen] = await Promise.all([
-      this.prisma.user.findMany({ where: userWhere, select: { id: true, createdAt: true }, take: 100_000 }),
+      this.prisma.user.findMany({
+        where: userWhere,
+        select: { id: true, createdAt: true },
+        take: 100_000,
+      }),
       this.prisma.loginAttempt.groupBy({
         by: ['userId'],
         where: { result: LoginResultEnum.SUCCESS, user: { is: userWhere } },
@@ -3099,12 +3105,16 @@ export class UserService {
       }),
     ]);
     const lastLogin = new Map(lastSeen.map((l) => [l.userId, l._max.createdAt]));
-    const rows = users.map((u) => ({ createdAt: u.createdAt, lastLoginAt: lastLogin.get(u.id) ?? null }));
+    const rows = users.map((u) => ({
+      createdAt: u.createdAt,
+      lastLoginAt: lastLogin.get(u.id) ?? null,
+    }));
     const now = Date.now();
     const windows = [7, 30, 90].map((days) => {
       const eligible = rows.filter((r) => r.createdAt.getTime() <= now - days * 86_400_000);
       const retained = eligible.filter(
-        (r) => r.lastLoginAt && r.lastLoginAt.getTime() >= r.createdAt.getTime() + days * 86_400_000,
+        (r) =>
+          r.lastLoginAt && r.lastLoginAt.getTime() >= r.createdAt.getTime() + days * 86_400_000,
       );
       return {
         days,
@@ -3121,7 +3131,9 @@ export class UserService {
     const [events, deletionsApproved] = await Promise.all([
       this.prisma.auditLog.findMany({
         where: {
-          action: { in: [AuditEventEnum.USER_DEACTIVATED, AuditEventEnum.USER_DEACTIVATED_BY_ADMIN] },
+          action: {
+            in: [AuditEventEnum.USER_DEACTIVATED, AuditEventEnum.USER_DEACTIVATED_BY_ADMIN],
+          },
           outcome: AuditOutcome.SUCCESS,
           createdAt: { gte: from, lte: to },
         },
@@ -3156,11 +3168,16 @@ export class UserService {
     const range = { gte: from, lte: to };
     const [failures, lockEvents, currentlyLocked] = await Promise.all([
       this.prisma.loginAttempt.findMany({
-        where: { result: { in: [LoginResultEnum.FAILED, LoginResultEnum.LOCKED] }, createdAt: range },
+        where: {
+          result: { in: [LoginResultEnum.FAILED, LoginResultEnum.LOCKED] },
+          createdAt: range,
+        },
         select: { createdAt: true },
         take: 200_000,
       }),
-      this.prisma.loginAttempt.count({ where: { result: LoginResultEnum.LOCKED, createdAt: range } }),
+      this.prisma.loginAttempt.count({
+        where: { result: LoginResultEnum.LOCKED, createdAt: range },
+      }),
       this.prisma.user.count({ where: { lockedUntil: { gt: new Date() } } }),
     ]);
     return {
@@ -3177,7 +3194,11 @@ export class UserService {
     const { from, to } = this.rangeOf(query, 30);
     const range = { createdAt: { gte: from, lte: to } };
     const [restrictions, warnings] = await Promise.all([
-      this.listFor('userRestriction', { where: range, select: { createdAt: true, ability: true }, take: 100_000 }),
+      this.listFor('userRestriction', {
+        where: range,
+        select: { createdAt: true, ability: true },
+        take: 100_000,
+      }),
       this.listFor('userWarning', { where: range, select: { createdAt: true }, take: 100_000 }),
     ]);
     const byAbility = new Map<string, number>();
@@ -3190,32 +3211,52 @@ export class UserService {
         timeline: this.bucketDates(restrictions.map((r) => r.createdAt)),
         byAbility: [...byAbility.entries()].map(([ability, count]) => ({ ability, count })),
       },
-      warnings: { total: warnings.length, timeline: this.bucketDates(warnings.map((w) => w.createdAt)) },
+      warnings: {
+        total: warnings.length,
+        timeline: this.bucketDates(warnings.map((w) => w.createdAt)),
+      },
     };
   }
 
   async getUserStatsOverview(actor: CurrentUserDto, query: UserStatsQueryDto) {
     return this.cache.wrapStats(`user-stats-overview:${JSON.stringify(query)}`, async () => {
-      const [dashboard, timeline, active, byRole, byRegion, funnel, retention, deactivations, loginFailures, restrictions] =
-        await Promise.all([
-          this.getDashboardStatsUncached(),
-          this.getUserStatsTimeline(actor, { ...query, interval: StatsInterval.DAY }),
-          this.getUserStatsActive(actor, query),
-          this.getUserStatsByRole(actor, query),
-          this.getUserStatsByRegion(actor, query),
-          this.getUserStatsVerificationFunnel(actor, query),
-          this.getUserStatsRetention(actor, query),
-          this.getUserStatsDeactivations(actor, query),
-          this.getUserStatsLoginFailures(actor, query),
-          this.getUserStatsRestrictions(actor, query),
-        ]);
-      return { dashboard, timeline, active, byRole, byRegion, funnel, retention, deactivations, loginFailures, restrictions };
+      const [
+        dashboard,
+        timeline,
+        active,
+        byRole,
+        byRegion,
+        funnel,
+        retention,
+        deactivations,
+        loginFailures,
+        restrictions,
+      ] = await Promise.all([
+        this.getDashboardStatsUncached(),
+        this.getUserStatsTimeline(actor, { ...query, interval: StatsInterval.DAY }),
+        this.getUserStatsActive(actor, query),
+        this.getUserStatsByRole(actor, query),
+        this.getUserStatsByRegion(actor, query),
+        this.getUserStatsVerificationFunnel(actor, query),
+        this.getUserStatsRetention(actor, query),
+        this.getUserStatsDeactivations(actor, query),
+        this.getUserStatsLoginFailures(actor, query),
+        this.getUserStatsRestrictions(actor, query),
+      ]);
+      return {
+        dashboard,
+        timeline,
+        active,
+        byRole,
+        byRegion,
+        funnel,
+        retention,
+        deactivations,
+        loginFailures,
+        restrictions,
+      };
     });
   }
-
-  // ══════════════════════════════════════════════════════════════════
-  // NEW — per-user admin reads (US-15 .. US-22, US-26, US-29, US-45, US-53)
-  // ══════════════════════════════════════════════════════════════════
 
   async getUserSummary(actor: CurrentUserDto, userId: string) {
     await this.requireUser(userId);
@@ -3328,7 +3369,13 @@ export class UserService {
   async getUserVerification(actor: CurrentUserDto, userId: string) {
     const user = await this.db.user.findUnique({
       where: { id: userId },
-      select: { phone: true, pendingPhone: true, isPhoneVerified: true, isEmailVerified: true, email: true },
+      select: {
+        phone: true,
+        pendingPhone: true,
+        isPhoneVerified: true,
+        isEmailVerified: true,
+        email: true,
+      },
     });
     if (!user) throw new NotFoundException('user_not_found');
     this.recordView(actor, userId, 'verification');
@@ -3388,10 +3435,6 @@ export class UserService {
       at: row.createdAt,
     }));
   }
-
-  // ══════════════════════════════════════════════════════════════════
-  // NEW — per-user admin actions (US-23 .. US-28, US-32, US-42 .. US-44, US-47, US-50 .. US-52)
-  // ══════════════════════════════════════════════════════════════════
 
   async forcePasswordReset(actor: CurrentUserDto, userId: string, data: AdminRequiredReasonDto) {
     if (actor.id === userId) throw new BadRequestException('use_change_password_instead');
@@ -3515,7 +3558,11 @@ export class UserService {
     return warning;
   }
 
-  async deactivateUserWithReason(actor: CurrentUserDto, userId: string, data: AdminRequiredReasonDto) {
+  async deactivateUserWithReason(
+    actor: CurrentUserDto,
+    userId: string,
+    data: AdminRequiredReasonDto,
+  ) {
     return this.deactivateUser(actor, userId, data.reason);
   }
 
@@ -3665,24 +3712,39 @@ export class UserService {
     });
     if (!target) throw new NotFoundException('user_not_found');
     if (!!target.legalHold === data.legalHold) {
-      throw new BadRequestException(data.legalHold ? 'legal_hold_already_set' : 'no_legal_hold_to_lift');
+      throw new BadRequestException(
+        data.legalHold ? 'legal_hold_already_set' : 'no_legal_hold_to_lift',
+      );
     }
 
     await this.db.user.update({ where: { id: userId }, data: { legalHold: data.legalHold } });
 
-    this.auditUser(actor, userId, AuditEventEnum.USER_UPDATED, data.legalHold ? 'legal_hold_set' : 'legal_hold_lifted', {
-      severity: AuditSeverity.WARNING,
-      reason: data.reason,
-      label: this.buildUserLabel(target),
-      diff: { previousLegalHold: !!target.legalHold, currentLegalHold: data.legalHold },
-    });
+    this.auditUser(
+      actor,
+      userId,
+      AuditEventEnum.USER_UPDATED,
+      data.legalHold ? 'legal_hold_set' : 'legal_hold_lifted',
+      {
+        severity: AuditSeverity.WARNING,
+        reason: data.reason,
+        label: this.buildUserLabel(target),
+        diff: { previousLegalHold: !!target.legalHold, currentLegalHold: data.legalHold },
+      },
+    );
     return { userId, legalHold: data.legalHold };
   }
 
   async restoreDeletedUser(actor: CurrentUserDto, userId: string, data: AdminActionReasonDto) {
     const target = await this.db.user.findUnique({
       where: { id: userId },
-      select: { id: true, name: true, phone: true, email: true, deletedAt: true, anonymizedAt: true },
+      select: {
+        id: true,
+        name: true,
+        phone: true,
+        email: true,
+        deletedAt: true,
+        anonymizedAt: true,
+      },
     });
     if (!target) throw new NotFoundException('user_not_found');
     if (target.anonymizedAt) throw new BadRequestException('account_already_erased');
@@ -3691,13 +3753,19 @@ export class UserService {
       where: { userId, status: DeletionRequestStatus.APPROVED },
     });
     if (!target.deletedAt && !approved) throw new BadRequestException('user_not_pending_deletion');
-    if (target.deletedAt && Date.now() > target.deletedAt.getTime() + DELETION_GRACE_DAYS * 86_400_000) {
+    if (
+      target.deletedAt &&
+      Date.now() > target.deletedAt.getTime() + DELETION_GRACE_DAYS * 86_400_000
+    ) {
       throw new BadRequestException('grace_period_over');
     }
 
     await this.db.user.update({ where: { id: userId }, data: { deletedAt: null, isActive: true } });
     await this.db.userDeletionRequest.updateMany({
-      where: { userId, status: { in: [DeletionRequestStatus.APPROVED, ...OPEN_DELETION_STATUSES] } },
+      where: {
+        userId,
+        status: { in: [DeletionRequestStatus.APPROVED, ...OPEN_DELETION_STATUSES] },
+      },
       data: { status: DeletionRequestStatus.CANCELLED },
     });
     await this.cache.purgeUserCache(userId);
@@ -3798,7 +3866,8 @@ export class UserService {
     try {
       await this.prisma.user.update({ where: { id: userId }, data: { pendingPhone: newPhone } });
     } catch (error) {
-      if (this.isUniqueConstraintError(error)) throw new BadRequestException('phone_already_registered');
+      if (this.isUniqueConstraintError(error))
+        throw new BadRequestException('phone_already_registered');
       throw error;
     }
     const { verificationId } = await this.otpUtil.issueAndSendOtp(

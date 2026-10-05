@@ -4,16 +4,6 @@ import { ConfigService } from '@nestjs/config';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { CacheService } from 'src/services/redis/cache.service'; // REDIS
 
-// Extracted from AuthService: shared lockout logic used by login(), adminLoginByEmail(),
-// and every OTP-verify method (phone verification, password reset).
-//
-// REDIS: failed-password attempts are counted in Redis (security connection, atomic
-// INCR+EXPIRE, fixed window = TTL.FAILED_LOGIN_ATTEMPTS) instead of one Postgres UPDATE per
-// wrong password. Postgres stays the source of truth for the LOCK itself: `lockedUntil` is
-// still written to the user row, because assertNotLocked() and every other reader use it.
-// If Redis is unreachable the counter falls back to the original Postgres increment, so an
-// outage can never remove lockout protection.
-
 @Injectable()
 export class LockoutUtil {
   constructor(

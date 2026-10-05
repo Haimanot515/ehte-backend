@@ -1,9 +1,3 @@
-// src/modules/billing/controller/disbursement-admin.controller.ts
-//
-// Disbursement tools (BL-57 to BL-65).
-// Registered BEFORE DisbursementController and BillingReportController so that
-// `disbursements/bulk/approve` is not read as `disbursements/:id/approve`, and
-// `disbursements/pending-approval` / `failed` are not read as `disbursements/:id`.
 import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 
@@ -58,7 +52,8 @@ export class DisbursementAdminController {
   @RequireReauthentication()
   @ApiOperation({
     summary: 'Admin: approve many disbursements',
-    description: 'Each item is approved on its own, so the rule that the creator cannot approve applies per item.',
+    description:
+      'Each item is approved on its own, so the rule that the creator cannot approve applies per item.',
   })
   bulkApprove(@CurrentUser() admin: CurrentUserDto, @Body() body: BulkDisbursementIdsDto) {
     return this.svc.bulkApprove(admin.id, body.ids);
@@ -99,7 +94,11 @@ export class DisbursementAdminController {
   @RequirePermissions(P.DISBURSEMENTS_APPROVE)
   @RequireReauthentication()
   @ApiOperation({ summary: 'Admin: release a held disbursement' })
-  release(@CurrentUser() admin: CurrentUserDto, @Param('id') id: string, @Body() body: ReasonBodyDto) {
+  release(
+    @CurrentUser() admin: CurrentUserDto,
+    @Param('id') id: string,
+    @Body() body: ReasonBodyDto,
+  ) {
     return this.svc.release(admin.id, id, body.reason);
   }
 
@@ -109,7 +108,8 @@ export class DisbursementAdminController {
   @RequireReauthentication()
   @ApiOperation({
     summary: 'Admin: record a manual payout for a disbursement stuck in PROCESSING',
-    description: 'Needs a bank slip or transfer reference. A different admin from the executor must confirm.',
+    description:
+      'Needs a bank slip or transfer reference. A different admin from the executor must confirm.',
   })
   markPaid(
     @CurrentUser() admin: CurrentUserDto,

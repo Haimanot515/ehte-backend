@@ -1,15 +1,3 @@
-// prisma/schema/information-submission.prisma
-//
-// A tip a user sends about a missing-person case. The submission itself is
-// confidential: informant identity only leaves this table through the audited
-// reveal / informant-lookup paths in InformationSubmissionService.
-//
-// Review workflow (status):
-//   PENDING -> UNDER_REVIEW -> REVIEWED | REJECTED   (both terminal)
-//
-// `resolution` is a closing reason layered on top of REJECTED. A tip closed as a
-// duplicate or as already-known ends up REJECTED + resolution set, so the
-// existing status machine and the public REVIEWED cache stay untouched.
 
 enum InformationStatus {
   PENDING
@@ -128,10 +116,6 @@ model InformationSubmission {
   assignedAt   DateTime?
   assignedById String?
 
-  // ── Informant "seen" tracking ───────────────
-  // A tip has an unseen update when status differs from informantSeenStatus, or a
-  // question/message was added after informantSeenAt. Raw SQL updates these so
-  // marking seen does not bump updatedAt.
   informantSeenStatus InformationStatus @default(PENDING)
   informantSeenAt     DateTime?
 
@@ -261,9 +245,6 @@ model InformationEscalation {
   @@map("information_escalation")
 }
 
-// Per-file metadata for the admin attachment list, plus redaction state.
-// Rows are created lazily the first time an admin lists a tip's attachments.
-// scanStatus and sha256 are filled in by a scanning worker; etag comes from MinIO.
 model InformationAttachment {
   id           String                @id @default(uuid())
   submissionId String

@@ -49,9 +49,6 @@ import { CacheService } from 'src/services/redis/cache.service';
 const ASSIGNMENT_REQUEST_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_TEMPORARY_ASSIGNMENT_MS = 365 * 24 * 60 * 60 * 1000;
 
-// Starter roles (AR-45), written as exact permission names so a template always means the same
-// thing. Only names that exist in the permissions table are copied. Templates leave out approve,
-// publish and execute actions on purpose, so none of them creates a separation-of-duties conflict.
 const ROLE_TEMPLATES: {
   id: string;
   name: string;
@@ -61,7 +58,8 @@ const ROLE_TEMPLATES: {
   {
     id: 'reviewer',
     name: 'REVIEWER',
-    description: 'Reads and reviews reports, posts, missing-person cases, tips and victim profiles.',
+    description:
+      'Reads and reviews reports, posts, missing-person cases, tips and victim profiles.',
     permissions: [
       PermissionsEnum.DASHBOARD_READ,
       PermissionsEnum.REPORT_READ,
@@ -93,7 +91,8 @@ const ROLE_TEMPLATES: {
   {
     id: 'support-agent',
     name: 'SUPPORT_AGENT',
-    description: 'Read-only view of cases, posts, profiles, support and users, to help people who write in.',
+    description:
+      'Read-only view of cases, posts, profiles, support and users, to help people who write in.',
     permissions: [
       PermissionsEnum.DASHBOARD_READ,
       PermissionsEnum.REPORT_READ,
@@ -367,7 +366,8 @@ export class RoleService {
       },
       metadata: {
         changed:
-          role.name !== updatedRole.name || (role.description ?? null) !== (updatedRole.description ?? null),
+          role.name !== updatedRole.name ||
+          (role.description ?? null) !== (updatedRole.description ?? null),
         nameChanged: role.name !== updatedRole.name,
         descriptionChanged: (role.description ?? null) !== (updatedRole.description ?? null),
       },
@@ -463,10 +463,6 @@ export class RoleService {
 
     return { message: 'role_deleted' };
   }
-
-  // ═══════════════════════════════════════════════════════════════════════
-  // NEW (AR-29 … AR-46, AR-56, AR-57, AR-80). Everything above is unchanged.
-  // ═══════════════════════════════════════════════════════════════════════
 
   // ─── shared helpers ────────────────────────────────────────────────────
 
@@ -1145,7 +1141,11 @@ export class RoleService {
       entity: 'Role',
       entityId: roleId,
       diff: { result: failed.length === 0 ? 'success' : 'partial', action: data.action },
-      metadata: { requested: data.userIds.length, succeeded: succeeded.length, failed: failed.length },
+      metadata: {
+        requested: data.userIds.length,
+        succeeded: succeeded.length,
+        failed: failed.length,
+      },
     });
 
     return { action: data.action, succeeded, failed };
@@ -1212,7 +1212,11 @@ export class RoleService {
   ) {
     const request = await this.prisma.roleAssignmentRequest.findUnique({
       where: { id: requestId },
-      include: { role: { include: { rolePermissions: { select: { permission: { select: { name: true } } } } } } },
+      include: {
+        role: {
+          include: { rolePermissions: { select: { permission: { select: { name: true } } } } },
+        },
+      },
     });
 
     if (!request) {
@@ -1260,7 +1264,12 @@ export class RoleService {
 
       const rejected = await this.prisma.roleAssignmentRequest.updateMany({
         where: { id: request.id, status: 'PENDING' },
-        data: { status: 'REJECTED', reviewedById: actor.id, reviewedAt: new Date(), reviewNote: note },
+        data: {
+          status: 'REJECTED',
+          reviewedById: actor.id,
+          reviewedAt: new Date(),
+          reviewNote: note,
+        },
       });
 
       if (rejected.count === 0) {

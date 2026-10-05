@@ -99,9 +99,6 @@ export class UpdateUserDto {
   occupation?: string;
 }
 
-// PATCH /users/:id (admin). Same safe fields as a self-edit and nothing more.
-// Role, email, phone and active status are deliberately NOT editable here;
-// they have their own guarded routes (promote flow, change-phone, deactivate).
 export class AdminUpdateUserDto extends UpdateUserDto {
   @ApiPropertyOptional({ description: 'Admin justification, stored in the audit log' })
   @IsOptional()
@@ -148,11 +145,6 @@ export class AdminActionReasonDto {
   reason?: string;
 }
 
-// PATCH /users/:id/role  — SUPER_ADMIN escalation ONLY.
-// ADMIN is never granted here: the only way to become ADMIN is the
-// email-verified flow (POST /admin/auth/promote -> user clicks the link ->
-// POST /admin/auth/promote/verify). This route exists because that flow
-// cannot produce a SUPER_ADMIN (see the KNOWN LIMITATION in PromoteUserDto).
 export class AssignUserRoleDto {
   @ApiProperty({
     example: RolesEnum.SUPER_ADMIN,

@@ -119,16 +119,9 @@ const STALE_ELIGIBLE_EXCLUDED_STATUSES: VictimProfileStatus[] = [
   VictimProfileStatus.REJECTED,
 ];
 
-// G22 (billing review, section 4 design rule): money never leaves this
-// service as a JS number. Number() loses precision on large sums and
-// invites float-arithmetic bugs; a decimal string round-trips exactly.
 const money = (d: Prisma.Decimal | number | string | null | undefined): string =>
   d == null ? '0.00' : new Prisma.Decimal(d).toFixed(2);
 
-// G22: reconcileAllTotals used to run Promise.all over every profile in
-// the table at once — fine at a few hundred rows, a self-inflicted outage
-// once the platform has thousands. Runs `fn` over `items` with at most
-// `size` in flight at a time.
 async function mapWithConcurrency<T, R>(
   items: T[],
   size: number,
@@ -146,15 +139,8 @@ async function mapWithConcurrency<T, R>(
   return results;
 }
 
-// G11: fields findOne() must never return unless the caller has been
-// through the SUPPORT_PAYMENT_MANAGE-gated bank-details endpoint. Listed
-// explicitly (rather than an exclusion) so a future schema field is safe
-// by default instead of leaking until someone remembers to blocklist it.
 const BANK_DETAIL_FIELDS = ['bankAccountName', 'bankAccountNumber', 'bankName'] as const;
 
-// ───────────────────────────────────────────────────────────────────────────
-// Constants + helpers for the VP-01 .. VP-102 methods
-// ───────────────────────────────────────────────────────────────────────────
 const CONFIRMED_SUPPORT_STATUSES = ['CONFIRMED', 'COMPLETED'] as const;
 
 // Creator-side lifecycle rules.
@@ -209,7 +195,10 @@ const APPROVED_OUTCOME_STATUSES: VictimProfileStatus[] = [
 ];
 
 // Which next statuses each status can reach, and through which endpoint (VP-65).
-const STATUS_TRANSITIONS: Record<VictimProfileStatus, Array<{ to: VictimProfileStatus; via: string }>> = {
+const STATUS_TRANSITIONS: Record<
+  VictimProfileStatus,
+  Array<{ to: VictimProfileStatus; via: string }>
+> = {
   PENDING: [
     { to: 'UNDER_REVIEW', via: 'PATCH admin/:id/gates' },
     { to: 'CHANGES_REQUESTED', via: 'PATCH admin/:id/request-changes' },
@@ -254,7 +243,10 @@ const STATUS_TRANSITIONS: Record<VictimProfileStatus, Array<{ to: VictimProfileS
     { to: 'WITHDRAWN', via: 'PATCH mine/:id/withdraw (creator)' },
   ],
   REJECTED: [
-    { to: 'PENDING', via: 'PATCH admin/:id/resubmit | PATCH mine/:id/resubmit | appeal overturned' },
+    {
+      to: 'PENDING',
+      via: 'PATCH admin/:id/resubmit | PATCH mine/:id/resubmit | appeal overturned',
+    },
   ],
   WITHDRAWN: [],
   COMPLETED: [{ to: 'PUBLISHED', via: 'PATCH admin/:id/reopen' }],
@@ -925,11 +917,6 @@ export class VictimProfileService {
     return profile;
   }
 
-  // G11: this used to return every scalar column, bank details included,
-  // to anyone with PROFILE_READ — a much lower bar than SUPPORT_PAYMENT_MANAGE,
-  // which is what's required to *change* those same fields. Bank fields are
-  // now stripped from the object entirely; use findBankDetails() from a
-  // route gated on SUPPORT_PAYMENT_MANAGE when they're actually needed.
   async findOne(id: string) {
     const profile = await this.prisma.victimProfile.findUnique({
       where: { id },
@@ -963,9 +950,6 @@ export class VictimProfileService {
     return profile;
   }
 
-  // G11: the SUPPORT_PAYMENT_MANAGE-gated counterpart to findOne(). Call
-  // this from a route that requires the same permission updateBankDetails()
-  // already requires, not from the plain PROFILE_READ :id route.
   async findBankDetails(id: string) {
     const profile = await this.prisma.victimProfile.findUnique({
       where: { id },
@@ -1308,12 +1292,6 @@ export class VictimProfileService {
 
     this.assertAdminCanAccessProfile(admin, profile, AuditEventEnum.VICTIM_PROFILE_DELETED);
 
-    // G8: a PAID payment with an unsettled allocation means real money is
-    // still owed to someone against this profile (recipient, institution or
-    // platform). Deleting the profile out from under it either cascades the
-    // Support row away (losing the split breakdown, G8's original finding)
-    // or — once the section-9 sync migration lands — fails with a DB-level
-    // Restrict error instead of this readable one. Either way, block first.
     const unsettled = await this.prisma.payment.findFirst({
       where: {
         victimProfileId: id,
@@ -1994,10 +1972,6 @@ export class VictimProfileService {
       AuditEventEnum.VICTIM_PROFILE_BANK_DETAILS_UPDATED,
     );
 
-    // G12: a minor cannot be the payout account holder. If the profile
-    // involves a child, whoever is filling this form must say who the
-    // account actually belongs to (parent, guardian, or another adult) —
-    // SELF is only valid for a non-child profile.
     if (profile.involvesChild && data.accountHolderRelationship === 'SELF') {
       this.emitProfileFailure(
         admin,
@@ -2035,12 +2009,6 @@ export class VictimProfileService {
       { admin, action: AuditEventEnum.VICTIM_PROFILE_BANK_DETAILS_UPDATED, profile },
     );
 
-    // G40 (section 9): PayoutDestination is meant to become the only source
-    // of truth for where money goes, but nothing writes to it today except
-    // this transitional dual-write. One-per-profile owner, so upsert on
-    // victimProfileId. isVerified deliberately left false/unset here — G2
-    // requires an approver to verify the destination before it's usable,
-    // not whoever just typed it into this form.
     await this.prisma.payoutDestination.upsert({
       where: { victimProfileId: id },
       create: {
@@ -2054,9 +2022,6 @@ export class VictimProfileService {
         bankName: data.bankName,
         accountNumber: data.bankAccountNumber,
         accountHolder: data.accountHolderName,
-        // A changed destination is not the one that was verified.
-        // TODO(section 9 sync migration): also clear verifiedAt/verifiedById
-        // once those columns exist — today isVerified is all there is.
         isVerified: false,
       },
     });
@@ -2088,11 +2053,6 @@ export class VictimProfileService {
           data.bankAccountNumber !== profile.bankAccountNumber,
         bankNameChanged: data.bankName !== undefined && data.bankName !== profile.bankName,
         accountHolderRelationship: data.accountHolderRelationship,
-        // TODO(section 9 sync migration): bankCode has no persisted column
-        // yet on VictimProfile or PayoutDestination — kept here so it's at
-        // least traceable in the audit trail rather than silently dropped,
-        // until the schema catches up and disbursement.service.ts can
-        // validate it against Chapa's banks list (G4).
         bankCodeProvided: data.bankCode,
       },
     });
@@ -2370,12 +2330,6 @@ export class VictimProfileService {
     return updatedProfile;
   }
 
-  // G22 / design rule (section 4): compute every total from Payment (PAID) and PaymentAllocation,
-  // never from Support amounts. totalRaised is the recipient's share of paid SUPPORT payments (the
-  // same number SupportService adds when a financial support is created, and the number the victim
-  // sees in their notification). Posting-fee and reward payments never count, and neither does a
-  // support an admin has cancelled. A paid payment whose Support does not exist yet is not counted
-  // until it is fulfilled. Non-financial offers have no payment, so they never count.
   async reconcileProfileTotal(admin: CurrentUserDto, id: string, autoCorrect: boolean) {
     const profile = await this.prisma.victimProfile.findUnique({ where: { id } });
     if (!profile) {
@@ -2444,9 +2398,6 @@ export class VictimProfileService {
     };
   }
 
-  // G22: was an unbounded Promise.all over every profile in the table —
-  // fine in dev, a self-inflicted DB connection-pool exhaustion once there
-  // are thousands of profiles. Bounded to 10 concurrent reconciliations.
   async reconcileAllTotals(admin: CurrentUserDto, autoCorrect: boolean) {
     const profiles = await this.prisma.victimProfile.findMany({ select: { id: true } });
 
@@ -2456,10 +2407,6 @@ export class VictimProfileService {
 
     return results.filter((r) => r.mismatch);
   }
-
-  // ───────────────────────────────────────────────────────────────────────────
-  // VP-01 .. VP-102: methods added for the full controller
-  // ───────────────────────────────────────────────────────────────────────────
 
   // ── New shared helpers ──────────────────────────────────────────────────────
 
@@ -2480,7 +2427,10 @@ export class VictimProfileService {
   }
 
   private async assertProfileExists(id: string): Promise<void> {
-    const found = await this.prisma.victimProfile.findUnique({ where: { id }, select: { id: true } });
+    const found = await this.prisma.victimProfile.findUnique({
+      where: { id },
+      select: { id: true },
+    });
     if (!found) throw new NotFoundException('victim_profile_not_found');
   }
 
@@ -2670,10 +2620,6 @@ export class VictimProfileService {
     };
   }
 
-  // ════════════════════════════════════════════════════════════════════════════
-  // Creator: my profiles (VP-01 .. VP-14, VP-48)
-  // ════════════════════════════════════════════════════════════════════════════
-
   // VP-01
   async findMine(user: CurrentUserDto, query: FindAllVictimProfilesQueryDto) {
     const { page, limit, skip } = this.pageOf(query);
@@ -2710,7 +2656,14 @@ export class VictimProfileService {
       this.prisma.victimProfileAppeal.findFirst({
         where: { profileId: id },
         orderBy: { createdAt: 'desc' },
-        select: { id: true, status: true, message: true, decisionNote: true, decidedAt: true, createdAt: true },
+        select: {
+          id: true,
+          status: true,
+          message: true,
+          decisionNote: true,
+          decidedAt: true,
+          createdAt: true,
+        },
       }),
     ]);
 
@@ -2751,19 +2704,31 @@ export class VictimProfileService {
     const profile = await this.getMineOr404(user, id);
 
     if (!CREATOR_EDITABLE_STATUSES.includes(profile.status)) {
-      this.emitProfileFailure(user, AuditEventEnum.VICTIM_PROFILE_UPDATED, profile, 'victim_profile_not_editable', {
-        outcome: AuditOutcome.DENIED,
-        diff: { currentStatus: profile.status },
-      });
+      this.emitProfileFailure(
+        user,
+        AuditEventEnum.VICTIM_PROFILE_UPDATED,
+        profile,
+        'victim_profile_not_editable',
+        {
+          outcome: AuditOutcome.DENIED,
+          diff: { currentStatus: profile.status },
+        },
+      );
       throw new BadRequestException('victim_profile_not_editable');
     }
 
     // Lowering the child flag skips child-safety review and un-hides photos; that is the
     // dual-admin PATCH admin/:id/child-flag path (VP-64), never a creator edit.
     if (profile.involvesChild && data.involvesChild === false) {
-      this.emitProfileFailure(user, AuditEventEnum.VICTIM_PROFILE_UPDATED, profile, 'child_flag_change_requires_admin', {
-        outcome: AuditOutcome.DENIED,
-      });
+      this.emitProfileFailure(
+        user,
+        AuditEventEnum.VICTIM_PROFILE_UPDATED,
+        profile,
+        'child_flag_change_requires_admin',
+        {
+          outcome: AuditOutcome.DENIED,
+        },
+      );
       throw new ForbiddenException('child_flag_change_requires_admin');
     }
 
@@ -2776,9 +2741,15 @@ export class VictimProfileService {
     try {
       media = await this.computeMediaChange(profile, data);
     } catch (err) {
-      this.emitProfileFailure(user, AuditEventEnum.VICTIM_PROFILE_UPDATED, profile, 'media_validation_failed', {
-        diff: { message: err instanceof Error ? err.message : String(err) },
-      });
+      this.emitProfileFailure(
+        user,
+        AuditEventEnum.VICTIM_PROFILE_UPDATED,
+        profile,
+        'media_validation_failed',
+        {
+          diff: { message: err instanceof Error ? err.message : String(err) },
+        },
+      );
       throw err;
     }
 
@@ -2844,10 +2815,16 @@ export class VictimProfileService {
     const profile = await this.getMineOr404(user, id);
 
     if (profile.isPublished || !CREATOR_WITHDRAWABLE_STATUSES.includes(profile.status)) {
-      this.emitProfileFailure(user, AuditEventEnum.VICTIM_PROFILE_WITHDRAWN, profile, 'victim_profile_not_withdrawable', {
-        outcome: AuditOutcome.DENIED,
-        diff: { currentStatus: profile.status },
-      });
+      this.emitProfileFailure(
+        user,
+        AuditEventEnum.VICTIM_PROFILE_WITHDRAWN,
+        profile,
+        'victim_profile_not_withdrawable',
+        {
+          outcome: AuditOutcome.DENIED,
+          diff: { currentStatus: profile.status },
+        },
+      );
       throw new BadRequestException('victim_profile_not_withdrawable');
     }
 
@@ -2879,10 +2856,16 @@ export class VictimProfileService {
     const profile = await this.getMineOr404(user, id);
 
     if (!CREATOR_RESUBMITTABLE_STATUSES.includes(profile.status)) {
-      this.emitProfileFailure(user, AuditEventEnum.VICTIM_PROFILE_RESUBMITTED, profile, 'victim_profile_not_resubmittable', {
-        outcome: AuditOutcome.DENIED,
-        diff: { currentStatus: profile.status },
-      });
+      this.emitProfileFailure(
+        user,
+        AuditEventEnum.VICTIM_PROFILE_RESUBMITTED,
+        profile,
+        'victim_profile_not_resubmittable',
+        {
+          outcome: AuditOutcome.DENIED,
+          diff: { currentStatus: profile.status },
+        },
+      );
       throw new BadRequestException('victim_profile_not_resubmittable');
     }
 
@@ -2940,10 +2923,16 @@ export class VictimProfileService {
     const profile = await this.getMineOr404(user, id);
 
     if (!this.collectMediaFields(profile).includes(query.key)) {
-      this.emitProfileFailure(user, AuditEventEnum.VICTIM_PROFILE_MEDIA_DOWNLOADED, profile, 'media_not_found_on_profile', {
-        outcome: AuditOutcome.DENIED,
-        metadata: { requestedKey: query.key },
-      });
+      this.emitProfileFailure(
+        user,
+        AuditEventEnum.VICTIM_PROFILE_MEDIA_DOWNLOADED,
+        profile,
+        'media_not_found_on_profile',
+        {
+          outcome: AuditOutcome.DENIED,
+          metadata: { requestedKey: query.key },
+        },
+      );
       throw new NotFoundException('media_not_found_on_profile');
     }
 
@@ -3084,7 +3073,13 @@ export class VictimProfileService {
     }
 
     const update = await this.prisma.victimProfileUpdate.create({
-      data: { profileId: id, authorId: user.id, isStaff: false, title: data.title, body: data.body },
+      data: {
+        profileId: id,
+        authorId: user.id,
+        isStaff: false,
+        title: data.title,
+        body: data.body,
+      },
     });
 
     this.auditSuccess(user, AuditEventEnum.VICTIM_PROFILE_UPDATE_POSTED, profile, {
@@ -3156,10 +3151,6 @@ export class VictimProfileService {
 
     return appeal;
   }
-
-  // ════════════════════════════════════════════════════════════════════════════
-  // Logged-in supporters (VP-15 .. VP-24)
-  // ════════════════════════════════════════════════════════════════════════════
 
   // VP-15
   async findPublicUpdates(_user: CurrentUserDto, id: string, query: PagedQueryDto) {
@@ -3252,12 +3243,19 @@ export class VictimProfileService {
       throw err;
     }
 
-    this.auditSuccess(user, AuditEventEnum.VICTIM_PROFILE_FLAGGED, { ...profile, createdByUserId: profile.createdByUserId }, {
-      severity:
-        data.reason === FlagReason.IDENTIFIES_CHILD ? AuditSeverity.CRITICAL : AuditSeverity.WARNING,
-      diff: { reason: data.reason },
-      metadata: { flagId: flag.id },
-    });
+    this.auditSuccess(
+      user,
+      AuditEventEnum.VICTIM_PROFILE_FLAGGED,
+      { ...profile, createdByUserId: profile.createdByUserId },
+      {
+        severity:
+          data.reason === FlagReason.IDENTIFIES_CHILD
+            ? AuditSeverity.CRITICAL
+            : AuditSeverity.WARNING,
+        diff: { reason: data.reason },
+        metadata: { flagId: flag.id },
+      },
+    );
 
     this.eventEmitter.emit(NotificationEventEnum.VICTIM_PROFILE_FLAGGED, {
       victimProfileId: id,
@@ -3439,10 +3437,6 @@ export class VictimProfileService {
     };
   }
 
-  // ════════════════════════════════════════════════════════════════════════════
-  // Admin: read state (VP-25 .. VP-34)
-  // ════════════════════════════════════════════════════════════════════════════
-
   private unreadWhere(
     admin: CurrentUserDto,
     extra: Prisma.VictimProfileWhereInput = {},
@@ -3525,7 +3519,10 @@ export class VictimProfileService {
   // VP-30
   async findUnread(admin: CurrentUserDto, query: FindUnreadVictimProfilesQueryDto) {
     const { page, limit, skip } = this.pageOf(query);
-    const where = this.unreadWhere(admin, query.status !== undefined ? { status: query.status } : {});
+    const where = this.unreadWhere(
+      admin,
+      query.status !== undefined ? { status: query.status } : {},
+    );
 
     const [rows, total] = await this.prisma.$transaction([
       this.prisma.victimProfile.findMany({
@@ -3587,10 +3584,6 @@ export class VictimProfileService {
     ]);
     return { total, read, unread: Math.max(0, total - read) };
   }
-
-  // ════════════════════════════════════════════════════════════════════════════
-  // Admin: by creator (VP-35 .. VP-40)
-  // ════════════════════════════════════════════════════════════════════════════
 
   private async creatorNames(ids: string[]): Promise<Map<string, string | null>> {
     if (!ids.length) return new Map();
@@ -3743,7 +3736,11 @@ export class VictimProfileService {
     const [rejected, fraudFlags] = await Promise.all([
       this.prisma.victimProfile.groupBy({
         by: ['createdByUserId'],
-        where: { status: VictimProfileStatus.REJECTED, createdByUserId: { not: null }, deletedAt: null },
+        where: {
+          status: VictimProfileStatus.REJECTED,
+          createdByUserId: { not: null },
+          deletedAt: null,
+        },
         _count: { id: true },
         having: { id: { _count: { gte: threshold } } },
         orderBy: { _count: { id: 'desc' } },
@@ -3775,7 +3772,8 @@ export class VictimProfileService {
       .map(([creatorId, s]) => ({ creatorId, ...s, suspectedFraud: s.confirmedFalseInfoFlags > 0 }))
       .sort(
         (a, b) =>
-          b.rejectedCount + b.confirmedFalseInfoFlags * 2 -
+          b.rejectedCount +
+          b.confirmedFalseInfoFlags * 2 -
           (a.rejectedCount + a.confirmedFalseInfoFlags * 2),
       );
 
@@ -3787,10 +3785,6 @@ export class VictimProfileService {
       meta: this.metaOf(page, limit, rows.length),
     };
   }
-
-  // ════════════════════════════════════════════════════════════════════════════
-  // Admin: flags and appeals (VP-41 .. VP-43, VP-46, VP-47)
-  // ════════════════════════════════════════════════════════════════════════════
 
   // VP-41
   async findFlags(_admin: CurrentUserDto, query: FindFlagsQueryDto) {
@@ -3824,7 +3818,9 @@ export class VictimProfileService {
   }
 
   // The DTO's FlagStatus has RESOLVED; the table splits that into DISMISSED / ACTIONED.
-  private toFlagStatus(status: string): VictimProfileFlagStatus | { in: VictimProfileFlagStatus[] } {
+  private toFlagStatus(
+    status: string,
+  ): VictimProfileFlagStatus | { in: VictimProfileFlagStatus[] } {
     if (status === 'RESOLVED') {
       return { in: [VictimProfileFlagStatus.DISMISSED, VictimProfileFlagStatus.ACTIONED] };
     }
@@ -3888,7 +3884,13 @@ export class VictimProfileService {
       // The action failed, so put the flag back in the queue rather than losing it.
       await this.prisma.victimProfileFlag.update({
         where: { id: flagId },
-        data: { status: VictimProfileFlagStatus.OPEN, resolution: null, resolvedById: null, resolvedAt: null, note: null },
+        data: {
+          status: VictimProfileFlagStatus.OPEN,
+          resolution: null,
+          resolvedById: null,
+          resolvedAt: null,
+          note: null,
+        },
       });
       throw err;
     }
@@ -3960,9 +3962,15 @@ export class VictimProfileService {
         select: { userId: true },
       });
       if (rejection?.userId === admin.id) {
-        this.emitProfileFailure(admin, AuditEventEnum.VICTIM_PROFILE_APPEAL_DECIDED, profile, 'appeal_requires_a_different_reviewer', {
-          outcome: AuditOutcome.DENIED,
-        });
+        this.emitProfileFailure(
+          admin,
+          AuditEventEnum.VICTIM_PROFILE_APPEAL_DECIDED,
+          profile,
+          'appeal_requires_a_different_reviewer',
+          {
+            outcome: AuditOutcome.DENIED,
+          },
+        );
         throw new ForbiddenException('appeal_requires_a_different_reviewer');
       }
     }
@@ -4009,10 +4017,6 @@ export class VictimProfileService {
     return this.prisma.victimProfileAppeal.findUniqueOrThrow({ where: { id: appealId } });
   }
 
-  // ════════════════════════════════════════════════════════════════════════════
-  // Admin: bulk actions (VP-51, VP-53, VP-54, VP-55)
-  // ════════════════════════════════════════════════════════════════════════════
-
   // Runs `fn` per id, never aborts the batch on one failure, returns who succeeded / failed and why.
   private async runBulk(
     admin: CurrentUserDto,
@@ -4047,7 +4051,12 @@ export class VictimProfileService {
       entity: 'VictimProfile',
       reason,
       diff: { result: failed.length ? 'partial' : 'success', action },
-      metadata: { requested: unique.length, succeeded: succeeded.length, failed: failed.length, ids: unique },
+      metadata: {
+        requested: unique.length,
+        succeeded: succeeded.length,
+        failed: failed.length,
+        ids: unique,
+      },
     });
 
     return { requested: unique.length, succeeded, failed };
@@ -4099,10 +4108,6 @@ export class VictimProfileService {
       this.unpublish(admin, id),
     );
   }
-
-  // ════════════════════════════════════════════════════════════════════════════
-  // Admin: duplicates, trash, search, facets, filters (VP-66, VP-69, VP-84 .. VP-86)
-  // ════════════════════════════════════════════════════════════════════════════
 
   // VP-66  (heuristics: same payout account number, or same name from the same creator)
   async findDuplicates(admin: CurrentUserDto, query: PagedQueryDto) {
@@ -4164,7 +4169,10 @@ export class VictimProfileService {
         return {
           matchedOn: c.matchedOn,
           // Child names are never shown as a cluster key.
-          key: members.some((m) => m.involvesChild) && c.matchedOn === 'name+creator' ? 'redacted' : c.key,
+          key:
+            members.some((m) => m.involvesChild) && c.matchedOn === 'name+creator'
+              ? 'redacted'
+              : c.key,
           count: c.count,
           profiles: members.map((m) => ({
             id: m.id,
@@ -4209,7 +4217,10 @@ export class VictimProfileService {
     ]);
 
     return {
-      data: rows.map(({ name, ...row }) => ({ ...row, label: this.profileLabel({ id: row.id, name, involvesChild: row.involvesChild }) })),
+      data: rows.map(({ name, ...row }) => ({
+        ...row,
+        label: this.profileLabel({ id: row.id, name, involvesChild: row.involvesChild }),
+      })),
       meta: this.metaOf(page, limit, total),
     };
   }
@@ -4291,34 +4302,65 @@ export class VictimProfileService {
   async getFacets(admin: CurrentUserDto, query: StatsQueryDto) {
     const where = this.statsWhere(query);
 
-    const [byStatus, byCategory, byChild, byAssignee, unassigned, unclaimed, flagged, paused, held, unread] =
-      await Promise.all([
-        this.prisma.victimProfile.groupBy({ by: ['status'], where, _count: { _all: true }, orderBy: { status: 'asc' } }),
-        this.prisma.victimProfile.groupBy({ by: ['supportType'], where, _count: { _all: true }, orderBy: { supportType: 'asc' } }),
-        this.prisma.victimProfile.groupBy({ by: ['involvesChild'], where, _count: { _all: true }, orderBy: { involvesChild: 'asc' } }),
-        this.prisma.victimProfile.groupBy({
-          by: ['assignedReviewerId'],
-          where: { AND: [where, { assignedReviewerId: { not: null } }] },
-          _count: { _all: true },
-          orderBy: { assignedReviewerId: 'asc' },
-        }),
-        this.prisma.victimProfile.count({ where: { AND: [where, { assignedReviewerId: null }] } }),
-        this.prisma.victimProfile.count({ where: { AND: [where, { claimedByUserId: null }] } }),
-        this.prisma.victimProfile.count({
-          where: { AND: [where, { flags: { some: { status: VictimProfileFlagStatus.OPEN } } }] },
-        }),
-        this.prisma.victimProfile.count({ where: { AND: [where, { donationsPaused: true }] } }),
-        this.prisma.victimProfile.count({ where: { AND: [where, { legalHold: true }] } }),
-        this.prisma.victimProfile.count({ where: { AND: [where, this.unreadWhere(admin)] } }),
-      ]);
+    const [
+      byStatus,
+      byCategory,
+      byChild,
+      byAssignee,
+      unassigned,
+      unclaimed,
+      flagged,
+      paused,
+      held,
+      unread,
+    ] = await Promise.all([
+      this.prisma.victimProfile.groupBy({
+        by: ['status'],
+        where,
+        _count: { _all: true },
+        orderBy: { status: 'asc' },
+      }),
+      this.prisma.victimProfile.groupBy({
+        by: ['supportType'],
+        where,
+        _count: { _all: true },
+        orderBy: { supportType: 'asc' },
+      }),
+      this.prisma.victimProfile.groupBy({
+        by: ['involvesChild'],
+        where,
+        _count: { _all: true },
+        orderBy: { involvesChild: 'asc' },
+      }),
+      this.prisma.victimProfile.groupBy({
+        by: ['assignedReviewerId'],
+        where: { AND: [where, { assignedReviewerId: { not: null } }] },
+        _count: { _all: true },
+        orderBy: { assignedReviewerId: 'asc' },
+      }),
+      this.prisma.victimProfile.count({ where: { AND: [where, { assignedReviewerId: null }] } }),
+      this.prisma.victimProfile.count({ where: { AND: [where, { claimedByUserId: null }] } }),
+      this.prisma.victimProfile.count({
+        where: { AND: [where, { flags: { some: { status: VictimProfileFlagStatus.OPEN } } }] },
+      }),
+      this.prisma.victimProfile.count({ where: { AND: [where, { donationsPaused: true }] } }),
+      this.prisma.victimProfile.count({ where: { AND: [where, { legalHold: true }] } }),
+      this.prisma.victimProfile.count({ where: { AND: [where, this.unreadWhere(admin)] } }),
+    ]);
 
     return {
       status: Object.fromEntries(byStatus.map((r) => [r.status, r._count._all])),
-      category: Object.fromEntries(byCategory.map((r) => [r.supportType ?? 'UNSPECIFIED', r._count._all])),
-      involvesChild: Object.fromEntries(byChild.map((r) => [String(r.involvesChild), r._count._all])),
+      category: Object.fromEntries(
+        byCategory.map((r) => [r.supportType ?? 'UNSPECIFIED', r._count._all]),
+      ),
+      involvesChild: Object.fromEntries(
+        byChild.map((r) => [String(r.involvesChild), r._count._all]),
+      ),
       assignedReviewer: {
         unassigned,
-        ...Object.fromEntries(byAssignee.map((r) => [r.assignedReviewerId as string, r._count._all])),
+        ...Object.fromEntries(
+          byAssignee.map((r) => [r.assignedReviewerId as string, r._count._all]),
+        ),
       },
       unclaimed,
       withOpenFlags: flagged,
@@ -4350,14 +4392,21 @@ export class VictimProfileService {
     };
   }
 
-  // ════════════════════════════════════════════════════════════════════════════
-  // Admin: export (VP-87 .. VP-90)
-  // ════════════════════════════════════════════════════════════════════════════
-
   private static readonly EXPORT_COLUMNS = [
-    'id', 'label', 'status', 'supportType', 'supportGoal', 'totalRaised', 'involvesChild',
-    'isPublished', 'donationsPaused', 'assignedReviewerId', 'claimedByUserId', 'createdByUserId',
-    'createdAt', 'updatedAt',
+    'id',
+    'label',
+    'status',
+    'supportType',
+    'supportGoal',
+    'totalRaised',
+    'involvesChild',
+    'isPublished',
+    'donationsPaused',
+    'assignedReviewerId',
+    'claimedByUserId',
+    'createdByUserId',
+    'createdAt',
+    'updatedAt',
   ] as const;
 
   // Never exports story, description, bank or consent data; child profiles are exported by label only.
@@ -4376,9 +4425,20 @@ export class VictimProfileService {
       const rows = await this.prisma.victimProfile.findMany({
         where,
         select: {
-          id: true, name: true, status: true, supportType: true, supportGoal: true, totalRaised: true,
-          involvesChild: true, isPublished: true, donationsPaused: true, assignedReviewerId: true,
-          claimedByUserId: true, createdByUserId: true, createdAt: true, updatedAt: true,
+          id: true,
+          name: true,
+          status: true,
+          supportType: true,
+          supportGoal: true,
+          totalRaised: true,
+          involvesChild: true,
+          isPublished: true,
+          donationsPaused: true,
+          assignedReviewerId: true,
+          claimedByUserId: true,
+          createdByUserId: true,
+          createdAt: true,
+          updatedAt: true,
         },
         orderBy: { id: 'asc' },
         take: Math.min(batch, maxRows - rowCount + 1),
@@ -4393,9 +4453,20 @@ export class VictimProfileService {
         }
         lines.push(
           [
-            r.id, this.profileLabel(r), r.status, r.supportType, r.supportGoal ? money(r.supportGoal) : '',
-            money(r.totalRaised), r.involvesChild, r.isPublished, r.donationsPaused, r.assignedReviewerId,
-            r.claimedByUserId, r.createdByUserId, r.createdAt, r.updatedAt,
+            r.id,
+            this.profileLabel(r),
+            r.status,
+            r.supportType,
+            r.supportGoal ? money(r.supportGoal) : '',
+            money(r.totalRaised),
+            r.involvesChild,
+            r.isPublished,
+            r.donationsPaused,
+            r.assignedReviewerId,
+            r.claimedByUserId,
+            r.createdByUserId,
+            r.createdAt,
+            r.updatedAt,
           ]
             .map(csvCell)
             .join(','),
@@ -4469,10 +4540,14 @@ export class VictimProfileService {
     });
     if (started.count === 0) return;
 
-    const job = await this.prisma.victimProfileExportJob.findUniqueOrThrow({ where: { id: jobId } });
+    const job = await this.prisma.victimProfileExportJob.findUniqueOrThrow({
+      where: { id: jobId },
+    });
 
     try {
-      const maxRows = Number(this.configService.get<string>('PROFILE_EXPORT_JOB_MAX_ROWS') ?? 100_000);
+      const maxRows = Number(
+        this.configService.get<string>('PROFILE_EXPORT_JOB_MAX_ROWS') ?? 100_000,
+      );
       const ttlHours = Number(this.configService.get<string>('PROFILE_EXPORT_TTL_HOURS') ?? 24);
       const filters = (job.filters ?? {}) as unknown as StatsQueryDto;
 
@@ -4480,7 +4555,11 @@ export class VictimProfileService {
 
       const storageKey = `exports/victim-profiles/${jobId}.csv`;
       // Adapt to your MinioService upload method (key, bytes, content type).
-      await this.minioService.uploadFile(storageKey, Buffer.from(lines.join('\n'), 'utf8'), 'text/csv');
+      await this.minioService.uploadFile(
+        storageKey,
+        Buffer.from(lines.join('\n'), 'utf8'),
+        'text/csv',
+      );
 
       await this.prisma.victimProfileExportJob.update({
         where: { id: jobId },
@@ -4524,7 +4603,9 @@ export class VictimProfileService {
   async getExportJob(admin: CurrentUserDto, id: string) {
     const job = await this.getOwnedExportJob(admin, id);
     const expired =
-      job.status === VictimProfileExportJobStatus.COMPLETED && !!job.expiresAt && job.expiresAt < new Date();
+      job.status === VictimProfileExportJobStatus.COMPLETED &&
+      !!job.expiresAt &&
+      job.expiresAt < new Date();
     return {
       id: job.id,
       status: expired ? VictimProfileExportJobStatus.EXPIRED : job.status,
@@ -4569,10 +4650,6 @@ export class VictimProfileService {
 
     return { url, expiresAt: job.expiresAt };
   }
-
-  // ════════════════════════════════════════════════════════════════════════════
-  // Admin: case management (VP-44, 45, 49, 50, 52, 56 .. 65)
-  // ════════════════════════════════════════════════════════════════════════════
 
   // VP-49
   async assignReviewer(admin: CurrentUserDto, id: string, data: AssignReviewerDto) {
@@ -4619,13 +4696,23 @@ export class VictimProfileService {
   // VP-52
   async requestChanges(admin: CurrentUserDto, id: string, data: RequestChangesDto) {
     const profile = await this.getProfileOr404(id);
-    this.assertAdminCanAccessProfile(admin, profile, AuditEventEnum.VICTIM_PROFILE_CHANGES_REQUESTED);
+    this.assertAdminCanAccessProfile(
+      admin,
+      profile,
+      AuditEventEnum.VICTIM_PROFILE_CHANGES_REQUESTED,
+    );
 
     if (profile.deletedAt) throw new BadRequestException('victim_profile_deleted');
     if (profile.isPublished || !CHANGE_REQUESTABLE_STATUSES.includes(profile.status)) {
-      this.emitProfileFailure(admin, AuditEventEnum.VICTIM_PROFILE_CHANGES_REQUESTED, profile, 'changes_cannot_be_requested_in_this_status', {
-        diff: { currentStatus: profile.status },
-      });
+      this.emitProfileFailure(
+        admin,
+        AuditEventEnum.VICTIM_PROFILE_CHANGES_REQUESTED,
+        profile,
+        'changes_cannot_be_requested_in_this_status',
+        {
+          diff: { currentStatus: profile.status },
+        },
+      );
       throw new BadRequestException('changes_cannot_be_requested_in_this_status');
     }
 
@@ -4645,7 +4732,11 @@ export class VictimProfileService {
 
     this.auditSuccess(admin, AuditEventEnum.VICTIM_PROFILE_CHANGES_REQUESTED, profile, {
       reason: data.message,
-      diff: { previousStatus: profile.status, newStatus: VictimProfileStatus.CHANGES_REQUESTED, creatorMessage: data.message },
+      diff: {
+        previousStatus: profile.status,
+        newStatus: VictimProfileStatus.CHANGES_REQUESTED,
+        creatorMessage: data.message,
+      },
     });
     this.eventEmitter.emit(NotificationEventEnum.VICTIM_PROFILE_CHANGES_REQUESTED, {
       userId: profile.createdByUserId,
@@ -4685,7 +4776,11 @@ export class VictimProfileService {
     this.auditSuccess(admin, AuditEventEnum.VICTIM_PROFILE_TAKEDOWN, profile, {
       severity: AuditSeverity.CRITICAL,
       reason: data.reason,
-      diff: { previousStatus: profile.status, newStatus: VictimProfileStatus.UNPUBLISHED, previousIsPublished: profile.isPublished },
+      diff: {
+        previousStatus: profile.status,
+        newStatus: VictimProfileStatus.UNPUBLISHED,
+        previousIsPublished: profile.isPublished,
+      },
     });
     this.eventEmitter.emit(NotificationEventEnum.VICTIM_PROFILE_TAKEN_DOWN, {
       userId: profile.createdByUserId,
@@ -4712,7 +4807,11 @@ export class VictimProfileService {
     this.auditSuccess(admin, AuditEventEnum.VICTIM_PROFILE_TAKEDOWN_LIFTED, profile, {
       severity: AuditSeverity.CRITICAL,
       reason: data.reason,
-      diff: { previousTakedownReason: profile.takedownReason, previousTakedownById: profile.takedownById, creatorMessage: 'The takedown was lifted; your profile will be reviewed again.' },
+      diff: {
+        previousTakedownReason: profile.takedownReason,
+        previousTakedownById: profile.takedownById,
+        creatorMessage: 'The takedown was lifted; your profile will be reviewed again.',
+      },
     });
     return updated;
   }
@@ -4723,9 +4822,15 @@ export class VictimProfileService {
     this.assertAdminCanAccessProfile(admin, profile, AuditEventEnum.VICTIM_PROFILE_COMPLETED);
 
     if (profile.status !== VictimProfileStatus.PUBLISHED) {
-      this.emitProfileFailure(admin, AuditEventEnum.VICTIM_PROFILE_COMPLETED, profile, 'only_published_profiles_can_be_completed', {
-        diff: { currentStatus: profile.status },
-      });
+      this.emitProfileFailure(
+        admin,
+        AuditEventEnum.VICTIM_PROFILE_COMPLETED,
+        profile,
+        'only_published_profiles_can_be_completed',
+        {
+          diff: { currentStatus: profile.status },
+        },
+      );
       throw new BadRequestException('only_published_profiles_can_be_completed');
     }
 
@@ -4770,15 +4875,16 @@ export class VictimProfileService {
     }
 
     // Back to PUBLISHED only if every gate still holds; otherwise fall back to the derived pipeline status.
-    const gatesHold = this.getMissingApprovalGates({
-      involvesChild: profile.involvesChild,
-      isVerified: profile.isVerified,
-      isSafetyReviewed: profile.isSafetyReviewed,
-      isChildSafetyReviewed: profile.isChildSafetyReviewed,
-      hasConsent: profile.hasConsent,
-      isPrivacyReviewed: profile.isPrivacyReviewed,
-      hasBankDetails: this.hasBankDetails(profile),
-    }).length === 0 && profile.isAdminApproved;
+    const gatesHold =
+      this.getMissingApprovalGates({
+        involvesChild: profile.involvesChild,
+        isVerified: profile.isVerified,
+        isSafetyReviewed: profile.isSafetyReviewed,
+        isChildSafetyReviewed: profile.isChildSafetyReviewed,
+        hasConsent: profile.hasConsent,
+        isPrivacyReviewed: profile.isPrivacyReviewed,
+        hasBankDetails: this.hasBankDetails(profile),
+      }).length === 0 && profile.isAdminApproved;
 
     const status = gatesHold
       ? VictimProfileStatus.PUBLISHED
@@ -4824,13 +4930,20 @@ export class VictimProfileService {
     const profile = await this.getProfileOr404(id);
     if (
       profile.takedownAt ||
-      (profile.status !== VictimProfileStatus.PUBLISHED && profile.status !== VictimProfileStatus.COMPLETED)
+      (profile.status !== VictimProfileStatus.PUBLISHED &&
+        profile.status !== VictimProfileStatus.COMPLETED)
     ) {
       throw new BadRequestException('updates_require_a_published_profile');
     }
 
     const update = await this.prisma.victimProfileUpdate.create({
-      data: { profileId: id, authorId: admin.id, isStaff: true, title: data.title, body: data.body },
+      data: {
+        profileId: id,
+        authorId: admin.id,
+        isStaff: true,
+        title: data.title,
+        body: data.body,
+      },
     });
 
     this.auditSuccess(admin, AuditEventEnum.VICTIM_PROFILE_UPDATE_POSTED, profile, {
@@ -4869,7 +4982,11 @@ export class VictimProfileService {
   // VP-60
   async recordConsent(admin: CurrentUserDto, id: string, data: RecordConsentDto) {
     const profile = await this.getProfileOr404(id);
-    this.assertAdminCanAccessProfile(admin, profile, AuditEventEnum.VICTIM_PROFILE_CONSENT_RECORDED);
+    this.assertAdminCanAccessProfile(
+      admin,
+      profile,
+      AuditEventEnum.VICTIM_PROFILE_CONSENT_RECORDED,
+    );
 
     if (profile.hasConsent) {
       throw new ConflictException('consent_already_recorded_revoke_first');
@@ -4878,14 +4995,21 @@ export class VictimProfileService {
     if (!documents.length) throw new BadRequestException('signed_consent_form_required');
 
     const consentAt = data.consentedAt ? new Date(data.consentedAt) : new Date();
-    if (consentAt.getTime() > Date.now() + 60_000) throw new BadRequestException('consent_date_in_future');
+    if (consentAt.getTime() > Date.now() + 60_000)
+      throw new BadRequestException('consent_date_in_future');
 
     try {
       await this.validateMediaFilesExist(documents);
     } catch (err) {
-      this.emitProfileFailure(admin, AuditEventEnum.VICTIM_PROFILE_CONSENT_RECORDED, profile, 'media_validation_failed', {
-        diff: { message: err instanceof Error ? err.message : String(err) },
-      });
+      this.emitProfileFailure(
+        admin,
+        AuditEventEnum.VICTIM_PROFILE_CONSENT_RECORDED,
+        profile,
+        'media_validation_failed',
+        {
+          diff: { message: err instanceof Error ? err.message : String(err) },
+        },
+      );
       throw err;
     }
 
@@ -5031,7 +5155,11 @@ export class VictimProfileService {
   // VP-64  (first admin proposes, a different admin confirms the same value within 72h)
   async updateChildFlag(admin: CurrentUserDto, id: string, data: UpdateChildFlagDto) {
     const profile = await this.getProfileOr404(id);
-    this.assertAdminCanAccessProfile(admin, profile, AuditEventEnum.VICTIM_PROFILE_CHILD_FLAG_UPDATED);
+    this.assertAdminCanAccessProfile(
+      admin,
+      profile,
+      AuditEventEnum.VICTIM_PROFILE_CHILD_FLAG_UPDATED,
+    );
 
     if (profile.involvesChild === data.involvesChild) {
       throw new BadRequestException('child_flag_unchanged');
@@ -5065,9 +5193,15 @@ export class VictimProfileService {
     }
 
     if (profile.childFlagProposedById === admin.id) {
-      this.emitProfileFailure(admin, AuditEventEnum.VICTIM_PROFILE_CHILD_FLAG_UPDATED, profile, 'child_flag_requires_second_admin', {
-        outcome: AuditOutcome.DENIED,
-      });
+      this.emitProfileFailure(
+        admin,
+        AuditEventEnum.VICTIM_PROFILE_CHILD_FLAG_UPDATED,
+        profile,
+        'child_flag_requires_second_admin',
+        {
+          outcome: AuditOutcome.DENIED,
+        },
+      );
       throw new BadRequestException('child_flag_requires_second_admin');
     }
 
@@ -5155,7 +5289,10 @@ export class VictimProfileService {
         available:
           !claimedByOther &&
           !profile.deletedAt &&
-          !(t.to === VictimProfileStatus.PUBLISHED && (missingGates.length > 0 || !!profile.takedownAt)),
+          !(
+            t.to === VictimProfileStatus.PUBLISHED &&
+            (missingGates.length > 0 || !!profile.takedownAt)
+          ),
         blockedBy:
           t.to === VictimProfileStatus.PUBLISHED && profile.status === VictimProfileStatus.APPROVED
             ? missingGates
@@ -5163,10 +5300,6 @@ export class VictimProfileService {
       })),
     };
   }
-
-  // ════════════════════════════════════════════════════════════════════════════
-  // Admin: delete, restore, revisions (VP-67, 68, 70)
-  // ════════════════════════════════════════════════════════════════════════════
 
   private async assertNoUnsettledPayments(profileId: string): Promise<boolean> {
     const unsettled = await this.prisma.payment.findFirst({
@@ -5186,13 +5319,24 @@ export class VictimProfileService {
     if (profile.deletedAt) throw new ConflictException('victim_profile_already_deleted');
 
     if (profile.legalHold) {
-      this.emitProfileFailure(admin, AuditEventEnum.VICTIM_PROFILE_SOFT_DELETED, profile, 'victim_profile_under_legal_hold', {
-        outcome: AuditOutcome.DENIED,
-      });
+      this.emitProfileFailure(
+        admin,
+        AuditEventEnum.VICTIM_PROFILE_SOFT_DELETED,
+        profile,
+        'victim_profile_under_legal_hold',
+        {
+          outcome: AuditOutcome.DENIED,
+        },
+      );
       throw new ForbiddenException('victim_profile_under_legal_hold');
     }
     if (await this.assertNoUnsettledPayments(id)) {
-      this.emitProfileFailure(admin, AuditEventEnum.VICTIM_PROFILE_SOFT_DELETED, profile, 'victim_profile_has_unsettled_payments');
+      this.emitProfileFailure(
+        admin,
+        AuditEventEnum.VICTIM_PROFILE_SOFT_DELETED,
+        profile,
+        'victim_profile_has_unsettled_payments',
+      );
       throw new ConflictException('victim_profile_has_unsettled_payments');
     }
 
@@ -5205,7 +5349,10 @@ export class VictimProfileService {
         deletedAt: new Date(),
         deletedById: admin.id,
         deleteReason: data.reason,
-        status: profile.status === VictimProfileStatus.PUBLISHED ? VictimProfileStatus.UNPUBLISHED : profile.status,
+        status:
+          profile.status === VictimProfileStatus.PUBLISHED
+            ? VictimProfileStatus.UNPUBLISHED
+            : profile.status,
         isPublished: false,
         isAdminApproved: false,
         isFeatured: false,
@@ -5229,7 +5376,8 @@ export class VictimProfileService {
   async restore(admin: CurrentUserDto, id: string) {
     const profile = await this.getProfileOr404(id);
     if (!profile.deletedAt) throw new BadRequestException('victim_profile_not_deleted');
-    if (profile.anonymizedAt) throw new BadRequestException('anonymized_profiles_cannot_be_restored');
+    if (profile.anonymizedAt)
+      throw new BadRequestException('anonymized_profiles_cannot_be_restored');
 
     const updated = await this.conditionalUpdate(
       id,
@@ -5255,10 +5403,6 @@ export class VictimProfileService {
       orderBy: { createdAt: 'desc' },
     });
   }
-
-  // ════════════════════════════════════════════════════════════════════════════
-  // Admin: money controls (VP-71 .. VP-76)
-  // ════════════════════════════════════════════════════════════════════════════
 
   // VP-71
   async pauseDonations(admin: CurrentUserDto, id: string, data: ReasonDto) {
@@ -5355,7 +5499,14 @@ export class VictimProfileService {
       }),
       this.prisma.payoutDestination.findUnique({
         where: { victimProfileId: id },
-        select: { rail: true, bankName: true, accountNumber: true, accountHolder: true, isVerified: true, updatedAt: true },
+        select: {
+          rail: true,
+          bankName: true,
+          accountNumber: true,
+          accountHolder: true,
+          isVerified: true,
+          updatedAt: true,
+        },
       }),
     ]);
 
@@ -5393,9 +5544,15 @@ export class VictimProfileService {
   // VP-75  (four eyes: the admin who typed the destination cannot be the one who verifies it)
   async verifyBankDetails(admin: CurrentUserDto, id: string, data: VerifyBankDetailsDto) {
     const profile = await this.getProfileOr404(id);
-    this.assertAdminCanAccessProfile(admin, profile, AuditEventEnum.VICTIM_PROFILE_BANK_DETAILS_VERIFIED);
+    this.assertAdminCanAccessProfile(
+      admin,
+      profile,
+      AuditEventEnum.VICTIM_PROFILE_BANK_DETAILS_VERIFIED,
+    );
 
-    const destination = await this.prisma.payoutDestination.findUnique({ where: { victimProfileId: id } });
+    const destination = await this.prisma.payoutDestination.findUnique({
+      where: { victimProfileId: id },
+    });
     if (!destination) throw new BadRequestException('payout_destination_not_set');
     if (destination.isVerified) throw new ConflictException('payout_destination_already_verified');
 
@@ -5410,9 +5567,15 @@ export class VictimProfileService {
       select: { userId: true },
     });
     if (lastEdit?.userId === admin.id) {
-      this.emitProfileFailure(admin, AuditEventEnum.VICTIM_PROFILE_BANK_DETAILS_VERIFIED, profile, 'verifier_must_differ_from_editor', {
-        outcome: AuditOutcome.DENIED,
-      });
+      this.emitProfileFailure(
+        admin,
+        AuditEventEnum.VICTIM_PROFILE_BANK_DETAILS_VERIFIED,
+        profile,
+        'verifier_must_differ_from_editor',
+        {
+          outcome: AuditOutcome.DENIED,
+        },
+      );
       throw new ForbiddenException('verifier_must_differ_from_editor');
     }
 
@@ -5443,7 +5606,9 @@ export class VictimProfileService {
         type: 'SUPPORT',
         status: 'PAID',
         support: { status: { not: 'CANCELLED' } },
-        ...(from || to ? { paidAt: { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) } } : {}),
+        ...(from || to
+          ? { paidAt: { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) } }
+          : {}),
       },
       select: {
         paidAt: true,
@@ -5467,17 +5632,20 @@ export class VictimProfileService {
       .map(([date, v]) => ({ date, donations: v.count, recipientAmount: money(v.total) }));
   }
 
-  // ════════════════════════════════════════════════════════════════════════════
-  // Admin: media, custody, access (VP-77 .. VP-81)
-  // ════════════════════════════════════════════════════════════════════════════
-
   // VP-77  (scan status / hash are read from object metadata; they stay "unknown" until your upload pipeline sets them)
   async getAttachments(admin: CurrentUserDto, id: string) {
     const profile = await this.getProfileOr404(id);
     this.logAdminView(admin, profile, 'attachments');
 
-    type StatLike = { size: number; contentType: string; etag?: string; metaData?: Record<string, string> };
-    const items = MEDIA_FIELD_NAMES.flatMap((field) => profile[field].map((key) => ({ field, key })));
+    type StatLike = {
+      size: number;
+      contentType: string;
+      etag?: string;
+      metaData?: Record<string, string>;
+    };
+    const items = MEDIA_FIELD_NAMES.flatMap((field) =>
+      profile[field].map((key) => ({ field, key })),
+    );
 
     return Promise.all(
       items.map(async ({ field, key }) => {
@@ -5533,7 +5701,11 @@ export class VictimProfileService {
   // VP-79  (no image processing lives in this service: this validates + records the request and hands it to a worker)
   async redactMedia(admin: CurrentUserDto, id: string, key: string, data: RedactMediaDto) {
     const profile = await this.getProfileOr404(id);
-    this.assertAdminCanAccessProfile(admin, profile, AuditEventEnum.VICTIM_PROFILE_MEDIA_REDACTION_REQUESTED);
+    this.assertAdminCanAccessProfile(
+      admin,
+      profile,
+      AuditEventEnum.VICTIM_PROFILE_MEDIA_REDACTION_REQUESTED,
+    );
 
     const field = this.findMediaField(profile, key);
     if (!field) throw new NotFoundException('media_not_found_on_profile');
@@ -5577,7 +5749,15 @@ export class VictimProfileService {
       },
       orderBy: { createdAt: 'desc' },
       take: 500,
-      select: { action: true, outcome: true, userId: true, actorType: true, ipAddress: true, userAgent: true, createdAt: true },
+      select: {
+        action: true,
+        outcome: true,
+        userId: true,
+        actorType: true,
+        ipAddress: true,
+        userAgent: true,
+        createdAt: true,
+      },
     });
 
     return { key, events: rows };
@@ -5591,7 +5771,10 @@ export class VictimProfileService {
       entity: 'VictimProfile',
       entityId: id,
       action: {
-        in: [AuditEventEnum.VICTIM_PROFILE_ADMIN_VIEWED, AuditEventEnum.VICTIM_PROFILE_MEDIA_DOWNLOADED],
+        in: [
+          AuditEventEnum.VICTIM_PROFILE_ADMIN_VIEWED,
+          AuditEventEnum.VICTIM_PROFILE_MEDIA_DOWNLOADED,
+        ],
       },
     };
 
@@ -5601,7 +5784,15 @@ export class VictimProfileService {
         orderBy: { createdAt: 'desc' },
         skip,
         take: limit,
-        select: { userId: true, actorName: true, action: true, outcome: true, metadata: true, ipAddress: true, createdAt: true },
+        select: {
+          userId: true,
+          actorName: true,
+          action: true,
+          outcome: true,
+          metadata: true,
+          ipAddress: true,
+          createdAt: true,
+        },
       }),
       this.prisma.auditLog.count({ where }),
     ]);
@@ -5612,7 +5803,9 @@ export class VictimProfileService {
   async setLegalHold(admin: CurrentUserDto, id: string, data: LegalHoldDto) {
     const profile = await this.getProfileOr404(id);
     if (profile.legalHold === data.legalHold) {
-      throw new BadRequestException(data.legalHold ? 'legal_hold_already_set' : 'legal_hold_not_set');
+      throw new BadRequestException(
+        data.legalHold ? 'legal_hold_already_set' : 'legal_hold_not_set',
+      );
     }
 
     const updated = await this.conditionalUpdate(
@@ -5641,9 +5834,15 @@ export class VictimProfileService {
 
     if (profile.anonymizedAt) throw new ConflictException('victim_profile_already_anonymized');
     if (profile.legalHold) {
-      this.emitProfileFailure(admin, AuditEventEnum.VICTIM_PROFILE_ANONYMIZED, profile, 'victim_profile_under_legal_hold', {
-        outcome: AuditOutcome.DENIED,
-      });
+      this.emitProfileFailure(
+        admin,
+        AuditEventEnum.VICTIM_PROFILE_ANONYMIZED,
+        profile,
+        'victim_profile_under_legal_hold',
+        {
+          outcome: AuditOutcome.DENIED,
+        },
+      );
       throw new ForbiddenException('victim_profile_under_legal_hold');
     }
     if (!CLOSED_STATUSES.includes(profile.status) && !profile.deletedAt) {
@@ -5686,7 +5885,12 @@ export class VictimProfileService {
       }),
       this.prisma.payoutDestination.updateMany({
         where: { victimProfileId: id },
-        data: { accountNumber: null, telebirrPhone: null, accountHolder: 'ANONYMIZED', isVerified: false },
+        data: {
+          accountNumber: null,
+          telebirrPhone: null,
+          accountHolder: 'ANONYMIZED',
+          isVerified: false,
+        },
       }),
       this.prisma.victimProfileUpdate.deleteMany({ where: { profileId: id } }),
       this.prisma.victimProfileRevision.deleteMany({ where: { profileId: id } }),
@@ -5697,20 +5901,19 @@ export class VictimProfileService {
     await this.deleteMediaFiles(mediaKeys);
     await this.cache.invalidateVictimProfileEverywhere(id);
 
-    this.auditSuccess(admin, AuditEventEnum.VICTIM_PROFILE_ANONYMIZED, { ...profile, name: null }, {
-      severity: AuditSeverity.CRITICAL,
-      reason: data.reason,
-      diff: { previousStatus: profile.status },
-      metadata: { mediaFilesDeleted: mediaKeys.length },
-    });
+    this.auditSuccess(
+      admin,
+      AuditEventEnum.VICTIM_PROFILE_ANONYMIZED,
+      { ...profile, name: null },
+      {
+        severity: AuditSeverity.CRITICAL,
+        reason: data.reason,
+        diff: { previousStatus: profile.status },
+        metadata: { mediaFilesDeleted: mediaKeys.length },
+      },
+    );
     return { message: 'victim_profile_anonymized', id };
   }
-
-  // ════════════════════════════════════════════════════════════════════════════
-  // Admin: statistics (VP-91 .. VP-102)
-  // All of them honour from / to / status / category / creatorId / involvesChild / assignedTo.
-  // Row-fetching ones are capped (STATS_ROW_CAP) so a wide-open filter can't pull the whole table.
-  // ════════════════════════════════════════════════════════════════════════════
 
   private static readonly STATS_ROW_CAP = 20_000;
 
@@ -5743,7 +5946,8 @@ export class VictimProfileService {
         _min: { createdAt: true },
         orderBy: { entityId: 'asc' },
       });
-      for (const r of rows) if (r.entityId && r._min.createdAt) out.set(r.entityId, r._min.createdAt);
+      for (const r of rows)
+        if (r.entityId && r._min.createdAt) out.set(r.entityId, r._min.createdAt);
     }
     return out;
   }
@@ -5844,7 +6048,11 @@ export class VictimProfileService {
     }
 
     // The window applies to the days shown, not to which profiles are counted.
-    const { createdAt: _ignored, ...baseWhere } = this.statsWhere({ ...query, from: undefined, to: undefined }) as Prisma.VictimProfileWhereInput & { createdAt?: unknown };
+    const { createdAt: _ignored, ...baseWhere } = this.statsWhere({
+      ...query,
+      from: undefined,
+      to: undefined,
+    }) as Prisma.VictimProfileWhereInput & { createdAt?: unknown };
     const profiles = await this.prisma.victimProfile.findMany({
       where: { ...baseWhere, createdAt: { lte: end } },
       select: { id: true, createdAt: true },
@@ -5852,11 +6060,19 @@ export class VictimProfileService {
     });
     const decided = await this.firstAuditTimes(
       profiles.map((p) => p.id),
-      [...DECISION_ACTIONS, AuditEventEnum.VICTIM_PROFILE_DELETED, AuditEventEnum.VICTIM_PROFILE_WITHDRAWN],
+      [
+        ...DECISION_ACTIONS,
+        AuditEventEnum.VICTIM_PROFILE_DELETED,
+        AuditEventEnum.VICTIM_PROFILE_WITHDRAWN,
+      ],
     );
 
     const series: Array<{ date: string; pending: number }> = [];
-    for (let t = Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate()); t <= end.getTime(); t += 86_400_000) {
+    for (
+      let t = Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate());
+      t <= end.getTime();
+      t += 86_400_000
+    ) {
       const endOfDay = t + 86_400_000 - 1;
       let pending = 0;
       for (const p of profiles) {
@@ -5916,7 +6132,11 @@ export class VictimProfileService {
   // VP-98  (monthly series of PAID support payments: gross, recipient share, platform share, provider fee, paid out)
   async getStatsFunding(_admin: CurrentUserDto, query: StatsQueryDto) {
     const { from, to } = this.parseRange(query);
-    const { createdAt: _ignored, ...profileWhere } = this.statsWhere({ ...query, from: undefined, to: undefined }) as Prisma.VictimProfileWhereInput & { createdAt?: unknown };
+    const { createdAt: _ignored, ...profileWhere } = this.statsWhere({
+      ...query,
+      from: undefined,
+      to: undefined,
+    }) as Prisma.VictimProfileWhereInput & { createdAt?: unknown };
 
     const payments = await this.prisma.payment.findMany({
       where: {
@@ -5924,7 +6144,9 @@ export class VictimProfileService {
         status: 'PAID',
         support: { status: { not: 'CANCELLED' } },
         victimProfile: { is: profileWhere },
-        ...(from || to ? { paidAt: { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) } } : {}),
+        ...(from || to
+          ? { paidAt: { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) } }
+          : {}),
       },
       select: {
         paidAt: true,
@@ -5932,14 +6154,32 @@ export class VictimProfileService {
         amount: true,
         chapaFee: true,
         allocations: {
-          select: { partyType: true, amount: true, disbursements: { where: { status: 'PAID_OUT' }, select: { amount: true } } },
+          select: {
+            partyType: true,
+            amount: true,
+            disbursements: { where: { status: 'PAID_OUT' }, select: { amount: true } },
+          },
         },
       },
       take: VictimProfileService.STATS_ROW_CAP,
     });
 
-    type Row = { gross: Prisma.Decimal; recipient: Prisma.Decimal; platform: Prisma.Decimal; providerFee: Prisma.Decimal; paidOut: Prisma.Decimal; payments: number };
-    const zero = (): Row => ({ gross: new Prisma.Decimal(0), recipient: new Prisma.Decimal(0), platform: new Prisma.Decimal(0), providerFee: new Prisma.Decimal(0), paidOut: new Prisma.Decimal(0), payments: 0 });
+    type Row = {
+      gross: Prisma.Decimal;
+      recipient: Prisma.Decimal;
+      platform: Prisma.Decimal;
+      providerFee: Prisma.Decimal;
+      paidOut: Prisma.Decimal;
+      payments: number;
+    };
+    const zero = (): Row => ({
+      gross: new Prisma.Decimal(0),
+      recipient: new Prisma.Decimal(0),
+      platform: new Prisma.Decimal(0),
+      providerFee: new Prisma.Decimal(0),
+      paidOut: new Prisma.Decimal(0),
+      payments: 0,
+    });
     const total = zero();
     const months = new Map<string, Row>();
 
@@ -5976,7 +6216,9 @@ export class VictimProfileService {
       currency: 'ETB',
       truncated: payments.length >= VictimProfileService.STATS_ROW_CAP,
       totals: fmt(total),
-      series: [...months.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([month, r]) => ({ month, ...fmt(r) })),
+      series: [...months.entries()]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([month, r]) => ({ month, ...fmt(r) })),
     };
   }
 
@@ -5996,7 +6238,10 @@ export class VictimProfileService {
       { bucket: '100_plus', min: 100, count: 0 },
     ];
     for (const r of rows) {
-      const pct = new Prisma.Decimal(r.totalRaised).div(r.supportGoal as Prisma.Decimal).mul(100).toNumber();
+      const pct = new Prisma.Decimal(r.totalRaised)
+        .div(r.supportGoal as Prisma.Decimal)
+        .mul(100)
+        .toNumber();
       for (let i = buckets.length - 1; i >= 0; i--) {
         if (pct >= buckets[i].min) {
           buckets[i].count += 1;
@@ -6004,24 +6249,52 @@ export class VictimProfileService {
         }
       }
     }
-    return { profilesWithGoal: rows.length, buckets: buckets.map(({ bucket, count }) => ({ bucket, count })) };
+    return {
+      profilesWithGoal: rows.length,
+      buckets: buckets.map(({ bucket, count }) => ({ bucket, count })),
+    };
   }
 
   // VP-100
   async getStatsChildInvolved(_admin: CurrentUserDto, query: StatsQueryDto) {
     const base = this.statsWhere({ ...query, involvesChild: true });
-    const [total, byStatus, awaitingFirst, awaitingSecond, reviewed, published] = await Promise.all([
-      this.prisma.victimProfile.count({ where: base }),
-      this.prisma.victimProfile.groupBy({ by: ['status'], where: base, _count: { _all: true }, orderBy: { status: 'asc' } }),
-      this.prisma.victimProfile.count({
-        where: { AND: [base, { isChildSafetyReviewed: false, childSafetyFirstConfirmedByUserId: null, status: { in: PIPELINE_STATUSES } }] },
-      }),
-      this.prisma.victimProfile.count({
-        where: { AND: [base, { isChildSafetyReviewed: false, childSafetyFirstConfirmedByUserId: { not: null } }] },
-      }),
-      this.prisma.victimProfile.count({ where: { AND: [base, { isChildSafetyReviewed: true }] } }),
-      this.prisma.victimProfile.count({ where: { AND: [base, { status: VictimProfileStatus.PUBLISHED }] } }),
-    ]);
+    const [total, byStatus, awaitingFirst, awaitingSecond, reviewed, published] = await Promise.all(
+      [
+        this.prisma.victimProfile.count({ where: base }),
+        this.prisma.victimProfile.groupBy({
+          by: ['status'],
+          where: base,
+          _count: { _all: true },
+          orderBy: { status: 'asc' },
+        }),
+        this.prisma.victimProfile.count({
+          where: {
+            AND: [
+              base,
+              {
+                isChildSafetyReviewed: false,
+                childSafetyFirstConfirmedByUserId: null,
+                status: { in: PIPELINE_STATUSES },
+              },
+            ],
+          },
+        }),
+        this.prisma.victimProfile.count({
+          where: {
+            AND: [
+              base,
+              { isChildSafetyReviewed: false, childSafetyFirstConfirmedByUserId: { not: null } },
+            ],
+          },
+        }),
+        this.prisma.victimProfile.count({
+          where: { AND: [base, { isChildSafetyReviewed: true }] },
+        }),
+        this.prisma.victimProfile.count({
+          where: { AND: [base, { status: VictimProfileStatus.PUBLISHED }] },
+        }),
+      ],
+    );
 
     return {
       total,
@@ -6043,13 +6316,17 @@ export class VictimProfileService {
     const [assigned, claimed, decisions] = await Promise.all([
       this.prisma.victimProfile.groupBy({
         by: ['assignedReviewerId'],
-        where: { AND: [where, { assignedReviewerId: { not: null }, status: { in: PIPELINE_STATUSES } }] },
+        where: {
+          AND: [where, { assignedReviewerId: { not: null }, status: { in: PIPELINE_STATUSES } }],
+        },
         _count: { _all: true },
         orderBy: { assignedReviewerId: 'asc' },
       }),
       this.prisma.victimProfile.groupBy({
         by: ['claimedByUserId'],
-        where: { AND: [where, { claimedByUserId: { not: null }, status: { in: PIPELINE_STATUSES } }] },
+        where: {
+          AND: [where, { claimedByUserId: { not: null }, status: { in: PIPELINE_STATUSES } }],
+        },
         _count: { _all: true },
         orderBy: { claimedByUserId: 'asc' },
       }),
@@ -6059,7 +6336,9 @@ export class VictimProfileService {
           action: { in: [...DECISION_ACTIONS, AuditEventEnum.VICTIM_PROFILE_CHANGES_REQUESTED] },
           outcome: AuditOutcome.SUCCESS,
           userId: { not: null },
-          ...(from || to ? { createdAt: { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) } } : {}),
+          ...(from || to
+            ? { createdAt: { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) } }
+            : {}),
         },
         select: { userId: true, entityId: true, action: true, createdAt: true },
         orderBy: { createdAt: 'desc' },
@@ -6068,15 +6347,35 @@ export class VictimProfileService {
     ]);
 
     const created = new Map<string, Date>();
-    for (const part of chunk([...new Set(decisions.map((d) => d.entityId).filter((x): x is string => !!x))], 1000)) {
-      const ps = await this.prisma.victimProfile.findMany({ where: { id: { in: part } }, select: { id: true, createdAt: true } });
+    for (const part of chunk(
+      [...new Set(decisions.map((d) => d.entityId).filter((x): x is string => !!x))],
+      1000,
+    )) {
+      const ps = await this.prisma.victimProfile.findMany({
+        where: { id: { in: part } },
+        select: { id: true, createdAt: true },
+      });
       for (const p of ps) created.set(p.id, p.createdAt);
     }
 
-    type Row = { assigned: number; claimed: number; published: number; rejected: number; changesRequested: number; hours: number[] };
+    type Row = {
+      assigned: number;
+      claimed: number;
+      published: number;
+      rejected: number;
+      changesRequested: number;
+      hours: number[];
+    };
     const admins = new Map<string, Row>();
     const row = (id: string): Row => {
-      const r = admins.get(id) ?? { assigned: 0, claimed: 0, published: 0, rejected: 0, changesRequested: 0, hours: [] };
+      const r = admins.get(id) ?? {
+        assigned: 0,
+        claimed: 0,
+        published: 0,
+        rejected: 0,
+        changesRequested: 0,
+        hours: [],
+      };
       admins.set(id, r);
       return r;
     };
@@ -6097,26 +6396,42 @@ export class VictimProfileService {
       name: names.get(adminId) ?? null,
       currentlyAssigned: r.assigned,
       currentlyClaimed: r.claimed,
-      decisions: { published: r.published, rejected: r.rejected, changesRequested: r.changesRequested },
+      decisions: {
+        published: r.published,
+        rejected: r.rejected,
+        changesRequested: r.changesRequested,
+      },
       turnaround: summarize(r.hours.filter((h) => h >= 0)),
     }));
   }
 
   // VP-102
   async getStatsOverview(admin: CurrentUserDto, query: StatsQueryDto) {
-    const [byStatus, byCategory, aging, approval, funding, child, reviewTime, openFlags, openAppeals, paused] =
-      await Promise.all([
-        this.getStatsByStatus(admin, query),
-        this.getStatsByCategory(admin, query),
-        this.getStatsAging(admin, query),
-        this.getStatsApprovalRate(admin, query),
-        this.getStatsFunding(admin, query),
-        this.getStatsChildInvolved(admin, query),
-        this.getStatsReviewTime(admin, query),
-        this.prisma.victimProfileFlag.count({ where: { status: VictimProfileFlagStatus.OPEN } }),
-        this.prisma.victimProfileAppeal.count({ where: { status: VictimProfileAppealStatus.OPEN } }),
-        this.prisma.victimProfile.count({ where: { AND: [this.statsWhere(query), { donationsPaused: true }] } }),
-      ]);
+    const [
+      byStatus,
+      byCategory,
+      aging,
+      approval,
+      funding,
+      child,
+      reviewTime,
+      openFlags,
+      openAppeals,
+      paused,
+    ] = await Promise.all([
+      this.getStatsByStatus(admin, query),
+      this.getStatsByCategory(admin, query),
+      this.getStatsAging(admin, query),
+      this.getStatsApprovalRate(admin, query),
+      this.getStatsFunding(admin, query),
+      this.getStatsChildInvolved(admin, query),
+      this.getStatsReviewTime(admin, query),
+      this.prisma.victimProfileFlag.count({ where: { status: VictimProfileFlagStatus.OPEN } }),
+      this.prisma.victimProfileAppeal.count({ where: { status: VictimProfileAppealStatus.OPEN } }),
+      this.prisma.victimProfile.count({
+        where: { AND: [this.statsWhere(query), { donationsPaused: true }] },
+      }),
+    ]);
 
     return {
       totals: {
@@ -6132,7 +6447,10 @@ export class VictimProfileService {
       approvalRate: approval,
       funding: funding.totals,
       childInvolved: child,
-      reviewTime: { timeToFirstReview: reviewTime.timeToFirstReview, timeToDecision: reviewTime.timeToDecision },
+      reviewTime: {
+        timeToFirstReview: reviewTime.timeToFirstReview,
+        timeToDecision: reviewTime.timeToDecision,
+      },
       queues: { openFlags, openAppeals },
     };
   }

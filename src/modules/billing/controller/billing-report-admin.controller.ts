@@ -1,7 +1,3 @@
-// src/modules/billing/controller/billing-report-admin.controller.ts
-//
-// Ledger, daily close, liabilities, CSV exports and statistics
-// (BL-77 to BL-82, BL-85 to BL-92). Read-only.
 import { Controller, Get, Query, Res } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
@@ -35,7 +31,9 @@ export class BillingReportAdminController {
   // BL-77
   @Get('summary')
   @RequirePermissions(P.SUPPORT_PAYMENT_READ)
-  @ApiOperation({ summary: 'Admin: totals by period and type: collected, allocated, refunded, paid out' })
+  @ApiOperation({
+    summary: 'Admin: totals by period and type: collected, allocated, refunded, paid out',
+  })
   summary(@Query() q: DateRangeDto) {
     return this.svc.summary(q);
   }
@@ -61,7 +59,9 @@ export class BillingReportAdminController {
   @Get('liabilities/by-party')
   @Roles(RolesEnum.SUPER_ADMIN)
   @RequirePermissions(P.SUPPORT_PAYMENT_READ)
-  @ApiOperation({ summary: 'Super admin: money still owed to each institution, profile and informant' })
+  @ApiOperation({
+    summary: 'Super admin: money still owed to each institution, profile and informant',
+  })
   liabilitiesByParty(@Query() q: LiabilitiesQueryDto) {
     return this.svc.liabilitiesByParty(q);
   }
@@ -73,7 +73,9 @@ export class BillingReportAdminController {
   @RequirePermissions(P.BILLING_EXPORT)
   @RequireReauthentication()
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
-  @ApiOperation({ summary: 'Admin: CSV of payments, row-capped and audited. Payer identity is left out.' })
+  @ApiOperation({
+    summary: 'Admin: CSV of payments, row-capped and audited. Payer identity is left out.',
+  })
   async exportPayments(
     @CurrentUser() admin: CurrentUserDto,
     @Query() q: BillingExportQueryDto,
@@ -88,7 +90,9 @@ export class BillingReportAdminController {
   @RequirePermissions(P.BILLING_EXPORT)
   @RequireReauthentication()
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
-  @ApiOperation({ summary: 'Admin: CSV of disbursements, row-capped and audited. Account numbers are left out.' })
+  @ApiOperation({
+    summary: 'Admin: CSV of disbursements, row-capped and audited. Account numbers are left out.',
+  })
   async exportDisbursements(
     @CurrentUser() admin: CurrentUserDto,
     @Query() q: BillingExportQueryDto,

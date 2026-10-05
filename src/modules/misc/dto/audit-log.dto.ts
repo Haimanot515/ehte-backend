@@ -34,10 +34,6 @@ const HTTP_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'
 
 const trim = ({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim() : value);
 
-// ─────────────────────────────────────────────
-// PAGING
-// ─────────────────────────────────────────────
-
 /**
  * Two paging modes:
  *  - cursor (preferred): pass `cursor` from the previous response's meta.nextCursor.
@@ -70,10 +66,6 @@ export class AuditPagingDto {
   @Max(100)
   limit?: number = 20;
 }
-
-// ─────────────────────────────────────────────
-// FILTERS (shared by list, security view, export, saved filters)
-// ─────────────────────────────────────────────
 
 export class AuditLogFiltersDto {
   @ApiPropertyOptional({ description: 'Free text over entityLabel, reason and actorName.' })
@@ -204,10 +196,6 @@ export class AuditLogFiltersDto {
 /** List / security / export query: every filter plus paging (paging is ignored by export). */
 export class GetAuditLogsDto extends IntersectionType(AuditLogFiltersDto, AuditPagingDto) {}
 
-// ─────────────────────────────────────────────
-// SCOPED VIEWS
-// ─────────────────────────────────────────────
-
 export class AuditUserScopeQueryDto extends AuditPagingDto {
   @ApiPropertyOptional({
     enum: ['actor', 'target', 'both'],
@@ -218,10 +206,6 @@ export class AuditUserScopeQueryDto extends AuditPagingDto {
   @IsIn(['actor', 'target', 'both'])
   as?: 'actor' | 'target' | 'both' = 'actor';
 }
-
-// ─────────────────────────────────────────────
-// STATS
-// ─────────────────────────────────────────────
 
 export class TimelineQueryDto {
   @ApiPropertyOptional({
@@ -255,10 +239,6 @@ export class AuditStatsQueryDto {
   limit?: number = 10;
 }
 
-// ─────────────────────────────────────────────
-// SAVED FILTERS
-// ─────────────────────────────────────────────
-
 export class CreateSavedFilterDto {
   @ApiProperty({ example: 'Denied logins this week' })
   @Transform(trim)
@@ -273,10 +253,6 @@ export class CreateSavedFilterDto {
   @Type(() => AuditLogFiltersDto)
   filter!: AuditLogFiltersDto;
 }
-
-// ─────────────────────────────────────────────
-// ALERT RULES
-// ─────────────────────────────────────────────
 
 export class CreateAuditAlertDto {
   @ApiProperty({ example: 'Repeated denials' })
@@ -338,10 +314,6 @@ export class CreateAuditAlertDto {
 
 export class UpdateAuditAlertDto extends PartialType(CreateAuditAlertDto) {}
 
-// ─────────────────────────────────────────────
-// INTEGRITY
-// ─────────────────────────────────────────────
-
 export class IntegrityVerifyQueryDto {
   @ApiPropertyOptional({ example: '2026-08-01T00:00:00.000Z' })
   @IsOptional()
@@ -353,10 +325,6 @@ export class IntegrityVerifyQueryDto {
   @IsDateString()
   to?: string;
 }
-
-// ─────────────────────────────────────────────
-// RETENTION
-// ─────────────────────────────────────────────
 
 export class PurgePreviewQueryDto {
   @ApiProperty({
@@ -381,19 +349,11 @@ export class PurgeAuditLogsDto extends PurgePreviewQueryDto {
   confirmToken!: string;
 }
 
-// ═════════════════════════════════════════════
-// NEW ENDPOINTS (AL-01 to AL-56)
-// ═════════════════════════════════════════════
-
 const boolFromQuery = ({ value }: { value: unknown }) => {
   if (value === 'true' || value === true) return true;
   if (value === 'false' || value === false) return false;
   return value;
 };
-
-// ─────────────────────────────────────────────
-// 1. Legal hold
-// ─────────────────────────────────────────────
 
 /** AL-01. legalHold true sets a hold on one row, false clears it (clearing needs a second Super Admin). */
 export class SetRowLegalHoldDto {
@@ -486,10 +446,6 @@ export class LegalHoldsQueryDto extends AuditPagingDto {
   caseReference?: string;
 }
 
-// ─────────────────────────────────────────────
-// 2. Purge and retention
-// ─────────────────────────────────────────────
-
 export class PurgeRunsQueryDto extends AuditPagingDto {
   @ApiPropertyOptional({ enum: ['STARTED', 'ARCHIVED', 'COMPLETED', 'FAILED'] })
   @IsOptional()
@@ -499,11 +455,17 @@ export class PurgeRunsQueryDto extends AuditPagingDto {
 
 /** AL-11. The purge runs on its own at runAt, which gives other admins time to object. */
 export class SchedulePurgeDto {
-  @ApiProperty({ example: '2025-01-01T00:00:00.000Z', description: 'Rows older than this are purged.' })
+  @ApiProperty({
+    example: '2025-01-01T00:00:00.000Z',
+    description: 'Rows older than this are purged.',
+  })
   @IsDateString()
   olderThan!: string;
 
-  @ApiProperty({ example: '2026-11-01T02:00:00.000Z', description: 'When the purge runs. Must leave the minimum notice period.' })
+  @ApiProperty({
+    example: '2026-11-01T02:00:00.000Z',
+    description: 'When the purge runs. Must leave the minimum notice period.',
+  })
   @IsDateString()
   runAt!: string;
 
@@ -525,7 +487,10 @@ export class CancelPurgeScheduleDto {
 }
 
 export class PurgeScheduleQueryDto extends AuditPagingDto {
-  @ApiPropertyOptional({ enum: ['SCHEDULED', 'RUNNING', 'EXECUTED', 'FAILED', 'CANCELLED'], description: 'Default SCHEDULED.' })
+  @ApiPropertyOptional({
+    enum: ['SCHEDULED', 'RUNNING', 'EXECUTED', 'FAILED', 'CANCELLED'],
+    description: 'Default SCHEDULED.',
+  })
   @IsOptional()
   @IsIn(['SCHEDULED', 'RUNNING', 'EXECUTED', 'FAILED', 'CANCELLED'])
   status?: 'SCHEDULED' | 'RUNNING' | 'EXECUTED' | 'FAILED' | 'CANCELLED';
@@ -538,7 +503,11 @@ export class RetentionPolicyItemDto {
   @IsIn(RETENTION_SCOPES)
   scope!: (typeof RETENTION_SCOPES)[number];
 
-  @ApiProperty({ example: 'Report', description: "Use 'DEFAULT' for the default, an entity name for ENTITY, or a severity for SEVERITY." })
+  @ApiProperty({
+    example: 'Report',
+    description:
+      "Use 'DEFAULT' for the default, an entity name for ENTITY, or a severity for SEVERITY.",
+  })
   @Transform(trim)
   @IsString()
   @MinLength(1)
@@ -571,12 +540,10 @@ export class UpdateRetentionDto {
   reason!: string;
 }
 
-// ─────────────────────────────────────────────
-// 3. Integrity
-// ─────────────────────────────────────────────
-
 export class IntegrityRunsQueryDto extends AuditPagingDto {
-  @ApiPropertyOptional({ description: 'true = only clean runs, false = only runs that found a break.' })
+  @ApiPropertyOptional({
+    description: 'true = only clean runs, false = only runs that found a break.',
+  })
   @IsOptional()
   @Transform(boolFromQuery)
   @IsBoolean()
@@ -598,7 +565,13 @@ export class IntegrityScheduleDto {
 }
 
 export class HealthHistoryQueryDto {
-  @ApiPropertyOptional({ example: 24, default: 24, minimum: 1, maximum: 720, description: 'How many hours back.' })
+  @ApiPropertyOptional({
+    example: 24,
+    default: 24,
+    minimum: 1,
+    maximum: 720,
+    description: 'How many hours back.',
+  })
   @IsOptional()
   @Type(() => Number)
   @IsInt()
@@ -607,17 +580,15 @@ export class HealthHistoryQueryDto {
   hours?: number = 24;
 }
 
-// ─────────────────────────────────────────────
-// 4. Alert rules
-// ─────────────────────────────────────────────
-
 export class AlertTriggersQueryDto extends AuditPagingDto {
   @ApiPropertyOptional({ description: 'Only triggers of this rule.' })
   @IsOptional()
   @IsUUID()
   alertId?: string;
 
-  @ApiPropertyOptional({ description: 'false = only unacknowledged (default for the queue), true = only acknowledged.' })
+  @ApiPropertyOptional({
+    description: 'false = only unacknowledged (default for the queue), true = only acknowledged.',
+  })
   @IsOptional()
   @Transform(boolFromQuery)
   @IsBoolean()
@@ -625,7 +596,13 @@ export class AlertTriggersQueryDto extends AuditPagingDto {
 }
 
 export class TestAlertDto {
-  @ApiPropertyOptional({ example: 24, default: 24, minimum: 1, maximum: 168, description: 'Hours of recent data to replay.' })
+  @ApiPropertyOptional({
+    example: 24,
+    default: 24,
+    minimum: 1,
+    maximum: 168,
+    description: 'Hours of recent data to replay.',
+  })
   @IsOptional()
   @Type(() => Number)
   @IsInt()
@@ -677,10 +654,6 @@ export class ApplyAlertTemplateDto {
   cooldownMinutes?: number;
 }
 
-// ─────────────────────────────────────────────
-// 5. Saved filters
-// ─────────────────────────────────────────────
-
 export class UpdateSavedFilterDto {
   @ApiPropertyOptional({ example: 'Denied logins this week' })
   @IsOptional()
@@ -700,7 +673,10 @@ export class UpdateSavedFilterDto {
 
 /** Leave userIds out to share with every admin. */
 export class ShareSavedFilterDto {
-  @ApiPropertyOptional({ type: [String], description: 'Share with these admins only. Omit to share with all admins.' })
+  @ApiPropertyOptional({
+    type: [String],
+    description: 'Share with these admins only. Omit to share with all admins.',
+  })
   @IsOptional()
   @IsArray()
   @ArrayMaxSize(100)
@@ -709,7 +685,10 @@ export class ShareSavedFilterDto {
 }
 
 export class UnshareSavedFilterDto {
-  @ApiPropertyOptional({ type: [String], description: 'Stop sharing with these admins only. Omit to stop sharing completely.' })
+  @ApiPropertyOptional({
+    type: [String],
+    description: 'Stop sharing with these admins only. Omit to stop sharing completely.',
+  })
   @IsOptional()
   @IsArray()
   @ArrayMaxSize(100)
@@ -717,20 +696,12 @@ export class UnshareSavedFilterDto {
   userIds?: string[];
 }
 
-// ─────────────────────────────────────────────
-// 6. Exports
-// ─────────────────────────────────────────────
-
 /** AL-36. The filters of GET /audit-logs, without paging: a job exports everything that matches. */
 export class CreateAuditExportJobDto extends OmitType(GetAuditLogsDto, [
   'cursor',
   'page',
   'limit',
 ] as const) {}
-
-// ─────────────────────────────────────────────
-// 7. Views for users and cases
-// ─────────────────────────────────────────────
 
 /** AL-41, AL-42 */
 export class MyActivityQueryDto extends AuditPagingDto {
@@ -758,13 +729,12 @@ export class AuditSummaryQueryDto {
   to?: string;
 }
 
-// ─────────────────────────────────────────────
-// 8. Statistics
-// ─────────────────────────────────────────────
-
 /** Shared by every /audit-logs/stats/* route below. */
 export class AuditStatsFilterDto {
-  @ApiPropertyOptional({ example: '2026-09-01T00:00:00.000Z', description: 'Default: 30 days before now.' })
+  @ApiPropertyOptional({
+    example: '2026-09-01T00:00:00.000Z',
+    description: 'Default: 30 days before now.',
+  })
   @IsOptional()
   @IsDateString()
   from?: string;
@@ -805,7 +775,11 @@ export class AuditBucketStatsQueryDto extends AuditStatsFilterDto {
 }
 
 export class DeniedStatsQueryDto extends AuditBucketStatsQueryDto {
-  @ApiPropertyOptional({ enum: ['path', 'action'], default: 'action', description: 'What to group the denied events by.' })
+  @ApiPropertyOptional({
+    enum: ['path', 'action'],
+    default: 'action',
+    description: 'What to group the denied events by.',
+  })
   @IsOptional()
   @IsIn(['path', 'action'])
   by?: 'path' | 'action';

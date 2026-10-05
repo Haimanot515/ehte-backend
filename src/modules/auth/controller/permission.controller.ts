@@ -32,13 +32,6 @@ import {
   PermissionDiffQueryDto,
 } from '../dto/permission.dto';
 
-// Every route here is admin-only by design — no self-service "/my-permissions" route exists.
-//
-// All mutating routes (POST/PUT/DELETE) require re-authentication: the client must send the
-// admin's current `password` in the JSON body (the guard reads and strips it before the DTO
-// is built). DELETE bodies are stripped by some proxies, so prefer POST roles/:roleId/revoke-many
-// over DELETE roles/:roleId/:permissionName.
-
 @Controller('permissions')
 @ApiTags('Permissions')
 @ApiBearerAuth('access-token')
@@ -52,10 +45,6 @@ export class PermissionController {
   async findAll() {
     return this.service.findAll();
   }
-
-  // ───────────────────────────── NEW ENDPOINTS ─────────────────────────────
-  // Static paths are declared above ':name' on purpose, and above the existing
-  // 'roles/:roleId' routes, so they are never read as a permission name.
 
   // AR-47
   @Get('groups')
@@ -156,7 +145,9 @@ export class PermissionController {
   @RequirePermissions(PermissionsEnum.PERMISSION_READ)
   @ApiOperation({ summary: 'List all roles that currently have a given permission' })
   @ApiParam({ name: 'permissionName', enum: PermissionsEnum })
-  async findRolesForPermission(@Param('permissionName', new ParseEnumPipe(PermissionsEnum)) permissionName: PermissionsEnum) {
+  async findRolesForPermission(
+    @Param('permissionName', new ParseEnumPipe(PermissionsEnum)) permissionName: PermissionsEnum,
+  ) {
     return this.service.findRolesForPermission(permissionName);
   }
 

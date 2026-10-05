@@ -1,7 +1,4 @@
-import {
-  ApiProperty,
-  ApiPropertyOptional,
-} from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   ArrayMinSize,
   ArrayUnique,
@@ -62,10 +59,6 @@ export class SetPermissionsDto {
   @IsEnum(PermissionsEnum, { each: true })
   permissions: PermissionsEnum[];
 }
-
-// ═════════════════════════════════════════════
-// NEW ENDPOINTS (AR-xx) — added to the existing DTOs
-// ═════════════════════════════════════════════
 
 // New DTOs for the endpoints added to PermissionController (AR-52, AR-55).
 

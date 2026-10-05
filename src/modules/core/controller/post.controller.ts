@@ -593,10 +593,6 @@ export class PostController {
     return this.postService.unpublish(user, postId);
   }
 
-  // ---------------------------------------------------------------------------
-  // NEW routes below. Every one requires login (no @AllowAnonymous).
-  // ---------------------------------------------------------------------------
-
   // NEW — PATCH /posts/:id/read — read state is stored per admin.
   @Patch(':id/read')
   @ApiBearerAuth('access-token')

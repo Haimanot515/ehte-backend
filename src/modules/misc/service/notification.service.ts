@@ -84,10 +84,6 @@ import {
   NotificationOutboundChannel,
 } from './notification-channel.provider';
 
-// ─────────────────────────────────────────────
-// Constants
-// ─────────────────────────────────────────────
-
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 100;
 const MAX_EXPORT_ROWS = 50_000;
@@ -164,10 +160,6 @@ const DEVICE_STALE_MS = 90 * 24 * 60 * 60 * 1000;
 
 const DEFAULT_TIMEZONE = process.env.NOTIFICATION_DEFAULT_TIMEZONE || 'Africa/Addis_Ababa';
 
-// ─────────────────────────────────────────────
-// Input types
-// ─────────────────────────────────────────────
-
 /** Fields shared by every way of creating a notification. */
 export interface NotificationContent {
   type: NotificationType;
@@ -238,10 +230,6 @@ type PlanRow = {
 
 type PagingInput = { cursor?: string; page?: number; limit?: number };
 
-// ─────────────────────────────────────────────
-// Service
-// ─────────────────────────────────────────────
-
 @Injectable()
 export class NotificationService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(NotificationService.name);
@@ -277,10 +265,6 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
       this.providers.set(p.channel, p);
     }
   }
-
-  // ───────────────────────────────────────────
-  // LIFECYCLE (delivery worker)
-  // ───────────────────────────────────────────
 
   onModuleInit() {
     if (process.env.NOTIFICATION_WORKER_ENABLED === 'false') {
@@ -318,10 +302,6 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
       this.ticking = false;
     }
   }
-
-  // ───────────────────────────────────────────
-  // CREATE
-  // ───────────────────────────────────────────
 
   /**
    * Create one notification for one user, then plan its outside deliveries.
@@ -459,10 +439,6 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  // ───────────────────────────────────────────
-  // READ  (everything below is scoped to the caller's own rows)
-  // ───────────────────────────────────────────
-
   async getMyNotifications(user: CurrentUserDto, query: NotificationQueryDto = {}) {
     return this.paginateNotifications(this.myFilters(user.id, query), query);
   }
@@ -518,10 +494,6 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     }
     return { total, byType };
   }
-
-  // ───────────────────────────────────────────
-  // UPDATE / DELETE
-  // ───────────────────────────────────────────
 
   /**
    * Mark one of MY notifications as read. Someone else's id and an unknown id
@@ -596,10 +568,6 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     });
     return { count: result.count };
   }
-
-  // ───────────────────────────────────────────
-  // PREFERENCES
-  // ───────────────────────────────────────────
 
   /**
    * One entry per notification type. A null channel means "default policy":
@@ -677,10 +645,6 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     return this.getMyPreferences(user);
   }
 
-  // ───────────────────────────────────────────
-  // DEVICES (push tokens)
-  // ───────────────────────────────────────────
-
   async registerDevice(user: CurrentUserDto, dto: RegisterDeviceDto) {
     const userId = this.requireUserId(user);
     const now = new Date();
@@ -714,10 +678,6 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     });
     return { removed: result.count > 0 };
   }
-
-  // ───────────────────────────────────────────
-  // LIVE STREAM (SSE)
-  // ───────────────────────────────────────────
 
   /**
    * Emits { kind: 'refresh' } whenever the caller's inbox or unread count may
@@ -781,10 +741,6 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
       for (const subject of set) subject.next({ data: { kind: 'refresh' } });
     }
   }
-
-  // ───────────────────────────────────────────
-  // BROADCASTS (admin)
-  // ───────────────────────────────────────────
 
   /**
    * Audience send with optional template, scheduling and dry run.
@@ -1165,10 +1121,6 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
         .catch(() => undefined);
     }
   }
-
-  // ───────────────────────────────────────────
-  // SENT HISTORY + DELIVERY HEALTH (admin)
-  // ───────────────────────────────────────────
 
   /**
    * Notifications I sent one-to-one or to admins. Broadcast rows are left out
@@ -1634,10 +1586,6 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     return { requested: ids.length, requeued: result.count };
   }
 
-  // ───────────────────────────────────────────
-  // TEMPLATES (admin)
-  // ───────────────────────────────────────────
-
   async listTemplates() {
     return this.prisma.notificationTemplate.findMany({
       orderBy: [{ type: 'asc' }, { language: 'asc' }],
@@ -1702,10 +1650,6 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
 
     return after;
   }
-
-  // ───────────────────────────────────────────
-  // DATA-SUBJECT REQUESTS (SUPER_ADMIN)
-  // ───────────────────────────────────────────
 
   /** Everything held about one user's notifications. Push tokens are masked. Audited (fails closed). */
   async exportForUser(userId: string, admin: CurrentUserDto) {
@@ -1805,10 +1749,6 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
 
     return { userId, ...summary };
   }
-
-  // ───────────────────────────────────────────
-  // DELIVERY PLANNING
-  // ───────────────────────────────────────────
 
   /**
    * Decides, per notification and outside channel, whether a delivery row is
@@ -2013,10 +1953,6 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
-  // ───────────────────────────────────────────
-  // DELIVERY WORKER
-  // ───────────────────────────────────────────
-
   private async processDeliveries(): Promise<void> {
     await this.recoverStuckDeliveries();
 
@@ -2180,10 +2116,6 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  // ───────────────────────────────────────────
-  // MAINTENANCE
-  // ───────────────────────────────────────────
-
   private async runMaintenance() {
     const now = Date.now();
     const readDays = await this.effectiveReadRetentionDays();
@@ -2213,17 +2145,6 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
       this.logger.error(`Maintenance failed: ${this.safeError(err)}`);
     }
   }
-
-  // ═════════════════════════════════════════════════════════════════════════
-  // NEW ENDPOINTS (NF-01 to NF-63)
-  // Everything below was added. The methods above are unchanged except for the
-  // small hooks marked "NEW HOOK" (planDeliveries, claimDeliveries, dispatchOne,
-  // broadcast, runBroadcast, runMaintenance, eraseForUser).
-  // ═════════════════════════════════════════════════════════════════════════
-
-  // ───────────────────────────────────────────
-  // 1. USER: OWN NOTIFICATIONS
-  // ───────────────────────────────────────────
 
   /** NF-01: every type with its locked flag and default channel policy, for a preferences screen. */
   getNotificationTypes() {
@@ -2525,10 +2446,6 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     ]);
     return { data, meta: this.offsetMeta(page, limit, total, data.length) };
   }
-
-  // ───────────────────────────────────────────
-  // 2. TEMPLATES AND BROADCASTS (admin)
-  // ───────────────────────────────────────────
 
   /** NF-23 */
   async getTemplate(id: string) {
@@ -3038,10 +2955,6 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  // ───────────────────────────────────────────
-  // 3. DELIVERY AND BOUNCES (admin)
-  // ───────────────────────────────────────────
-
   /** NF-35: retry every FAILED delivery that matches the filter, up to a safety cap per call. */
   async retryAllFailedDeliveries(dto: RetryAllFailedDeliveriesDto, actor: CurrentUserDto) {
     const limit = Math.min(dto.limit ?? 5000, MAX_RETRY_ALL);
@@ -3368,10 +3281,6 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     return { id: bounce.id };
   }
 
-  // ───────────────────────────────────────────
-  // 4. PER-USER SUPPORT (admin)
-  // ───────────────────────────────────────────
-
   /** NF-42: for a compromised account. Their push tokens stop working at once. */
   async revokeUserDevices(userId: string, dto: AdminReasonDto, admin: CurrentUserDto) {
     await this.requireUserExists(userId);
@@ -3416,10 +3325,6 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     await this.requireUserExists(userId);
     return this.listDeliveries({ ...query, userId });
   }
-
-  // ───────────────────────────────────────────
-  // 5. COMPANY-WIDE ANALYTICS (admin)
-  // ───────────────────────────────────────────
 
   /** NF-50: one row per recipient. */
   async getAllByRecipient(query: ByRecipientQueryDto) {
@@ -3694,10 +3599,6 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  // ───────────────────────────────────────────
-  // 6. GOVERNANCE AND QUEUE (super admin)
-  // ───────────────────────────────────────────
-
   /** NF-58: runs the expired-notification cleanup now instead of waiting for the hourly pass. */
   async purgeExpiredNow(dto: AdminReasonDto, admin: CurrentUserDto) {
     const result = await this.deleteExpired();
@@ -3907,10 +3808,6 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  // ───────────────────────────────────────────
-  // AUDIT ALERTS → SUPER ADMIN INBOX
-  // ───────────────────────────────────────────
-
   /**
    * AuditLogService cannot call this service directly (this one depends on it), so it
    * emits an event. Every active SUPER_ADMIN gets an inbox notice. SECURITY_ALERT is a
@@ -3945,10 +3842,6 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
       );
     }
   }
-
-  // ───────────────────────────────────────────
-  // NEW: inbox notices for the new workflows
-  // ───────────────────────────────────────────
 
   /** A background export finished or failed. Tells only the person who asked for it. No data in the text. */
   @OnEvent(NotificationEventEnum.EXPORT_JOB_FINISHED)
@@ -4038,10 +3931,6 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
       );
     }
   }
-
-  // ───────────────────────────────────────────
-  // NEW INTERNALS
-  // ───────────────────────────────────────────
 
   private snoozeView(until: Date | null) {
     const active = !!until && until.getTime() > Date.now();
@@ -4184,10 +4073,6 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
       data: { status: BROADCAST_STATUS.STOPPED, stoppedAt: now, finishedAt: now, recipientCount },
     });
   }
-
-  // ───────────────────────────────────────────
-  // INTERNALS
-  // ───────────────────────────────────────────
 
   /**
    * Retry-safe wrapper for the two admin send routes. The key is claimed first

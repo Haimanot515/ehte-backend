@@ -187,19 +187,11 @@ export class ReportController {
     return this.reportService.findAllForAdmin(query);
   }
 
-  // ---------------------------------------------------------------------------
-  // NEW literal-path routes. They must stay above the existing GET ':id' (and the
-  // ':id/...' routes below it), or Nest reads words like "unread" or "bulk" as a
-  // report id. Keep by-user/repeat above by-user/:userId.
-  // ---------------------------------------------------------------------------
-
   // RPT-29
   @Get('me/summary')
   @Header('Cache-Control', 'no-store')
   @ApiOperation({ summary: 'Get my report totals by status' })
-  async getMyReportSummary(
-    @CurrentUser() user: CurrentUserDto,
-  ) {
+  async getMyReportSummary(@CurrentUser() user: CurrentUserDto) {
     return this.reportService.getMySummary(user);
   }
 
@@ -207,18 +199,14 @@ export class ReportController {
   @Get('me/unread-updates/count')
   @Header('Cache-Control', 'no-store')
   @ApiOperation({ summary: 'Count the report updates I have not seen' })
-  async countMyUnreadUpdates(
-    @CurrentUser() user: CurrentUserDto,
-  ) {
+  async countMyUnreadUpdates(@CurrentUser() user: CurrentUserDto) {
     return this.reportService.countMyUnreadUpdates(user);
   }
 
   // RPT-32
   @Patch('me/seen-all')
   @ApiOperation({ summary: 'Mark all my report updates as seen' })
-  async markAllUpdatesSeen(
-    @CurrentUser() user: CurrentUserDto,
-  ) {
+  async markAllUpdatesSeen(@CurrentUser() user: CurrentUserDto) {
     return this.reportService.markAllSeen(user);
   }
 
@@ -238,10 +226,7 @@ export class ReportController {
   @MediaUpload(SaveReportDraftDto)
   @RequireReauthentication()
   @ApiOperation({ summary: 'Save a report draft' })
-  async saveDraft(
-    @CurrentUser() user: CurrentUserDto,
-    @Body() data: SaveReportDraftDto,
-  ) {
+  async saveDraft(@CurrentUser() user: CurrentUserDto, @Body() data: SaveReportDraftDto) {
     return this.reportService.saveDraft(user, data);
   }
 
@@ -250,10 +235,7 @@ export class ReportController {
   @RequireReauthentication()
   @Header('Cache-Control', 'no-store')
   @ApiOperation({ summary: 'Get my report drafts' })
-  async findMyDrafts(
-    @CurrentUser() user: CurrentUserDto,
-    @Query() query: ReportListQueryDto,
-  ) {
+  async findMyDrafts(@CurrentUser() user: CurrentUserDto, @Query() query: ReportListQueryDto) {
     return this.reportService.listDrafts(user, query);
   }
 
@@ -274,10 +256,7 @@ export class ReportController {
   @Delete('drafts/:draftId')
   @RequireReauthentication()
   @ApiOperation({ summary: 'Delete one of my drafts' })
-  async deleteDraft(
-    @CurrentUser() user: CurrentUserDto,
-    @Param('draftId') draftId: string,
-  ) {
+  async deleteDraft(@CurrentUser() user: CurrentUserDto, @Param('draftId') draftId: string) {
     return this.reportService.deleteDraft(user, draftId);
   }
 
@@ -286,10 +265,7 @@ export class ReportController {
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @RequireReauthentication()
   @ApiOperation({ summary: 'Submit a draft as a report' })
-  async submitDraft(
-    @CurrentUser() user: CurrentUserDto,
-    @Param('draftId') draftId: string,
-  ) {
+  async submitDraft(@CurrentUser() user: CurrentUserDto, @Param('draftId') draftId: string) {
     return this.reportService.submitDraft(user, draftId);
   }
 
@@ -298,10 +274,7 @@ export class ReportController {
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @RequireReauthentication()
   @ApiOperation({ summary: 'Submit reports that were queued while offline' })
-  async syncOfflineReports(
-    @CurrentUser() user: CurrentUserDto,
-    @Body() data: SyncReportsDto,
-  ) {
+  async syncOfflineReports(@CurrentUser() user: CurrentUserDto, @Body() data: SyncReportsDto) {
     return this.reportService.syncReports(user, data);
   }
 
@@ -322,10 +295,7 @@ export class ReportController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.REPORT_READ)
   @ApiOperation({ summary: 'Admin: mark many reports as read for me' })
-  async bulkMarkRead(
-    @CurrentUser() admin: CurrentUserDto,
-    @Body() data: BulkReportIdsDto,
-  ) {
+  async bulkMarkRead(@CurrentUser() admin: CurrentUserDto, @Body() data: BulkReportIdsDto) {
     return this.reportService.bulkMarkRead(admin, data.ids);
   }
 
@@ -334,10 +304,7 @@ export class ReportController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.REPORT_READ)
   @ApiOperation({ summary: 'Admin: mark many reports as unread for me' })
-  async bulkMarkUnread(
-    @CurrentUser() admin: CurrentUserDto,
-    @Body() data: BulkReportIdsDto,
-  ) {
+  async bulkMarkUnread(@CurrentUser() admin: CurrentUserDto, @Body() data: BulkReportIdsDto) {
     return this.reportService.bulkMarkUnread(admin, data.ids);
   }
 
@@ -346,10 +313,7 @@ export class ReportController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.REPORT_READ)
   @ApiOperation({ summary: 'Admin: mark all reports matching a filter as read for me' })
-  async markAllRead(
-    @CurrentUser() admin: CurrentUserDto,
-    @Body() data: ReadAllReportsDto,
-  ) {
+  async markAllRead(@CurrentUser() admin: CurrentUserDto, @Body() data: ReadAllReportsDto) {
     return this.reportService.readAll(admin, data);
   }
 
@@ -359,10 +323,7 @@ export class ReportController {
   @RequirePermissions(PermissionsEnum.REPORT_READ)
   @Header('Cache-Control', 'no-store')
   @ApiOperation({ summary: 'Admin: get my unread reports' })
-  async findUnread(
-    @CurrentUser() admin: CurrentUserDto,
-    @Query() query: UnreadReportsQueryDto,
-  ) {
+  async findUnread(@CurrentUser() admin: CurrentUserDto, @Query() query: UnreadReportsQueryDto) {
     return this.reportService.listUnread(admin, query);
   }
 
@@ -372,10 +333,7 @@ export class ReportController {
   @RequirePermissions(PermissionsEnum.REPORT_READ)
   @Header('Cache-Control', 'no-store')
   @ApiOperation({ summary: 'Admin: get my unread badge count' })
-  async getUnreadCount(
-    @CurrentUser() admin: CurrentUserDto,
-    @Query() query: ReportCountsQueryDto,
-  ) {
+  async getUnreadCount(@CurrentUser() admin: CurrentUserDto, @Query() query: ReportCountsQueryDto) {
     return this.reportService.countUnread(admin);
   }
 
@@ -385,9 +343,7 @@ export class ReportController {
   @RequirePermissions(PermissionsEnum.REPORT_READ)
   @Header('Cache-Control', 'no-store')
   @ApiOperation({ summary: 'Admin: get my unread count by status' })
-  async getUnreadCountByStatus(
-    @CurrentUser() admin: CurrentUserDto,
-  ) {
+  async getUnreadCountByStatus(@CurrentUser() admin: CurrentUserDto) {
     return this.reportService.countUnreadByStatus(admin);
   }
 
@@ -397,9 +353,7 @@ export class ReportController {
   @RequirePermissions(PermissionsEnum.REPORT_READ)
   @Header('Cache-Control', 'no-store')
   @ApiOperation({ summary: 'Admin: get my unread count by category' })
-  async getUnreadCountByCategory(
-    @CurrentUser() admin: CurrentUserDto,
-  ) {
+  async getUnreadCountByCategory(@CurrentUser() admin: CurrentUserDto) {
     return this.reportService.countUnreadByCategory(admin);
   }
 
@@ -409,10 +363,7 @@ export class ReportController {
   @RequirePermissions(PermissionsEnum.REPORT_READ)
   @Header('Cache-Control', 'no-store')
   @ApiOperation({ summary: 'Admin: get my total, read and unread report counts' })
-  async getCounts(
-    @CurrentUser() admin: CurrentUserDto,
-    @Query() query: ReportCountsQueryDto,
-  ) {
+  async getCounts(@CurrentUser() admin: CurrentUserDto, @Query() query: ReportCountsQueryDto) {
     return this.reportService.getCounts(admin, query);
   }
 
@@ -422,10 +373,7 @@ export class ReportController {
   @RequirePermissions(PermissionsEnum.REPORT_READ, PermissionsEnum.REPORTER_INFO_READ)
   @Header('Cache-Control', 'no-store')
   @ApiOperation({ summary: 'Admin: get one row per reporter with total, read and unread counts' })
-  async findByUser(
-    @CurrentUser() admin: CurrentUserDto,
-    @Query() query: ByUserQueryDto,
-  ) {
+  async findByUser(@CurrentUser() admin: CurrentUserDto, @Query() query: ByUserQueryDto) {
     return this.reportService.listByUser(admin, query);
   }
 
@@ -462,10 +410,7 @@ export class ReportController {
   @RequirePermissions(PermissionsEnum.REPORT_READ, PermissionsEnum.REPORTER_INFO_READ)
   @Header('Cache-Control', 'no-store')
   @ApiOperation({ summary: "Admin: get one user's totals by status and category" })
-  async getUserSummary(
-    @CurrentUser() admin: CurrentUserDto,
-    @Param('userId') userId: string,
-  ) {
+  async getUserSummary(@CurrentUser() admin: CurrentUserDto, @Param('userId') userId: string) {
     return this.reportService.getUserSummary(admin, userId);
   }
 
@@ -488,10 +433,7 @@ export class ReportController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.REPORT_READ)
   @ApiOperation({ summary: "Admin: mark all of one user's reports as read for me" })
-  async markUserReportsRead(
-    @CurrentUser() admin: CurrentUserDto,
-    @Param('userId') userId: string,
-  ) {
+  async markUserReportsRead(@CurrentUser() admin: CurrentUserDto, @Param('userId') userId: string) {
     return this.reportService.markUserReportsRead(admin, userId);
   }
 
@@ -512,10 +454,7 @@ export class ReportController {
   @Roles(RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.REPORT_ASSIGN)
   @ApiOperation({ summary: 'Super admin: assign many reports to an administrator' })
-  async bulkAssign(
-    @CurrentUser() admin: CurrentUserDto,
-    @Body() data: BulkAssignReportsDto,
-  ) {
+  async bulkAssign(@CurrentUser() admin: CurrentUserDto, @Body() data: BulkAssignReportsDto) {
     return this.reportService.bulkAssign(admin, data);
   }
 
@@ -537,10 +476,7 @@ export class ReportController {
   @RequirePermissions(PermissionsEnum.REPORT_READ)
   @Header('Cache-Control', 'no-store')
   @ApiOperation({ summary: 'Admin: take the next report from my queue' })
-  async takeNextFromQueue(
-    @CurrentUser() admin: CurrentUserDto,
-    @Query() query: QueueNextQueryDto,
-  ) {
+  async takeNextFromQueue(@CurrentUser() admin: CurrentUserDto, @Query() query: QueueNextQueryDto) {
     return this.reportService.queueNext(admin, query);
   }
 
@@ -549,10 +485,7 @@ export class ReportController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.REPORT_READ)
   @ApiOperation({ summary: 'Admin: get escalated reports' })
-  async findEscalated(
-    @CurrentUser() admin: CurrentUserDto,
-    @Query() query: ReportListQueryDto,
-  ) {
+  async findEscalated(@CurrentUser() admin: CurrentUserDto, @Query() query: ReportListQueryDto) {
     return this.reportService.listEscalated(admin, query);
   }
 
@@ -561,10 +494,7 @@ export class ReportController {
   @Roles(RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.REPORT_ASSIGN)
   @ApiOperation({ summary: 'Super admin: unassign many reports' })
-  async bulkUnassign(
-    @CurrentUser() admin: CurrentUserDto,
-    @Body() data: BulkUnassignReportsDto,
-  ) {
+  async bulkUnassign(@CurrentUser() admin: CurrentUserDto, @Body() data: BulkUnassignReportsDto) {
     return this.reportService.bulkUnassign(admin, data.ids);
   }
 
@@ -573,10 +503,7 @@ export class ReportController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.REPORT_READ)
   @ApiOperation({ summary: 'Admin: get archived reports' })
-  async findArchived(
-    @CurrentUser() admin: CurrentUserDto,
-    @Query() query: ReportListQueryDto,
-  ) {
+  async findArchived(@CurrentUser() admin: CurrentUserDto, @Query() query: ReportListQueryDto) {
     return this.reportService.listArchived(admin, query);
   }
 
@@ -585,10 +512,7 @@ export class ReportController {
   @Roles(RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.REPORT_DELETE)
   @ApiOperation({ summary: 'Super admin: get deleted reports' })
-  async findTrash(
-    @CurrentUser() admin: CurrentUserDto,
-    @Query() query: ReportListQueryDto,
-  ) {
+  async findTrash(@CurrentUser() admin: CurrentUserDto, @Query() query: ReportListQueryDto) {
     return this.reportService.listTrash(admin, query);
   }
 
@@ -597,10 +521,7 @@ export class ReportController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.REPORT_READ)
   @ApiOperation({ summary: 'Admin: get the spam queue' })
-  async findSpam(
-    @CurrentUser() admin: CurrentUserDto,
-    @Query() query: ReportListQueryDto,
-  ) {
+  async findSpam(@CurrentUser() admin: CurrentUserDto, @Query() query: ReportListQueryDto) {
     return this.reportService.listSpam(admin, query);
   }
 
@@ -634,10 +555,7 @@ export class ReportController {
   @RequirePermissions(PermissionsEnum.REPORT_READ)
   @Header('Cache-Control', 'no-store')
   @ApiOperation({ summary: 'Admin: get my due reminders' })
-  async findMyFollowUps(
-    @CurrentUser() admin: CurrentUserDto,
-    @Query() query: FollowUpsQueryDto,
-  ) {
+  async findMyFollowUps(@CurrentUser() admin: CurrentUserDto, @Query() query: FollowUpsQueryDto) {
     return this.reportService.listFollowUps(admin, query);
   }
 
@@ -646,10 +564,7 @@ export class ReportController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.REPORT_TRIAGE)
   @ApiOperation({ summary: 'Admin: tag many reports at once' })
-  async bulkTag(
-    @CurrentUser() admin: CurrentUserDto,
-    @Body() data: BulkTagReportsDto,
-  ) {
+  async bulkTag(@CurrentUser() admin: CurrentUserDto, @Body() data: BulkTagReportsDto) {
     return this.reportService.bulkTag(admin, data);
   }
 
@@ -659,10 +574,7 @@ export class ReportController {
   @RequirePermissions(PermissionsEnum.REPORT_READ)
   @Header('Cache-Control', 'no-store')
   @ApiOperation({ summary: 'Admin: get reports I follow' })
-  async findWatching(
-    @CurrentUser() admin: CurrentUserDto,
-    @Query() query: ReportListQueryDto,
-  ) {
+  async findWatching(@CurrentUser() admin: CurrentUserDto, @Query() query: ReportListQueryDto) {
     return this.reportService.listWatching(admin, query);
   }
 
@@ -672,9 +584,7 @@ export class ReportController {
   @RequirePermissions(PermissionsEnum.REPORT_READ)
   @Header('Cache-Control', 'no-store')
   @ApiOperation({ summary: 'Admin: get my saved filters' })
-  async findViews(
-    @CurrentUser() admin: CurrentUserDto,
-  ) {
+  async findViews(@CurrentUser() admin: CurrentUserDto) {
     return this.reportService.listViews(admin);
   }
 
@@ -683,10 +593,7 @@ export class ReportController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.REPORT_READ)
   @ApiOperation({ summary: 'Admin: save a filter' })
-  async createView(
-    @CurrentUser() admin: CurrentUserDto,
-    @Body() data: SaveReportViewDto,
-  ) {
+  async createView(@CurrentUser() admin: CurrentUserDto, @Body() data: SaveReportViewDto) {
     return this.reportService.saveView(admin, data);
   }
 
@@ -708,10 +615,7 @@ export class ReportController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.REPORT_READ)
   @ApiOperation({ summary: 'Admin: delete a saved filter' })
-  async deleteView(
-    @CurrentUser() admin: CurrentUserDto,
-    @Param('viewId') viewId: string,
-  ) {
+  async deleteView(@CurrentUser() admin: CurrentUserDto, @Param('viewId') viewId: string) {
     return this.reportService.deleteView(admin, viewId);
   }
 
@@ -733,10 +637,7 @@ export class ReportController {
   @RequirePermissions(PermissionsEnum.REPORT_LOCATION_READ)
   @Header('Cache-Control', 'no-store')
   @ApiOperation({ summary: 'Admin: get clustered report pins for the map' })
-  async findMapPins(
-    @CurrentUser() admin: CurrentUserDto,
-    @Query() query: ReportMapQueryDto,
-  ) {
+  async findMapPins(@CurrentUser() admin: CurrentUserDto, @Query() query: ReportMapQueryDto) {
     return this.reportService.getMapPins(admin, query);
   }
 
@@ -746,10 +647,7 @@ export class ReportController {
   @RequirePermissions(PermissionsEnum.REPORT_LOCATION_READ)
   @Header('Cache-Control', 'no-store')
   @ApiOperation({ summary: 'Admin: get reports near a point' })
-  async findNearby(
-    @CurrentUser() admin: CurrentUserDto,
-    @Query() query: NearbyReportsQueryDto,
-  ) {
+  async findNearby(@CurrentUser() admin: CurrentUserDto, @Query() query: NearbyReportsQueryDto) {
     return this.reportService.findNearby(admin, query);
   }
 
@@ -758,10 +656,7 @@ export class ReportController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.REPORT_READ)
   @ApiOperation({ summary: 'Admin: get heatmap data' })
-  async getHotspots(
-    @CurrentUser() admin: CurrentUserDto,
-    @Query() query: HotspotsQueryDto,
-  ) {
+  async getHotspots(@CurrentUser() admin: CurrentUserDto, @Query() query: HotspotsQueryDto) {
     return this.reportService.getHotspots(admin, query);
   }
 
@@ -773,10 +668,7 @@ export class ReportController {
   @Header('Cache-Control', 'no-store')
   @Header('Content-Type', 'text/csv; charset=utf-8')
   @ApiOperation({ summary: 'Admin: export reports as CSV (row-capped)' })
-  async exportCsv(
-    @CurrentUser() admin: CurrentUserDto,
-    @Query() query: ExportReportsQueryDto,
-  ) {
+  async exportCsv(@CurrentUser() admin: CurrentUserDto, @Query() query: ExportReportsQueryDto) {
     return this.reportService.exportReports(admin, query);
   }
 
@@ -785,10 +677,7 @@ export class ReportController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.REPORT_READ)
   @ApiOperation({ summary: 'Admin: full-text search of reports' })
-  async search(
-    @CurrentUser() admin: CurrentUserDto,
-    @Query() query: SearchReportsQueryDto,
-  ) {
+  async search(@CurrentUser() admin: CurrentUserDto, @Query() query: SearchReportsQueryDto) {
     return this.reportService.searchReports(admin, query);
   }
 
@@ -809,10 +698,7 @@ export class ReportController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.REPORT_READ)
   @ApiOperation({ summary: 'Admin: get filter sidebar counts' })
-  async getFacets(
-    @CurrentUser() admin: CurrentUserDto,
-    @Query() query: ReportStatsQueryDto,
-  ) {
+  async getFacets(@CurrentUser() admin: CurrentUserDto, @Query() query: ReportStatsQueryDto) {
     return this.reportService.getFacets(admin, query);
   }
 
@@ -821,9 +707,7 @@ export class ReportController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.REPORT_READ)
   @ApiOperation({ summary: 'Admin: get dropdown values for the report filters' })
-  async getFilterOptions(
-    @CurrentUser() admin: CurrentUserDto,
-  ) {
+  async getFilterOptions(@CurrentUser() admin: CurrentUserDto) {
     return this.reportService.getFilterOptions(admin);
   }
 
@@ -833,10 +717,7 @@ export class ReportController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.REPORT_EXPORT)
   @ApiOperation({ summary: 'Admin: start a background export' })
-  async startExportJob(
-    @CurrentUser() admin: CurrentUserDto,
-    @Body() data: StartExportJobDto,
-  ) {
+  async startExportJob(@CurrentUser() admin: CurrentUserDto, @Body() data: StartExportJobDto) {
     return this.reportService.startExportJob(admin, data);
   }
 
@@ -846,10 +727,7 @@ export class ReportController {
   @RequirePermissions(PermissionsEnum.REPORT_EXPORT)
   @Header('Cache-Control', 'no-store')
   @ApiOperation({ summary: 'Admin: get my exports' })
-  async findMyExportJobs(
-    @CurrentUser() admin: CurrentUserDto,
-    @Query() query: ReportListQueryDto,
-  ) {
+  async findMyExportJobs(@CurrentUser() admin: CurrentUserDto, @Query() query: ReportListQueryDto) {
     return this.reportService.listExportJobs(admin, query);
   }
 
@@ -859,10 +737,7 @@ export class ReportController {
   @RequirePermissions(PermissionsEnum.REPORT_EXPORT)
   @Header('Cache-Control', 'no-store')
   @ApiOperation({ summary: 'Admin: get the progress of an export' })
-  async getExportJob(
-    @CurrentUser() admin: CurrentUserDto,
-    @Param('jobId') jobId: string,
-  ) {
+  async getExportJob(@CurrentUser() admin: CurrentUserDto, @Param('jobId') jobId: string) {
     return this.reportService.getExportJob(admin, jobId);
   }
 
@@ -872,10 +747,7 @@ export class ReportController {
   @RequirePermissions(PermissionsEnum.REPORT_EXPORT)
   @Header('Cache-Control', 'no-store')
   @ApiOperation({ summary: 'Admin: get a download link for an export (audited)' })
-  async downloadExportJob(
-    @CurrentUser() admin: CurrentUserDto,
-    @Param('jobId') jobId: string,
-  ) {
+  async downloadExportJob(@CurrentUser() admin: CurrentUserDto, @Param('jobId') jobId: string) {
     return this.reportService.getExportDownload(admin, jobId);
   }
 
@@ -903,10 +775,7 @@ export class ReportController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.DASHBOARD_READ)
   @ApiOperation({ summary: 'Admin: compare against the previous period' })
-  async getStatsCompare(
-    @CurrentUser() admin: CurrentUserDto,
-    @Query() query: ReportStatsQueryDto,
-  ) {
+  async getStatsCompare(@CurrentUser() admin: CurrentUserDto, @Query() query: ReportStatsQueryDto) {
     return this.reportService.getStatsCompare(admin, query);
   }
 
@@ -915,10 +784,7 @@ export class ReportController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.DASHBOARD_READ)
   @ApiOperation({ summary: 'Admin: get reports by hour and weekday' })
-  async getStatsByHour(
-    @CurrentUser() admin: CurrentUserDto,
-    @Query() query: ReportStatsQueryDto,
-  ) {
+  async getStatsByHour(@CurrentUser() admin: CurrentUserDto, @Query() query: ReportStatsQueryDto) {
     return this.reportService.getStatsByHour(admin, query);
   }
 
@@ -939,10 +805,7 @@ export class ReportController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.DASHBOARD_READ)
   @ApiOperation({ summary: 'Admin: get open reports over time' })
-  async getStatsBacklog(
-    @CurrentUser() admin: CurrentUserDto,
-    @Query() query: ReportStatsQueryDto,
-  ) {
+  async getStatsBacklog(@CurrentUser() admin: CurrentUserDto, @Query() query: ReportStatsQueryDto) {
     return this.reportService.getStatsBacklog(admin, query);
   }
 
@@ -987,10 +850,7 @@ export class ReportController {
   @Roles(RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.DASHBOARD_READ)
   @ApiOperation({ summary: 'Super admin: get reports per assignee' })
-  async getStatsByAdmin(
-    @CurrentUser() admin: CurrentUserDto,
-    @Query() query: ReportStatsQueryDto,
-  ) {
+  async getStatsByAdmin(@CurrentUser() admin: CurrentUserDto, @Query() query: ReportStatsQueryDto) {
     return this.reportService.getStatsByAdmin(admin, query);
   }
 
@@ -1035,10 +895,7 @@ export class ReportController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.DASHBOARD_READ)
   @ApiOperation({ summary: 'Admin: get reports by age bucket' })
-  async getStatsAging(
-    @CurrentUser() admin: CurrentUserDto,
-    @Query() query: ReportStatsQueryDto,
-  ) {
+  async getStatsAging(@CurrentUser() admin: CurrentUserDto, @Query() query: ReportStatsQueryDto) {
     return this.reportService.getStatsAging(admin, query);
   }
 
@@ -1047,10 +904,7 @@ export class ReportController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.DASHBOARD_READ)
   @ApiOperation({ summary: 'Admin: get the share of reports within SLA' })
-  async getStatsSla(
-    @CurrentUser() admin: CurrentUserDto,
-    @Query() query: ReportStatsQueryDto,
-  ) {
+  async getStatsSla(@CurrentUser() admin: CurrentUserDto, @Query() query: ReportStatsQueryDto) {
     return this.reportService.getStatsSla(admin, query);
   }
 
@@ -1095,10 +949,7 @@ export class ReportController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.DASHBOARD_READ)
   @ApiOperation({ summary: 'Admin: get the spam rate' })
-  async getStatsSpam(
-    @CurrentUser() admin: CurrentUserDto,
-    @Query() query: ReportStatsQueryDto,
-  ) {
+  async getStatsSpam(@CurrentUser() admin: CurrentUserDto, @Query() query: ReportStatsQueryDto) {
     return this.reportService.getStatsSpam(admin, query);
   }
 
@@ -1107,10 +958,7 @@ export class ReportController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.DASHBOARD_READ)
   @ApiOperation({ summary: 'Admin: get reports by tag' })
-  async getStatsByTag(
-    @CurrentUser() admin: CurrentUserDto,
-    @Query() query: ReportStatsQueryDto,
-  ) {
+  async getStatsByTag(@CurrentUser() admin: CurrentUserDto, @Query() query: ReportStatsQueryDto) {
     return this.reportService.getStatsByTag(admin, query);
   }
 
@@ -1279,11 +1127,6 @@ export class ReportController {
     return this.reportService.escalate(admin, reportId, data);
   }
 
-  // ---------------------------------------------------------------------------
-  // NEW ':id' routes. Every one needs login; admin routes also check the report's
-  // access list in the service, so restricted reports stay hidden.
-  // ---------------------------------------------------------------------------
-
   // RPT-01 ★
   @Post(':id/evidence')
   @MediaUpload(AddReportEvidenceDto)
@@ -1370,10 +1213,7 @@ export class ReportController {
   // RPT-31
   @Patch(':id/seen')
   @ApiOperation({ summary: 'Mark the latest update on my report as seen' })
-  async markUpdatesSeen(
-    @CurrentUser() user: CurrentUserDto,
-    @Param('id') reportId: string,
-  ) {
+  async markUpdatesSeen(@CurrentUser() user: CurrentUserDto, @Param('id') reportId: string) {
     return this.reportService.markSeen(user, reportId);
   }
 
@@ -1382,10 +1222,7 @@ export class ReportController {
   @RequireReauthentication()
   @Header('Cache-Control', 'no-store')
   @ApiOperation({ summary: 'Get the status history of my report, without internal notes' })
-  async getReporterTimeline(
-    @CurrentUser() user: CurrentUserDto,
-    @Param('id') reportId: string,
-  ) {
+  async getReporterTimeline(@CurrentUser() user: CurrentUserDto, @Param('id') reportId: string) {
     return this.reportService.getReporterTimeline(user, reportId);
   }
 
@@ -1395,10 +1232,7 @@ export class ReportController {
   @Header('Cache-Control', 'no-store')
   @Header('Content-Type', 'application/pdf')
   @ApiOperation({ summary: 'Download my report as a PDF' })
-  async downloadPdf(
-    @CurrentUser() user: CurrentUserDto,
-    @Param('id') reportId: string,
-  ) {
+  async downloadPdf(@CurrentUser() user: CurrentUserDto, @Param('id') reportId: string) {
     return this.reportService.generateMyReportPdf(user, reportId);
   }
 
@@ -1466,10 +1300,7 @@ export class ReportController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.REPORT_READ)
   @ApiOperation({ summary: 'Admin: mark one report as read for me' })
-  async markRead(
-    @CurrentUser() admin: CurrentUserDto,
-    @Param('id') reportId: string,
-  ) {
+  async markRead(@CurrentUser() admin: CurrentUserDto, @Param('id') reportId: string) {
     return this.reportService.markRead(admin, reportId);
   }
 
@@ -1478,10 +1309,7 @@ export class ReportController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.REPORT_READ)
   @ApiOperation({ summary: 'Admin: mark one report as unread for me' })
-  async markUnread(
-    @CurrentUser() admin: CurrentUserDto,
-    @Param('id') reportId: string,
-  ) {
+  async markUnread(@CurrentUser() admin: CurrentUserDto, @Param('id') reportId: string) {
     return this.reportService.markUnread(admin, reportId);
   }
 
@@ -1529,10 +1357,7 @@ export class ReportController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.REPORT_READ)
   @ApiOperation({ summary: 'Admin: get reports related to this one' })
-  async findRelated(
-    @CurrentUser() admin: CurrentUserDto,
-    @Param('id') reportId: string,
-  ) {
+  async findRelated(@CurrentUser() admin: CurrentUserDto, @Param('id') reportId: string) {
     return this.reportService.findRelated(admin, reportId);
   }
 
@@ -1580,10 +1405,7 @@ export class ReportController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.REPORT_READ)
   @ApiOperation({ summary: 'Admin: get the escalation history of a report' })
-  async findEscalations(
-    @CurrentUser() admin: CurrentUserDto,
-    @Param('id') reportId: string,
-  ) {
+  async findEscalations(@CurrentUser() admin: CurrentUserDto, @Param('id') reportId: string) {
     return this.reportService.getEscalations(admin, reportId);
   }
 
@@ -1592,10 +1414,7 @@ export class ReportController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.REPORT_READ)
   @ApiOperation({ summary: 'Admin: get the statuses a report may move to next' })
-  async getAllowedTransitions(
-    @CurrentUser() admin: CurrentUserDto,
-    @Param('id') reportId: string,
-  ) {
+  async getAllowedTransitions(@CurrentUser() admin: CurrentUserDto, @Param('id') reportId: string) {
     return this.reportService.getAllowedTransitions(admin, reportId);
   }
 
@@ -1617,10 +1436,7 @@ export class ReportController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.REPORT_UPDATE_STATUS)
   @ApiOperation({ summary: 'Admin: unarchive a report' })
-  async unarchive(
-    @CurrentUser() admin: CurrentUserDto,
-    @Param('id') reportId: string,
-  ) {
+  async unarchive(@CurrentUser() admin: CurrentUserDto, @Param('id') reportId: string) {
     return this.reportService.unarchive(admin, reportId);
   }
 
@@ -1643,10 +1459,7 @@ export class ReportController {
   @Roles(RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.REPORT_DELETE)
   @ApiOperation({ summary: 'Super admin: restore a deleted report' })
-  async restore(
-    @CurrentUser() admin: CurrentUserDto,
-    @Param('id') reportId: string,
-  ) {
+  async restore(@CurrentUser() admin: CurrentUserDto, @Param('id') reportId: string) {
     return this.reportService.restore(admin, reportId);
   }
 
@@ -1694,10 +1507,7 @@ export class ReportController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.REPORT_READ)
   @ApiOperation({ summary: 'Admin: get records linked to a report' })
-  async findLinks(
-    @CurrentUser() admin: CurrentUserDto,
-    @Param('id') reportId: string,
-  ) {
+  async findLinks(@CurrentUser() admin: CurrentUserDto, @Param('id') reportId: string) {
     return this.reportService.getLinks(admin, reportId);
   }
 
@@ -1745,10 +1555,7 @@ export class ReportController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.REPORT_READ)
   @ApiOperation({ summary: 'Admin: get the merge history of a report' })
-  async findMergeHistory(
-    @CurrentUser() admin: CurrentUserDto,
-    @Param('id') reportId: string,
-  ) {
+  async findMergeHistory(@CurrentUser() admin: CurrentUserDto, @Param('id') reportId: string) {
     return this.reportService.getMergeHistory(admin, reportId);
   }
 
@@ -1770,10 +1577,7 @@ export class ReportController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.REPORT_READ)
   @ApiOperation({ summary: 'Admin: get the SLA clock of a report' })
-  async getSla(
-    @CurrentUser() admin: CurrentUserDto,
-    @Param('id') reportId: string,
-  ) {
+  async getSla(@CurrentUser() admin: CurrentUserDto, @Param('id') reportId: string) {
     return this.reportService.getSla(admin, reportId);
   }
 
@@ -1834,10 +1638,7 @@ export class ReportController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.REPORT_READ)
   @ApiOperation({ summary: 'Admin: follow a report' })
-  async watch(
-    @CurrentUser() admin: CurrentUserDto,
-    @Param('id') reportId: string,
-  ) {
+  async watch(@CurrentUser() admin: CurrentUserDto, @Param('id') reportId: string) {
     return this.reportService.watch(admin, reportId);
   }
 
@@ -1846,10 +1647,7 @@ export class ReportController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.REPORT_READ)
   @ApiOperation({ summary: 'Admin: unfollow a report' })
-  async unwatch(
-    @CurrentUser() admin: CurrentUserDto,
-    @Param('id') reportId: string,
-  ) {
+  async unwatch(@CurrentUser() admin: CurrentUserDto, @Param('id') reportId: string) {
     return this.reportService.unwatch(admin, reportId);
   }
 
@@ -1857,10 +1655,7 @@ export class ReportController {
   @Get(':id/evidence')
   @Header('Cache-Control', 'no-store')
   @ApiOperation({ summary: 'Get the evidence list of a report (reporter or admin)' })
-  async findEvidence(
-    @CurrentUser() user: CurrentUserDto,
-    @Param('id') reportId: string,
-  ) {
+  async findEvidence(@CurrentUser() user: CurrentUserDto, @Param('id') reportId: string) {
     return this.reportService.listEvidence(user, reportId);
   }
 
@@ -1914,10 +1709,7 @@ export class ReportController {
   @RequirePermissions(PermissionsEnum.REPORT_READ, PermissionsEnum.REPORTER_INFO_READ)
   @Header('Cache-Control', 'no-store')
   @ApiOperation({ summary: 'Admin: get the printable case file' })
-  async getCaseFile(
-    @CurrentUser() admin: CurrentUserDto,
-    @Param('id') reportId: string,
-  ) {
+  async getCaseFile(@CurrentUser() admin: CurrentUserDto, @Param('id') reportId: string) {
     return this.reportService.getCaseFile(admin, reportId);
   }
 
@@ -2010,10 +1802,7 @@ export class ReportController {
   @RequirePermissions(PermissionsEnum.REPORT_SENSITIVITY_MANAGE)
   @Header('Cache-Control', 'no-store')
   @ApiOperation({ summary: 'Super admin: get who may open a restricted report' })
-  async findAccessGrants(
-    @CurrentUser() admin: CurrentUserDto,
-    @Param('id') reportId: string,
-  ) {
+  async findAccessGrants(@CurrentUser() admin: CurrentUserDto, @Param('id') reportId: string) {
     return this.reportService.listAccessGrants(admin, reportId);
   }
 
@@ -2080,10 +1869,7 @@ export class ReportController {
   @RequirePermissions(PermissionsEnum.REPORT_LOCATION_READ)
   @Header('Cache-Control', 'no-store')
   @ApiOperation({ summary: 'Admin: get the precise incident location (audited)' })
-  async getLocation(
-    @CurrentUser() admin: CurrentUserDto,
-    @Param('id') reportId: string,
-  ) {
+  async getLocation(@CurrentUser() admin: CurrentUserDto, @Param('id') reportId: string) {
     return this.reportService.getLocation(admin, reportId);
   }
 

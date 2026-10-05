@@ -1,7 +1,3 @@
-// src/modules/billing/service/disbursement-admin.service.ts
-//
-// Disbursement tools (BL-57 to BL-65). The four-eyes rules stay in
-// DisbursementService: every create, approve and execute below goes through it.
 import {
   BadRequestException,
   ConflictException,
@@ -42,7 +38,8 @@ export class DisbursementAdminService {
   async retry(adminId: string, id: string) {
     const d = await this.prisma.disbursement.findUnique({ where: { id } });
     if (!d) throw new NotFoundException('disbursement_not_found');
-    if (d.status !== 'FAILED') throw new BadRequestException('only_failed_disbursements_can_be_retried');
+    if (d.status !== 'FAILED')
+      throw new BadRequestException('only_failed_disbursements_can_be_retried');
 
     const fresh = await this.disbursements.create(
       adminId,
@@ -56,7 +53,10 @@ export class DisbursementAdminService {
       action: AuditEventEnum.DISBURSEMENT_RETRIED,
       entityType: 'Disbursement',
       entityId: id,
-      metadata: { failedReason: d.failureReason, newDisbursementId: (fresh as { id?: string })?.id },
+      metadata: {
+        failedReason: d.failureReason,
+        newDisbursementId: (fresh as { id?: string })?.id,
+      },
     });
 
     return fresh;
@@ -72,7 +72,8 @@ export class DisbursementAdminService {
       where: { id, heldAt: null, status: { in: ['PENDING_APPROVAL', 'APPROVED'] } },
       data: { heldAt: new Date(), holdReason: reason, heldById: adminId },
     });
-    if (count === 0) throw new BadRequestException('only_pending_or_approved_disbursements_can_be_held');
+    if (count === 0)
+      throw new BadRequestException('only_pending_or_approved_disbursements_can_be_held');
 
     await this.events.log({
       actorId: adminId,

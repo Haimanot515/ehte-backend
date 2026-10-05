@@ -1,8 +1,5 @@
 import { Type } from 'class-transformer';
-import {
-  ApiProperty,
-  ApiPropertyOptional,
-} from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 import {
   ArrayNotEmpty,
@@ -23,18 +20,7 @@ import {
 
 import { RolesEnum } from 'src/common/enums/roles.enum';
 
-// Reused as-is: channel-agnostic (verificationId + otp), so the admin
-// reset-password endpoint takes the same shape as the user one. Also reused
-// (unchanged) as the payload for step 2 of adminChangePassword — see
-// AdminChangePasswordInitiateDto below for step 1.
 export { ResetPasswordDto } from '../../auth/dto/auth.dto';
-
-// ─────────────────────────────────────────────
-// ADMIN — LOGIN BY EMAIL  (Doc §1, §7: Admin/Super Admin login is
-// specified as Email + Password. This is the only admin credential
-// path — phone-based admin login has been removed. Used by
-// AdminAuthService.adminLoginByEmail().
-// ─────────────────────────────────────────────
 
 export class AdminLoginEmailDto {
   @ApiProperty({
@@ -53,16 +39,6 @@ export class AdminLoginEmailDto {
   @IsNotEmpty()
   password: string;
 }
-
-// ─────────────────────────────────────────────
-// ADMIN — REGISTER  (Doc §2, Step 1-2)
-//
-// Super Admin supplies email + full name + the roles to grant.
-// Account is created with no password and inactive/unverified — the
-// "REGISTERING" state — and a registration link (containing a raw, single-use
-// token) is emailed to the new admin. Used by
-// AdminAuthService.adminRegister().
-// ─────────────────────────────────────────────
 
 export class AdminRegisterDto {
   @ApiProperty({
@@ -97,10 +73,6 @@ export class AdminRegisterDto {
   roles: string[];
 }
 
-// ─────────────────────────────────────────────
-// ADMIN — RESEND REGISTRATION  (Phase 1 #6)
-// ─────────────────────────────────────────────
-
 export class AdminRegisterResendDto {
   @ApiProperty({
     description: 'Email address of the pending admin registration to resend',
@@ -110,10 +82,6 @@ export class AdminRegisterResendDto {
   @IsNotEmpty()
   email: string;
 }
-
-// ─────────────────────────────────────────────
-// ADMIN — COMPLETE REGISTRATION  (Doc §2, Step 3)
-// ─────────────────────────────────────────────
 
 export class AdminCompleteRegistrationDto {
   @ApiProperty({
@@ -136,16 +104,6 @@ export class AdminCompleteRegistrationDto {
   password: string;
 }
 
-// ─────────────────────────────────────────────
-// ADMIN — FORGOT PASSWORD  (email-only; no phone)
-//
-// Already email-OTP-based end to end: adminForgotPassword() issues the OTP via
-// OtpChannelEnum.email, and adminResetPassword() (POST /admin/auth/reset-password)
-// consumes it. This is already a separate endpoint pair from the USER
-// /auth/forgot-password + /auth/reset-password flow, which is phone/SMS-based.
-// No change needed here — noted for clarity alongside the new change-password flow.
-// ─────────────────────────────────────────────
-
 export class AdminForgotPasswordDto {
   @ApiProperty({
     description: 'Registered admin email address to receive the password reset OTP',
@@ -156,17 +114,6 @@ export class AdminForgotPasswordDto {
   email: string;
 }
 
-// ─────────────────────────────────────────────
-// ADMIN — CHANGE PASSWORD (STEP 1): authenticated self-service password change.
-//
-// Deliberately a dedicated admin-only endpoint (POST /admin/auth/change-password/initiate)
-// rather than the shared USER /auth/change-password endpoint — AuthService.changePassword()
-// now rejects any account holding an admin role and points it here instead. Verification
-// is two-factor: this DTO's currentPassword proves the admin still knows their password,
-// then an OTP is emailed to their own address (step 2 uses the existing ResetPasswordDto
-// shape: verificationId + otp + newPassword) before the change is committed.
-// ─────────────────────────────────────────────
-
 export class AdminChangePasswordInitiateDto {
   @ApiProperty({
     description: "The authenticated admin's current password",
@@ -175,17 +122,6 @@ export class AdminChangePasswordInitiateDto {
   @IsNotEmpty()
   currentPassword: string;
 }
-
-// ─────────────────────────────────────────────
-// ADMIN — PROMOTE EXISTING USER  (Doc §3, Step 1-2)
-//
-// KNOWN LIMITATION: this flow always grants ADMIN, never SUPER_ADMIN.
-// Adding a `role` field here wouldn't be enough on its own — UserOtp
-// has nowhere to persist that choice between promoteUserInitiate()
-// and promoteUserVerify(), so it would need a schema change (e.g. a
-// nullable `metadata` column on UserOtp) to round-trip safely.
-// Promoting to SUPER_ADMIN currently requires a direct DB action.
-// ─────────────────────────────────────────────
 
 export class PromoteUserDto {
   @ApiProperty({
@@ -205,10 +141,6 @@ export class PromoteUserDto {
   email: string;
 }
 
-// ─────────────────────────────────────────────
-// ADMIN — RESEND PROMOTION  (Phase 1 #6)
-// ─────────────────────────────────────────────
-
 export class PromoteUserResendDto {
   @ApiProperty({
     description: 'Phone number of the user whose pending promotion email should be resent',
@@ -218,10 +150,6 @@ export class PromoteUserResendDto {
   @IsNotEmpty()
   phone: string;
 }
-
-// ─────────────────────────────────────────────
-// ADMIN — PROMOTE: VERIFY EMAIL LINK
-// ─────────────────────────────────────────────
 
 export class PromoteVerifyDto {
   @ApiProperty({
@@ -233,10 +161,6 @@ export class PromoteVerifyDto {
   token: string;
 }
 
-// ─────────────────────────────────────────────
-// ADMIN — CANCEL PENDING REGISTRATION
-// ─────────────────────────────────────────────
-
 export class AdminCancelRegistrationDto {
   @ApiProperty({
     description: 'Email address of the pending admin registration to cancel',
@@ -246,14 +170,6 @@ export class AdminCancelRegistrationDto {
   @IsNotEmpty()
   email: string;
 }
-
-// ─────────────────────────────────────────────
-// ADMIN — CHANGE OWN EMAIL  (self-service)
-//
-// Gated by @RequireReauthentication() at the controller, which reads and
-// strips a `password` field from the raw request body before this DTO is
-// built — that's why there's no password field here.
-// ─────────────────────────────────────────────
 
 export class AdminChangeEmailDto {
   @ApiProperty({
@@ -265,10 +181,6 @@ export class AdminChangeEmailDto {
   newEmail: string;
 }
 
-// ─────────────────────────────────────────────
-// ADMIN — CHANGE OWN EMAIL: VERIFY LINK
-// ─────────────────────────────────────────────
-
 export class AdminChangeEmailVerifyDto {
   @ApiProperty({
     description: 'Secure email-change token received through the verification link',
@@ -278,10 +190,6 @@ export class AdminChangeEmailVerifyDto {
   @IsNotEmpty()
   token: string;
 }
-
-// ═════════════════════════════════════════════
-// NEW ENDPOINTS (AR-xx) — added to the existing DTOs
-// ═════════════════════════════════════════════
 
 // New DTOs for the endpoints added to AdminAuthController (AR-13 … AR-28, AR-78, AR-79).
 

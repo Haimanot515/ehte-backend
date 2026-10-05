@@ -40,10 +40,6 @@ export class EmailService implements OnModuleInit {
         family: 4,
       } as any);
     } else {
-      // Missing config: log instead of throwing at boot — a misconfigured mailer
-      // shouldn't crash the whole app. In practice this branch should be
-      // unreachable in production since SMTP_HOST/USER/PASSWORD are all
-      // Joi .required() in app.module.ts and boot fails first if they're unset.
       this.logger.warn('SMTP not fully configured — emails will be logged, not sent.');
       this.transporter = nodemailer.createTransport({ jsonTransport: true });
     }

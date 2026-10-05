@@ -9,9 +9,6 @@ import { assertSafeRedisConfig } from './redis-safety';
 const jsonReplacer = (_key: string, value: unknown) =>
   typeof value === 'bigint' ? value.toString() : value;
 
-// Atomic GET-then-DELETE. Portable across Redis versions (doesn't rely on GETDEL,
-// which needs Redis >= 6.2) and guarantees no other client can read the value
-// between the GET and the DEL.
 const GETDEL_SCRIPT = `
 local v = redis.call('GET', KEYS[1])
 if v then redis.call('DEL', KEYS[1]) end
@@ -37,18 +34,16 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
   readonly keyPrefix: string;
 
   constructor(private readonly config: ConfigService) {
-    // FIX: was `'', so an unset REDIS_KEY_PREFIX silently produced UNPREFIXED keys, and
-    // purgeAll() would then sweep the raw keyspace (post:*, user:*, ...), which on a shared
-    // Redis can also match another application's keys.
     this.keyPrefix = this.config.get<string>('REDIS_KEY_PREFIX', 'ehte:');
 
     const url = this.config.get<string>('REDIS_URL');
     const password = this.config.get<string>('REDIS_PASSWORD');
 
-    // FIX: production refuses to boot with no password / no TLS. this.constructor.name is
-    // 'RedisService' for the cache connection and 'SecurityRedisService' for the other, so
-    // the error identifies which one is unsafe.
-    assertSafeRedisConfig({ url, password, label: this.constructor.name }, this.config, this.logger);
+    assertSafeRedisConfig(
+      { url, password, label: this.constructor.name },
+      this.config,
+      this.logger,
+    );
 
     const options: RedisOptions = {
       lazyConnect: true,
@@ -86,10 +81,6 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     await this.client.quit().catch(() => undefined);
   }
 
-  // ───────────────────────────────────────────
-  // JSON get/set
-  // ───────────────────────────────────────────
-
   async get<T>(key: string): Promise<T | null> {
     try {
       const raw = await this.client.get(key);
@@ -126,10 +117,6 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  // ───────────────────────────────────────────
-  // Delete
-  // ───────────────────────────────────────────
-
   /** Returns whether the delete succeeded (true if there was nothing to delete). */
   async del(...keys: string[]): Promise<boolean> {
     if (!keys.length) return true;
@@ -163,10 +150,6 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     return (result as string | null) ?? null;
   }
 
-  // ───────────────────────────────────────────
-  // Raw string get/set (no JSON envelope)
-  // ───────────────────────────────────────────
-
   async getRaw(key: string): Promise<string | null> {
     try {
       return await this.client.get(key);
@@ -196,10 +179,6 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  // ───────────────────────────────────────────
-  // Lua scripts (atomic multi-key ops)
-  // ───────────────────────────────────────────
-
   /**
    * Runs a Lua script via EVAL. Errors are NOT caught here — callers that need
    * "best effort" behavior should wrap the call (as guarded() does); callers
@@ -209,10 +188,6 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
   async evalScript<T>(script: string, keys: string[], args: (string | number)[]): Promise<T> {
     return this.client.eval(script, keys.length, ...keys, ...args) as Promise<T>;
   }
-
-  // ───────────────────────────────────────────
-  // Misc
-  // ───────────────────────────────────────────
 
   async exists(key: string): Promise<boolean> {
     try {

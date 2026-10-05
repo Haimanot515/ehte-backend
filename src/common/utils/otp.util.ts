@@ -38,12 +38,6 @@ export class OtpUtil {
     const cooldownSeconds = this.configService.get<number>('otp.resendCooldownSeconds', 60);
     const otpExpiresInMinutes = this.configService.get<number>('otp.expiresInMinutes', 10);
 
-    // REDIS: fast path for a repeat tap on "resend" — every request within the cooldown
-    // window after the first ends here with one Redis GET, instead of a Postgres read.
-    // Correctness doesn't depend on this: it's a read-through cache in front of the
-    // Postgres check below, which remains the source of truth and stays unchanged. A
-    // miss here (cold cache, Redis down, or two requests racing the very first send)
-    // just falls through to the original path, which is itself transaction-safe.
     const cachedId = await this.cache.getOtpCooldown(userId, purpose, channel);
     if (cachedId) {
       return { verificationId: cachedId };
@@ -93,7 +87,13 @@ export class OtpUtil {
 
     // REDIS: cache the cooldown regardless of which branch created it, so the NEXT repeat
     // tap (not this one) hits the fast path above instead of Postgres.
-    await this.cache.setOtpCooldown(userId, purpose, channel, result.verificationId, cooldownSeconds);
+    await this.cache.setOtpCooldown(
+      userId,
+      purpose,
+      channel,
+      result.verificationId,
+      cooldownSeconds,
+    );
 
     if (result.reused) {
       return { verificationId: result.verificationId };

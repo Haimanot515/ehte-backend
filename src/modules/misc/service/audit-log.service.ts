@@ -81,10 +81,6 @@ import {
 import { EXPORT_SCOPE, ExportJobService } from './export-job.service';
 import { MISC_OBJECT_STORAGE, MiscObjectStorage } from './misc-object-storage';
 
-// ─────────────────────────────────────────────
-// CONSTANTS
-// ─────────────────────────────────────────────
-
 const DEFAULT_LIMIT = 20;
 const DAY_MS = 86_400_000;
 const MAX_EXPORT_ROWS = 50_000;
@@ -112,10 +108,6 @@ const SEVERITY_RANK = ['INFO', 'WARNING', 'ERROR', 'CRITICAL'];
 const SECURITY_SEVERITIES = (Object.values(AuditSeverity) as string[]).filter(
   (s) => SEVERITY_RANK.indexOf(s) >= 1,
 ) as AuditSeverity[];
-
-// ─────────────────────────────────────────────
-// SELECTS (role-based redaction happens in the query, not after it)
-// ─────────────────────────────────────────────
 
 /** Phone is never selected, for any role. */
 const USER_SELECT = { id: true, name: true } as const;
@@ -167,10 +159,6 @@ type RedactedKey =
 /** ADMIN rows simply do not carry the redacted keys, so they are optional in the type. */
 export type AuditLogView = Omit<FullAuditRow, RedactedKey> &
   Partial<Pick<FullAuditRow, RedactedKey>>;
-
-// ─────────────────────────────────────────────
-// TYPES
-// ─────────────────────────────────────────────
 
 export type AuditLogStats = {
   totalEvents: number;
@@ -241,8 +229,21 @@ const APPROVAL_TTL_MS = 24 * 60 * 60 * 1000;
 const ARCHIVE_LINK_TTL_SECONDS = 300;
 
 // Case views (AL-43 to AL-45). Adjust these lists to the entity and action names your app really writes.
-const SENSITIVE_ENTITIES = ['Report', 'VictimProfile', 'PayoutDestination', 'RewardClaim', 'InformationSubmission', 'MissingPerson'];
-const SENSITIVE_ACTION_KEYWORDS = ['REPORTER_INFO', 'INFORMANT', 'BANK_DETAILS', 'CHILD_SAFETY', 'PAYOUT_DESTINATION_VIEWED'];
+const SENSITIVE_ENTITIES = [
+  'Report',
+  'VictimProfile',
+  'PayoutDestination',
+  'RewardClaim',
+  'InformationSubmission',
+  'MissingPerson',
+];
+const SENSITIVE_ACTION_KEYWORDS = [
+  'REPORTER_INFO',
+  'INFORMANT',
+  'BANK_DETAILS',
+  'CHILD_SAFETY',
+  'PAYOUT_DESTINATION_VIEWED',
+];
 const PRIVILEGED_ENTITIES = [
   'Role',
   'Permission',
@@ -256,8 +257,21 @@ const PRIVILEGED_ENTITIES = [
   'TwoFactorResetRequest',
 ];
 const PRIVILEGED_ACTION_KEYWORDS = ['ROLE_', 'PERMISSION', 'TWO_FACTOR', 'ACCESS_REVIEW'];
-const MONEY_ENTITIES = ['Payment', 'PaymentAllocation', 'Disbursement', 'PayoutDestination', 'RewardClaim'];
-const MONEY_ACTION_KEYWORDS = ['REFUND', 'PAYOUT', 'DISBURSEMENT', 'PAYMENT_VERIFIED', 'MANUAL_PAYMENT', 'REWARD_CLAIM'];
+const MONEY_ENTITIES = [
+  'Payment',
+  'PaymentAllocation',
+  'Disbursement',
+  'PayoutDestination',
+  'RewardClaim',
+];
+const MONEY_ACTION_KEYWORDS = [
+  'REFUND',
+  'PAYOUT',
+  'DISBURSEMENT',
+  'PAYMENT_VERIFIED',
+  'MANUAL_PAYMENT',
+  'REWARD_CLAIM',
+];
 
 /** Ready-made alert rules (AL-28, AL-29). */
 const ALERT_TEMPLATES = [
@@ -323,10 +337,6 @@ const ALERT_TEMPLATES = [
   },
 ];
 
-// ─────────────────────────────────────────────
-// SERVICE
-// ─────────────────────────────────────────────
-
 @Injectable()
 export class AuditLogService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(AuditLogService.name);
@@ -352,10 +362,6 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
     @Inject(MISC_OBJECT_STORAGE)
     private readonly objectStorage?: MiscObjectStorage,
   ) {}
-
-  // ═════════════════════════════════════════════
-  // WRITE
-  // ═════════════════════════════════════════════
 
   /**
    * Record an audit event and link it into the hash chain.
@@ -527,10 +533,6 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  // ═════════════════════════════════════════════
-  // READ: LIST, ONE, SCOPED VIEWS
-  // ═════════════════════════════════════════════
-
   async findAll(dto: GetAuditLogsDto, viewer: CurrentUserDto): Promise<AuditPage> {
     const { cursor, page, limit, ...filters } = dto;
     return this.paginate(this.buildWhere(filters, viewer), { cursor, page, limit }, viewer);
@@ -625,10 +627,6 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
     });
     return rows.map((row) => row.entity);
   }
-
-  // ═════════════════════════════════════════════
-  // STATS
-  // ═════════════════════════════════════════════
 
   async getStats(): Promise<AuditLogStats> {
     const now = new Date();
@@ -757,10 +755,6 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  // ═════════════════════════════════════════════
-  // HEALTH
-  // ═════════════════════════════════════════════
-
   async getHealth() {
     const [newest, oldest, legalHoldCount, unchainedRows, table] = await Promise.all([
       this.prisma.auditLog.findFirst({
@@ -811,10 +805,6 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
       return { estimatedRows: null, sizeBytes: null };
     }
   }
-
-  // ═════════════════════════════════════════════
-  // EXPORT
-  // ═════════════════════════════════════════════
 
   /**
    * CSV export of the rows matching the filters (paging ignored, capped at MAX_EXPORT_ROWS).
@@ -952,10 +942,6 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  // ═════════════════════════════════════════════
-  // SAVED FILTERS (per admin)
-  // ═════════════════════════════════════════════
-
   async findSavedFilters(viewer: CurrentUserDto) {
     return this.prisma.auditSavedFilter.findMany({
       where: { userId: this.requireUserId(viewer) },
@@ -999,12 +985,6 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
 
     return { deleted: true };
   }
-
-  // ═════════════════════════════════════════════
-  // ALERT RULES (SUPER_ADMIN)
-  // Rules are stored and managed here. Evaluating them (count matches in the
-  // window, respect cooldown, notify SUPER_ADMINs) belongs with the notification batch.
-  // ═════════════════════════════════════════════
 
   async findAlerts() {
     return this.prisma.auditAlert.findMany({ orderBy: { createdAt: 'desc' } });
@@ -1076,10 +1056,6 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
 
     return { deleted: true };
   }
-
-  // ═════════════════════════════════════════════
-  // INTEGRITY (hash chain)
-  // ═════════════════════════════════════════════
 
   /**
    * Walks the chain in seq order and checks, for every row:
@@ -1247,10 +1223,6 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
     }
     return merged;
   }
-
-  // ═════════════════════════════════════════════
-  // RETENTION: PREVIEW → PURGE
-  // ═════════════════════════════════════════════
 
   /**
    * Dry run. Counts what a purge would delete, what legal hold protects, and issues a
@@ -1519,10 +1491,6 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
     return claims;
   }
 
-  // ═════════════════════════════════════════════
-  // DATA-SUBJECT: anonymize one user
-  // ═════════════════════════════════════════════
-
   /**
    * Keeps the events, removes the person. On rows the user performed, blanks
    * name, role, IP, user agent, geo and metadata, and stamps anonymizedAt (which
@@ -1581,16 +1549,6 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
       skippedLegalHold,
     };
   }
-
-  // ═════════════════════════════════════════════════════════════════════════
-  // NEW ENDPOINTS (AL-01 to AL-56)
-  // Everything below was added. The methods above are unchanged except for the
-  // small hooks marked "NEW HOOK" (constructor, auditSelf, verifyIntegrity).
-  // ═════════════════════════════════════════════════════════════════════════
-
-  // ─────────────────────────────────────────────
-  // BACKGROUND WORKER (scheduled purge, scheduled integrity, alert evaluation, health snapshots)
-  // ─────────────────────────────────────────────
 
   onModuleInit() {
     if (process.env.AUDIT_WORKER_ENABLED === 'false') {
@@ -1651,7 +1609,10 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
 
       // Runs exactly like a manual purge (archive first, held rows skipped, audited after),
       // acting as the Super Admin who scheduled it.
-      const actor = { id: s.createdById, roles: [RolesEnum.SUPER_ADMIN] } as unknown as CurrentUserDto;
+      const actor = {
+        id: s.createdById,
+        roles: [RolesEnum.SUPER_ADMIN],
+      } as unknown as CurrentUserDto;
       try {
         const { token } = this.issueConfirmToken(actor, s.olderThan);
         const result = await this.purgeOlderThan(
@@ -1684,7 +1645,9 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async runDueIntegrity() {
-    const schedule = await this.prisma.auditIntegritySchedule.findUnique({ where: { id: 'default' } });
+    const schedule = await this.prisma.auditIntegritySchedule.findUnique({
+      where: { id: 'default' },
+    });
     if (!schedule?.enabled) return;
     const now = new Date();
     if (schedule.nextRunAt && schedule.nextRunAt > now) return;
@@ -1766,7 +1729,12 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
   }
 
   private alertWhere(
-    alert: { action: string | null; entity: string | null; outcome: AuditOutcome | null; severity: AuditSeverity | null },
+    alert: {
+      action: string | null;
+      entity: string | null;
+      outcome: AuditOutcome | null;
+      severity: AuditSeverity | null;
+    },
     from: Date,
     to: Date,
   ): Prisma.AuditLogWhereInput {
@@ -1787,7 +1755,10 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
     if (last && Date.now() - last.createdAt.getTime() < HEALTH_SNAPSHOT_EVERY_MS) return;
 
     const [newest, unchained, table] = await Promise.all([
-      this.prisma.auditLog.findFirst({ orderBy: { createdAt: 'desc' }, select: { createdAt: true } }),
+      this.prisma.auditLog.findFirst({
+        orderBy: { createdAt: 'desc' },
+        select: { createdAt: true },
+      }),
       this.prisma.auditLog.count({ where: { seq: null } }),
       this.tableStats(),
     ]);
@@ -1795,7 +1766,9 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
     await this.prisma.auditHealthSnapshot.create({
       data: {
         lastWriteAt: newest?.createdAt ?? null,
-        lagSeconds: newest ? Math.max(0, Math.round((Date.now() - newest.createdAt.getTime()) / 1000)) : null,
+        lagSeconds: newest
+          ? Math.max(0, Math.round((Date.now() - newest.createdAt.getTime()) / 1000))
+          : null,
         writeFailures: this.writeFailures,
         estimatedRows: table.estimatedRows,
         sizeBytes: table.sizeBytes,
@@ -1807,10 +1780,6 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
       where: { createdAt: { lt: new Date(Date.now() - 90 * DAY_MS) } },
     });
   }
-
-  // ─────────────────────────────────────────────
-  // TWO-PERSON RULE
-  // ─────────────────────────────────────────────
 
   /**
    * Releasing a hold, changing retention and retrieving an archive weaken evidence, so a
@@ -1921,10 +1890,6 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
     return JSON.stringify(value ?? null);
   }
 
-  // ─────────────────────────────────────────────
-  // 1. LEGAL HOLD
-  // ─────────────────────────────────────────────
-
   /** One place that turns a stored hold filter into a row query. Rejects an empty filter. */
   private holdWhere(f: HoldFilter): Prisma.AuditLogWhereInput {
     const where: Prisma.AuditLogWhereInput = {
@@ -1943,7 +1908,8 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
         },
       }),
     };
-    if (Object.keys(where).length === 0) throw new BadRequestException('hold_filter_needs_at_least_one_condition');
+    if (Object.keys(where).length === 0)
+      throw new BadRequestException('hold_filter_needs_at_least_one_condition');
     if (f.startDate && f.endDate && new Date(f.startDate) > new Date(f.endDate)) {
       throw new BadRequestException('startDate_after_endDate');
     }
@@ -1951,7 +1917,9 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
   }
 
   private cleanHoldFilter(f: HoldFilter): HoldFilter {
-    return Object.fromEntries(Object.entries(f).filter(([, v]) => v !== undefined && v !== null && v !== '')) as HoldFilter;
+    return Object.fromEntries(
+      Object.entries(f).filter(([, v]) => v !== undefined && v !== null && v !== ''),
+    ) as HoldFilter;
   }
 
   /** AL-01 */
@@ -1964,7 +1932,8 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
     const reason = dto.reason.trim();
 
     if (dto.legalHold) {
-      if (!dto.caseReference?.trim()) throw new BadRequestException('caseReference_required_to_set_a_hold');
+      if (!dto.caseReference?.trim())
+        throw new BadRequestException('caseReference_required_to_set_a_hold');
       const caseReference = dto.caseReference.trim();
 
       const hold = await this.prisma.$transaction(async (tx) => {
@@ -1995,7 +1964,8 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
     }
 
     // Clearing: weakens evidence, so a second Super Admin must approve.
-    if (!this.isSuperAdmin(actor)) throw new ForbiddenException('only_super_admin_can_clear_a_hold');
+    if (!this.isSuperAdmin(actor))
+      throw new ForbiddenException('only_super_admin_can_clear_a_hold');
     const active = await this.prisma.auditLegalHold.findMany({ where: { status: 'ACTIVE' } });
     const covering: typeof active = [];
     for (const h of active) {
@@ -2046,7 +2016,11 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
     const [total, alreadyHeld, range, byEntity] = await Promise.all([
       this.prisma.auditLog.count({ where }),
       this.prisma.auditLog.count({ where: { ...where, legalHold: true } }),
-      this.prisma.auditLog.aggregate({ where, _min: { createdAt: true }, _max: { createdAt: true } }),
+      this.prisma.auditLog.aggregate({
+        where,
+        _min: { createdAt: true },
+        _max: { createdAt: true },
+      }),
       this.prisma.auditLog.groupBy({
         by: ['entity'],
         where,
@@ -2090,7 +2064,10 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
             createdById: actor.id,
           },
         });
-        await tx.auditLog.updateMany({ where: { ...where, legalHold: false }, data: { legalHold: true } });
+        await tx.auditLog.updateMany({
+          where: { ...where, legalHold: false },
+          data: { legalHold: true },
+        });
         return created;
       },
       { timeout: 60_000 },
@@ -2113,7 +2090,9 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
   async listLegalHolds(query: LegalHoldsQueryDto) {
     const where: Prisma.AuditLegalHoldWhereInput = {
       ...(query.status && { status: query.status }),
-      ...(query.caseReference && { caseReference: { contains: query.caseReference, mode: 'insensitive' } }),
+      ...(query.caseReference && {
+        caseReference: { contains: query.caseReference, mode: 'insensitive' },
+      }),
     };
     const page = query.page ?? 1;
     const limit = query.limit ?? DEFAULT_LIMIT;
@@ -2215,7 +2194,9 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
     let reapplied = 0;
     for (const o of others) {
       const r = await this.prisma.auditLog.updateMany({
-        where: { AND: [releasedWhere, this.holdWhere(o.filter as HoldFilter), { legalHold: false }] },
+        where: {
+          AND: [releasedWhere, this.holdWhere(o.filter as HoldFilter), { legalHold: false }],
+        },
         data: { legalHold: true },
       });
       reapplied += r.count;
@@ -2235,7 +2216,12 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
       },
     });
 
-    return { holdId, status: 'RELEASED', clearedRows: cleared.count - reapplied, keptByOtherHolds: reapplied };
+    return {
+      holdId,
+      status: 'RELEASED',
+      clearedRows: cleared.count - reapplied,
+      keptByOtherHolds: reapplied,
+    };
   }
 
   /** AL-07: who created, changed and released a hold. Read from the audit log itself. */
@@ -2243,10 +2229,6 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
     await this.findHold(holdId);
     return this.paginate({ entity: 'AuditLegalHold', entityId: holdId }, dto, viewer, 'asc');
   }
-
-  // ─────────────────────────────────────────────
-  // 2. PURGE AND RETENTION
-  // ─────────────────────────────────────────────
 
   /** AL-08 */
   async listPurgeRuns(query: PurgeRunsQueryDto) {
@@ -2316,7 +2298,9 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
 
     let parts: Array<{ key: string; rows: number; bytes: number }> = [];
     try {
-      const manifest = JSON.parse((await this.objectStorage.getBuffer(run.archiveKey)).toString('utf8'));
+      const manifest = JSON.parse(
+        (await this.objectStorage.getBuffer(run.archiveKey)).toString('utf8'),
+      );
       parts = Array.isArray(manifest.parts) ? manifest.parts : [];
     } catch (err) {
       this.logger.error(`Archive manifest unreadable for run ${id}: ${this.errMsg(err)}`);
@@ -2328,7 +2312,11 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
       entity: 'AuditPurgeRun',
       entityId: id,
       severity: AuditSeverity.CRITICAL,
-      metadata: { parts: parts.length, archivedCount: run.archivedCount, requestedById: gate.requestedById },
+      metadata: {
+        parts: parts.length,
+        archivedCount: run.archivedCount,
+        requestedById: gate.requestedById,
+      },
     });
 
     const files = await Promise.all(
@@ -2358,7 +2346,8 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
     if (runAt.getTime() < Date.now() + minNoticeHours * 3_600_000) {
       throw new BadRequestException(`runAt_needs_at_least_${minNoticeHours}_hours_notice`);
     }
-    if (runAt.getTime() > Date.now() + 365 * DAY_MS) throw new BadRequestException('runAt_too_far_ahead');
+    if (runAt.getTime() > Date.now() + 365 * DAY_MS)
+      throw new BadRequestException('runAt_too_far_ahead');
     if (!this.archive) throw new ServiceUnavailableException('audit_archive_not_configured');
     this.tokenSecret(); // fails closed when purge is not configured
 
@@ -2371,14 +2360,20 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
       },
     });
 
-    const wouldDelete = await this.prisma.auditLog.count({ where: { createdAt: { lt: olderThan }, legalHold: false } });
+    const wouldDelete = await this.prisma.auditLog.count({
+      where: { createdAt: { lt: olderThan }, legalHold: false },
+    });
     await this.auditSelf(actor, {
       action: AuditEventEnum.AUDIT_PURGE_SCHEDULED,
       entity: 'AuditPurgeSchedule',
       entityId: schedule.id,
       severity: AuditSeverity.CRITICAL,
       reason: dto.reason.trim(),
-      metadata: { olderThan: olderThan.toISOString(), runAt: runAt.toISOString(), wouldDeleteToday: wouldDelete },
+      metadata: {
+        olderThan: olderThan.toISOString(),
+        runAt: runAt.toISOString(),
+        wouldDeleteToday: wouldDelete,
+      },
     });
 
     return { ...schedule, wouldDeleteToday: wouldDelete };
@@ -2434,15 +2429,24 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
 
   /** AL-14 */
   async getRetention() {
-    const rows = await this.prisma.auditRetentionPolicy.findMany({ orderBy: [{ scope: 'asc' }, { key: 'asc' }] });
+    const rows = await this.prisma.auditRetentionPolicy.findMany({
+      orderBy: [{ scope: 'asc' }, { key: 'asc' }],
+    });
     const defaultRow = rows.find((r) => r.scope === 'DEFAULT');
     return {
       default: defaultRow?.retentionDays ?? null,
-      byEntity: rows.filter((r) => r.scope === 'ENTITY').map((r) => ({ entity: r.key, retentionDays: r.retentionDays })),
-      bySeverity: rows.filter((r) => r.scope === 'SEVERITY').map((r) => ({ severity: r.key, retentionDays: r.retentionDays })),
+      byEntity: rows
+        .filter((r) => r.scope === 'ENTITY')
+        .map((r) => ({ entity: r.key, retentionDays: r.retentionDays })),
+      bySeverity: rows
+        .filter((r) => r.scope === 'SEVERITY')
+        .map((r) => ({ severity: r.key, retentionDays: r.retentionDays })),
       enforcement:
         'Declared policy. Rows are only removed by a purge (manual or scheduled), and rows under legal hold are always kept.',
-      updatedAt: rows.reduce<Date | null>((m, r) => (!m || r.updatedAt > m ? r.updatedAt : m), null),
+      updatedAt: rows.reduce<Date | null>(
+        (m, r) => (!m || r.updatedAt > m ? r.updatedAt : m),
+        null,
+      ),
     };
   }
 
@@ -2454,12 +2458,18 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
       const k = `${p.scope}:${p.key}`;
       if (seen.has(k)) throw new BadRequestException('duplicate_policy');
       seen.add(k);
-      if (p.scope === 'DEFAULT' && p.key !== 'DEFAULT') throw new BadRequestException("DEFAULT_policy_key_must_be_'DEFAULT'");
-      if (p.scope === 'SEVERITY' && !severities.includes(p.key)) throw new BadRequestException('unknown_severity');
+      if (p.scope === 'DEFAULT' && p.key !== 'DEFAULT')
+        throw new BadRequestException("DEFAULT_policy_key_must_be_'DEFAULT'");
+      if (p.scope === 'SEVERITY' && !severities.includes(p.key))
+        throw new BadRequestException('unknown_severity');
     }
 
     const reason = dto.reason.trim();
-    const material = { policies: [...dto.policies].sort((a, b) => `${a.scope}${a.key}`.localeCompare(`${b.scope}${b.key}`)) };
+    const material = {
+      policies: [...dto.policies].sort((a, b) =>
+        `${a.scope}${a.key}`.localeCompare(`${b.scope}${b.key}`),
+      ),
+    };
     const gate = await this.twoPerson('RETENTION_CHANGE', 'retention', material, reason, actor);
     if (!gate.approved) return gate.response as Record<string, unknown>;
 
@@ -2468,7 +2478,12 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
       dto.policies.map((p) =>
         this.prisma.auditRetentionPolicy.upsert({
           where: { scope_key: { scope: p.scope, key: p.key } },
-          create: { scope: p.scope, key: p.key, retentionDays: p.retentionDays, updatedById: actor.id },
+          create: {
+            scope: p.scope,
+            key: p.key,
+            retentionDays: p.retentionDays,
+            updatedById: actor.id,
+          },
           update: { retentionDays: p.retentionDays, updatedById: actor.id },
         }),
       ),
@@ -2490,10 +2505,6 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
   async listAnonymizations(dto: AuditPagingDto, viewer: CurrentUserDto) {
     return this.paginate({ action: AuditEventEnum.AUDIT_LOG_ANONYMIZED }, dto, viewer);
   }
-
-  // ─────────────────────────────────────────────
-  // 3. INTEGRITY
-  // ─────────────────────────────────────────────
 
   /** NEW HOOK: every verification is kept, so history and breaks can be listed. Never fails the check. */
   private async saveIntegrityRun(
@@ -2523,7 +2534,9 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
 
   /** AL-17 */
   async listIntegrityRuns(query: IntegrityRunsQueryDto) {
-    const where: Prisma.AuditIntegrityRunWhereInput = { ...(query.ok !== undefined && { ok: query.ok }) };
+    const where: Prisma.AuditIntegrityRunWhereInput = {
+      ...(query.ok !== undefined && { ok: query.ok }),
+    };
     const page = query.page ?? 1;
     const limit = query.limit ?? DEFAULT_LIMIT;
 
@@ -2541,13 +2554,21 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
 
   /** AL-18 */
   async setIntegritySchedule(dto: IntegrityScheduleDto, actor: CurrentUserDto) {
-    const before = await this.prisma.auditIntegritySchedule.findUnique({ where: { id: 'default' } });
+    const before = await this.prisma.auditIntegritySchedule.findUnique({
+      where: { id: 'default' },
+    });
     const intervalHours = dto.intervalHours ?? before?.intervalHours ?? 24;
     const nextRunAt = dto.enabled ? new Date(Date.now() + 60_000) : null;
 
     const after = await this.prisma.auditIntegritySchedule.upsert({
       where: { id: 'default' },
-      create: { id: 'default', enabled: dto.enabled, intervalHours, nextRunAt, updatedById: actor.id },
+      create: {
+        id: 'default',
+        enabled: dto.enabled,
+        intervalHours,
+        nextRunAt,
+        updatedById: actor.id,
+      },
       update: { enabled: dto.enabled, intervalHours, nextRunAt, updatedById: actor.id },
     });
 
@@ -2596,7 +2617,11 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
     const hours = query.hours ?? 24;
     const since = new Date(Date.now() - hours * 3_600_000);
     const [snapshots, current] = await Promise.all([
-      this.prisma.auditHealthSnapshot.findMany({ where: { createdAt: { gte: since } }, orderBy: { createdAt: 'asc' }, take: 2000 }),
+      this.prisma.auditHealthSnapshot.findMany({
+        where: { createdAt: { gte: since } },
+        orderBy: { createdAt: 'asc' },
+        take: 2000,
+      }),
       this.getHealth(),
     ]);
     return {
@@ -2616,10 +2641,6 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
       })),
     };
   }
-
-  // ─────────────────────────────────────────────
-  // 4. ALERT RULES
-  // ─────────────────────────────────────────────
 
   private async requireAlert(id: string) {
     const alert = await this.prisma.auditAlert.findUnique({ where: { id } });
@@ -2785,10 +2806,6 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
-  // ─────────────────────────────────────────────
-  // 5. SAVED FILTERS
-  // ─────────────────────────────────────────────
-
   /** The owner, or someone it was shared with. Everyone else gets 404. */
   private async accessibleFilter(id: string, viewer: CurrentUserDto) {
     const userId = this.requireUserId(viewer);
@@ -2807,7 +2824,10 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
     const filter = await this.accessibleFilter(id, viewer);
     const isOwner = filter.userId === viewer.id;
     const shares = isOwner
-      ? await this.prisma.auditSavedFilterShare.findMany({ where: { filterId: id }, select: { userId: true } })
+      ? await this.prisma.auditSavedFilterShare.findMany({
+          where: { filterId: id },
+          select: { userId: true },
+        })
       : [];
     return {
       ...filter,
@@ -2822,14 +2842,17 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
       where: { id, userId: this.requireUserId(viewer) },
     });
     if (!existing) throw new NotFoundException('Saved filter not found');
-    if (dto.name === undefined && dto.filter === undefined) throw new BadRequestException('nothing_to_update');
+    if (dto.name === undefined && dto.filter === undefined)
+      throw new BadRequestException('nothing_to_update');
 
     try {
       return await this.prisma.auditSavedFilter.update({
         where: { id },
         data: {
           ...(dto.name !== undefined && { name: dto.name }),
-          ...(dto.filter !== undefined && { filter: dto.filter as unknown as Prisma.InputJsonValue }),
+          ...(dto.filter !== undefined && {
+            filter: dto.filter as unknown as Prisma.InputJsonValue,
+          }),
         },
       });
     } catch (err) {
@@ -2848,7 +2871,10 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
     if (!owned) throw new NotFoundException('Saved filter not found');
 
     if (!dto.userIds?.length) {
-      await this.prisma.auditSavedFilter.update({ where: { id }, data: { sharedWithAdmins: true } });
+      await this.prisma.auditSavedFilter.update({
+        where: { id },
+        data: { sharedWithAdmins: true },
+      });
       await this.auditSelf(viewer, {
         action: AuditEventEnum.AUDIT_SAVED_FILTER_SHARED,
         entity: 'AuditSavedFilter',
@@ -2868,7 +2894,8 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
       },
       select: { id: true },
     });
-    if (admins.length !== ids.length) throw new BadRequestException('can_only_share_with_active_admins');
+    if (admins.length !== ids.length)
+      throw new BadRequestException('can_only_share_with_active_admins');
 
     await this.prisma.auditSavedFilterShare.createMany({
       data: admins.map((a) => ({ filterId: id, userId: a.id })),
@@ -2920,23 +2947,26 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
   }
 
   /** AL-34: runs the saved filter with the caller's own redaction level and paging. */
-  async runSavedFilter(id: string, dto: AuditPagingDto, viewer: CurrentUserDto): Promise<AuditPage & { filterName: string }> {
+  async runSavedFilter(
+    id: string,
+    dto: AuditPagingDto,
+    viewer: CurrentUserDto,
+  ): Promise<AuditPage & { filterName: string }> {
     const saved = await this.accessibleFilter(id, viewer);
     const filters = saved.filter as unknown as AuditLogFiltersDto;
     const page = await this.paginate(this.buildWhere(filters, viewer), dto, viewer);
     return { ...page, filterName: saved.name };
   }
 
-  // ─────────────────────────────────────────────
-  // 6. EXPORTS
-  // ─────────────────────────────────────────────
-
   /** AL-35 */
   async getExportRecord(id: string) {
     const record = await this.prisma.auditExport.findUnique({ where: { id } });
     if (!record) throw new NotFoundException('Export not found');
     const names = await this.userNames([record.exportedById]);
-    return { ...record, exportedByName: record.exportedById ? (names.get(record.exportedById) ?? null) : null };
+    return {
+      ...record,
+      exportedByName: record.exportedById ? (names.get(record.exportedById) ?? null) : null,
+    };
   }
 
   private auditExportColumns(superAdmin: boolean) {
@@ -3021,7 +3051,12 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
         await this.auditSelf(viewer, {
           action: AuditEventEnum.AUDIT_LOG_EXPORTED,
           entityLabel: `${done.rowCount} rows (background job)`,
-          metadata: { jobId: done.id, filter: storedFilter, rowCount: done.rowCount, truncated: done.truncated },
+          metadata: {
+            jobId: done.id,
+            filter: storedFilter,
+            rowCount: done.rowCount,
+            truncated: done.truncated,
+          },
         });
       },
     });
@@ -3044,7 +3079,11 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
   /** AL-39: short-lived links, audited before they are returned. */
   async downloadExportJob(id: string, viewer: CurrentUserDto) {
     if (!this.exportJobs) throw new ServiceUnavailableException('export_jobs_not_configured');
-    const result = await this.exportJobs.downloadLinks(EXPORT_SCOPE.AUDIT_LOGS, id, this.requireUserId(viewer));
+    const result = await this.exportJobs.downloadLinks(
+      EXPORT_SCOPE.AUDIT_LOGS,
+      id,
+      this.requireUserId(viewer),
+    );
 
     await this.auditSelf(viewer, {
       action: AuditEventEnum.AUDIT_EXPORT_DOWNLOADED,
@@ -3072,7 +3111,14 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
         where: { scope: EXPORT_SCOPE.AUDIT_LOGS },
         orderBy: { createdAt: 'desc' },
         take: 50,
-        select: { id: true, requestedById: true, status: true, rowCount: true, createdAt: true, finishedAt: true },
+        select: {
+          id: true,
+          requestedById: true,
+          status: true,
+          rowCount: true,
+          createdAt: true,
+          finishedAt: true,
+        },
       }),
     ]);
 
@@ -3095,10 +3141,6 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  // ─────────────────────────────────────────────
-  // 7. VIEWS FOR USERS AND CASES
-  // ─────────────────────────────────────────────
-
   /** Fields a normal user may see about their own events: no IP, device, request or session detail. */
   private static readonly SELF_SELECT = {
     id: true,
@@ -3114,7 +3156,10 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
 
   private async selfPage(where: Prisma.AuditLogWhereInput, dto: AuditPagingDto) {
     const limit = dto.limit ?? DEFAULT_LIMIT;
-    const orderBy: Prisma.AuditLogOrderByWithRelationInput[] = [{ createdAt: 'desc' }, { id: 'desc' }];
+    const orderBy: Prisma.AuditLogOrderByWithRelationInput[] = [
+      { createdAt: 'desc' },
+      { id: 'desc' },
+    ];
     const select = AuditLogService.SELF_SELECT;
 
     if (!dto.cursor && dto.page !== undefined) {
@@ -3125,7 +3170,13 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
       ]);
       return {
         data,
-        meta: { page: dto.page, limit, total, totalPages: Math.ceil(total / limit), hasMore: skip + data.length < total },
+        meta: {
+          page: dto.page,
+          limit,
+          total,
+          totalPages: Math.ceil(total / limit),
+          hasMore: skip + data.length < total,
+        },
       };
     }
     const rows = await this.prisma.auditLog.findMany({
@@ -3136,7 +3187,10 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
       select,
     });
     const hasMore = rows.length > limit;
-    return { data: rows.slice(0, limit), meta: { limit, nextCursor: hasMore ? rows[limit].id : null, hasMore } };
+    return {
+      data: rows.slice(0, limit),
+      meta: { limit, nextCursor: hasMore ? rows[limit].id : null, hasMore },
+    };
   }
 
   private selfWhere(userId: string, q: MyActivityQueryDto): Prisma.AuditLogWhereInput {
@@ -3169,16 +3223,26 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
   }
 
   /** Shared by the case views below: the usual filters and paging, plus a fixed condition. */
-  private async scopedList(dto: GetAuditLogsDto, viewer: CurrentUserDto, fixed: Prisma.AuditLogWhereInput) {
+  private async scopedList(
+    dto: GetAuditLogsDto,
+    viewer: CurrentUserDto,
+    fixed: Prisma.AuditLogWhereInput,
+  ) {
     const { cursor, page, limit, ...filters } = dto;
-    return this.paginate({ AND: [this.buildWhere(filters, viewer), fixed] }, { cursor, page, limit }, viewer);
+    return this.paginate(
+      { AND: [this.buildWhere(filters, viewer), fixed] },
+      { cursor, page, limit },
+      viewer,
+    );
   }
 
   private sensitiveWhere(): Prisma.AuditLogWhereInput {
     return {
       OR: [
         {
-          action: { in: [AuditEventEnum.EXPLORER_RECORD_VIEWED, AuditEventEnum.EXPLORER_RELATION_VIEWED] },
+          action: {
+            in: [AuditEventEnum.EXPLORER_RECORD_VIEWED, AuditEventEnum.EXPLORER_RELATION_VIEWED],
+          },
           entity: { in: SENSITIVE_ENTITIES },
         },
         ...SENSITIVE_ACTION_KEYWORDS.map((k) => ({ action: { contains: k } })),
@@ -3213,7 +3277,9 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
 
   /** AL-46: denied and failed events, to spot probing. */
   async findDenied(dto: GetAuditLogsDto, viewer: CurrentUserDto) {
-    return this.scopedList(dto, viewer, { outcome: { in: [AuditOutcome.DENIED, AuditOutcome.FAILURE] } });
+    return this.scopedList(dto, viewer, {
+      outcome: { in: [AuditOutcome.DENIED, AuditOutcome.FAILURE] },
+    });
   }
 
   private summaryRange(q: AuditSummaryQueryDto) {
@@ -3221,18 +3287,29 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
     const from = q.from ? new Date(q.from) : new Date(to.getTime() - 30 * DAY_MS);
     if (isNaN(from.getTime()) || isNaN(to.getTime())) throw new BadRequestException('invalid_date');
     if (from >= to) throw new BadRequestException('from_must_be_before_to');
-    if (to.getTime() - from.getTime() > 365 * DAY_MS) throw new BadRequestException('range_too_large_max_365_days');
+    if (to.getTime() - from.getTime() > 365 * DAY_MS)
+      throw new BadRequestException('range_too_large_max_365_days');
     return { from, to };
   }
 
   /** AL-47: counts of actions on one record by type and actor. */
   async summarizeEntity(entity: string, entityId: string, q: AuditSummaryQueryDto) {
     const { from, to } = this.summaryRange(q);
-    const where: Prisma.AuditLogWhereInput = { entity, entityId, createdAt: { gte: from, lte: to } };
+    const where: Prisma.AuditLogWhereInput = {
+      entity,
+      entityId,
+      createdAt: { gte: from, lte: to },
+    };
 
     const [total, byAction, byActor, byOutcome, range] = await Promise.all([
       this.prisma.auditLog.count({ where }),
-      this.prisma.auditLog.groupBy({ by: ['action'], where, _count: { _all: true }, orderBy: { _count: { action: 'desc' } }, take: 50 }),
+      this.prisma.auditLog.groupBy({
+        by: ['action'],
+        where,
+        _count: { _all: true },
+        orderBy: { _count: { action: 'desc' } },
+        take: 50,
+      }),
       this.prisma.auditLog.groupBy({
         by: ['userId', 'actorType'],
         where,
@@ -3241,7 +3318,11 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
         take: 25,
       }),
       this.prisma.auditLog.groupBy({ by: ['outcome'], where, _count: { _all: true } }),
-      this.prisma.auditLog.aggregate({ where, _min: { createdAt: true }, _max: { createdAt: true } }),
+      this.prisma.auditLog.aggregate({
+        where,
+        _min: { createdAt: true },
+        _max: { createdAt: true },
+      }),
     ]);
 
     const names = await this.userNames(byActor.map((g) => g.userId));
@@ -3272,10 +3353,26 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
     const [user, total, byEntity, byAction, byOutcome, range] = await Promise.all([
       this.prisma.user.findUnique({ where: { id: userId }, select: USER_SELECT }),
       this.prisma.auditLog.count({ where }),
-      this.prisma.auditLog.groupBy({ by: ['entity'], where, _count: { _all: true }, orderBy: { _count: { entity: 'desc' } }, take: 50 }),
-      this.prisma.auditLog.groupBy({ by: ['action'], where, _count: { _all: true }, orderBy: { _count: { action: 'desc' } }, take: 25 }),
+      this.prisma.auditLog.groupBy({
+        by: ['entity'],
+        where,
+        _count: { _all: true },
+        orderBy: { _count: { entity: 'desc' } },
+        take: 50,
+      }),
+      this.prisma.auditLog.groupBy({
+        by: ['action'],
+        where,
+        _count: { _all: true },
+        orderBy: { _count: { action: 'desc' } },
+        take: 25,
+      }),
       this.prisma.auditLog.groupBy({ by: ['outcome'], where, _count: { _all: true } }),
-      this.prisma.auditLog.aggregate({ where, _min: { createdAt: true }, _max: { createdAt: true } }),
+      this.prisma.auditLog.aggregate({
+        where,
+        _min: { createdAt: true },
+        _max: { createdAt: true },
+      }),
     ]);
     if (!user && total === 0) throw new NotFoundException('User not found');
 
@@ -3293,20 +3390,20 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  // ─────────────────────────────────────────────
-  // 8. STATISTICS
-  // ─────────────────────────────────────────────
-
   private statsRange(f: AuditStatsFilterDto) {
     const to = f.to ? new Date(f.to) : new Date();
     const from = f.from ? new Date(f.from) : new Date(to.getTime() - 30 * DAY_MS);
     if (isNaN(from.getTime()) || isNaN(to.getTime())) throw new BadRequestException('invalid_date');
     if (from >= to) throw new BadRequestException('from_must_be_before_to');
-    if (to.getTime() - from.getTime() > 365 * DAY_MS) throw new BadRequestException('range_too_large_max_365_days');
+    if (to.getTime() - from.getTime() > 365 * DAY_MS)
+      throw new BadRequestException('range_too_large_max_365_days');
     return { from, to };
   }
 
-  private statsWhere(f: AuditStatsFilterDto, extra: Prisma.AuditLogWhereInput = {}): Prisma.AuditLogWhereInput {
+  private statsWhere(
+    f: AuditStatsFilterDto,
+    extra: Prisma.AuditLogWhereInput = {},
+  ): Prisma.AuditLogWhereInput {
     const { from, to } = this.statsRange(f);
     return {
       createdAt: { gte: from, lte: to },
@@ -3321,7 +3418,10 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
   private statsSql(f: AuditStatsFilterDto, alias = ''): Prisma.Sql[] {
     const { from, to } = this.statsRange(f);
     const c = (name: string) => Prisma.raw(`${alias}"${name}"`);
-    const conds: Prisma.Sql[] = [Prisma.sql`${c('createdAt')} >= ${from}`, Prisma.sql`${c('createdAt')} <= ${to}`];
+    const conds: Prisma.Sql[] = [
+      Prisma.sql`${c('createdAt')} >= ${from}`,
+      Prisma.sql`${c('createdAt')} <= ${to}`,
+    ];
     if (f.entity) conds.push(Prisma.sql`${c('entity')} = ${f.entity}`);
     if (f.action) conds.push(Prisma.sql`${c('action')} = ${f.action}`);
     if (f.actorId) conds.push(Prisma.sql`${c('userId')} = ${f.actorId}`);
@@ -3332,18 +3432,31 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
   /** AL-49 */
   async statsBySeverity(f: AuditStatsFilterDto) {
     const where = this.statsWhere(f);
-    const groups = await this.prisma.auditLog.groupBy({ by: ['severity'], where, _count: { _all: true } });
+    const groups = await this.prisma.auditLog.groupBy({
+      by: ['severity'],
+      where,
+      _count: { _all: true },
+    });
     const data: Record<string, number> = {};
     for (const s of Object.values(AuditSeverity)) data[s] = 0;
     for (const g of groups) data[g.severity] = g._count._all;
     const { from, to } = this.statsRange(f);
-    return { from: from.toISOString(), to: to.toISOString(), total: Object.values(data).reduce((a, b) => a + b, 0), data };
+    return {
+      from: from.toISOString(),
+      to: to.toISOString(),
+      total: Object.values(data).reduce((a, b) => a + b, 0),
+      data,
+    };
   }
 
   /** AL-50 */
   async statsByOutcome(f: AuditStatsFilterDto) {
     const where = this.statsWhere(f);
-    const groups = await this.prisma.auditLog.groupBy({ by: ['outcome'], where, _count: { _all: true } });
+    const groups = await this.prisma.auditLog.groupBy({
+      by: ['outcome'],
+      where,
+      _count: { _all: true },
+    });
     const data: Record<string, number> = {};
     for (const o of Object.values(AuditOutcome)) data[o] = 0;
     for (const g of groups) data[g.outcome] = g._count._all;
@@ -3354,7 +3467,8 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
       to: to.toISOString(),
       total,
       data,
-      successRate: total > 0 ? Number(((data[AuditOutcome.SUCCESS] ?? 0) / total).toFixed(4)) : null,
+      successRate:
+        total > 0 ? Number(((data[AuditOutcome.SUCCESS] ?? 0) / total).toFixed(4)) : null,
     };
   }
 
@@ -3396,7 +3510,9 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
     const actor = f.actorId ? Prisma.sql`AND "exportedById" = ${f.actorId}` : Prisma.empty;
 
     const [series, perAdmin] = await Promise.all([
-      this.prisma.$queryRaw<{ bucket: Date; exportedById: string | null; exports: bigint; rows: bigint }[]>`
+      this.prisma.$queryRaw<
+        { bucket: Date; exportedById: string | null; exports: bigint; rows: bigint }[]
+      >`
         SELECT date_trunc(${unit}, "createdAt") AS bucket, "exportedById", COUNT(*)::bigint AS exports,
                COALESCE(SUM("rowCount"), 0)::bigint AS rows
         FROM audit_export
@@ -3412,7 +3528,10 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
       }),
     ]);
 
-    const names = await this.userNames([...series.map((s) => s.exportedById), ...perAdmin.map((p) => p.exportedById)]);
+    const names = await this.userNames([
+      ...series.map((s) => s.exportedById),
+      ...perAdmin.map((p) => p.exportedById),
+    ]);
     return {
       from: from.toISOString(),
       to: to.toISOString(),
@@ -3443,7 +3562,11 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
       take: 100,
     });
     const { from, to } = this.statsRange(f);
-    return { from: from.toISOString(), to: to.toISOString(), data: groups.map((g) => ({ entity: g.entity, count: g._count._all })) };
+    return {
+      from: from.toISOString(),
+      to: to.toISOString(),
+      data: groups.map((g) => ({ entity: g.entity, count: g._count._all })),
+    };
   }
 
   /** AL-54: events by hour of day and weekday (UTC), to spot out-of-hours activity. */
@@ -3464,7 +3587,14 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
       byHour[r.hour] += Number(r.count);
     }
     const { from, to } = this.statsRange(f);
-    return { from: from.toISOString(), to: to.toISOString(), timezone: 'UTC', weekdayStartsAt: 'SUNDAY', byHour, grid };
+    return {
+      from: from.toISOString(),
+      to: to.toISOString(),
+      timezone: 'UTC',
+      weekdayStartsAt: 'SUNDAY',
+      byHour,
+      grid,
+    };
   }
 
   /** AL-55: sensitive reads per admin over time. */
@@ -3482,7 +3612,11 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
         orderBy: { _count: { userId: 'desc' } },
         take: 25,
       }),
-      this.prisma.auditLog.findMany({ where, select: { createdAt: true, userId: true }, take: 100_000 }),
+      this.prisma.auditLog.findMany({
+        where,
+        select: { createdAt: true, userId: true },
+        take: 100_000,
+      }),
     ]);
 
     const series = new Map<string, number>();
@@ -3524,29 +3658,52 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
     const { from, to } = this.statsRange(f);
     const weekAgo = new Date(Math.max(from.getTime(), to.getTime() - 7 * DAY_MS));
 
-    const [total, bySeverity, byOutcome, byEntity, topActors, lastIntegrity, unackedAlerts, activeHolds, lastPurge, exportsInRange, daily] =
-      await Promise.all([
-        this.prisma.auditLog.count({ where }),
-        this.prisma.auditLog.groupBy({ by: ['severity'], where, _count: { _all: true } }),
-        this.prisma.auditLog.groupBy({ by: ['outcome'], where, _count: { _all: true } }),
-        this.prisma.auditLog.groupBy({ by: ['entity'], where, _count: { _all: true }, orderBy: { _count: { entity: 'desc' } }, take: 5 }),
-        this.prisma.auditLog.groupBy({
-          by: ['userId'],
-          where: { ...where, userId: { not: null }, anonymizedAt: null },
-          _count: { _all: true },
-          orderBy: { _count: { userId: 'desc' } },
-          take: 5,
-        }),
-        this.prisma.auditIntegrityRun.findFirst({ orderBy: { createdAt: 'desc' }, select: { ok: true, createdAt: true, checked: true, complete: true } }),
-        this.prisma.auditAlertTrigger.count({ where: { acknowledgedAt: null } }),
-        this.prisma.auditLegalHold.count({ where: { status: 'ACTIVE' } }),
-        this.prisma.auditPurgeRun.findFirst({ orderBy: { createdAt: 'desc' }, select: { status: true, createdAt: true, deletedCount: true } }),
-        this.prisma.auditExport.count({ where: { createdAt: { gte: from, lte: to } } }),
-        this.prisma.$queryRaw<{ day: Date; count: bigint }[]>`
+    const [
+      total,
+      bySeverity,
+      byOutcome,
+      byEntity,
+      topActors,
+      lastIntegrity,
+      unackedAlerts,
+      activeHolds,
+      lastPurge,
+      exportsInRange,
+      daily,
+    ] = await Promise.all([
+      this.prisma.auditLog.count({ where }),
+      this.prisma.auditLog.groupBy({ by: ['severity'], where, _count: { _all: true } }),
+      this.prisma.auditLog.groupBy({ by: ['outcome'], where, _count: { _all: true } }),
+      this.prisma.auditLog.groupBy({
+        by: ['entity'],
+        where,
+        _count: { _all: true },
+        orderBy: { _count: { entity: 'desc' } },
+        take: 5,
+      }),
+      this.prisma.auditLog.groupBy({
+        by: ['userId'],
+        where: { ...where, userId: { not: null }, anonymizedAt: null },
+        _count: { _all: true },
+        orderBy: { _count: { userId: 'desc' } },
+        take: 5,
+      }),
+      this.prisma.auditIntegrityRun.findFirst({
+        orderBy: { createdAt: 'desc' },
+        select: { ok: true, createdAt: true, checked: true, complete: true },
+      }),
+      this.prisma.auditAlertTrigger.count({ where: { acknowledgedAt: null } }),
+      this.prisma.auditLegalHold.count({ where: { status: 'ACTIVE' } }),
+      this.prisma.auditPurgeRun.findFirst({
+        orderBy: { createdAt: 'desc' },
+        select: { status: true, createdAt: true, deletedCount: true },
+      }),
+      this.prisma.auditExport.count({ where: { createdAt: { gte: from, lte: to } } }),
+      this.prisma.$queryRaw<{ day: Date; count: bigint }[]>`
           SELECT date_trunc('day', "createdAt") AS day, COUNT(*)::bigint AS count
           FROM audit_log WHERE ${Prisma.join(this.statsSql({ ...f, from: weekAgo.toISOString(), to: to.toISOString() }), ' AND ')}
           GROUP BY 1 ORDER BY 1 ASC`,
-      ]);
+    ]);
 
     const names = await this.userNames(topActors.map((a) => a.userId));
     const outcome: Record<string, number> = {};
@@ -3564,8 +3721,15 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
       byOutcome: outcome,
       deniedOrFailed: (outcome[AuditOutcome.DENIED] ?? 0) + (outcome[AuditOutcome.FAILURE] ?? 0),
       topEntities: byEntity.map((g) => ({ entity: g.entity, count: g._count._all })),
-      topActors: topActors.map((a) => ({ userId: a.userId, name: a.userId ? (names.get(a.userId) ?? null) : null, count: a._count._all })),
-      last7Days: daily.map((d) => ({ date: d.day.toISOString().slice(0, 10), count: Number(d.count) })),
+      topActors: topActors.map((a) => ({
+        userId: a.userId,
+        name: a.userId ? (names.get(a.userId) ?? null) : null,
+        count: a._count._all,
+      })),
+      last7Days: daily.map((d) => ({
+        date: d.day.toISOString().slice(0, 10),
+        count: Number(d.count),
+      })),
       exports: exportsInRange,
       attention: {
         unacknowledgedAlerts: unackedAlerts,
@@ -3576,14 +3740,15 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  // ─────────────────────────────────────────────
-  // NEW INTERNALS
-  // ─────────────────────────────────────────────
-
-  private async userNames(ids: Array<string | null | undefined>): Promise<Map<string, string | null>> {
+  private async userNames(
+    ids: Array<string | null | undefined>,
+  ): Promise<Map<string, string | null>> {
     const unique = [...new Set(ids.filter((x): x is string => !!x))];
     if (unique.length === 0) return new Map();
-    const users = await this.prisma.user.findMany({ where: { id: { in: unique } }, select: USER_SELECT });
+    const users = await this.prisma.user.findMany({
+      where: { id: { in: unique } },
+      select: USER_SELECT,
+    });
     return new Map(users.map((u) => [u.id, u.name]));
   }
 
@@ -3596,10 +3761,6 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
       hasMore: (page - 1) * limit + returned < total,
     };
   }
-
-  // ═════════════════════════════════════════════
-  // INTERNALS
-  // ═════════════════════════════════════════════
 
   private isSuperAdmin(user: CurrentUserDto): boolean {
     return user.roles.includes(RolesEnum.SUPER_ADMIN);

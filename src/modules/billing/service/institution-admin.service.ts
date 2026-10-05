@@ -1,7 +1,3 @@
-// src/modules/billing/service/institution-admin.service.ts
-//
-// Institutions, agreements and payout destinations (BL-37 to BL-56).
-// Creating, activating and retiring agreements stays in AgreementService.
 import {
   BadRequestException,
   ConflictException,
@@ -15,13 +11,7 @@ import { PrismaService } from '../../../prisma/prisma.service';
 import { AuditEventEnum } from '../../../common/enums/shared/audit-events.enum';
 
 import { BillingEventsService } from './billing-events.service';
-import {
-  maskTail,
-  money,
-  pageArgs,
-  pageResult,
-  resolveRange,
-} from './billing-admin.helpers';
+import { maskTail, money, pageArgs, pageResult, resolveRange } from './billing-admin.helpers';
 import {
   CreatePayoutDestinationDto,
   ExpiringAgreementsQueryDto,
@@ -44,9 +34,9 @@ export class InstitutionAdminService {
   ) {}
 
   // Account numbers and phones are never returned in full from list or detail views.
-  private maskDestination<
-    T extends { accountNumber: string | null; telebirrPhone: string | null },
-  >(d: T) {
+  private maskDestination<T extends { accountNumber: string | null; telebirrPhone: string | null }>(
+    d: T,
+  ) {
     return {
       ...d,
       accountNumber: maskTail(d.accountNumber),
@@ -59,10 +49,6 @@ export class InstitutionAdminService {
     if (!i) throw new NotFoundException('institution_not_found');
     return i;
   }
-
-  // ═════════════════════════════════════════════
-  // INSTITUTIONS
-  // ═════════════════════════════════════════════
 
   // BL-37
   async listInstitutions(q: InstitutionsQueryDto) {
@@ -133,9 +119,6 @@ export class InstitutionAdminService {
     return updated;
   }
 
-  // BL-40. Suspends an institution without deleting its history. Active
-  // agreements keep working for old payments, but no new agreement can be
-  // activated for it (AgreementService.assertSigned checks the status).
   async deactivate(adminId: string, id: string, reason: string) {
     const i = await this.loadInstitution(id);
     if (i.status === InstitutionStatus.SUSPENDED) throw new ConflictException('already_suspended');
@@ -193,7 +176,11 @@ export class InstitutionAdminService {
         _count: { _all: true },
       }),
       this.prisma.disbursement.aggregate({
-        where: { allocation: { institutionId: id }, status: 'PAID_OUT', executedAt: { gte: from, lte: to } },
+        where: {
+          allocation: { institutionId: id },
+          status: 'PAID_OUT',
+          executedAt: { gte: from, lte: to },
+        },
         _sum: { amount: true },
         _count: { _all: true },
       }),
@@ -258,10 +245,6 @@ export class InstitutionAdminService {
     return pageResult(items, total, page, limit);
   }
 
-  // ═════════════════════════════════════════════
-  // AGREEMENTS
-  // ═════════════════════════════════════════════
-
   // BL-44
   async getAgreement(id: string) {
     const a = await this.prisma.agreement.findUnique({
@@ -282,7 +265,9 @@ export class InstitutionAdminService {
       ...(dto.effectiveFrom ? { effectiveFrom: dto.effectiveFrom } : {}),
       ...(dto.effectiveTo ? { effectiveTo: dto.effectiveTo } : {}),
       ...(dto.refundPolicy !== undefined ? { refundPolicy: dto.refundPolicy } : {}),
-      ...(dto.cancellationPolicy !== undefined ? { cancellationPolicy: dto.cancellationPolicy } : {}),
+      ...(dto.cancellationPolicy !== undefined
+        ? { cancellationPolicy: dto.cancellationPolicy }
+        : {}),
     };
     if (Object.keys(data).length === 0) throw new BadRequestException('nothing_to_update');
 
@@ -433,10 +418,6 @@ export class InstitutionAdminService {
     };
   }
 
-  // ═════════════════════════════════════════════
-  // PAYOUT DESTINATIONS
-  // ═════════════════════════════════════════════
-
   // BL-50
   async listDestinations(q: PayoutDestinationsQueryDto) {
     const { page, limit, skip } = pageArgs(q);
@@ -575,7 +556,12 @@ export class InstitutionAdminService {
 
     const { count } = await this.prisma.payoutDestination.updateMany({
       where: { id, isVerified: false },
-      data: { isVerified: true, verifiedById: adminId, verifiedAt: new Date(), verifiedNote: note ?? null },
+      data: {
+        isVerified: true,
+        verifiedById: adminId,
+        verifiedAt: new Date(),
+        verifiedNote: note ?? null,
+      },
     });
     if (count === 0) throw new ConflictException('already_verified');
 
@@ -616,7 +602,10 @@ export class InstitutionAdminService {
 
   // BL-55. Reads the audit rows we wrote above; they hold masked values only.
   async destinationHistory(id: string) {
-    const d = await this.prisma.payoutDestination.findUnique({ where: { id }, select: { id: true } });
+    const d = await this.prisma.payoutDestination.findUnique({
+      where: { id },
+      select: { id: true },
+    });
     if (!d) throw new NotFoundException('payout_destination_not_found');
 
     return this.prisma.auditLog.findMany({

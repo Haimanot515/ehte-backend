@@ -20,9 +20,6 @@ import {
   ValidateIf,
 } from 'class-validator';
 
-// Non-financial offers only. Money never comes through here: financial support is created
-// by the server after Chapa confirms a payment. With forbidNonWhitelisted on the global
-// ValidationPipe, sending amount, split, agreementType or transferReference is rejected.
 export class CreateSupportDto {
   @ApiProperty()
   @IsUUID()
@@ -38,18 +35,27 @@ export class CreateSupportDto {
 
   // Required when OTHER is ticked.
   @ApiPropertyOptional({ description: 'Short note. Required when OTHER is ticked.' })
-  @ValidateIf((o: CreateSupportDto) => o.message !== undefined || o.categories?.includes(SupportCategory.OTHER))
+  @ValidateIf(
+    (o: CreateSupportDto) =>
+      o.message !== undefined || o.categories?.includes(SupportCategory.OTHER),
+  )
   @IsString()
   @MinLength(1)
   @MaxLength(1000)
   message?: string;
 
-  @ApiPropertyOptional({ default: true, description: 'Hide my name from the victim and public lists.' })
+  @ApiPropertyOptional({
+    default: true,
+    description: 'Hide my name from the victim and public lists.',
+  })
   @IsOptional()
   @IsBoolean()
   anonymous?: boolean;
 
-  @ApiPropertyOptional({ default: false, description: 'The team may share my contact with this person.' })
+  @ApiPropertyOptional({
+    default: false,
+    description: 'The team may share my contact with this person.',
+  })
   @IsOptional()
   @IsBoolean()
   contactMayBeShared?: boolean;
@@ -305,7 +311,10 @@ export class BulkSupportReasonDto {
 }
 
 export class BulkExpireSupportDto {
-  @ApiPropertyOptional({ default: 14, description: 'Expire PENDING offers older than this many days' })
+  @ApiPropertyOptional({
+    default: 14,
+    description: 'Expire PENDING offers older than this many days',
+  })
   @IsOptional()
   @Type(() => Number)
   @IsInt()

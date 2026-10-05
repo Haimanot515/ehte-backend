@@ -1,8 +1,3 @@
-// src/modules/billing/controller/chapa-webhook.controller.ts
-//
-// Public route (no JWT). Requires main.ts: NestFactory.create(AppModule, { rawBody: true })
-// The webhook body is never trusted: reconcile() re-verifies with Chapa.
-
 import {
   BadRequestException,
   Controller,

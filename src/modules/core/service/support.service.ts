@@ -539,8 +539,7 @@ export class SupportService {
         support.type === SupportType.FINANCIAL
           ? Number(support.recipientAmount ?? support.amount ?? 0)
           : null,
-      supporterName:
-        support.anonymous || !support.user?.name ? ANONYMOUS_LABEL : support.user.name,
+      supporterName: support.anonymous || !support.user?.name ? ANONYMOUS_LABEL : support.user.name,
       createdAt: support.createdAt,
     }));
   }
@@ -678,11 +677,7 @@ export class SupportService {
   }
 
   // Allowed moves. Completed financial supports can still be cancelled by an admin (paid by mistake).
-  private isTransitionAllowed(
-    from: SupportStatus,
-    to: SupportStatus,
-    type: SupportType,
-  ): boolean {
+  private isTransitionAllowed(from: SupportStatus, to: SupportStatus, type: SupportType): boolean {
     switch (to) {
       case SupportStatus.CONFIRMED:
         return from === SupportStatus.PENDING;
@@ -726,8 +721,7 @@ export class SupportService {
     const label = this.buildSupportLabel(support);
 
     // Set only when the actor is someone other than the supporter — a self-cancel isn't "against" anyone.
-    const targetUserFields =
-      actor.id === support.userId ? {} : { targetUserId: support.userId };
+    const targetUserFields = actor.id === support.userId ? {} : { targetUserId: support.userId };
 
     if (previousStatus === status) {
       this.emitAudit({
@@ -942,7 +936,10 @@ export class SupportService {
       throw new NotFoundException('support_not_found');
     }
 
-    if (!support.victimProfile.claimedByUserId || support.victimProfile.claimedByUserId !== user.id) {
+    if (
+      !support.victimProfile.claimedByUserId ||
+      support.victimProfile.claimedByUserId !== user.id
+    ) {
       this.emitAudit({
         userId: user.id,
         actorType,
@@ -966,7 +963,11 @@ export class SupportService {
     }
 
     if (support.victimConfirmedReceiptAt) {
-      return { id: support.id, status: support.status, victimConfirmedReceiptAt: support.victimConfirmedReceiptAt };
+      return {
+        id: support.id,
+        status: support.status,
+        victimConfirmedReceiptAt: support.victimConfirmedReceiptAt,
+      };
     }
 
     const now = new Date();
@@ -1033,7 +1034,11 @@ export class SupportService {
     }
 
     // A paid financial support cannot be cancelled by the supporter. A refund is a separate admin action.
-    if (!isAdmin && support.type === SupportType.FINANCIAL && support.status !== SupportStatus.PENDING) {
+    if (
+      !isAdmin &&
+      support.type === SupportType.FINANCIAL &&
+      support.status !== SupportStatus.PENDING
+    ) {
       this.emitAudit({
         userId: requestingUser.id,
         actorType,
@@ -1141,10 +1146,6 @@ export class SupportService {
       }
     }
   }
-
-  // ════════════════════════════════════════════════════════════════════════════════════════
-  // Everything below is new: services for SP-01 .. SP-68. Nothing above this line was changed.
-  // ════════════════════════════════════════════════════════════════════════════════════════
 
   // ───────────────────────────── shared helpers ─────────────────────────────
 
@@ -1256,7 +1257,10 @@ export class SupportService {
   }
 
   private async touchSupporterUpdate(supportId: string): Promise<void> {
-    await this.prisma.support.updateMany({ where: { id: supportId }, data: { lastUpdateAt: new Date() } });
+    await this.prisma.support.updateMany({
+      where: { id: supportId },
+      data: { lastUpdateAt: new Date() },
+    });
   }
 
   private mapAdminRow<T extends { adminReads: unknown[] }>(row: T) {
@@ -1276,11 +1280,6 @@ export class SupportService {
     if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
     return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   }
-
-  // ───────────────────────── status-change listeners ─────────────────────────
-  // updateStatus(), cancel() and the cron job already emit an audit event on every change. These
-  // listeners turn those events into SupportStatusEvent rows and the confirmedAt/completedAt/...
-  // stamps, so the existing methods above did not need to change.
 
   @OnEvent(AuditEventEnum.SUPPORT_CONFIRMED)
   async onSupportConfirmed(p: AuditEventPayload) {
@@ -1384,7 +1383,10 @@ export class SupportService {
 
   // SP-01
   async updateMyOffer(id: string, user: CurrentUserDto, data: UpdateSupportDto) {
-    const support = await this.prisma.support.findUnique({ where: { id }, select: SUPPORT_OWNER_SELECT });
+    const support = await this.prisma.support.findUnique({
+      where: { id },
+      select: SUPPORT_OWNER_SELECT,
+    });
     if (!support) throw new NotFoundException('support_not_found');
     if (support.userId !== user.id) throw new ForbiddenException('not_allowed_to_modify_support');
     if (support.type !== SupportType.NON_FINANCIAL) {
@@ -1539,7 +1541,11 @@ export class SupportService {
 
     const { count } = await this.prisma.supportAttachment.updateMany({
       where: { supportId: id, key, removedAt: null },
-      data: { removedAt: new Date(), removedByUserId: user.id, removalReason: 'removed_by_supporter' },
+      data: {
+        removedAt: new Date(),
+        removedByUserId: user.id,
+        removalReason: 'removed_by_supporter',
+      },
     });
     if (count === 0) throw new NotFoundException('proof_not_found');
 
@@ -1566,13 +1572,23 @@ export class SupportService {
     ]);
 
     const by = (t: ActorType | null) =>
-      t === ActorType.SYSTEM ? 'SYSTEM' : t === ActorType.ADMIN || t === ActorType.SUPER_ADMIN ? 'STAFF' : 'PARTICIPANT';
+      t === ActorType.SYSTEM
+        ? 'SYSTEM'
+        : t === ActorType.ADMIN || t === ActorType.SUPER_ADMIN
+          ? 'STAFF'
+          : 'PARTICIPANT';
 
     return {
       supportId: support.id,
       currentStatus: head.status,
       timeline: [
-        { status: SupportStatus.PENDING, previousStatus: null, at: head.createdAt, by: 'PARTICIPANT', event: 'CREATED' },
+        {
+          status: SupportStatus.PENDING,
+          previousStatus: null,
+          at: head.createdAt,
+          by: 'PARTICIPANT',
+          event: 'CREATED',
+        },
         ...events.map((e) => ({
           status: e.toStatus,
           previousStatus: e.fromStatus,
@@ -1722,11 +1738,13 @@ export class SupportService {
     const statusCounts = Object.fromEntries(
       Object.values(SupportStatus).map((s) => [s, 0]),
     ) as Record<SupportStatus, number>;
-    for (const row of byStatus) statusCounts[row.status] = (row._count as { _all?: number })?._all ?? 0;
+    for (const row of byStatus)
+      statusCounts[row.status] = (row._count as { _all?: number })?._all ?? 0;
 
-    const typeCounts = Object.fromEntries(
-      Object.values(SupportType).map((t) => [t, 0]),
-    ) as Record<SupportType, number>;
+    const typeCounts = Object.fromEntries(Object.values(SupportType).map((t) => [t, 0])) as Record<
+      SupportType,
+      number
+    >;
     for (const row of byType) typeCounts[row.type] = (row._count as { _all?: number })?._all ?? 0;
 
     return {
@@ -1740,7 +1758,11 @@ export class SupportService {
   async getMySupportImpact(user: CurrentUserDto) {
     const [completed, inProgress, profiles, financial] = await Promise.all([
       this.prisma.support.count({
-        where: { userId: user.id, type: SupportType.NON_FINANCIAL, status: SupportStatus.COMPLETED },
+        where: {
+          userId: user.id,
+          type: SupportType.NON_FINANCIAL,
+          status: SupportStatus.COMPLETED,
+        },
       }),
       this.prisma.support.count({
         where: {
@@ -1782,7 +1804,10 @@ export class SupportService {
   async markSeen(id: string, user: CurrentUserDto) {
     await this.findOwnedOrThrow(id, user);
     const supporterSeenAt = new Date();
-    await this.prisma.support.updateMany({ where: { id, userId: user.id }, data: { supporterSeenAt } });
+    await this.prisma.support.updateMany({
+      where: { id, userId: user.id },
+      data: { supporterSeenAt },
+    });
     return { id, supporterSeenAt };
   }
 
@@ -1795,10 +1820,6 @@ export class SupportService {
     return { marked: count };
   }
 
-  // ═════════════════════ recipient side (SP-13 .. SP-19) ═════════════════════
-  // "Incoming" = non-financial offers on profiles the user claimed. PENDING offers are not shown:
-  // the victim is only told once an admin has confirmed the offer. A declined offer stays visible.
-
   private incomingWhere(userId: string): Prisma.SupportWhereInput {
     return {
       type: SupportType.NON_FINANCIAL,
@@ -1807,7 +1828,9 @@ export class SupportService {
     };
   }
 
-  private mapIncoming(s: Prisma.SupportGetPayload<{ select: typeof SupportService.INCOMING_SELECT }>) {
+  private mapIncoming(
+    s: Prisma.SupportGetPayload<{ select: typeof SupportService.INCOMING_SELECT }>,
+  ) {
     return {
       id: s.id,
       status: s.status,
@@ -1859,7 +1882,8 @@ export class SupportService {
     const statusCounts = Object.fromEntries(
       Object.values(SupportStatus).map((s) => [s, 0]),
     ) as Record<SupportStatus, number>;
-    for (const row of byStatus) statusCounts[row.status] = (row._count as { _all?: number })?._all ?? 0;
+    for (const row of byStatus)
+      statusCounts[row.status] = (row._count as { _all?: number })?._all ?? 0;
 
     return {
       total: Object.values(statusCounts).reduce((a, b) => a + b, 0),
@@ -1911,7 +1935,12 @@ export class SupportService {
     }
 
     const reason = data.reason.trim();
-    const cancelled = await this.updateStatus(id, SupportStatus.CANCELLED, user, `declined_by_recipient: ${reason}`);
+    const cancelled = await this.updateStatus(
+      id,
+      SupportStatus.CANCELLED,
+      user,
+      `declined_by_recipient: ${reason}`,
+    );
 
     await this.prisma.support.updateMany({
       where: { id, declinedAt: null },
@@ -1997,7 +2026,10 @@ export class SupportService {
   // SP-22
   async bulkMarkRead(admin: CurrentUserDto, data: BulkSupportIdsDto) {
     const ids = [...new Set(data.ids)];
-    const found = await this.prisma.support.findMany({ where: { id: { in: ids } }, select: { id: true } });
+    const found = await this.prisma.support.findMany({
+      where: { id: { in: ids } },
+      select: { id: true },
+    });
     const { count } = await this.prisma.supportAdminRead.createMany({
       data: found.map((s) => ({ supportId: s.id, adminId: admin.id })),
       skipDuplicates: true,
@@ -2192,7 +2224,8 @@ export class SupportService {
     const statusCounts = Object.fromEntries(
       Object.values(SupportStatus).map((s) => [s, 0]),
     ) as Record<SupportStatus, number>;
-    for (const row of byStatus) statusCounts[row.status] = (row._count as { _all?: number })?._all ?? 0;
+    for (const row of byStatus)
+      statusCounts[row.status] = (row._count as { _all?: number })?._all ?? 0;
 
     const total = Object.values(statusCounts).reduce((a, b) => a + b, 0);
     const completed = statusCounts[SupportStatus.COMPLETED];
@@ -2469,18 +2502,24 @@ export class SupportService {
     let appliedStatus: SupportStatus | null = null;
 
     // Change the offer first: if the move is refused the dispute stays open.
-    if (data.outcome === SupportDisputeOutcome.DELIVERED && support.status === SupportStatus.CONFIRMED) {
-      appliedStatus = (await this.updateStatus(support.id, SupportStatus.COMPLETED, admin, reason)).status;
+    if (
+      data.outcome === SupportDisputeOutcome.DELIVERED &&
+      support.status === SupportStatus.CONFIRMED
+    ) {
+      appliedStatus = (await this.updateStatus(support.id, SupportStatus.COMPLETED, admin, reason))
+        .status;
     } else if (
       data.outcome === SupportDisputeOutcome.NOT_DELIVERED &&
       this.isAdminTransitionAllowed(support.status, SupportStatus.FAILED, support.type)
     ) {
-      appliedStatus = (await this.adminTransition(support.id, SupportStatus.FAILED, admin, reason)).status;
+      appliedStatus = (await this.adminTransition(support.id, SupportStatus.FAILED, admin, reason))
+        .status;
     } else if (
       data.outcome === SupportDisputeOutcome.CANCELLED &&
       this.isTransitionAllowed(support.status, SupportStatus.CANCELLED, support.type)
     ) {
-      appliedStatus = (await this.updateStatus(support.id, SupportStatus.CANCELLED, admin, reason)).status;
+      appliedStatus = (await this.updateStatus(support.id, SupportStatus.CANCELLED, admin, reason))
+        .status;
     }
 
     const { count } = await this.prisma.supportDispute.updateMany({
@@ -2570,7 +2609,11 @@ export class SupportService {
       entity: 'User',
       entityId: supporterId,
       reason,
-      diff: { result: 'success', restrictionId: restriction.id, endsAt: endsAt?.toISOString() ?? null },
+      diff: {
+        result: 'success',
+        restrictionId: restriction.id,
+        endsAt: endsAt?.toISOString() ?? null,
+      },
     } as AuditEventPayload);
     this.eventEmitter.emit(NotificationEventEnum.SUPPORT_SUPPORTER_RESTRICTED, {
       userId: supporterId,
@@ -2807,12 +2850,21 @@ export class SupportService {
       }
     }
 
-    return { olderThanDays: days, matched: stale.length, expired, more: stale.length === BULK_EXPIRE_MAX };
+    return {
+      olderThanDays: days,
+      matched: stale.length,
+      expired,
+      more: stale.length === BULK_EXPIRE_MAX,
+    };
   }
 
   // Moves that updateStatus() does not cover. Reopening is limited to non-financial offers so a
   // refunded or cancelled payment can never come back to life and change total raised by accident.
-  private isAdminTransitionAllowed(from: SupportStatus, to: SupportStatus, type: SupportType): boolean {
+  private isAdminTransitionAllowed(
+    from: SupportStatus,
+    to: SupportStatus,
+    type: SupportType,
+  ): boolean {
     if (to === SupportStatus.FAILED) {
       return (
         from === SupportStatus.PENDING ||
@@ -2882,7 +2934,12 @@ export class SupportService {
         data: {
           status: to,
           ...(to === SupportStatus.PENDING
-            ? { declinedAt: null, declineReason: null, declinedByUserId: null, recipientOpenedAt: null }
+            ? {
+                declinedAt: null,
+                declineReason: null,
+                declinedByUserId: null,
+                recipientOpenedAt: null,
+              }
             : {}),
         },
       });
@@ -2901,7 +2958,12 @@ export class SupportService {
       this.emitSupportAudit(admin, AuditEventEnum.SUPPORT_UPDATED, support, {
         outcome: AuditOutcome.FAILURE,
         severity: AuditSeverity.WARNING,
-        diff: { result: 'failure', reason: 'support_transition_conflict', expectedStatus: from, attemptedStatus: to },
+        diff: {
+          result: 'failure',
+          reason: 'support_transition_conflict',
+          expectedStatus: from,
+          attemptedStatus: to,
+        },
       });
       throw new BadRequestException('support_transition_conflict');
     }
@@ -3024,11 +3086,20 @@ export class SupportService {
     const support = await this.findSupportOrThrow(id);
     const { status: from, type } = support;
 
-    const allowed: Array<{ to: SupportStatus; action: string; method: string; path: string; requires: string[] }> = [];
+    const allowed: Array<{
+      to: SupportStatus;
+      action: string;
+      method: string;
+      path: string;
+      requires: string[];
+    }> = [];
     const add = (to: SupportStatus, action: string, path: string, requires: string[]) =>
       allowed.push({ to, action, method: 'PATCH', path: `/support/${id}/${path}`, requires });
 
-    if (type === SupportType.NON_FINANCIAL && this.isTransitionAllowed(from, SupportStatus.CONFIRMED, type)) {
+    if (
+      type === SupportType.NON_FINANCIAL &&
+      this.isTransitionAllowed(from, SupportStatus.CONFIRMED, type)
+    ) {
       add(SupportStatus.CONFIRMED, 'confirm', 'confirm', []);
     }
     if (this.isTransitionAllowed(from, SupportStatus.COMPLETED, type)) {
@@ -3054,7 +3125,14 @@ export class SupportService {
     return this.prisma.supportRevision.findMany({
       where: { supportId: id },
       orderBy: { createdAt: 'desc' },
-      select: { id: true, field: true, oldValue: true, newValue: true, actorUserId: true, createdAt: true },
+      select: {
+        id: true,
+        field: true,
+        oldValue: true,
+        newValue: true,
+        actorUserId: true,
+        createdAt: true,
+      },
       take: 500,
     });
   }
@@ -3067,10 +3145,19 @@ export class SupportService {
 
     const [message] = await this.prisma.$transaction([
       this.prisma.supportMessage.create({
-        data: { supportId: id, authorUserId: admin.id, authorType: SupportMessageAuthor.STAFF, body },
+        data: {
+          supportId: id,
+          authorUserId: admin.id,
+          authorType: SupportMessageAuthor.STAFF,
+          body,
+        },
         select: { id: true, authorType: true, body: true, createdAt: true },
       }),
-      this.prisma.support.update({ where: { id }, data: { lastUpdateAt: new Date() }, select: { id: true } }),
+      this.prisma.support.update({
+        where: { id },
+        data: { lastUpdateAt: new Date() },
+        select: { id: true },
+      }),
       this.prisma.supportAdminRead.upsert({
         where: { supportId_adminId: { supportId: id, adminId: admin.id } },
         create: { supportId: id, adminId: admin.id },
@@ -3113,7 +3200,11 @@ export class SupportService {
         removalReason: true,
       },
     });
-    return rows.map(({ removedAt, ...rest }) => ({ ...rest, removedAt, removed: removedAt !== null }));
+    return rows.map(({ removedAt, ...rest }) => ({
+      ...rest,
+      removedAt,
+      removed: removedAt !== null,
+    }));
   }
 
   // SP-53. For example a photo that shows a face or an address.
@@ -3164,16 +3255,19 @@ export class SupportService {
     });
     const userIds = [
       ...new Set(
-        [attachment.uploadedByUserId, attachment.removedByUserId, ...accesses.map((a) => a.userId)].filter(
-          (v): v is string => Boolean(v),
-        ),
+        [
+          attachment.uploadedByUserId,
+          attachment.removedByUserId,
+          ...accesses.map((a) => a.userId),
+        ].filter((v): v is string => Boolean(v)),
       ),
     ];
     const users = await this.prisma.user.findMany({
       where: { id: { in: userIds } },
       select: { id: true, name: true },
     });
-    const name = (uid: string | null) => (uid ? (users.find((u) => u.id === uid)?.name ?? null) : null);
+    const name = (uid: string | null) =>
+      uid ? (users.find((u) => u.id === uid)?.name ?? null) : null;
 
     return {
       attachment,
@@ -3284,7 +3378,9 @@ export class SupportService {
         where: { ...full, disputes: { some: { status: SupportDisputeStatus.OPEN } } },
       }),
       this.prisma.support.count({ where: { ...full, flags: { some: {} } } }),
-      this.prisma.support.count({ where: { ...full, adminReads: { none: { adminId: admin.id } } } }),
+      this.prisma.support.count({
+        where: { ...full, adminReads: { none: { adminId: admin.id } } },
+      }),
       ...Object.values(SupportCategory).map((category) =>
         this.prisma.support.count({ where: { ...base, ...full, categories: { has: category } } }),
       ),
@@ -3293,11 +3389,13 @@ export class SupportService {
     const statusCounts = Object.fromEntries(
       Object.values(SupportStatus).map((s) => [s, 0]),
     ) as Record<SupportStatus, number>;
-    for (const row of byStatus) statusCounts[row.status] = (row._count as { _all?: number })?._all ?? 0;
+    for (const row of byStatus)
+      statusCounts[row.status] = (row._count as { _all?: number })?._all ?? 0;
 
-    const typeCounts = Object.fromEntries(
-      Object.values(SupportType).map((t) => [t, 0]),
-    ) as Record<SupportType, number>;
+    const typeCounts = Object.fromEntries(Object.values(SupportType).map((t) => [t, 0])) as Record<
+      SupportType,
+      number
+    >;
     for (const row of byType) typeCounts[row.type] = (row._count as { _all?: number })?._all ?? 0;
 
     const categories = Object.fromEntries(
@@ -3339,17 +3437,46 @@ export class SupportService {
 
     // Contact details are deliberately not exported.
     const header = [
-      'id', 'createdAt', 'type', 'status', 'victimProfileId', 'victimProfileName', 'supporterId',
-      'supporterName', 'anonymous', 'categories', 'amount', 'recipientAmount', 'organizationAmount',
-      'platformAmount', 'transferReference', 'contactMayBeShared', 'receiptConfirmedAt', 'completedAt',
+      'id',
+      'createdAt',
+      'type',
+      'status',
+      'victimProfileId',
+      'victimProfileName',
+      'supporterId',
+      'supporterName',
+      'anonymous',
+      'categories',
+      'amount',
+      'recipientAmount',
+      'organizationAmount',
+      'platformAmount',
+      'transferReference',
+      'contactMayBeShared',
+      'receiptConfirmedAt',
+      'completedAt',
     ];
     const lines = [header.join(',')];
     for (const r of slice) {
       lines.push(
         [
-          r.id, r.createdAt, r.type, r.status, r.victimProfileId, r.victimProfile?.name, r.userId,
-          r.user?.name, r.anonymous, r.categories, r.amount, r.recipientAmount, r.organizationAmount,
-          r.platformAmount, r.transferReference, r.contactMayBeShared, r.victimConfirmedReceiptAt,
+          r.id,
+          r.createdAt,
+          r.type,
+          r.status,
+          r.victimProfileId,
+          r.victimProfile?.name,
+          r.userId,
+          r.user?.name,
+          r.anonymous,
+          r.categories,
+          r.amount,
+          r.recipientAmount,
+          r.organizationAmount,
+          r.platformAmount,
+          r.transferReference,
+          r.contactMayBeShared,
+          r.victimConfirmedReceiptAt,
           r.completedAt,
         ]
           .map((v) => this.csvCell(v))
@@ -3473,15 +3600,25 @@ export class SupportService {
       const now = Date.now();
 
       const queued = await this.prisma.supportExportJob.findMany({
-        where: { status: SupportExportJobStatus.QUEUED, createdAt: { lt: new Date(now - 2 * 60_000) } },
+        where: {
+          status: SupportExportJobStatus.QUEUED,
+          createdAt: { lt: new Date(now - 2 * 60_000) },
+        },
         select: { id: true },
         take: 5,
       });
       for (const job of queued) await this.runSupportExportJob(job.id);
 
       await this.prisma.supportExportJob.updateMany({
-        where: { status: SupportExportJobStatus.RUNNING, startedAt: { lt: new Date(now - 30 * 60_000) } },
-        data: { status: SupportExportJobStatus.FAILED, error: 'export_timed_out', completedAt: new Date() },
+        where: {
+          status: SupportExportJobStatus.RUNNING,
+          startedAt: { lt: new Date(now - 30 * 60_000) },
+        },
+        data: {
+          status: SupportExportJobStatus.FAILED,
+          error: 'export_timed_out',
+          completedAt: new Date(),
+        },
       });
 
       await this.prisma.supportExportJob.updateMany({
@@ -3570,7 +3707,12 @@ export class SupportService {
   async getSupportStatsTimeline(admin: CurrentUserDto, query: SupportStatsTimelineQueryDto) {
     void admin;
     const interval = query.interval ?? SupportStatsInterval.DAY;
-    const unit = interval === SupportStatsInterval.WEEK ? 'week' : interval === SupportStatsInterval.MONTH ? 'month' : 'day';
+    const unit =
+      interval === SupportStatsInterval.WEEK
+        ? 'week'
+        : interval === SupportStatsInterval.MONTH
+          ? 'month'
+          : 'day';
 
     const rows = await this.prisma.$queryRaw<
       Array<{
@@ -3617,9 +3759,10 @@ export class SupportService {
       _count: { _all: true },
       orderBy: { status: 'asc' },
     });
-    const counts = Object.fromEntries(
-      Object.values(SupportStatus).map((s) => [s, 0]),
-    ) as Record<SupportStatus, number>;
+    const counts = Object.fromEntries(Object.values(SupportStatus).map((s) => [s, 0])) as Record<
+      SupportStatus,
+      number
+    >;
     for (const row of rows) counts[row.status] = (row._count as { _all?: number })?._all ?? 0;
     return { total: Object.values(counts).reduce((a, b) => a + b, 0), byStatus: counts };
   }
@@ -3678,7 +3821,8 @@ export class SupportService {
       ${this.whereSql(conds)}
     `);
 
-    const hours = (v: number | null | undefined) => (v === null || v === undefined ? null : Number((Number(v) / 3600).toFixed(2)));
+    const hours = (v: number | null | undefined) =>
+      v === null || v === undefined ? null : Number((Number(v) / 3600).toFixed(2));
     return {
       completed: this.num(row?.completed),
       unit: 'hours',
@@ -3719,10 +3863,30 @@ export class SupportService {
     const where: Prisma.SupportDisputeWhereInput = { support: this.buildStatsWhere(query) };
 
     const [byStatus, byOutcome, byReason, bySide, perMonth] = await Promise.all([
-      this.prisma.supportDispute.groupBy({ by: ['status'], where, _count: { _all: true }, orderBy: { status: 'asc' } }),
-      this.prisma.supportDispute.groupBy({ by: ['outcome'], where, _count: { _all: true }, orderBy: { outcome: 'asc' } }),
-      this.prisma.supportDispute.groupBy({ by: ['reason'], where, _count: { _all: true }, orderBy: { reason: 'asc' } }),
-      this.prisma.supportDispute.groupBy({ by: ['side'], where, _count: { _all: true }, orderBy: { side: 'asc' } }),
+      this.prisma.supportDispute.groupBy({
+        by: ['status'],
+        where,
+        _count: { _all: true },
+        orderBy: { status: 'asc' },
+      }),
+      this.prisma.supportDispute.groupBy({
+        by: ['outcome'],
+        where,
+        _count: { _all: true },
+        orderBy: { outcome: 'asc' },
+      }),
+      this.prisma.supportDispute.groupBy({
+        by: ['reason'],
+        where,
+        _count: { _all: true },
+        orderBy: { reason: 'asc' },
+      }),
+      this.prisma.supportDispute.groupBy({
+        by: ['side'],
+        where,
+        _count: { _all: true },
+        orderBy: { side: 'asc' },
+      }),
       this.prisma.$queryRaw<Array<{ bucket: Date; opened: bigint; resolved: bigint }>>(Prisma.sql`
         SELECT date_trunc('month', d."createdAt") AS bucket,
                COUNT(*) AS opened,
@@ -3736,9 +3900,15 @@ export class SupportService {
       `),
     ]);
 
-    const toMap = <K extends string>(rows: Array<{ _count: unknown } & Record<string, unknown>>, key: string) =>
+    const toMap = <K extends string>(
+      rows: Array<{ _count: unknown } & Record<string, unknown>>,
+      key: string,
+    ) =>
       Object.fromEntries(
-        rows.map((r) => [String(r[key] ?? 'UNRESOLVED') as K, (r._count as { _all?: number })?._all ?? 0]),
+        rows.map((r) => [
+          String(r[key] ?? 'UNRESOLVED') as K,
+          (r._count as { _all?: number })?._all ?? 0,
+        ]),
       ) as Record<K, number>;
 
     const status = toMap<SupportDisputeStatus>(byStatus, 'status');
@@ -3806,19 +3976,22 @@ export class SupportService {
   // SP-68. The dashboard in one call.
   async getSupportStatsOverview(admin: CurrentUserDto, query: SupportStatsQueryDto) {
     const where = this.buildStatsWhere(query);
-    const [status, type, completion, aging, fulfilment, disputes, financial, flagged] = await Promise.all([
-      this.getSupportStatsByStatus(admin, query),
-      this.getSupportStatsByType(admin, query),
-      this.getSupportStatsCompletionRate(admin, query),
-      this.getSupportStatsAging(admin, query),
-      this.getSupportStatsFulfilmentTime(admin, query),
-      this.getSupportStatsDisputes(admin, query),
-      this.prisma.support.aggregate({
-        where: { AND: [where, { type: SupportType.FINANCIAL, status: { in: COUNTED_STATUSES } }] },
-        _sum: { recipientAmount: true, amount: true },
-      }),
-      this.prisma.support.count({ where: { ...where, flags: { some: {} } } }),
-    ]);
+    const [status, type, completion, aging, fulfilment, disputes, financial, flagged] =
+      await Promise.all([
+        this.getSupportStatsByStatus(admin, query),
+        this.getSupportStatsByType(admin, query),
+        this.getSupportStatsCompletionRate(admin, query),
+        this.getSupportStatsAging(admin, query),
+        this.getSupportStatsFulfilmentTime(admin, query),
+        this.getSupportStatsDisputes(admin, query),
+        this.prisma.support.aggregate({
+          where: {
+            AND: [where, { type: SupportType.FINANCIAL, status: { in: COUNTED_STATUSES } }],
+          },
+          _sum: { recipientAmount: true, amount: true },
+        }),
+        this.prisma.support.count({ where: { ...where, flags: { some: {} } } }),
+      ]);
 
     return {
       total: status.total,

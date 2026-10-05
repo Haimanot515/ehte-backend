@@ -23,10 +23,6 @@ import { Transform, Type } from 'class-transformer';
 
 import { ReportStatus, ReportCategory } from '@prisma/client';
 
-// ─────────────────────────────────────────────
-// REPORTER-FACING
-// ─────────────────────────────────────────────
-
 export class CreateReportDto {
   @ApiProperty({
     enum: ReportCategory,
@@ -114,14 +110,6 @@ export class CreateReportDto {
   @IsString({ each: true })
   other?: string[];
 
-  // ─────────────────────────────────────────
-  // RE-AUTHENTICATION
-  //
-  // Verified and stripped by ReauthGuard before this DTO's data
-  // reaches ReportService.create() — never persisted or returned.
-  // Optional here since it can instead be supplied via the
-  // X-Reauth-Credential header; the guard accepts either.
-  // ─────────────────────────────────────────
   @ApiPropertyOptional({
     description:
       'Account password (or Discreet Mode passcode, if enabled) confirming this sensitive action. Optional here if provided instead via the X-Reauth-Credential header.',
@@ -130,14 +118,6 @@ export class CreateReportDto {
   @IsOptional()
   @IsString()
   credential?: string;
-
-  // NOTE (item #5, idempotency): deliberately NOT a DTO field. Same
-  // convention as CreatePostDto — the client sends an
-  // Idempotency-Key header instead, read by ReportController.create
-  // via @Headers('idempotency-key') and passed through to
-  // ReportService.create(). Keeping it out of the body means it
-  // can never accidentally get persisted or echoed back on the
-  // report itself.
 }
 
 export class UpdateReportDto {
@@ -221,10 +201,6 @@ export class UpdateReportDto {
   @IsString({ each: true })
   other?: string[];
 }
-
-// ─────────────────────────────────────────────
-// ADMIN-FACING
-// ─────────────────────────────────────────────
 
 export class AdminReportQueryDto {
   @ApiPropertyOptional({ enum: ReportStatus })
@@ -323,10 +299,6 @@ export class EscalateReportDto {
   @IsString()
   reason: string;
 }
-
-// ─────────────────────────────────────────────
-// SHARED + QUERY DTOs (new)
-// ─────────────────────────────────────────────
 
 export class PageQueryDto {
   @ApiPropertyOptional({ description: 'Page' })
@@ -644,11 +616,6 @@ export class ReportLocationDto {
   address?: string;
 }
 
-
-// ─────────────────────────────────────────────
-// REPORTER-FACING (new)
-// ─────────────────────────────────────────────
-
 export class AddReportEvidenceDto {
   @ApiPropertyOptional({ description: 'Note' })
   @IsOptional()
@@ -779,11 +746,6 @@ export class ChangeAnonymityDto {
   @MaxLength(500)
   reason?: string;
 }
-
-
-// ─────────────────────────────────────────────
-// ADMIN-FACING (new)
-// ─────────────────────────────────────────────
 
 export class BulkReportIdsDto {
   @ApiProperty({ type: [String], description: 'Ids' })
@@ -947,7 +909,10 @@ export class UnmarkReportDto {
 }
 
 export class LinkReportRecordDto {
-  @ApiProperty({ enum: ['REPORT', 'MISSING_PERSON', 'VICTIM_PROFILE', 'INFORMATION_SUBMISSION', 'POST'], description: 'Record type' })
+  @ApiProperty({
+    enum: ['REPORT', 'MISSING_PERSON', 'VICTIM_PROFILE', 'INFORMATION_SUBMISSION', 'POST'],
+    description: 'Record type',
+  })
   @IsIn(['REPORT', 'MISSING_PERSON', 'VICTIM_PROFILE', 'INFORMATION_SUBMISSION', 'POST'])
   recordType: 'REPORT' | 'MISSING_PERSON' | 'VICTIM_PROFILE' | 'INFORMATION_SUBMISSION' | 'POST';
 

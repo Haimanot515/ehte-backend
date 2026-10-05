@@ -11,17 +11,8 @@ export class MinioService implements OnModuleInit {
   // Internal client: all server-side traffic (put/stat/remove/bucket checks)
   // goes over the docker network, e.g. http://shared-minio:9000.
   private client: Minio.Client;
-  // Presign-only client: signs URLs for the BROWSER. SigV4 signs the Host
-  // header, so a URL signed for shared-minio:9000 can't be rewritten to the
-  // public host afterwards — it has to be signed with the public host from
-  // the start. Falls back to `client` when MINIO_PUBLIC_URL is unset.
   private presignClient: Minio.Client;
   private bucket: string;
-  // FIX: was read from process.env.DURATION_OF_PRE_SIGNED_DOCUMENT directly
-  // inside each presign method, bypassing ConfigService/Joi entirely — a
-  // non-numeric value would silently become NaN at request time instead of
-  // failing fast at boot. Now resolved once here from configuration.ts's
-  // minio.presignDurationSeconds, same pattern as every other config value.
   private presignDurationSeconds: number;
 
   constructor(private readonly configService: ConfigService) {}
@@ -31,12 +22,6 @@ export class MinioService implements OnModuleInit {
     const accessKey = this.configService.get<string>('minio.accessKey');
     const secretKey = this.configService.get<string>('minio.secretKey');
 
-    // FIX: was `minio.bucketName ?? 'ehte-media'`, but configuration.ts used
-    // to expose this value under the key `minio.bucket` (not `bucketName`),
-    // so this lookup always returned undefined and silently fell back to
-    // 'ehte-media' regardless of what MINIO_BUCKET_NAME was set to. Fixed at
-    // the source in configuration.ts; this line is unchanged but now
-    // actually resolves the configured bucket name correctly.
     this.bucket = this.configService.get<string>('minio.bucketName') ?? 'ehte-media';
 
     this.presignDurationSeconds =
@@ -54,12 +39,6 @@ export class MinioService implements OnModuleInit {
         endPoint: endpoint,
         port: this.configService.get<number>('minio.port') ?? 9000,
         useSSL: this.configService.get<boolean>('minio.useSSL') ?? false,
-        // Region is required for S3-compatible providers like Backblaze B2
-        // and Cloudflare R2 to skip the SDK's GetBucketLocation
-        // auto-detection call and sign requests correctly. Local MinIO is
-        // happy with the 'us-east-1' fallback below; production sets
-        // MINIO_REGION explicitly (e.g. a real B2 region like us-west-004,
-        // or 'auto' if this ever points at R2 instead).
         region: this.configService.get<string>('minio.region') ?? 'us-east-1',
         accessKey,
         secretKey,
@@ -69,23 +48,12 @@ export class MinioService implements OnModuleInit {
 
       await this.ensureBucket(this.bucket);
     } catch (e: any) {
-      // FIX: was `this.logger.error('Failed to initialize MinIO', e)`, which
-      // silently dropped the actual error details under a Pino-backed
-      // Nest logger (Pino's .error() expects the error as the FIRST
-      // argument, not the second — passing it second means it never gets
-      // serialized into the log line). Inlining the fields we actually need
-      // into the message string guarantees they show up regardless of the
-      // logger's argument-handling quirks.
       this.logger.error(
         `Failed to initialize MinIO: code=${e?.code ?? 'unknown'} status=${e?.statusCode ?? 'unknown'} message=${e?.message ?? 'unknown'}`,
       );
     }
   }
 
-  // Builds the client used only to sign browser-facing URLs. Signing is a
-  // local computation (region is set explicitly, so the SDK never makes a
-  // network call), which means the public host does not have to be reachable
-  // from inside the container.
   private buildPresignClient(accessKey: string, secretKey: string): Minio.Client {
     const publicUrl = this.configService.get<string>('minio.publicUrl');
     if (!publicUrl) {
@@ -135,13 +103,6 @@ export class MinioService implements OnModuleInit {
     }
   }
 
-  // FIX (per mentor review): MinioService no longer decides object-key naming.
-  // Every method below now takes a finished `key: string` and just stores/reads/
-  // signs it — key construction (UUID, folder prefix, extension, etc.) is the
-  // caller's responsibility. This collapses the old uploadBuffer()/uploadFile()
-  // duplication into one method and matches generatePresignedUploadUrl(), which
-  // already built its key the same way (randomUUID() + extname(...)).
-
   async uploadFile(
     key: string,
     buffer: Buffer,
@@ -155,9 +116,6 @@ export class MinioService implements OnModuleInit {
     return key;
   }
 
-  // Convenience helper for callers that still have a raw Multer file and just
-  // want a safe, unique key generated for them. Not required — callers are
-  // free to build their own key and call uploadFile() directly instead.
   buildObjectKey(originalname: string, folder: string): string {
     return `${folder}/${randomUUID()}${extname(originalname)}`;
   }
@@ -177,11 +135,6 @@ export class MinioService implements OnModuleInit {
     await this.client.removeObject(this.bucket, key);
   }
 
-  // Confirms an object actually exists in the bucket before some
-  // other entity (Post, Report, etc.) is allowed to reference its
-  // filepath. Used by PostService/ReportService to validate
-  // incoming media filepaths on create/update, so a record can
-  // never point at an object that was never uploaded.
   async objectExists(key: string): Promise<boolean> {
     this.assertClient();
     try {
@@ -195,19 +148,6 @@ export class MinioService implements OnModuleInit {
     }
   }
 
-  // NEW — exposes size/content-type for a stored object so callers
-  // (PostService.validateMediaFilesExist) can enforce MEDIA_MAX_FILE_SIZE /
-  // MEDIA_ALLOWED_MIME_TYPES limits on media that's already been confirmed
-  // to exist via objectExists(). Only called on filepaths already known to
-  // exist, so a NotFound here would indicate a race (deleted between the
-  // objectExists() check and this call) rather than a normal outcome —
-  // callers should let that error propagate rather than swallow it.
-  //
-  // Content-type comes back from MinIO under the 'content-type' metadata
-  // key (lowercase, per the S3-style API) — it's whatever was passed as
-  // 'Content-Type' at upload time via uploadFile()/putObject(), so the
-  // media-upload module must set it accurately for MIME-type validation
-  // here to mean anything.
   async statObject(key: string): Promise<{ size: number; contentType: string }> {
     this.assertClient();
     const stat = await this.client.statObject(this.bucket, key);

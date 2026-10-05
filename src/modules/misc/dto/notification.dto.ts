@@ -27,10 +27,6 @@ import { NotificationPriority, NotificationType } from '@prisma/client';
 
 import { GetAuditLogsDto } from './audit-log.dto';
 
-// ─────────────────────────────────────────────
-// Shared constants
-// ─────────────────────────────────────────────
-
 export const EVENT_CATEGORIES = ['USER', 'ADMIN', 'SUPER_ADMIN', 'SYSTEM'] as const;
 export type EventCategoryValue = (typeof EVENT_CATEGORIES)[number];
 
@@ -70,10 +66,6 @@ const parseBoolean = ({ value }: { value: unknown }) => {
   return value;
 };
 
-// ─────────────────────────────────────────────
-// Paging
-// ─────────────────────────────────────────────
-
 /**
  * Cursor paging when `cursor` is set or `page` is absent (no COUNT).
  * Offset paging when `page` is set (returns total and totalPages).
@@ -99,10 +91,6 @@ export class NotificationPagingDto {
   @Max(100)
   limit?: number = 20;
 }
-
-// ─────────────────────────────────────────────
-// Send
-// ─────────────────────────────────────────────
 
 /**
  * Body of POST /notifications/admin.
@@ -357,10 +345,6 @@ export class NotificationSummaryQueryDto {
   entity?: string;
 }
 
-// ─────────────────────────────────────────────
-// Read
-// ─────────────────────────────────────────────
-
 export class MarkBulkReadDto {
   @ApiProperty({
     type: [String],
@@ -396,10 +380,6 @@ export class NotificationQueryDto extends NotificationPagingDto {
   @IsBoolean()
   isRead?: boolean;
 }
-
-// ─────────────────────────────────────────────
-// Preferences and devices
-// ─────────────────────────────────────────────
 
 /**
  * One notification type. For each channel:
@@ -470,10 +450,6 @@ export class RegisterDeviceDto {
   platform: (typeof DEVICE_PLATFORMS)[number];
 }
 
-// ─────────────────────────────────────────────
-// Deliveries
-// ─────────────────────────────────────────────
-
 export class FailedDeliveriesQueryDto extends NotificationPagingDto {
   @ApiPropertyOptional({ enum: DELIVERY_CHANNELS })
   @IsOptional()
@@ -489,10 +465,6 @@ export class RetryDeliveriesDto {
   @IsUUID('4', { each: true })
   ids: string[];
 }
-
-// ─────────────────────────────────────────────
-// Templates
-// ─────────────────────────────────────────────
 
 export class CreateNotificationTemplateDto {
   @ApiProperty({ enum: NotificationType })
@@ -543,10 +515,6 @@ export class UpdateNotificationTemplateDto {
   isActive?: boolean;
 }
 
-// ═════════════════════════════════════════════
-// NEW ENDPOINTS (NF-01 to NF-63)
-// ═════════════════════════════════════════════
-
 export const OUTBOUND_CHANNELS_LIST = ['EMAIL', 'SMS', 'PUSH'] as const;
 export type OutboundChannelValue = (typeof OUTBOUND_CHANNELS_LIST)[number];
 
@@ -555,10 +523,6 @@ export const DELIVERY_STATUSES = ['PENDING', 'SENDING', 'SENT', 'FAILED', 'SKIPP
 export const BOUNCE_STATUSES = ['ACTIVE', 'CLEARED'] as const;
 export const STATS_BUCKETS = ['hour', 'day', 'week', 'month'] as const;
 export type StatsBucket = (typeof STATS_BUCKETS)[number];
-
-// ─────────────────────────────────────────────
-// 1. User: own notifications
-// ─────────────────────────────────────────────
 
 /** PATCH /notifications/preferences/:type. The type comes from the path. Same rules as the bulk update. */
 export class UpdateTypePreferenceDto extends OmitType(NotificationPreferenceItemDto, [
@@ -602,10 +566,6 @@ export class SearchNotificationsQueryDto extends NotificationPagingDto {
   q: string;
 }
 
-// ─────────────────────────────────────────────
-// 2. Templates and broadcasts
-// ─────────────────────────────────────────────
-
 /** Render a saved template, or loose text, with sample values. Nothing is sent or saved. */
 export class PreviewTemplateDto {
   @ApiPropertyOptional({ description: 'Preview a saved template.' })
@@ -613,7 +573,9 @@ export class PreviewTemplateDto {
   @IsUUID()
   templateId?: string;
 
-  @ApiPropertyOptional({ description: 'Or preview text that is not saved yet (title and body together).' })
+  @ApiPropertyOptional({
+    description: 'Or preview text that is not saved yet (title and body together).',
+  })
   @IsOptional()
   @IsString()
   @MaxLength(200)
@@ -660,7 +622,10 @@ export class UpdateBroadcastDto {
   @IsEnum(NotificationPriority)
   priority?: NotificationPriority;
 
-  @ApiPropertyOptional({ example: '2026-10-10T09:00:00.000Z', description: 'ISO date in the future (up to 90 days).' })
+  @ApiPropertyOptional({
+    example: '2026-10-10T09:00:00.000Z',
+    description: 'ISO date in the future (up to 90 days).',
+  })
   @IsOptional()
   @IsISO8601()
   scheduledAt?: string;
@@ -687,10 +652,6 @@ export class SendTestNotificationDto {
   @IsIn(TEST_CHANNELS)
   channel: (typeof TEST_CHANNELS)[number];
 }
-
-// ─────────────────────────────────────────────
-// 3. Delivery and bounces
-// ─────────────────────────────────────────────
 
 export class DeliveriesQueryDto extends NotificationPagingDto {
   @ApiPropertyOptional({ enum: DELIVERY_CHANNELS })
@@ -811,10 +772,6 @@ export class ClearBounceDto {
   note?: string;
 }
 
-// ─────────────────────────────────────────────
-// 4. Per-user support
-// ─────────────────────────────────────────────
-
 /** A short reason (for example the support ticket) that is written to the audit log. */
 export class AdminReasonDto {
   @ApiProperty({ example: 'Support ticket #4821: phone reported stolen.' })
@@ -823,10 +780,6 @@ export class AdminReasonDto {
   @MaxLength(500)
   reason: string;
 }
-
-// ─────────────────────────────────────────────
-// 5. Admin inbox and company-wide analytics
-// ─────────────────────────────────────────────
 
 export class ByRecipientQueryDto extends NotificationPagingDto {
   @ApiPropertyOptional({ example: '2026-09-01T00:00:00.000Z' })
@@ -886,16 +839,13 @@ export class NotificationExportJobDto extends OmitType(AllNotificationsQueryDto,
   'limit',
 ] as const) {}
 
-// ─────────────────────────────────────────────
-// 6. Governance and queue
-// ─────────────────────────────────────────────
-
 export class UpdateRetentionDto {
   @ApiProperty({
     example: 180,
     minimum: 0,
     maximum: 3650,
-    description: 'Days to keep a notification after it was read. 0 keeps read notifications forever.',
+    description:
+      'Days to keep a notification after it was read. 0 keeps read notifications forever.',
   })
   @Type(() => Number)
   @IsInt()

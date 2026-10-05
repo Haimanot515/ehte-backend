@@ -426,8 +426,7 @@ export class PaymentService {
       retryable:
         p.type === PaymentType.SUPPORT &&
         (p.status === 'FAILED' || p.status === 'EXPIRED' || p.status === 'PENDING'),
-      awaitingSupportRecord:
-        p.type === PaymentType.SUPPORT && p.status === 'PAID' && !p.supportId,
+      awaitingSupportRecord: p.type === PaymentType.SUPPORT && p.status === 'PAID' && !p.supportId,
     }));
 
     return { total, page, limit, items };
@@ -464,7 +463,9 @@ export class PaymentService {
       remote = await this.chapa.verify(payment.txRef);
     } catch (err) {
       this.logger.warn(`Verify failed for ${payment.txRef}: ${String(err)}`);
-      throw new ServiceUnavailableException('Could not verify this payment with Chapa. Try again shortly.');
+      throw new ServiceUnavailableException(
+        'Could not verify this payment with Chapa. Try again shortly.',
+      );
     }
     if (remote.status !== 'success') {
       throw new ConflictException('Chapa does not report this payment as successful');
@@ -595,9 +596,6 @@ export class PaymentService {
       });
     }
 
-    // Support payments are re-emitted while fulfilledAt is null, which SupportService.onPaymentPaid sets
-    // in the same transaction that creates the Support. Payments linked to a support by the old
-    // pledge flow (supportId set) are left alone.
     const supportPayments = await this.prisma.payment.findMany({
       where: {
         status: 'PAID',
@@ -617,7 +615,9 @@ export class PaymentService {
       (p) => p.paidAt && p.paidAt.getTime() < Date.now() - 30 * 60_000,
     ).length;
     if (stuckCount > 0) {
-      this.logger.warn(`${stuckCount} paid support payment(s) still have no Support after 30 minutes`);
+      this.logger.warn(
+        `${stuckCount} paid support payment(s) still have no Support after 30 minutes`,
+      );
     }
 
     // Posting fees are re-emitted while the object still has no paid, waived or not required fee status

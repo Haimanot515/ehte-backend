@@ -16,11 +16,6 @@ export class QrCodeController {
     private readonly config: ConfigService,
   ) {}
 
-  // ADMIN — GET QR CODE: generated on demand from APP_URL, never stored.
-  // Encodes the public /app smart-redirect endpoint (device detection ->
-  // Google Play / App Store / fallback page). Not the redirect itself —
-  // scanning the resulting image is what hits /app.
-
   @RequirePermissions(PermissionsEnum.APP_ACCESS_QR_READ)
   @Get()
   @ApiBearerAuth('access-token')

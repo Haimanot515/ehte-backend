@@ -37,9 +37,6 @@ export class CreateAgreementDto {
   @Type(() => AllocationRuleDto)
   rules!: AllocationRuleDto[];
 
-  // Section 14 / 27: refund/cancellation terms are part of the commercial
-  // agreement, versioned with everything else — free text for now (policy
-  // engine is out of scope here), stored verbatim on the agreement version.
   @IsOptional() @IsString() @MaxLength(4000) refundPolicy?: string;
   @IsOptional() @IsString() @MaxLength(4000) cancellationPolicy?: string;
 }

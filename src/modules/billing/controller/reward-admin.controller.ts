@@ -1,7 +1,3 @@
-// src/modules/billing/controller/reward-admin.controller.ts
-//
-// Reward claim queue and reviews (BL-66 to BL-73, BL-75, BL-76).
-// BL-74 (extend the claim window) is not included, see RewardAdminService.
 import { Body, Controller, Get, Param, Patch, Post, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 
@@ -84,7 +80,9 @@ export class RewardAdminController {
   // BL-67
   @Get('reward-claims/:claimId')
   @RequirePermissions(P.REWARDS_VERIFY_CLAIM)
-  @ApiOperation({ summary: 'Admin: one claim with scores, decision and payout state (no informant identity)' })
+  @ApiOperation({
+    summary: 'Admin: one claim with scores, decision and payout state (no informant identity)',
+  })
   getClaim(@Param('claimId') claimId: string) {
     return this.svc.getClaim(claimId);
   }
@@ -124,7 +122,8 @@ export class RewardAdminController {
   @RequireReauthentication()
   @ApiOperation({
     summary: 'Admin: show the informant identity once, with a reason',
-    description: 'The only route that returns the informant. Every call is written to the audit log.',
+    description:
+      'The only route that returns the informant. Every call is written to the audit log.',
   })
   reveal(
     @CurrentUser() admin: CurrentUserDto,

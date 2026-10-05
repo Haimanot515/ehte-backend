@@ -1,11 +1,3 @@
-// src/modules/billing/controller/payment-admin.controller.ts
-//
-// Admin payment tools and refunds (BL-16 to BL-36).
-// Registered BEFORE BillingReportController so `payments/by-payer`,
-// `payments/review-queue`, `payments/search` and `payments/disputes` are not
-// read as `payments/:id`.
-//
-// For refunds, `:id` is the PAYMENT id: a payment has at most one refund.
 import { Body, Controller, Get, Param, Patch, Post, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 
@@ -64,7 +56,8 @@ export class PaymentAdminController {
   @RequireReauthentication()
   @ApiOperation({
     summary: 'Super admin: replay a stored webhook',
-    description: 'Asks the gateway for the current state of the payment. The stored payload is never trusted as an instruction.',
+    description:
+      'Asks the gateway for the current state of the payment. The stored payload is never trusted as an instruction.',
   })
   replay(@CurrentUser() admin: CurrentUserDto, @Param('id') id: string) {
     return this.svc.replayWebhookEvent(admin.id, id);
@@ -83,7 +76,7 @@ export class PaymentAdminController {
   // BL-21
   @Get('payments/by-payer/:userId')
   @RequirePermissions(P.SUPPORT_PAYMENT_READ)
-  @ApiOperation({ summary: 'Admin: one payer\'s payments' })
+  @ApiOperation({ summary: "Admin: one payer's payments" })
   payerPayments(@Param('userId') userId: string, @Query() q: PagingDto) {
     return this.svc.payerPayments(userId, q);
   }
@@ -164,7 +157,11 @@ export class PaymentAdminController {
   @RequirePermissions(P.SUPPORT_PAYMENT_MANAGE)
   @RequireReauthentication()
   @ApiOperation({ summary: 'Admin: release a held payment' })
-  release(@CurrentUser() admin: CurrentUserDto, @Param('id') id: string, @Body() body: ReasonBodyDto) {
+  release(
+    @CurrentUser() admin: CurrentUserDto,
+    @Param('id') id: string,
+    @Body() body: ReasonBodyDto,
+  ) {
     return this.svc.release(admin.id, id, body.reason);
   }
 
@@ -193,7 +190,8 @@ export class PaymentAdminController {
   @RequireReauthentication()
   @ApiOperation({
     summary: 'Admin: request a refund, full or partial, with a reason',
-    description: 'Only records the request. A different admin executes it with POST refunds/:id/execute.',
+    description:
+      'Only records the request. A different admin executes it with POST refunds/:id/execute.',
   })
   requestRefund(
     @CurrentUser() admin: CurrentUserDto,
@@ -206,7 +204,9 @@ export class PaymentAdminController {
   // BL-32
   @Get('refunds/:id')
   @RequirePermissions(P.SUPPORT_PAYMENT_READ)
-  @ApiOperation({ summary: 'Admin: one refund with its payment, allocations and disputes (id is the payment id)' })
+  @ApiOperation({
+    summary: 'Admin: one refund with its payment, allocations and disputes (id is the payment id)',
+  })
   getRefund(@Param('id') id: string) {
     return this.svc.getRefund(id);
   }
@@ -217,7 +217,8 @@ export class PaymentAdminController {
   @RequireReauthentication()
   @ApiOperation({
     summary: 'Admin: execute a requested refund by recording the manual refund reference',
-    description: 'The executor must differ from the requester. A full refund cancels unpaid disbursements.',
+    description:
+      'The executor must differ from the requester. A full refund cancels unpaid disbursements.',
   })
   executeRefund(
     @CurrentUser() admin: CurrentUserDto,
@@ -232,7 +233,11 @@ export class PaymentAdminController {
   @RequirePermissions(P.PAYMENT_REFUND)
   @RequireReauthentication()
   @ApiOperation({ summary: 'Admin: decline a refund request, with a reason' })
-  rejectRefund(@CurrentUser() admin: CurrentUserDto, @Param('id') id: string, @Body() body: ReasonBodyDto) {
+  rejectRefund(
+    @CurrentUser() admin: CurrentUserDto,
+    @Param('id') id: string,
+    @Body() body: ReasonBodyDto,
+  ) {
     return this.svc.rejectRefund(admin.id, id, body.reason);
   }
 

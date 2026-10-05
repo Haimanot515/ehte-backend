@@ -1,19 +1,3 @@
-// src/services/redis/cache.keys.ts
-// Cache status/metadata, never raw report/evidence bodies.
-// Hash identifiers (emails, phones, tokens), never put raw ones in a key.
-//
-// Key families:
-//   <entity>          cached value (post, missing person, victim profile, ...)
-//   ver:<scope>       list "version token". Lists embed the token in their key,
-//                     so invalidating every list in a scope is ONE write
-//                     (no SCAN sweeps, no race with in-flight readers).
-//   gen:<kind>:<id>   per-entity generation. A reader may only write back if
-//                     the generation is unchanged since it started reading
-//                     (fixes stale write-back after a takedown).
-//   tomb:<scope>      short-lived marker written on invalidation; blocks
-//                     write-backs from callers that use the older get()/set()
-//                     accessors (which cannot carry a generation).
-
 export function buildCacheKeys(prefix = 'ehte:') {
   const p = prefix;
 
@@ -40,28 +24,13 @@ export function buildCacheKeys(prefix = 'ehte:') {
     // ── auth / identity ───────────────────────────────────────
     profile: (userId: string) => `${p}user:${userId}:profile`,
     session: (userId: string) => `${p}user:${userId}:session`,
-    // Per-session roles/permissions/alive-state, keyed by (userId, sessionId) so
-    // rotating one device's session (a new `sid` on /refresh) can never read or
-    // clobber another device's cached auth state. Checked on every authenticated
-    // request by JwtStrategy — short TTL (TTL.SESSION_AUTH), not a generation:
-    // purgeUserCache() sweeps these on logout/reset/deactivate/role-change, and
-    // the TTL bounds the window for anything that doesn't.
     sessionAuth: (userId: string, sessionId: string) =>
       `${p}user:${userId}:session:${sessionId}:auth`,
     // Callers pass an already-hashed identifier / token (CacheService hashes).
     failedLoginAttempts: (hashedIdentifier: string) =>
       `${p}auth:failed-attempts:${hashedIdentifier}`,
-    // Anti-spam cooldown for OTP resend, keyed by (user, purpose, channel). Value is the
-    // still-valid verificationId, so a repeat "resend" click returns it without a Postgres
-    // read. Not security-critical the way lockout counters are (a miss just means one extra
-    // Postgres check, never a bypassed limit — Postgres re-checks the cooldown itself), but
-    // it lives on the security connection anyway since it's the same anti-abuse family.
     otpCooldown: (userId: string, purpose: string, channel: string) =>
       `${p}auth:otp-cooldown:${userId}:${purpose}:${channel}`,
-    // Re-auth gate (ReauthGuard/ReauthService): separate counter and lock from
-    // failedLoginAttempts above — a session that's already authenticated failing its
-    // re-auth check (wrong password/passcode on a sensitive action) is a different signal
-    // from a failed LOGIN, and must not share a key with it or inflate/trigger the other.
     reauthFailedAttempts: (hashedUserId: string) =>
       `${p}auth:reauth-failed-attempts:${hashedUserId}`,
     reauthLocked: (hashedUserId: string) => `${p}auth:reauth-locked:${hashedUserId}`,

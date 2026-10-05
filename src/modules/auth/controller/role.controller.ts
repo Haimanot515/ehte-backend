@@ -76,7 +76,9 @@ export class RoleController {
   @Get('templates')
   @Roles(RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.ROLE_READ)
-  @ApiOperation({ summary: 'Starter roles for common jobs (reviewer, finance officer, support agent)' })
+  @ApiOperation({
+    summary: 'Starter roles for common jobs (reviewer, finance officer, support agent)',
+  })
   async templates() {
     return await this.service.listTemplates();
   }
@@ -133,7 +135,9 @@ export class RoleController {
   @Get('stats/overview')
   @Roles(RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.ROLE_READ)
-  @ApiOperation({ summary: 'Roles, assignments, temporary grants and pending requests in one call' })
+  @ApiOperation({
+    summary: 'Roles, assignments, temporary grants and pending requests in one call',
+  })
   async statsOverview() {
     return await this.service.statsOverview();
   }
@@ -274,10 +278,6 @@ export class RoleController {
   ) {
     return await this.service.unarchive(actor, id, data);
   }
-
-  // ── Role assignment ──
-  // Mutating routes need re-auth, a reason and an audit event. DELETE bodies are stripped by
-  // some proxies (see the note on PermissionController); the same tradeoff applies to AR-30.
 
   // AR-29
   @Post(':roleId/users')

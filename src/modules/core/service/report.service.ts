@@ -166,16 +166,6 @@ type MediaFieldName = (typeof MEDIA_FIELD_NAMES)[number];
 type MediaBearing = Record<MediaFieldName, string[]>;
 type MediaBearingDto = Partial<Record<MediaFieldName, string[] | undefined>>;
 
-// ─────────────────────────────────────────────
-// NEW — audit actions introduced by the 143 new endpoints.
-//
-// ACTION REQUIRED: add each of these strings to AuditEventEnum.
-// They are cast below because the enum file was not part of this
-// change; until they exist in the enum the audit rows will carry the
-// raw string. Existing members (REPORT_OPENED, REPORT_STATUS_CHANGED,
-// REPORT_ASSIGNED, REPORT_UNASSIGNED, REPORT_ESCALATED, REPORT_UPDATED,
-// REPORT_MEDIA_DOWNLOADED, REPORTER_INFORMATION_OPENED) are reused.
-// ─────────────────────────────────────────────
 const NEW_AUDIT_ACTIONS = [
   'REPORT_EVIDENCE_ADDED',
   'REPORT_EVIDENCE_REMOVED',
@@ -500,9 +490,6 @@ export class ReportService {
 
     this.emitAudit({
       targetUserId: payload.userId,
-      // ASSUMPTION: resolveActorType only knows about role-bearing
-      // actors; cast until AuditEventPayload's actorType union is
-      // extended with a SYSTEM variant. Same cast PostService uses.
       actorType: 'SYSTEM' as unknown as ReturnType<typeof resolveActorType>,
       action: AuditEventEnum.REPORT_UPDATED,
       entity: 'User',
@@ -952,21 +939,6 @@ export class ReportService {
     }));
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — DASHBOARD STATISTICS
-  // GET /reports/stats
-  //
-  // Same "advanced stats" shape as the other modules: counts by
-  // status/category, assignment split, escalation count, average
-  // time-to-close for CLOSED reports, and a 30-day daily creation
-  // trend for charting. Uses $queryRaw for the two aggregates Prisma's
-  // query builder can't express (date_trunc grouping, EPOCH-based
-  // duration average) — same DB assumptions (Postgres) as the rest of
-  // the schema.
-  //
-  // NOTE: $queryRaw does not apply @@map, so the raw SQL below uses
-  // REPORT_TABLE ("report"), the real table name.
-  // ─────────────────────────────────────────────
   async getStats() {
     const [
       total,
@@ -1609,19 +1581,6 @@ export class ReportService {
     return report;
   }
 
-  // ═════════════════════════════════════════════════════════════════
-  // NEW ENDPOINTS (143)
-  //
-  // Everything below this line is additive. The methods above are
-  // unchanged. Controller route order matters: declare literal paths
-  // (unread, counts, drafts, sync, search, by-user/repeat, ...) above
-  // GET :id — see the design notes in the endpoint spec.
-  // ═════════════════════════════════════════════════════════════════
-
-  // ─────────────────────────────────────────────
-  // SHARED HELPERS (new)
-  // ─────────────────────────────────────────────
-
   private isAdminUser(user: CurrentUserDto): boolean {
     return this.getRoles(user).some((name) => ADMIN_ROLE_NAMES.includes(name as RolesEnum));
   }
@@ -1648,10 +1607,6 @@ export class ReportService {
     };
   }
 
-  // Restricted / child-involved reports are visible only to SUPER_ADMIN,
-  // the assignee, and admins holding an active access grant.
-  // NOTE: the pre-existing admin read routes (findOneForAdmin, findAllForAdmin, ...)
-  // are unchanged and do NOT apply this filter yet.
   private visibilityWhere(admin: CurrentUserDto): Prisma.ReportWhereInput {
     if (this.isSuperAdmin(admin)) return {};
     return {
@@ -1752,9 +1707,9 @@ export class ReportService {
     admin: CurrentUserDto,
     where: Prisma.ReportWhereInput,
     q: { page?: number; limit?: number },
-    orderBy:
-      | Prisma.ReportOrderByWithRelationInput
-      | Prisma.ReportOrderByWithRelationInput[] = { createdAt: 'desc' },
+    orderBy: Prisma.ReportOrderByWithRelationInput | Prisma.ReportOrderByWithRelationInput[] = {
+      createdAt: 'desc',
+    },
   ) {
     const { page, limit, skip, take } = this.paging(q);
     const full: Prisma.ReportWhereInput = { AND: [where, this.visibilityWhere(admin)] };
@@ -1922,10 +1877,6 @@ export class ReportService {
     };
   }
 
-  // ─────────────────────────────────────────────
-  // 1. REPORTER (25)
-  // ─────────────────────────────────────────────
-
   // RPT-01 POST /reports/:id/evidence
   // `files` are already uploaded to MinIO by the controller/interceptor.
   async addEvidence(
@@ -1998,9 +1949,15 @@ export class ReportService {
       return created;
     });
 
-    this.audit(user, act('REPORT_EVIDENCE_ADDED'), report, { result: 'success' }, {
-      metadata: { count: rows.length, mediaTotalBytes: newTotal },
-    });
+    this.audit(
+      user,
+      act('REPORT_EVIDENCE_ADDED'),
+      report,
+      { result: 'success' },
+      {
+        metadata: { count: rows.length, mediaTotalBytes: newTotal },
+      },
+    );
 
     return rows;
   }
@@ -2091,9 +2048,15 @@ export class ReportService {
       data: { lastActivityAt: new Date() },
     });
 
-    this.audit(user, act('REPORT_REOPEN_REQUESTED'), report, { result: 'success' }, {
-      reason: dto.reason,
-    });
+    this.audit(
+      user,
+      act('REPORT_REOPEN_REQUESTED'),
+      report,
+      { result: 'success' },
+      {
+        reason: dto.reason,
+      },
+    );
     this.eventEmitter.emit(NEW_EVENTS.REOPEN_REQUESTED, {
       reportId,
       caseReference: report.caseReference,
@@ -2172,9 +2135,10 @@ export class ReportService {
       orderBy: { status: 'asc' },
     });
 
-    const byStatus = Object.fromEntries(
-      Object.values(ReportStatus).map((s) => [s, 0]),
-    ) as Record<ReportStatus, number>;
+    const byStatus = Object.fromEntries(Object.values(ReportStatus).map((s) => [s, 0])) as Record<
+      ReportStatus,
+      number
+    >;
     let total = 0;
     let lastReportAt: Date | null = null;
     for (const row of grouped) {
@@ -2192,9 +2156,6 @@ export class ReportService {
     return { total, open, byStatus, lastReportAt };
   }
 
-  // RPT-30 GET /reports/me/unread-updates/count
-  // "Updated since I last looked" = reporterUpdatedAt moved past reporterSeenAt
-  // (or past createdAt if the reporter has never opened it).
   async countMyUnreadUpdates(user: CurrentUserDto) {
     const rows = await this.prisma.$queryRaw<{ count: number }[]>`
       SELECT COUNT(*)::int AS count
@@ -2278,9 +2239,7 @@ export class ReportService {
 
   // RPT-93 POST /reports/drafts
   async saveDraft(user: CurrentUserDto, dto: SaveReportDraftDto) {
-    const maxDrafts = Number(
-      this.configService.get<string>('REPORT_MAX_DRAFTS_PER_USER') ?? 20,
-    );
+    const maxDrafts = Number(this.configService.get<string>('REPORT_MAX_DRAFTS_PER_USER') ?? 20);
     const count = await this.prisma.reportDraft.count({ where: { userId: user.id } });
     if (count >= maxDrafts) throw new BadRequestException('too_many_drafts');
 
@@ -2343,18 +2302,13 @@ export class ReportService {
     return { deleted: true };
   }
 
-  // RPT-97 POST /reports/drafts/:id/submit
-  // Goes through the normal create() path, so rate limits, caps and media
-  // validation all still apply. The draft id doubles as the idempotency key.
   async submitDraft(user: CurrentUserDto, draftId: string, idempotencyKey?: string) {
     const draft = await this.findOwnedDraft(user, draftId);
 
     const dto = plainToInstance(CreateReportDto, draft.data as Record<string, unknown>);
     const errors = await validate(dto, { whitelist: true });
     if (errors.length) {
-      throw new BadRequestException(
-        `draft_incomplete:${errors.map((e) => e.property).join(',')}`,
-      );
+      throw new BadRequestException(`draft_incomplete:${errors.map((e) => e.property).join(',')}`);
     }
 
     const report = await this.create(user, dto, idempotencyKey ?? `draft-${draftId}`);
@@ -2362,10 +2316,6 @@ export class ReportService {
     return report;
   }
 
-  // RPT-98 POST /reports/sync
-  // Offline queue: each item is idempotent on clientId. The 60s create cooldown
-  // and the pending cap are deliberately skipped (a queue of offline reports
-  // would always trip them); everything else (media, counts, sizes) still applies.
   async syncReports(user: CurrentUserDto, dto: SyncReportsDto) {
     const results: Array<{
       clientId: string;
@@ -2427,10 +2377,16 @@ export class ReportService {
           data: { clientCreatedAt: new Date(item.createdAt) },
         });
 
-        this.audit(user, AuditEventEnum.REPORT_CREATED, created, {
-          result: 'success',
-          status: created.status,
-        }, { metadata: { synced: true, clientId: item.clientId, mediaTotalBytes: totalBytes } });
+        this.audit(
+          user,
+          AuditEventEnum.REPORT_CREATED,
+          created,
+          {
+            result: 'success',
+            status: created.status,
+          },
+          { metadata: { synced: true, clientId: item.clientId, mediaTotalBytes: totalBytes } },
+        );
 
         this.eventEmitter.emit(NotificationEventEnum.REPORT_RECEIVED, {
           reportId: created.id,
@@ -2561,9 +2517,15 @@ export class ReportService {
       data: { reportId, requestedById: user.id, reason: dto.reason ?? null },
     });
 
-    this.audit(user, act('REPORT_ERASURE_REQUESTED'), report, { result: 'success' }, {
-      reason: dto.reason ?? null,
-    });
+    this.audit(
+      user,
+      act('REPORT_ERASURE_REQUESTED'),
+      report,
+      { result: 'success' },
+      {
+        reason: dto.reason ?? null,
+      },
+    );
     this.eventEmitter.emit(NEW_EVENTS.ERASURE_REQUESTED, {
       reportId,
       caseReference: report.caseReference,
@@ -2592,9 +2554,6 @@ export class ReportService {
     return updated;
   }
 
-  // RPT-161 POST /reports/:id/urgent
-  // Safety path: forces ESCALATED from any non-terminal status (bypasses the
-  // normal transition table on purpose), raises priority, notifies on-duty admins.
   async flagUrgent(user: CurrentUserDto, reportId: string, dto: UrgentReportDto) {
     const report = await this.loadOwned(user, reportId);
 
@@ -2642,11 +2601,17 @@ export class ReportService {
       return u;
     });
 
-    this.audit(user, act('REPORT_URGENT_FLAGGED'), report, {
-      result: 'success',
-      previousStatus: report.status,
-      currentStatus: updated.status,
-    }, { severity: AuditSeverity.WARNING });
+    this.audit(
+      user,
+      act('REPORT_URGENT_FLAGGED'),
+      report,
+      {
+        result: 'success',
+        previousStatus: report.status,
+        currentStatus: updated.status,
+      },
+      { severity: AuditSeverity.WARNING },
+    );
 
     this.eventEmitter.emit(NotificationEventEnum.HIGH_PRIORITY_REPORT, {
       reportId,
@@ -2677,10 +2642,6 @@ export class ReportService {
     });
   }
 
-  // RPT-163 PATCH /reports/:id/anonymity
-  // POLICY DECISION (open): implemented as "allowed, always audited and recorded as a
-  // revision". Set REPORT_ALLOW_ANONYMITY_CHANGE=false to turn the endpoint off, and it is
-  // refused once the reporter was revealed (break-glass) so the reveal cannot be undone.
   async changeAnonymity(user: CurrentUserDto, reportId: string, dto: ChangeAnonymityDto) {
     const report = await this.loadOwned(user, reportId);
 
@@ -2712,19 +2673,21 @@ export class ReportService {
       }),
     ]);
 
-    this.audit(user, act('REPORT_ANONYMITY_CHANGED'), report, {
-      result: 'success',
-      from: report.isAnonymous,
-      to: dto.anonymous,
-    }, { reason: dto.reason ?? null });
+    this.audit(
+      user,
+      act('REPORT_ANONYMITY_CHANGED'),
+      report,
+      {
+        result: 'success',
+        from: report.isAnonymous,
+        to: dto.anonymous,
+      },
+      { reason: dto.reason ?? null },
+    );
 
     return { id: report.id, isAnonymous: dto.anonymous };
   }
 
-  // ── PDF rendering (used by RPT-101 and RPT-86) ──
-  // Uses `pdfkit` if it is installed (set REPORT_PDF_FONT_PATH to an Ethiopic-capable
-  // TTF such as Noto Sans Ethiopic for Amharic text). Otherwise falls back to a tiny
-  // built-in writer that is Latin-only (non-Latin characters become "?").
   private async renderPdf(title: string, lines: string[]): Promise<Buffer> {
     let PDFDocument: any;
     try {
@@ -2737,7 +2700,9 @@ export class ReportService {
     const doc = new PDFDocument({ margin: 50, size: 'A4' });
     const chunks: Buffer[] = [];
     doc.on('data', (c: Buffer) => chunks.push(c));
-    const done = new Promise<Buffer>((resolve) => doc.on('end', () => resolve(Buffer.concat(chunks))));
+    const done = new Promise<Buffer>((resolve) =>
+      doc.on('end', () => resolve(Buffer.concat(chunks))),
+    );
 
     const fontPath = this.configService.get<string>('REPORT_PDF_FONT_PATH');
     if (fontPath) doc.font(fontPath);
@@ -2773,7 +2738,8 @@ export class ReportService {
       const content = `BT /F1 10 Tf 13 TL 50 800 Td\n${pg.map((l) => `(${clean(l)}) '`).join('\n')}\nET`;
       objs[4 + 2 * i] =
         `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R >> >> /Contents ${5 + 2 * i} 0 R >>`;
-      objs[5 + 2 * i] = `<< /Length ${Buffer.byteLength(content)} >>\nstream\n${content}\nendstream`;
+      objs[5 + 2 * i] =
+        `<< /Length ${Buffer.byteLength(content)} >>\nstream\n${content}\nendstream`;
     });
 
     let out = '%PDF-1.4\n';
@@ -2790,11 +2756,6 @@ export class ReportService {
     out += `trailer\n<< /Size ${objs.length} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`;
     return Buffer.from(out, 'latin1');
   }
-
-  // ─────────────────────────────────────────────
-  // 2. ADMIN READ AND UNREAD (10)
-  // Read state lives in ReportAdminRead: a row = this admin has read it.
-  // ─────────────────────────────────────────────
 
   private unreadFilter(adminId: string): Prisma.ReportWhereInput {
     return { adminReads: { none: { adminId } } };
@@ -2966,15 +2927,6 @@ export class ReportService {
     ]);
     return { total, read: total - unread, unread };
   }
-
-  // ─────────────────────────────────────────────
-  // 3. REPORTS PER USER (7)
-  //
-  // Reporter identity is exposed here, so every call writes an audit event.
-  // Identified reporters group by user id. Anonymous reports group by a masked
-  // key (anon_xxxx) and never carry a name; a user with both kinds of reports
-  // appears as two separate rows so the two cannot be linked by identity.
-  // ─────────────────────────────────────────────
 
   private async resolveUserScope(key: string): Promise<{ userId: string; isAnonymous: boolean }> {
     if (key.startsWith(ANON_KEY_PREFIX)) {
@@ -3235,10 +3187,6 @@ export class ReportService {
     return { items: rows.slice(skip, skip + limit), total: rows.length, page, limit };
   }
 
-  // ─────────────────────────────────────────────
-  // 4. CASE MANAGEMENT (31)
-  // ─────────────────────────────────────────────
-
   private revision(reportId: string, editedById: string, changes: Record<string, unknown>) {
     return this.prisma.reportRevision.create({
       data: { reportId, editedById, changes: changes as Prisma.InputJsonValue },
@@ -3261,11 +3209,17 @@ export class ReportService {
       }),
     ]);
 
-    this.audit(admin, act('REPORT_CATEGORY_CHANGED'), report, {
-      result: 'success',
-      from: existing.category,
-      to: dto.category,
-    }, { reason: dto.reason ?? null, targetUserId: report.isAnonymous ? null : report.userId });
+    this.audit(
+      admin,
+      act('REPORT_CATEGORY_CHANGED'),
+      report,
+      {
+        result: 'success',
+        from: existing.category,
+        to: dto.category,
+      },
+      { reason: dto.reason ?? null, targetUserId: report.isAnonymous ? null : report.userId },
+    );
     return report;
   }
 
@@ -3285,11 +3239,17 @@ export class ReportService {
       }),
     ]);
 
-    this.audit(admin, act('REPORT_PRIORITY_CHANGED'), report, {
-      result: 'success',
-      from: existing.priority,
-      to: dto.priority,
-    }, { reason: dto.reason ?? null });
+    this.audit(
+      admin,
+      act('REPORT_PRIORITY_CHANGED'),
+      report,
+      {
+        result: 'success',
+        from: existing.priority,
+        to: dto.priority,
+      },
+      { reason: dto.reason ?? null },
+    );
     return report;
   }
 
@@ -3317,12 +3277,18 @@ export class ReportService {
     );
     if (!report) throw new BadRequestException('report_transition_conflict');
 
-    this.audit(admin, AuditEventEnum.REPORT_STATUS_CHANGED, report, {
-      result: 'success',
-      previousStatus: existing.status,
-      currentStatus: report.status,
-      outcome: dto.outcome,
-    }, { reason: dto.summary });
+    this.audit(
+      admin,
+      AuditEventEnum.REPORT_STATUS_CHANGED,
+      report,
+      {
+        result: 'success',
+        previousStatus: existing.status,
+        currentStatus: report.status,
+        outcome: dto.outcome,
+      },
+      { reason: dto.summary },
+    );
     this.notifyReporter(report);
     return report;
   }
@@ -3399,7 +3365,9 @@ export class ReportService {
       await Promise.all([
         report.userId
           ? this.prisma.report.findMany({
-              where: { AND: [{ userId: report.userId, id: { not: reportId }, deletedAt: null }, vis] },
+              where: {
+                AND: [{ userId: report.userId, id: { not: reportId }, deletedAt: null }, vis],
+              },
               select: pick,
               orderBy: { createdAt: 'desc' },
               take: 20,
@@ -3436,9 +3404,6 @@ export class ReportService {
     return { sameReporter, linked, mergedInto, mergedReports, splitFrom, splitReports };
   }
 
-  // RPT-13 POST /reports/:id/merge     (id = duplicate / source, target = survivor)
-  // Non-destructive: the source is linked to the target and closed as NO_ACTION.
-  // Nothing is moved, so unmerge only has to restore the source's own fields.
   async merge(admin: CurrentUserDto, sourceId: string, dto: MergeReportDto) {
     if (sourceId === dto.targetReportId) throw new BadRequestException('cannot_merge_into_itself');
 
@@ -3514,11 +3479,17 @@ export class ReportService {
       return updated;
     });
 
-    this.audit(admin, act('REPORT_MERGED'), source, {
-      result: 'success',
-      targetReportId: target.id,
-      targetCaseReference: target.caseReference,
-    }, { reason: dto.reason ?? null });
+    this.audit(
+      admin,
+      act('REPORT_MERGED'),
+      source,
+      {
+        result: 'success',
+        targetReportId: target.id,
+        targetCaseReference: target.caseReference,
+      },
+      { reason: dto.reason ?? null },
+    );
     if (closeSource) this.notifyReporter(merged);
     return merged;
   }
@@ -3601,12 +3572,18 @@ export class ReportService {
       }
 
       const report = await this.prisma.report.findUniqueOrThrow({ where: { id: candidate.id } });
-      this.audit(admin, AuditEventEnum.REPORT_ASSIGNED, report, {
-        result: 'success',
-        assignedToUserId: admin.id,
-        previousStatus: candidate.status,
-        currentStatus: report.status,
-      }, { metadata: { source: 'queue_next' } });
+      this.audit(
+        admin,
+        AuditEventEnum.REPORT_ASSIGNED,
+        report,
+        {
+          result: 'success',
+          assignedToUserId: admin.id,
+          previousStatus: candidate.status,
+          currentStatus: report.status,
+        },
+        { metadata: { source: 'queue_next' } },
+      );
       this.eventEmitter.emit(NotificationEventEnum.REPORT_ASSIGNED, {
         reportId: report.id,
         caseReference: report.caseReference,
@@ -3640,32 +3617,37 @@ export class ReportService {
     if (open) {
       await this.prisma.reportEscalation.update({
         where: { id: open.id },
-        data: { deEscalatedAt: new Date(), deEscalatedById: admin.id, deEscalationReason: dto.reason },
+        data: {
+          deEscalatedAt: new Date(),
+          deEscalatedById: admin.id,
+          deEscalationReason: dto.reason,
+        },
       });
     }
 
-    this.audit(admin, act('REPORT_DE_ESCALATED'), report, {
-      result: 'success',
-      previousStatus: existing.status,
-      currentStatus: report.status,
-    }, { reason: dto.reason });
+    this.audit(
+      admin,
+      act('REPORT_DE_ESCALATED'),
+      report,
+      {
+        result: 'success',
+        previousStatus: existing.status,
+        currentStatus: report.status,
+      },
+      { reason: dto.reason },
+    );
     this.notifyReporter(report);
     return report;
   }
 
   // RPT-75 GET /reports/escalated
   async listEscalated(admin: CurrentUserDto, query: PageQueryDto) {
-    return this.pagedReports(
-      admin,
-      { deletedAt: null, status: ReportStatus.ESCALATED },
-      query,
-      [{ priority: 'desc' }, { updatedAt: 'desc' }],
-    );
+    return this.pagedReports(admin, { deletedAt: null, status: ReportStatus.ESCALATED }, query, [
+      { priority: 'desc' },
+      { updatedAt: 'desc' },
+    ]);
   }
 
-  // RPT-76 GET /reports/:id/escalations
-  // NOTE: the existing escalate() route does not write ReportEscalation rows; only
-  // escalations created by the new routes (urgent flag) appear here until it does.
   async getEscalations(admin: CurrentUserDto, reportId: string) {
     await this.loadForAdmin(admin, reportId);
     return this.prisma.reportEscalation.findMany({
@@ -3720,9 +3702,15 @@ export class ReportService {
         lastActivityAt: new Date(),
       },
     });
-    this.audit(admin, act('REPORT_ARCHIVED'), report, { result: 'success' }, {
-      reason: dto.reason ?? null,
-    });
+    this.audit(
+      admin,
+      act('REPORT_ARCHIVED'),
+      report,
+      { result: 'success' },
+      {
+        reason: dto.reason ?? null,
+      },
+    );
     return report;
   }
 
@@ -3733,7 +3721,12 @@ export class ReportService {
 
     const report = await this.prisma.report.update({
       where: { id: reportId },
-      data: { archivedAt: null, archivedById: null, archiveReason: null, lastActivityAt: new Date() },
+      data: {
+        archivedAt: null,
+        archivedById: null,
+        archiveReason: null,
+        lastActivityAt: new Date(),
+      },
     });
     this.audit(admin, act('REPORT_UNARCHIVED'), report, { result: 'success' });
     return report;
@@ -3759,10 +3752,16 @@ export class ReportService {
         deleteReason: dto.reason,
       },
     });
-    this.audit(admin, act('REPORT_DELETED'), report, { result: 'success' }, {
-      reason: dto.reason,
-      severity: AuditSeverity.WARNING,
-    });
+    this.audit(
+      admin,
+      act('REPORT_DELETED'),
+      report,
+      { result: 'success' },
+      {
+        reason: dto.reason,
+        severity: AuditSeverity.WARNING,
+      },
+    );
     return { id: report.id, deletedAt: report.deletedAt };
   }
 
@@ -3819,11 +3818,17 @@ export class ReportService {
       });
     }
 
-    this.audit(admin, act('REPORT_INTEGRITY_FLAGGED'), report, {
-      result: 'success',
-      flag: ReportIntegrityFlag.SPAM,
-      rejected: canReject,
-    }, { reason: dto.reason ?? null });
+    this.audit(
+      admin,
+      act('REPORT_INTEGRITY_FLAGGED'),
+      report,
+      {
+        result: 'success',
+        flag: ReportIntegrityFlag.SPAM,
+        rejected: canReject,
+      },
+      { reason: dto.reason ?? null },
+    );
 
     if (canReject) {
       this.notifyReporter(report);
@@ -3851,10 +3856,16 @@ export class ReportService {
         lastActivityAt: new Date(),
       },
     });
-    this.audit(admin, act('REPORT_INTEGRITY_FLAGGED'), report, {
-      result: 'success',
-      flag,
-    }, { reason: dto.reason, severity: dto.malicious ? AuditSeverity.WARNING : undefined });
+    this.audit(
+      admin,
+      act('REPORT_INTEGRITY_FLAGGED'),
+      report,
+      {
+        result: 'success',
+        flag,
+      },
+      { reason: dto.reason, severity: dto.malicious ? AuditSeverity.WARNING : undefined },
+    );
     return report;
   }
 
@@ -3873,21 +3884,24 @@ export class ReportService {
         lastActivityAt: new Date(),
       },
     });
-    this.audit(admin, act('REPORT_INTEGRITY_CLEARED'), report, {
-      result: 'success',
-      previousFlag: existing.integrityFlag,
-    }, { reason: dto.reason ?? null });
+    this.audit(
+      admin,
+      act('REPORT_INTEGRITY_CLEARED'),
+      report,
+      {
+        result: 'success',
+        previousFlag: existing.integrityFlag,
+      },
+      { reason: dto.reason ?? null },
+    );
     return report;
   }
 
   // RPT-122 GET /reports/spam
   async listSpam(admin: CurrentUserDto, query: PageQueryDto) {
-    return this.pagedReports(
-      admin,
-      { deletedAt: null, integrityFlag: { not: null } },
-      query,
-      { integrityFlagAt: 'desc' },
-    );
+    return this.pagedReports(admin, { deletedAt: null, integrityFlag: { not: null } }, query, {
+      integrityFlagAt: 'desc',
+    });
   }
 
   // RPT-123 GET /reports/:id/links
@@ -4009,11 +4023,17 @@ export class ReportService {
       return updated;
     });
 
-    this.audit(admin, act('REPORT_UNMERGED'), source, {
-      result: 'success',
-      mergeId: merge.id,
-      restoredStatus: restored.status,
-    }, { reason: dto.reason });
+    this.audit(
+      admin,
+      act('REPORT_UNMERGED'),
+      source,
+      {
+        result: 'success',
+        mergeId: merge.id,
+        restoredStatus: restored.status,
+      },
+      { reason: dto.reason },
+    );
     if (snap.closedByMerge) this.notifyReporter(restored);
     return restored;
   }
@@ -4027,9 +4047,6 @@ export class ReportService {
     });
   }
 
-  // RPT-164 GET /reports/duplicates
-  // Heuristic pairs among open reports: same category, created within 72h, and either
-  // the same reporter or GPS points within ~0.5 km. Pairs already linked are skipped.
   async listDuplicates(admin: CurrentUserDto, query: PageQueryDto) {
     const { page, limit, skip } = this.paging(query);
     const windowSec = 72 * 3600;
@@ -4089,9 +4106,6 @@ export class ReportService {
     };
   }
 
-  // RPT-165 POST /reports/:id/split
-  // Creates a new PENDING report (splitFromId = source) with the given description and
-  // moves the chosen evidence rows (and their media keys / bytes) over to it.
   async split(admin: CurrentUserDto, reportId: string, dto: SplitReportDto) {
     const source = await this.loadForAdminWrite(admin, reportId, act('REPORT_SPLIT'));
 
@@ -4113,7 +4127,14 @@ export class ReportService {
       document: [...source.document],
       other: [...source.other],
     };
-    const newMedia: MediaBearing = { photo: [], video: [], audio: [], pdf: [], document: [], other: [] };
+    const newMedia: MediaBearing = {
+      photo: [],
+      video: [],
+      audio: [],
+      pdf: [],
+      document: [],
+      other: [],
+    };
     let movedBytes = 0;
     for (const e of evidence) {
       const field = this.fieldForKind(e.kind);
@@ -4206,18 +4227,20 @@ export class ReportService {
       return child;
     });
 
-    this.audit(admin, act('REPORT_SPLIT'), source, {
-      result: 'success',
-      newReportId: created.id,
-      newCaseReference: created.caseReference,
-      movedEvidence: evidenceIds.length,
-    }, { reason: dto.reason ?? null });
+    this.audit(
+      admin,
+      act('REPORT_SPLIT'),
+      source,
+      {
+        result: 'success',
+        newReportId: created.id,
+        newCaseReference: created.caseReference,
+        movedEvidence: evidenceIds.length,
+      },
+      { reason: dto.reason ?? null },
+    );
     return created;
   }
-
-  // ─────────────────────────────────────────────
-  // 5. SLA, TAGS, WATCHING, SAVED VIEWS (15)
-  // ─────────────────────────────────────────────
 
   private slaInfo(r: {
     dueAt: Date | null;
@@ -4236,9 +4259,19 @@ export class ReportService {
     return {
       dueAt: r.dueAt,
       hasDeadline: due !== null,
-      state: due === null ? 'NO_DEADLINE' : closed ? (endedAt! <= due ? 'MET' : 'BREACHED') : now > due ? 'BREACHED' : 'RUNNING',
+      state:
+        due === null
+          ? 'NO_DEADLINE'
+          : closed
+            ? endedAt! <= due
+              ? 'MET'
+              : 'BREACHED'
+            : now > due
+              ? 'BREACHED'
+              : 'RUNNING',
       hoursRemaining: due && !closed ? Math.round(((due - now) / 3600000) * 10) / 10 : null,
-      percentElapsed: total && total > 0 ? Math.min(100, Math.round((elapsed / total) * 100)) : null,
+      percentElapsed:
+        total && total > 0 ? Math.min(100, Math.round((elapsed / total) * 100)) : null,
       firstRespondedAt: r.firstRespondedAt,
       hoursToFirstResponse: r.firstRespondedAt
         ? Math.round(((r.firstRespondedAt.getTime() - r.createdAt.getTime()) / 3600000) * 10) / 10
@@ -4276,7 +4309,8 @@ export class ReportService {
   async setDueDate(admin: CurrentUserDto, reportId: string, dto: SetDueDateDto) {
     const existing = await this.loadForAdminWrite(admin, reportId, act('REPORT_DUE_DATE_CHANGED'));
     const dueAt = new Date(dto.dueAt);
-    if (dueAt.getTime() <= Date.now()) throw new BadRequestException('due_date_must_be_in_the_future');
+    if (dueAt.getTime() <= Date.now())
+      throw new BadRequestException('due_date_must_be_in_the_future');
 
     const [report] = await this.prisma.$transaction([
       this.prisma.report.update({
@@ -4288,11 +4322,17 @@ export class ReportService {
         ...(dto.reason ? { reason: dto.reason } : {}),
       }),
     ]);
-    this.audit(admin, act('REPORT_DUE_DATE_CHANGED'), report, {
-      result: 'success',
-      from: existing.dueAt,
-      to: dueAt,
-    }, { reason: dto.reason ?? null });
+    this.audit(
+      admin,
+      act('REPORT_DUE_DATE_CHANGED'),
+      report,
+      {
+        result: 'success',
+        from: existing.dueAt,
+        to: dueAt,
+      },
+      { reason: dto.reason ?? null },
+    );
     return report;
   }
 
@@ -4379,7 +4419,10 @@ export class ReportService {
     const report = await this.loadForAdmin(admin, reportId);
     const res = await this.prisma.reportTagOnReport.deleteMany({ where: { reportId, tagId } });
     if (res.count === 0) throw new NotFoundException('tag_not_on_report');
-    this.audit(admin, act('REPORT_TAGS_CHANGED'), report, { result: 'success', removedTagId: tagId });
+    this.audit(admin, act('REPORT_TAGS_CHANGED'), report, {
+      result: 'success',
+      removedTagId: tagId,
+    });
     return { deleted: true };
   }
 
@@ -4421,7 +4464,11 @@ export class ReportService {
     });
 
     const found = new Set(visibleIds);
-    return { requested: ids.length, updated: visibleIds.length, notFound: ids.filter((i) => !found.has(i)) };
+    return {
+      requested: ids.length,
+      updated: visibleIds.length,
+      notFound: ids.filter((i) => !found.has(i)),
+    };
   }
 
   // RPT-60 POST /reports/:id/watch
@@ -4509,10 +4556,6 @@ export class ReportService {
     return { deleted: true };
   }
 
-  // ─────────────────────────────────────────────
-  // 6. EVIDENCE AND CUSTODY (5)
-  // ─────────────────────────────────────────────
-
   // Evidence added at submission lives only in the media arrays. Custody, redaction and
   // removal need a row, so one is created lazily the first time it is needed.
   private async ensureEvidenceRow(report: Report, key: string) {
@@ -4542,7 +4585,9 @@ export class ReportService {
         mimeType,
         sizeBytes,
         addedById: report.userId,
-        custody: { create: { action: 'ADDED', actorId: report.userId, note: 'initial_submission' } },
+        custody: {
+          create: { action: 'ADDED', actorId: report.userId, note: 'initial_submission' },
+        },
       },
     });
   }
@@ -4627,10 +4672,16 @@ export class ReportService {
     ]);
     // The MinIO object is intentionally kept: custody and legal discovery need it.
 
-    this.audit(admin, act('REPORT_EVIDENCE_REMOVED'), report, { result: 'success', key }, {
-      reason: dto.reason,
-      severity: AuditSeverity.WARNING,
-    });
+    this.audit(
+      admin,
+      act('REPORT_EVIDENCE_REMOVED'),
+      report,
+      { result: 'success', key },
+      {
+        reason: dto.reason,
+        severity: AuditSeverity.WARNING,
+      },
+    );
     return { removed: true, evidenceId: evidence.id };
   }
 
@@ -4645,11 +4696,6 @@ export class ReportService {
     return { evidenceId: evidence.id, storageKey: key, entries };
   }
 
-  // RPT-85 POST /reports/:id/evidence/:key/redact
-  // This service has no image/video pipeline. It records the redaction (reason, regions,
-  // custody entry) and emits `report.evidence.redaction-requested`; a worker should produce
-  // the redacted file and set ReportEvidence.redactedStorageKey. Until then redactedAt is set
-  // and redactedStorageKey is null, which is the "pending" state.
   async redactEvidence(
     admin: CurrentUserDto,
     reportId: string,
@@ -4680,9 +4726,15 @@ export class ReportService {
       },
     });
 
-    this.audit(admin, act('REPORT_EVIDENCE_REDACTED'), report, { result: 'success', key }, {
-      reason: dto.reason,
-    });
+    this.audit(
+      admin,
+      act('REPORT_EVIDENCE_REDACTED'),
+      report,
+      { result: 'success', key },
+      {
+        reason: dto.reason,
+      },
+    );
     this.eventEmitter.emit(NEW_EVENTS.EVIDENCE_REDACTION_REQUESTED, {
       reportId,
       evidenceId: evidence.id,
@@ -4704,9 +4756,15 @@ export class ReportService {
 
     const [messages, history, escalations, infoRequests, evidence, merges] = await Promise.all([
       this.prisma.reportMessage.findMany({ where: { reportId }, orderBy: { createdAt: 'asc' } }),
-      this.prisma.reportStatusHistory.findMany({ where: { reportId }, orderBy: { createdAt: 'asc' } }),
+      this.prisma.reportStatusHistory.findMany({
+        where: { reportId },
+        orderBy: { createdAt: 'asc' },
+      }),
       this.prisma.reportEscalation.findMany({ where: { reportId }, orderBy: { createdAt: 'asc' } }),
-      this.prisma.reportInformationRequest.findMany({ where: { reportId }, orderBy: { createdAt: 'asc' } }),
+      this.prisma.reportInformationRequest.findMany({
+        where: { reportId },
+        orderBy: { createdAt: 'asc' },
+      }),
       this.prisma.reportEvidence.findMany({ where: { reportId }, orderBy: { createdAt: 'asc' } }),
       this.prisma.reportMerge.findMany({
         where: { OR: [{ sourceReportId: reportId }, { targetReportId: reportId }] },
@@ -4722,23 +4780,34 @@ export class ReportService {
       `Submitted: ${iso(report.createdAt)}    Incident: ${iso(report.incidentAt)}`,
       `Location (as typed): ${report.location ?? '-'}`,
       `Due: ${iso(report.dueAt)}    Closed: ${iso(report.closedAt)}`,
-      report.resolutionOutcome ? `Resolution: ${report.resolutionOutcome} - ${report.resolutionSummary ?? ''}` : '',
-      report.integrityFlag ? `Integrity flag: ${report.integrityFlag} (${report.integrityReason ?? '-'})` : '',
+      report.resolutionOutcome
+        ? `Resolution: ${report.resolutionOutcome} - ${report.resolutionSummary ?? ''}`
+        : '',
+      report.integrityFlag
+        ? `Integrity flag: ${report.integrityFlag} (${report.integrityReason ?? '-'})`
+        : '',
       report.legalHold ? `LEGAL HOLD: ${report.legalHoldReason ?? '-'}` : '',
       '',
       'DESCRIPTION',
       ...report.description.split('\n'),
       '',
       `STATUS HISTORY (${history.length})`,
-      ...history.map((h) => `  ${iso(h.createdAt)}  ${h.fromStatus ?? '-'} -> ${h.toStatus}  ${h.note ?? ''}`),
+      ...history.map(
+        (h) => `  ${iso(h.createdAt)}  ${h.fromStatus ?? '-'} -> ${h.toStatus}  ${h.note ?? ''}`,
+      ),
       '',
       `ESCALATIONS (${escalations.length})`,
-      ...escalations.map((e) => `  ${iso(e.createdAt)}  ${e.reason}${e.deEscalatedAt ? `  [de-escalated ${iso(e.deEscalatedAt)}]` : ''}`),
+      ...escalations.map(
+        (e) =>
+          `  ${iso(e.createdAt)}  ${e.reason}${e.deEscalatedAt ? `  [de-escalated ${iso(e.deEscalatedAt)}]` : ''}`,
+      ),
       '',
       `INFORMATION REQUESTS (${infoRequests.length})`,
       ...infoRequests.flatMap((r) => [
         `  ${iso(r.createdAt)}  [${r.status}]  ${r.message}`,
-        ...(r.responseMessage ? [`      Response ${iso(r.respondedAt)}: ${r.responseMessage}`] : []),
+        ...(r.responseMessage
+          ? [`      Response ${iso(r.respondedAt)}: ${r.responseMessage}`]
+          : []),
       ]),
       '',
       `MESSAGES (${messages.length})`,
@@ -4751,23 +4820,32 @@ export class ReportService {
       ),
       '',
       `MERGES (${merges.length})`,
-      ...merges.map((m) => `  ${iso(m.createdAt)}  ${m.sourceReportId} -> ${m.targetReportId}${m.unmergedAt ? '  [undone]' : ''}`),
+      ...merges.map(
+        (m) =>
+          `  ${iso(m.createdAt)}  ${m.sourceReportId} -> ${m.targetReportId}${m.unmergedAt ? '  [undone]' : ''}`,
+      ),
       '',
       `Generated ${new Date().toISOString()} by admin ${admin.id}`,
     ].filter((l, i, arr) => !(l === '' && arr[i - 1] === ''));
 
     await this.logAccess(reportId, admin.id, 'CASE_FILE', ctx);
-    this.audit(admin, act('REPORT_CASE_FILE_GENERATED'), report, { result: 'success' }, {
-      targetUserId: report.isAnonymous ? null : report.userId,
-    });
+    this.audit(
+      admin,
+      act('REPORT_CASE_FILE_GENERATED'),
+      report,
+      { result: 'success' },
+      {
+        targetUserId: report.isAnonymous ? null : report.userId,
+      },
+    );
 
     const buffer = await this.renderPdf(`CASE FILE ${report.caseReference}`, lines);
-    return { buffer, filename: `case-file-${report.caseReference}.pdf`, contentType: 'application/pdf' };
+    return {
+      buffer,
+      filename: `case-file-${report.caseReference}.pdf`,
+      contentType: 'application/pdf',
+    };
   }
-
-  // ─────────────────────────────────────────────
-  // 7. INFORMATION REQUESTS - ADMIN (5)
-  // ─────────────────────────────────────────────
 
   private async loadInfoRequest(reportId: string, requestId: string) {
     const request = await this.prisma.reportInformationRequest.findFirst({
@@ -4818,7 +4896,11 @@ export class ReportService {
     requestId: string,
     dto: CancelInformationRequestDto,
   ) {
-    const report = await this.loadForAdminWrite(admin, reportId, act('REPORT_INFO_REQUEST_CHANGED'));
+    const report = await this.loadForAdminWrite(
+      admin,
+      reportId,
+      act('REPORT_INFO_REQUEST_CHANGED'),
+    );
     const request = await this.loadInfoRequest(reportId, requestId);
     if (request.status !== InformationRequestStatus.PENDING) {
       throw new BadRequestException('only_pending_requests_can_be_cancelled');
@@ -4833,25 +4915,33 @@ export class ReportService {
         cancelReason: dto.reason ?? null,
       },
     });
-    this.audit(admin, act('REPORT_INFO_REQUEST_CHANGED'), report, {
-      result: 'success',
-      op: 'cancel',
-      requestId,
-    }, { reason: dto.reason ?? null });
+    this.audit(
+      admin,
+      act('REPORT_INFO_REQUEST_CHANGED'),
+      report,
+      {
+        result: 'success',
+        op: 'cancel',
+        requestId,
+      },
+      { reason: dto.reason ?? null },
+    );
     return updated;
   }
 
   // RPT-90 POST /reports/:id/information-requests/:requestId/remind
   async remindInformationRequest(admin: CurrentUserDto, reportId: string, requestId: string) {
-    const report = await this.loadForAdminWrite(admin, reportId, act('REPORT_INFO_REQUEST_CHANGED'));
+    const report = await this.loadForAdminWrite(
+      admin,
+      reportId,
+      act('REPORT_INFO_REQUEST_CHANGED'),
+    );
     const request = await this.loadInfoRequest(reportId, requestId);
     if (request.status !== InformationRequestStatus.PENDING) {
       throw new BadRequestException('only_pending_requests_can_be_reminded');
     }
 
-    const minHours = Number(
-      this.configService.get<string>('REPORT_INFO_REMINDER_MIN_HOURS') ?? 24,
-    );
+    const minHours = Number(this.configService.get<string>('REPORT_INFO_REMINDER_MIN_HOURS') ?? 24);
     if (request.remindedAt && Date.now() - request.remindedAt.getTime() < minHours * 3600000) {
       throw new BadRequestException('reminder_sent_too_recently');
     }
@@ -4883,14 +4973,19 @@ export class ReportService {
     requestId: string,
     dto: ExtendInformationRequestDto,
   ) {
-    const report = await this.loadForAdminWrite(admin, reportId, act('REPORT_INFO_REQUEST_CHANGED'));
+    const report = await this.loadForAdminWrite(
+      admin,
+      reportId,
+      act('REPORT_INFO_REQUEST_CHANGED'),
+    );
     const request = await this.loadInfoRequest(reportId, requestId);
     if (request.status !== InformationRequestStatus.PENDING) {
       throw new BadRequestException('only_pending_requests_can_be_extended');
     }
 
     const dueAt = new Date(dto.dueAt);
-    if (dueAt.getTime() <= Date.now()) throw new BadRequestException('due_date_must_be_in_the_future');
+    if (dueAt.getTime() <= Date.now())
+      throw new BadRequestException('due_date_must_be_in_the_future');
     if (request.dueAt && dueAt.getTime() <= request.dueAt.getTime()) {
       throw new BadRequestException('new_due_date_must_be_later_than_current');
     }
@@ -4899,26 +4994,33 @@ export class ReportService {
       where: { id: requestId },
       data: { dueAt },
     });
-    this.audit(admin, act('REPORT_INFO_REQUEST_CHANGED'), report, {
-      result: 'success',
-      op: 'extend',
-      requestId,
-      from: request.dueAt,
-      to: dueAt,
-    }, { reason: dto.reason ?? null });
+    this.audit(
+      admin,
+      act('REPORT_INFO_REQUEST_CHANGED'),
+      report,
+      {
+        result: 'success',
+        op: 'extend',
+        requestId,
+        from: request.dueAt,
+        to: dueAt,
+      },
+      { reason: dto.reason ?? null },
+    );
     return updated;
   }
 
-  // RPT-92 PATCH /reports/:id/information-requests/:requestId/review
-  // ACCEPT closes the request. ASK_AGAIN reopens it (back to PENDING) with the admin's note;
-  // the previous response stays visible until the reporter answers again.
   async reviewInformationResponse(
     admin: CurrentUserDto,
     reportId: string,
     requestId: string,
     dto: ReviewInformationResponseDto,
   ) {
-    const report = await this.loadForAdminWrite(admin, reportId, act('REPORT_INFO_REQUEST_CHANGED'));
+    const report = await this.loadForAdminWrite(
+      admin,
+      reportId,
+      act('REPORT_INFO_REQUEST_CHANGED'),
+    );
     const request = await this.loadInfoRequest(reportId, requestId);
     if (request.status !== InformationRequestStatus.RESPONDED) {
       throw new BadRequestException('request_has_no_response_to_review');
@@ -4938,17 +5040,27 @@ export class ReportService {
       });
       await tx.report.update({
         where: { id: reportId },
-        data: { lastActivityAt: now, reporterUpdatedAt: now, firstRespondedAt: report.firstRespondedAt ?? now },
+        data: {
+          lastActivityAt: now,
+          reporterUpdatedAt: now,
+          firstRespondedAt: report.firstRespondedAt ?? now,
+        },
       });
       return u;
     });
 
-    this.audit(admin, act('REPORT_INFO_REQUEST_CHANGED'), report, {
-      result: 'success',
-      op: 'review',
-      decision: dto.decision,
-      requestId,
-    }, { reason: dto.note ?? null });
+    this.audit(
+      admin,
+      act('REPORT_INFO_REQUEST_CHANGED'),
+      report,
+      {
+        result: 'success',
+        op: 'review',
+        decision: dto.decision,
+        requestId,
+      },
+      { reason: dto.note ?? null },
+    );
     this.eventEmitter.emit(NEW_EVENTS.INFORMATION_REVIEWED, {
       reportId,
       caseReference: report.caseReference,
@@ -4960,13 +5072,17 @@ export class ReportService {
     return updated;
   }
 
-  // ─────────────────────────────────────────────
-  // 8. SENSITIVITY AND ACCESS (7)
-  // ─────────────────────────────────────────────
-
   // RPT-104 PATCH /reports/:id/sensitivity
-  async updateSensitivity(admin: CurrentUserDto, reportId: string, dto: UpdateReportSensitivityDto) {
-    const existing = await this.loadForAdminWrite(admin, reportId, act('REPORT_SENSITIVITY_CHANGED'));
+  async updateSensitivity(
+    admin: CurrentUserDto,
+    reportId: string,
+    dto: UpdateReportSensitivityDto,
+  ) {
+    const existing = await this.loadForAdminWrite(
+      admin,
+      reportId,
+      act('REPORT_SENSITIVITY_CHANGED'),
+    );
     if (existing.sensitivity === dto.level) return existing;
 
     const [report] = await this.prisma.$transaction([
@@ -4979,11 +5095,17 @@ export class ReportService {
         reason: dto.reason,
       }),
     ]);
-    this.audit(admin, act('REPORT_SENSITIVITY_CHANGED'), report, {
-      result: 'success',
-      from: existing.sensitivity,
-      to: dto.level,
-    }, { reason: dto.reason, severity: AuditSeverity.WARNING });
+    this.audit(
+      admin,
+      act('REPORT_SENSITIVITY_CHANGED'),
+      report,
+      {
+        result: 'success',
+        from: existing.sensitivity,
+        to: dto.level,
+      },
+      { reason: dto.reason, severity: AuditSeverity.WARNING },
+    );
     return report;
   }
 
@@ -5067,11 +5189,17 @@ export class ReportService {
         expiresAt,
       },
     });
-    this.audit(admin, act('REPORT_ACCESS_GRANTED'), report, {
-      result: 'success',
-      grantedTo: dto.adminId,
-      expiresAt,
-    }, { reason: dto.reason, targetUserId: dto.adminId, severity: AuditSeverity.WARNING });
+    this.audit(
+      admin,
+      act('REPORT_ACCESS_GRANTED'),
+      report,
+      {
+        result: 'success',
+        grantedTo: dto.adminId,
+        expiresAt,
+      },
+      { reason: dto.reason, targetUserId: dto.adminId, severity: AuditSeverity.WARNING },
+    );
     return grant;
   }
 
@@ -5083,10 +5211,16 @@ export class ReportService {
       data: { revokedAt: new Date(), revokedById: admin.id },
     });
     if (res.count === 0) throw new NotFoundException('access_grant_not_found');
-    this.audit(admin, act('REPORT_ACCESS_REVOKED'), report, {
-      result: 'success',
-      revokedFrom: adminId,
-    }, { targetUserId: adminId });
+    this.audit(
+      admin,
+      act('REPORT_ACCESS_REVOKED'),
+      report,
+      {
+        result: 'success',
+        revokedFrom: adminId,
+      },
+      { targetUserId: adminId },
+    );
     return { revoked: res.count };
   }
 
@@ -5116,15 +5250,21 @@ export class ReportService {
       select: { id: true, name: true, phone: true },
     });
 
-    this.audit(admin, act('REPORTER_REVEALED'), report, {
-      result: 'success',
-      wasAnonymous: report.isAnonymous,
-    }, {
-      reason: dto.reason,
-      targetUserId: report.userId,
-      severity: AuditSeverity.WARNING,
-      metadata: { ticketRef: dto.ticketRef ?? null },
-    });
+    this.audit(
+      admin,
+      act('REPORTER_REVEALED'),
+      report,
+      {
+        result: 'success',
+        wasAnonymous: report.isAnonymous,
+      },
+      {
+        reason: dto.reason,
+        targetUserId: report.userId,
+        severity: AuditSeverity.WARNING,
+        metadata: { ticketRef: dto.ticketRef ?? null },
+      },
+    );
 
     return { reportId, wasAnonymous: report.isAnonymous, reporter };
   }
@@ -5137,21 +5277,26 @@ export class ReportService {
     const report = await this.prisma.report.update({
       where: { id: reportId },
       data: dto.enabled
-        ? { legalHold: true, legalHoldReason: dto.reason, legalHoldAt: new Date(), legalHoldById: admin.id }
+        ? {
+            legalHold: true,
+            legalHoldReason: dto.reason,
+            legalHoldAt: new Date(),
+            legalHoldById: admin.id,
+          }
         : { legalHold: false, legalHoldReason: null, legalHoldAt: null, legalHoldById: null },
     });
-    this.audit(admin, act('REPORT_LEGAL_HOLD_CHANGED'), report, {
-      result: 'success',
-      enabled: dto.enabled,
-    }, { reason: dto.reason, severity: AuditSeverity.WARNING });
+    this.audit(
+      admin,
+      act('REPORT_LEGAL_HOLD_CHANGED'),
+      report,
+      {
+        result: 'success',
+        enabled: dto.enabled,
+      },
+      { reason: dto.reason, severity: AuditSeverity.WARNING },
+    );
     return report;
   }
-
-  // ─────────────────────────────────────────────
-  // SHARED FILTER BUILDERS (stats, export, map, hotspots)
-  // Optional filters: from, to, status, category, channel, assignedTo, region.
-  // Both builders also apply "not deleted" and sensitivity visibility.
-  // ─────────────────────────────────────────────
 
   private normChannel(channel?: string): SubmissionChannel | undefined {
     if (!channel) return undefined;
@@ -5194,19 +5339,21 @@ export class ReportService {
     return Prisma.join(c, ' AND ');
   }
 
-  // ─────────────────────────────────────────────
-  // 9. LOCATION AND MAP (6)
-  // ─────────────────────────────────────────────
-
   // GP-09 GET /reports/:id/location   (REPORT_LOCATION_READ, audited)
   async getLocation(admin: CurrentUserDto, reportId: string, ctx?: RequestCtx) {
     const report = await this.loadForAdmin(admin, reportId);
 
     await this.logAccess(reportId, admin.id, 'LOCATION_VIEW', ctx);
-    this.audit(admin, act('REPORT_LOCATION_VIEWED'), report, {
-      result: 'success',
-      hasGps: report.latitude != null,
-    }, { targetUserId: report.isAnonymous ? null : report.userId });
+    this.audit(
+      admin,
+      act('REPORT_LOCATION_VIEWED'),
+      report,
+      {
+        result: 'success',
+        hasGps: report.latitude != null,
+      },
+      { targetUserId: report.isAnonymous ? null : report.userId },
+    );
 
     return {
       id: report.id,
@@ -5231,7 +5378,8 @@ export class ReportService {
       throw new BadRequestException('nothing_to_update');
     }
     const hasLocation = existing.latitude != null || !!dto.gps;
-    if (dto.verified === true && !hasLocation) throw new BadRequestException('no_location_to_verify');
+    if (dto.verified === true && !hasLocation)
+      throw new BadRequestException('no_location_to_verify');
 
     const now = new Date();
     const data: Prisma.ReportUncheckedUpdateInput = { lastActivityAt: now };
@@ -5250,7 +5398,11 @@ export class ReportService {
       this.prisma.report.update({ where: { id: reportId }, data }),
       this.revision(reportId, admin.id, {
         location: {
-          from: { latitude: existing.latitude, longitude: existing.longitude, verified: existing.locationVerified },
+          from: {
+            latitude: existing.latitude,
+            longitude: existing.longitude,
+            verified: existing.locationVerified,
+          },
           to: {
             latitude: dto.gps?.latitude ?? existing.latitude,
             longitude: dto.gps?.longitude ?? existing.longitude,
@@ -5473,10 +5625,6 @@ export class ReportService {
 
   // GP-08 GET /reports/stats/by-region  (declared with the stats group below)
 
-  // ─────────────────────────────────────────────
-  // 10. EMAIL (2)
-  // ─────────────────────────────────────────────
-
   // EM-20 GET /reports/:id/emails
   async listEmails(admin: CurrentUserDto, reportId: string, query: PageQueryDto) {
     await this.loadForAdmin(admin, reportId);
@@ -5489,9 +5637,6 @@ export class ReportService {
     return { items, total, page, limit };
   }
 
-  // EM-21 POST /reports/:id/email-reply
-  // Stores the OUTBOUND row and emits `report.email.reply`; the mail module delivers it
-  // and may write the provider message id back onto ReportEmail.messageId.
   async replyToEmail(admin: CurrentUserDto, reportId: string, dto: ReplyToReportEmailDto) {
     const report = await this.loadForAdminWrite(admin, reportId, act('REPORT_EMAIL_SENT'));
 
@@ -5539,10 +5684,6 @@ export class ReportService {
     return email;
   }
 
-  // ─────────────────────────────────────────────
-  // 11. SEARCH, EXPORT, CATEGORIES (11)
-  // ─────────────────────────────────────────────
-
   // RPT-128 GET /reports/search?q=
   // Case-insensitive match over reference, description, location, region and tag names.
   async searchReports(admin: CurrentUserDto, query: SearchReportsQueryDto) {
@@ -5587,9 +5728,18 @@ export class ReportService {
   private async countBy(
     admin: CurrentUserDto,
     q: ReportStatsQueryDto,
-    column: 'status' | 'category' | 'channel' | 'priority' | 'sensitivity' | 'region' | 'assignedTeamId',
+    column:
+      'status' | 'category' | 'channel' | 'priority' | 'sensitivity' | 'region' | 'assignedTeamId',
   ) {
-    const allowed = ['status', 'category', 'channel', 'priority', 'sensitivity', 'region', 'assignedTeamId'];
+    const allowed = [
+      'status',
+      'category',
+      'channel',
+      'priority',
+      'sensitivity',
+      'region',
+      'assignedTeamId',
+    ];
     if (!allowed.includes(column)) throw new BadRequestException('invalid_column');
     const col = Prisma.raw(`r."${column}"`);
     const where = this.statsFilterSql(q, admin);
@@ -5624,7 +5774,16 @@ export class ReportService {
         this.countBy(admin, query, 'region'),
         this.getStatsAssignment(admin, query),
       ]);
-    return { total: status.total, status, category, priority, channel, sensitivity, region, assignment };
+    return {
+      total: status.total,
+      status,
+      category,
+      priority,
+      channel,
+      sensitivity,
+      region,
+      assignment,
+    };
   }
 
   // RPT-131 GET /reports/filters/options
@@ -5642,7 +5801,10 @@ export class ReportService {
         select: { assignedTeamId: true },
         orderBy: { assignedTeamId: 'asc' },
       }),
-      this.prisma.reportTag.findMany({ select: { id: true, name: true }, orderBy: { name: 'asc' } }),
+      this.prisma.reportTag.findMany({
+        select: { id: true, name: true },
+        orderBy: { name: 'asc' },
+      }),
       this.prisma.user.findMany({
         where: { userRoles: { some: { role: { name: { in: ADMIN_ROLE_NAMES as string[] } } } } },
         select: { id: true, name: true },
@@ -5695,9 +5857,22 @@ export class ReportService {
     const where = this.statsWhere(filters, admin);
 
     const header = [
-      'caseReference', 'createdAt', 'status', 'category', 'priority', 'sensitivity', 'channel',
-      'region', 'location', 'assignedToId', 'assignedTeamId', 'dueAt', 'closedAt',
-      'resolutionOutcome', 'integrityFlag', 'isAnonymous',
+      'caseReference',
+      'createdAt',
+      'status',
+      'category',
+      'priority',
+      'sensitivity',
+      'channel',
+      'region',
+      'location',
+      'assignedToId',
+      'assignedTeamId',
+      'dueAt',
+      'closedAt',
+      'resolutionOutcome',
+      'integrityFlag',
+      'isAnonymous',
       ...(includeDescription ? ['description'] : []),
     ];
     const lines: string[] = [header.join(',')];
@@ -5716,9 +5891,22 @@ export class ReportService {
       for (const r of batch) {
         lines.push(
           [
-            r.caseReference, r.createdAt, r.status, r.category, r.priority, r.sensitivity, r.channel,
-            r.region, r.location, r.assignedToId, r.assignedTeamId, r.dueAt, r.closedAt,
-            r.resolutionOutcome, r.integrityFlag, r.isAnonymous,
+            r.caseReference,
+            r.createdAt,
+            r.status,
+            r.category,
+            r.priority,
+            r.sensitivity,
+            r.channel,
+            r.region,
+            r.location,
+            r.assignedToId,
+            r.assignedTeamId,
+            r.dueAt,
+            r.closedAt,
+            r.resolutionOutcome,
+            r.integrityFlag,
+            r.isAnonymous,
             ...(includeDescription ? [r.description] : []),
           ]
             .map((v) => this.csvCell(v))
@@ -5747,7 +5935,12 @@ export class ReportService {
       action: act('REPORT_EXPORTED'),
       entity: 'Report',
       entityId: 'export',
-      diff: { result: 'success', rowCount, truncated, filters: query as unknown as Record<string, unknown> },
+      diff: {
+        result: 'success',
+        rowCount,
+        truncated,
+        filters: query as unknown as Record<string, unknown>,
+      },
     });
 
     return {
@@ -5783,7 +5976,10 @@ export class ReportService {
       },
     });
 
-    this.eventEmitter.emit(NEW_EVENTS.EXPORT_JOB_CREATED, { jobId: job.id, requestedById: admin.id });
+    this.eventEmitter.emit(NEW_EVENTS.EXPORT_JOB_CREATED, {
+      jobId: job.id,
+      requestedById: admin.id,
+    });
     // In-process worker. For multi-instance deployments move this behind your queue.
     setImmediate(() => {
       void this.runExportJob(job.id);
@@ -5812,7 +6008,9 @@ export class ReportService {
         roles: requester.userRoles.map((ur) => ur.role.name),
       } as unknown as CurrentUserDto;
 
-      const maxRows = Number(this.configService.get<string>('REPORT_EXPORT_JOB_MAX_ROWS') ?? 100000);
+      const maxRows = Number(
+        this.configService.get<string>('REPORT_EXPORT_JOB_MAX_ROWS') ?? 100000,
+      );
       const { csv, rowCount } = await this.buildCsv(
         actor,
         (job.filters ?? {}) as ReportStatsQueryDto,
@@ -5869,8 +6067,16 @@ export class ReportService {
         skip,
         take,
         select: {
-          id: true, format: true, filters: true, status: true, rowCount: true, error: true,
-          startedAt: true, completedAt: true, expiresAt: true, createdAt: true,
+          id: true,
+          format: true,
+          filters: true,
+          status: true,
+          rowCount: true,
+          error: true,
+          startedAt: true,
+          completedAt: true,
+          expiresAt: true,
+          createdAt: true,
         },
       }),
       this.prisma.reportExportJob.count({ where }),
@@ -5883,8 +6089,16 @@ export class ReportService {
     const job = await this.prisma.reportExportJob.findFirst({
       where: { id: jobId, requestedById: admin.id },
       select: {
-        id: true, format: true, filters: true, status: true, rowCount: true, error: true,
-        startedAt: true, completedAt: true, expiresAt: true, createdAt: true,
+        id: true,
+        format: true,
+        filters: true,
+        status: true,
+        rowCount: true,
+        error: true,
+        startedAt: true,
+        completedAt: true,
+        expiresAt: true,
+        createdAt: true,
       },
     });
     if (!job) throw new NotFoundException('export_job_not_found');
@@ -5901,7 +6115,10 @@ export class ReportService {
       throw new BadRequestException(`export_not_ready:${job.status}`);
     }
     if (job.expiresAt && job.expiresAt.getTime() < Date.now()) {
-      await this.prisma.reportExportJob.update({ where: { id: jobId }, data: { status: 'EXPIRED' } });
+      await this.prisma.reportExportJob.update({
+        where: { id: jobId },
+        data: { status: 'EXPIRED' },
+      });
       throw new BadRequestException('export_expired');
     }
 
@@ -5931,15 +6148,8 @@ export class ReportService {
     return Object.values(ReportCategory).map((value) => ({ value, label: labels[value] ?? value }));
   }
 
-  // ─────────────────────────────────────────────
-  // 12. STATISTICS (19)  +  GP-08 by-region
-  // Every route accepts: from, to, status, category, channel, assignedTo, region.
-  // ─────────────────────────────────────────────
-
   private round(n: number | null | undefined, digits = 2): number | null {
-    return n == null || !Number.isFinite(Number(n))
-      ? null
-      : Number(Number(n).toFixed(digits));
+    return n == null || !Number.isFinite(Number(n)) ? null : Number(Number(n).toFixed(digits));
   }
 
   // Default window when the caller gives no from/to: last `days` days
@@ -5984,7 +6194,13 @@ export class ReportService {
   private async periodMetrics(admin: CurrentUserDto, q: ReportStatsQueryDto, from: Date, to: Date) {
     const where = this.statsFilterSql(this.withRange(q, from, to), admin);
     const rows = await this.prisma.$queryRaw<
-      Array<{ total: number; closed: number; rejected: number; escalated: number; avg_hours: number | null }>
+      Array<{
+        total: number;
+        closed: number;
+        rejected: number;
+        escalated: number;
+        avg_hours: number | null;
+      }>
     >`
       SELECT COUNT(*)::int AS total,
              COUNT(*) FILTER (WHERE r.status::text = 'CLOSED')::int AS closed,
@@ -6019,7 +6235,10 @@ export class ReportService {
 
     const delta = (a: number | null, b: number | null) => {
       if (a == null || b == null) return { change: null, changePct: null };
-      return { change: this.round(a - b), changePct: b === 0 ? null : this.round(((a - b) / b) * 100, 1) };
+      return {
+        change: this.round(a - b),
+        changePct: b === 0 ? null : this.round(((a - b) / b) * 100, 1),
+      };
     };
 
     return {
@@ -6065,8 +6284,14 @@ export class ReportService {
     const where = this.statsFilterSql(query, admin);
     const rows = await this.prisma.$queryRaw<
       Array<{
-        resp_n: number; resp_avg: number | null; resp_p50: number | null; resp_p90: number | null;
-        close_n: number; close_avg: number | null; close_p50: number | null; close_p90: number | null;
+        resp_n: number;
+        resp_avg: number | null;
+        resp_p50: number | null;
+        resp_p90: number | null;
+        close_n: number;
+        close_avg: number | null;
+        close_p50: number | null;
+        close_p90: number | null;
       }>
     >`
       WITH x AS (
@@ -6164,7 +6389,12 @@ export class ReportService {
     const where = this.statsFilterSql(query, admin);
     const rows = await this.prisma.$queryRaw<
       Array<{
-        adminId: string; total: number; open: number; closed: number; overdue: number; avg_hours: number | null;
+        adminId: string;
+        total: number;
+        open: number;
+        closed: number;
+        overdue: number;
+        avg_hours: number | null;
       }>
     >`
       SELECT r."assignedToId" AS "adminId",
@@ -6240,7 +6470,13 @@ export class ReportService {
         this.getStatsTimeline(admin, { ...query, bucket: 'day' }),
         this.getStatsResolutionTime(admin, query),
         this.prisma.$queryRaw<
-          Array<{ open: number; overdue: number; escalated: number; unreadForMe: number; closedLast7d: number }>
+          Array<{
+            open: number;
+            overdue: number;
+            escalated: number;
+            unreadForMe: number;
+            closedLast7d: number;
+          }>
         >`
           SELECT COUNT(*) FILTER (WHERE r.status::text NOT IN ('CLOSED','REJECTED'))::int AS open,
                  COUNT(*) FILTER (WHERE r.status::text NOT IN ('CLOSED','REJECTED')
@@ -6310,7 +6546,13 @@ export class ReportService {
   async getStatsSla(admin: CurrentUserDto, query: ReportStatsQueryDto) {
     const where = this.statsFilterSql(query, admin);
     const rows = await this.prisma.$queryRaw<
-      Array<{ with_deadline: number; met: number; breached: number; running: number; at_risk: number }>
+      Array<{
+        with_deadline: number;
+        met: number;
+        breached: number;
+        running: number;
+        at_risk: number;
+      }>
     >`
       SELECT COUNT(*) FILTER (WHERE r."dueAt" IS NOT NULL)::int AS with_deadline,
              COUNT(*) FILTER (WHERE r."dueAt" IS NOT NULL AND r.status::text IN ('CLOSED','REJECTED')
@@ -6376,7 +6618,14 @@ export class ReportService {
   async getStatsReopened(admin: CurrentUserDto, query: ReportStatsQueryDto) {
     const where = this.statsFilterSql(query, admin);
     const rows = await this.prisma.$queryRaw<
-      Array<{ requests: number; reports: number; approved: number; pending: number; denied: number; closed: number }>
+      Array<{
+        requests: number;
+        reports: number;
+        approved: number;
+        pending: number;
+        denied: number;
+        closed: number;
+      }>
     >`
       SELECT (SELECT COUNT(*)::int FROM report_reopen_request q JOIN ${REPORT_TABLE} r ON r.id = q."reportId" WHERE ${where}) AS requests,
              (SELECT COUNT(DISTINCT q."reportId")::int FROM report_reopen_request q JOIN ${REPORT_TABLE} r ON r.id = q."reportId" WHERE ${where}) AS reports,
@@ -6397,14 +6646,16 @@ export class ReportService {
     };
   }
 
-  // RPT-156 GET /reports/stats/escalations
-  // `recorded` comes from ReportEscalation rows (written by the urgent flag and de-escalate
-  // routes); `currentlyEscalated` is the live status count, so it includes escalations made
-  // through the older escalate() route that did not write a row.
   async getStatsEscalations(admin: CurrentUserDto, query: ReportStatsQueryDto) {
     const where = this.statsFilterSql(query, admin);
     const rows = await this.prisma.$queryRaw<
-      Array<{ recorded: number; de_escalated: number; avg_hours: number | null; current: number; reports: number }>
+      Array<{
+        recorded: number;
+        de_escalated: number;
+        avg_hours: number | null;
+        current: number;
+        reports: number;
+      }>
     >`
       SELECT (SELECT COUNT(*)::int FROM report_escalation e JOIN ${REPORT_TABLE} r ON r.id = e."reportId" WHERE ${where}) AS recorded,
              (SELECT COUNT(*)::int FROM report_escalation e JOIN ${REPORT_TABLE} r ON r.id = e."reportId" WHERE ${where} AND e."deEscalatedAt" IS NOT NULL) AS de_escalated,

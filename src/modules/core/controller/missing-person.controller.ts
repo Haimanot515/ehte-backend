@@ -89,22 +89,6 @@ export class MissingPersonController {
     return this.missingPersonService.create(user, data, idempotencyKey);
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — DASHBOARD STATISTICS
-  // GET /missing-persons/admin/stats
-  //
-  // Declared before 'admin/:id' so Nest doesn't treat "stats" as a
-  // missing person id — same route-order reasoning as 'admin/stale'
-  // below.
-  //
-  // NOTE: a second, duplicate @Get('admin/stats')/getStats() handler
-  // existed further down this file (near 'admin/stale'), calling the
-  // same service method with a narrower summary ('counts by status
-  // and type'). Two methods with the same name in one class don't
-  // compile, so it's been removed — this is the one kept, since it
-  // matches the richer getStats() shape MissingPersonService actually
-  // returns (byStatus, byPersonType, reward breakdown, dailyTrend, etc).
-  // ─────────────────────────────────────────────
   @Get('admin/stats')
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
@@ -251,7 +235,9 @@ export class MissingPersonController {
   @Get('mine/:id/tips')
   @ApiBearerAuth('access-token')
   @Header('Cache-Control', 'no-store')
-  @ApiOperation({ summary: 'Get a summary of tips received on my case, without informant identity' })
+  @ApiOperation({
+    summary: 'Get a summary of tips received on my case, without informant identity',
+  })
   async getMyTipsSummary(@CurrentUser() user: CurrentUserDto, @Param('id') id: string) {
     return this.missingPersonService.getMyTipsSummary(user, id);
   }
@@ -366,10 +352,7 @@ export class MissingPersonController {
   @Roles(RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.MISSING_PERSON_REVIEW)
   @ApiOperation({ summary: 'Super admin: assign many cases to a reviewer' })
-  async bulkAssign(
-    @CurrentUser() admin: CurrentUserDto,
-    @Body() data: BulkAssignMissingPersonDto,
-  ) {
+  async bulkAssign(@CurrentUser() admin: CurrentUserDto, @Body() data: BulkAssignMissingPersonDto) {
     return this.missingPersonService.bulkAssign(admin, data.ids, data.adminId);
   }
 
@@ -378,10 +361,7 @@ export class MissingPersonController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.MISSING_PERSON_REVIEW)
   @ApiOperation({ summary: 'Admin: approve many low-risk cases' })
-  async bulkApprove(
-    @CurrentUser() admin: CurrentUserDto,
-    @Body() data: BulkMissingPersonIdsDto,
-  ) {
+  async bulkApprove(@CurrentUser() admin: CurrentUserDto, @Body() data: BulkMissingPersonIdsDto) {
     return this.missingPersonService.bulkApprove(admin, data.ids);
   }
 
@@ -390,10 +370,7 @@ export class MissingPersonController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.MISSING_PERSON_REVIEW)
   @ApiOperation({ summary: 'Admin: reject many cases with one reason' })
-  async bulkReject(
-    @CurrentUser() admin: CurrentUserDto,
-    @Body() data: BulkRejectMissingPersonDto,
-  ) {
+  async bulkReject(@CurrentUser() admin: CurrentUserDto, @Body() data: BulkRejectMissingPersonDto) {
     return this.missingPersonService.bulkReject(admin, data.ids, data.reviewNote);
   }
 
@@ -402,10 +379,7 @@ export class MissingPersonController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.MISSING_PERSON_REVIEW)
   @ApiOperation({ summary: 'Admin: expire many old cases with a reason' })
-  async bulkExpire(
-    @CurrentUser() admin: CurrentUserDto,
-    @Body() data: BulkExpireMissingPersonDto,
-  ) {
+  async bulkExpire(@CurrentUser() admin: CurrentUserDto, @Body() data: BulkExpireMissingPersonDto) {
     return this.missingPersonService.bulkExpire(admin, data.ids, data.reason);
   }
 
@@ -550,7 +524,9 @@ export class MissingPersonController {
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.MISSING_PERSON_REVIEW)
-  @ApiOperation({ summary: 'Admin: resolve a flag by dismissing, hiding the case or warning the owner' })
+  @ApiOperation({
+    summary: 'Admin: resolve a flag by dismissing, hiding the case or warning the owner',
+  })
   async resolveFlag(
     @CurrentUser() admin: CurrentUserDto,
     @Param('flagId') flagId: string,
@@ -849,16 +825,6 @@ export class MissingPersonController {
     return this.missingPersonService.unclaimMissingPerson(admin, id);
   }
 
-  // G6: this was reachable with MISSING_PERSON_REVIEW alone — the same
-  // permission used to approve/reject the case itself — while
-  // RewardService.approveOffer (the other write path onto these same
-  // fields) requires REWARDS_APPROVE. Requiring both here closes the gap
-  // where a reviewer without reward-approval privilege could still change
-  // or revoke reward terms through this route. The underlying "two write
-  // paths for one field" problem (G6's other half) is fixed on the
-  // service side by MissingPersonService.updateReward()'s funded-lock;
-  // fully consolidating onto RewardService as the single write path is
-  // tracked as a billing-module change, not done here.
   @Patch('admin/:id/reward')
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
@@ -1058,7 +1024,7 @@ export class MissingPersonController {
   @ApiBearerAuth('access-token')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.MISSING_PERSON_REVIEW)
-  @ApiOperation({ summary: "Admin: send the owner a message shown in their timeline" })
+  @ApiOperation({ summary: 'Admin: send the owner a message shown in their timeline' })
   async messageOwner(
     @CurrentUser() admin: CurrentUserDto,
     @Param('id') id: string,
@@ -1173,7 +1139,9 @@ export class MissingPersonController {
   @Roles(RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.MISSING_PERSON_REVIEW)
   @RequireReauthentication()
-  @ApiOperation({ summary: 'Super admin: place or release a legal hold that blocks deletion and purge' })
+  @ApiOperation({
+    summary: 'Super admin: place or release a legal hold that blocks deletion and purge',
+  })
   async setLegalHold(
     @CurrentUser() admin: CurrentUserDto,
     @Param('id') id: string,

@@ -1,11 +1,5 @@
-import {
-  ApiProperty,
-  ApiPropertyOptional,
-  PartialType,
-} from '@nestjs/swagger';
-import {
-  Transform,
-} from 'class-transformer';
+import { ApiProperty, ApiPropertyOptional, PartialType } from '@nestjs/swagger';
+import { Transform } from 'class-transformer';
 import {
   ArrayMaxSize,
   ArrayMinSize,
@@ -45,10 +39,6 @@ export class CreateRoleDto {
 }
 
 export class UpdateRoleDto extends PartialType(CreateRoleDto) {}
-
-// ═════════════════════════════════════════════
-// NEW ENDPOINTS (AR-xx) — added to the existing DTOs
-// ═════════════════════════════════════════════
 
 // New DTOs for the endpoints added to RoleController (AR-29 … AR-46, AR-56).
 // Re-authentication `password` is read and stripped by the guard, so it is not a field here.

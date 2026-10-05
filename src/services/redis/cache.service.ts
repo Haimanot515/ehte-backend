@@ -20,10 +20,6 @@ const RETRY_MAX_AGE_MS = 20 * 60 * 1000;
 const RETRY_INTERVAL_MS = 2000;
 const RETRY_QUEUE_MAX = 10_000;
 
-// ── Lua ───────────────────────────────────────────────────────────────────
-// Invalidate: bump a version/generation key, drop a tombstone, delete keys.
-// KEYS[1]=version|gen key  KEYS[2]=tombstone key  KEYS[3..]=keys to delete
-// ARGV[1]=new token  ARGV[2]=tombstone ttl  ARGV[3]=version key ttl (0 = none)
 const INVALIDATE = `
 if tonumber(ARGV[3]) > 0 then
   redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[3])
@@ -94,9 +90,6 @@ interface PendingOp {
   firstAt: number;
 }
 
-// Only the query fields each list actually filters by are hashed into its cache key.
-// Anything else (unknown params, ignored filters like information-submission's `status`)
-// is dropped before hashing, so it can't multiply the number of cached entries.
 const LIST_QUERY_FIELDS: Record<string, readonly string[]> = {
   post: ['type'],
   'missing-person': ['type'],
@@ -151,10 +144,6 @@ export class CacheService implements OnModuleDestroy {
     this.retryTimer = null;
   }
 
-  // ───────────────────────────────────────────
-  // Kill switch
-  // ───────────────────────────────────────────
-
   /**
    * Turns caching off for every instance for `ttlSeconds` (default 1h, so it
    * cannot be left off by accident). This instance stops using the cache
@@ -199,10 +188,6 @@ export class CacheService implements OnModuleDestroy {
     return this.redis.isConnected && (await this.isCacheEnabled());
   }
 
-  // ───────────────────────────────────────────
-  // Health / metrics
-  // ───────────────────────────────────────────
-
   getMetrics() {
     const total = this.stats.hits + this.stats.misses;
     return {
@@ -229,17 +214,10 @@ export class CacheService implements OnModuleDestroy {
     };
   }
 
-  // ───────────────────────────────────────────
-  // Low-level helpers
-  // ───────────────────────────────────────────
-
   private jitter(ttl: number): number {
     return Math.max(1, Math.round(ttl * (0.9 + Math.random() * 0.2)));
   }
 
-  // FIX 4: unwraps the SWR envelope so legacy get*() accessors (getMyReports, getMyPosts,
-  // getNotifications) don't hand callers a raw { __c, v, s } object when a wrap*() writer
-  // shares the same key.
   private async read<T>(key: string): Promise<T | null> {
     if (!(await this.canUseCache())) return null;
     const v = await this.redis.get<T | Envelope<T>>(key);
@@ -282,11 +260,6 @@ export class CacheService implements OnModuleDestroy {
     return createHash('sha256').update(secret).digest('hex');
   }
 
-  // FIX 5: was `isCacheableQuery(query) -> hashQuery(query)`, which hashed the WHOLE query
-  // object — an unknown `?x=random` param or an ignored filter (e.g. information-submission's
-  // `status`, which the service never applies) each produced a distinct cache key. Now takes
-  // an explicit field allow-list per list (LIST_QUERY_FIELDS) and only hashes page/limit plus
-  // those fields.
   private listCacheKey(
     query: Record<string, unknown>,
     fields: readonly string[],
@@ -340,10 +313,6 @@ export class CacheService implements OnModuleDestroy {
     return p;
   }
 
-  // ───────────────────────────────────────────
-  // wrap(): single-flight + TTL jitter + stale-while-revalidate
-  // ───────────────────────────────────────────
-
   async wrap<T>(key: string, factory: () => Promise<T>, ttlSeconds: number): Promise<T> {
     if (!(await this.canUseCache())) return factory();
 
@@ -374,13 +343,6 @@ export class CacheService implements OnModuleDestroy {
       return value;
     });
   }
-
-  // ───────────────────────────────────────────
-  // Versioned lists. The version token is part of the key, so invalidating a
-  // scope is one write. A reader that started before the invalidation writes
-  // to the OLD key, which nobody reads any more, so it cannot resurrect stale
-  // data. Old keys expire by TTL.
-  // ───────────────────────────────────────────
 
   private async getVersion(scope: string): Promise<string | null> {
     try {
@@ -438,21 +400,11 @@ export class CacheService implements OnModuleDestroy {
       const r = await this.redis.evalScript<number>(
         INVALIDATE,
         [this.keys.version(scope), this.keys.tomb(scope), ...extraDelete],
-        // FIX 2: was `0` (no expiry) — every user/case scope's version key lived forever.
-        // TTL.ENTITY_GEN (24h) is far above the longest entry lifetime (TAXONOMY 1800s +
-        // STALE_GRACE), so it can never resurrect an old entry once it expires.
         [newToken(), TTL.TOMBSTONE, TTL.ENTITY_GEN],
       );
       return r === 1;
     });
   }
-
-  // ───────────────────────────────────────────
-  // Entities (details). Correct-by-construction path: wrapX() captures the
-  // generation BEFORE reading the DB and writes back only if it is unchanged
-  // (atomic in Lua). The old getX()/setX() pair keeps working: setX() is
-  // blocked for TTL.TOMBSTONE seconds after an invalidation.
-  // ───────────────────────────────────────────
 
   private async wrapEntity<T>(
     kind: string,
@@ -477,11 +429,6 @@ export class CacheService implements OnModuleDestroy {
     }
     if (gen === null) return factory(); // Redis trouble: serve, don't cache
 
-    // FIX 1: the generation is captured BEFORE the factory runs and folded into the
-    // single-flight key. Previously the flight was keyed by `key` alone and the generation
-    // was read only inside it — a request starting AFTER a takedown could join a flight that
-    // started BEFORE it and receive the pre-takedown row (the CAS below stopped it from being
-    // re-cached, but not from being returned to that caller).
     return this.singleFlight(`${key}#${gen}`, async () => {
       const value = await factory();
 
@@ -537,13 +484,6 @@ export class CacheService implements OnModuleDestroy {
   private delKeys(id: string, ...keys: string[]): Promise<void> {
     return this.guarded(`del:${id}`, () => this.redis.del(...keys));
   }
-
-  // ───────────────────────────────────────────
-  // Invalidation retry. A failed invalidation is queued and replayed (every
-  // couple of seconds and immediately on reconnect) instead of being logged
-  // and forgotten. The queue is in memory: if the process dies during an
-  // outage, stale entries are bounded by their TTL (at most ~5 min).
-  // ───────────────────────────────────────────
 
   private async guarded(id: string, op: () => Promise<boolean>): Promise<void> {
     let ok = false;
@@ -617,10 +557,6 @@ export class CacheService implements OnModuleDestroy {
     );
     return results.every(Boolean);
   }
-
-  // ═══════════════════════════════════════════
-  // AUTH / IDENTITY
-  // ═══════════════════════════════════════════
 
   getProfile<T>(userId: string) {
     return this.read<T>(this.keys.profile(userId));
@@ -715,16 +651,12 @@ export class CacheService implements OnModuleDestroy {
     verificationId: string,
     ttlSeconds: number,
   ): Promise<void> {
-    return this.sec.setRaw(this.keys.otpCooldown(userId, purpose, channel), verificationId, ttlSeconds);
+    return this.sec.setRaw(
+      this.keys.otpCooldown(userId, purpose, channel),
+      verificationId,
+      ttlSeconds,
+    );
   }
-
-  // ── Re-auth gate: rate limiting for ReauthService, entirely on the security
-  // connection, deliberately separate from the login counters above.
-  //
-  // Fails open if Redis is unreachable (same trade-off as every other failed-login
-  // check in this file): a request already got past JwtAuthGuard to reach this gate,
-  // so an outage here means "no extra brute-force limit on the sensitive action", not
-  // "the account is unprotected" — bcrypt's own cost factor is still the floor.
 
   /** True only while a Redis-set lock is active. Never throws; unreachable Redis = not locked. */
   async isReauthLocked(userId: string): Promise<boolean> {
@@ -761,11 +693,7 @@ export class CacheService implements OnModuleDestroy {
 
   // Password-reset state. The raw token never appears in a key name.
   setPasswordReset(token: string, data: unknown): Promise<boolean> {
-    return this.sec.set(
-      this.keys.passwordReset(this.hashSecret(token)),
-      data,
-      TTL.PASSWORD_RESET,
-    );
+    return this.sec.set(this.keys.passwordReset(this.hashSecret(token)), data, TTL.PASSWORD_RESET);
   }
 
   getPasswordReset<T>(token: string): Promise<T | null> {
@@ -798,18 +726,11 @@ export class CacheService implements OnModuleDestroy {
       this.invalidateMyReports(userId),
       this.invalidateMyPosts(userId),
       this.invalidateNotifications(userId),
-      // Drops every cached session-auth entry for this user (every device/session), so
-      // logout, password reset/change, deactivation and role changes take effect on the
-      // NEXT request instead of waiting out TTL.SESSION_AUTH.
       this.guarded(`session-auth:${userId}`, () =>
         this.redis.delByPattern(`${this.keys.prefix}user:${userId}:session:*:auth`),
       ),
     ]);
   }
-
-  // ═══════════════════════════════════════════
-  // REPORTS
-  // ═══════════════════════════════════════════
 
   getReportStatus<T>(reportId: string) {
     return this.read<T>(this.keys.reportStatus(reportId));
@@ -856,10 +777,6 @@ export class CacheService implements OnModuleDestroy {
   invalidateMyReports(userId: string) {
     return this.bumpScope(this.keys.scopes.userReports(userId));
   }
-
-  // ═══════════════════════════════════════════
-  // POSTS
-  // ═══════════════════════════════════════════
 
   getPost<T>(postId: string) {
     return this.read<T>(this.keys.post(postId));
@@ -940,10 +857,6 @@ export class CacheService implements OnModuleDestroy {
     return this.delKeys('pending-posts-count', this.keys.pendingPostsCount());
   }
 
-  // ═══════════════════════════════════════════
-  // MISSING PERSONS
-  // ═══════════════════════════════════════════
-
   getMissingPerson<T>(id: string) {
     return this.read<T>(this.keys.missingPerson(id));
   }
@@ -1013,11 +926,6 @@ export class CacheService implements OnModuleDestroy {
     ]);
   }
 
-  // ───────────────────────────────────────────
-  // INFORMATION SUBMISSION
-  // Lists are scoped per missing-person case, not global.
-  // ───────────────────────────────────────────
-
   wrapInformationSubmissionList<T>(
     missingPersonId: string,
     query: Record<string, unknown>,
@@ -1039,10 +947,6 @@ export class CacheService implements OnModuleDestroy {
   invalidateInformationSubmissionList(missingPersonId: string) {
     return this.bumpScope(this.keys.scopes.informationSubmission(missingPersonId));
   }
-
-  // ═══════════════════════════════════════════
-  // VICTIM PROFILES
-  // ═══════════════════════════════════════════
 
   getVictimProfile<T>(id: string) {
     return this.read<T>(this.keys.victimProfile(id));
@@ -1115,10 +1019,6 @@ export class CacheService implements OnModuleDestroy {
     ]);
   }
 
-  // ═══════════════════════════════════════════
-  // NOTIFICATIONS
-  // ═══════════════════════════════════════════
-
   getNotifications<T>(userId: string, page = 1) {
     return this.getScoped<T>(this.keys.scopes.userNotifications(userId), (v) =>
       this.keys.notifications(userId, v, page),
@@ -1164,10 +1064,6 @@ export class CacheService implements OnModuleDestroy {
     return this.delKeys(`unread:${userId}`, this.keys.unreadNotificationCount(userId));
   }
 
-  // ═══════════════════════════════════════════
-  // TAXONOMIES
-  // ═══════════════════════════════════════════
-
   getIncidentCategories<T>() {
     return this.read<T>(this.keys.incidentCategories());
   }
@@ -1191,10 +1087,6 @@ export class CacheService implements OnModuleDestroy {
   invalidateSupportCategories() {
     return this.delKeys('support-categories', this.keys.supportCategories());
   }
-
-  // ═══════════════════════════════════════════
-  // STATS (heavy aggregate queries)
-  // ═══════════════════════════════════════════
 
   /**
    * Generic cached stats, e.g. wrapStats('post-admin', () => this.getStatsUncached()).

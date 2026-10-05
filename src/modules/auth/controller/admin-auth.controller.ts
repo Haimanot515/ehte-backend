@@ -126,11 +126,6 @@ export class AdminAuthController {
     return this.adminAuthService.adminChangeEmailVerify(data);
   }
 
-  // ADMIN — CHANGE PASSWORD (STEP 1): authenticated admin verifies their current password;
-  // an OTP is then emailed to their own address. Dedicated admin-only endpoint — the
-  // shared /auth/change-password endpoint now rejects admin-role accounts and points
-  // them here instead (see AuthService.changePassword()).
-
   @Throttle({ default: { limit: 5, ttl: 60000 } })
   @Post('change-password/initiate')
   @ApiBearerAuth('access-token')
@@ -362,7 +357,10 @@ export class AdminAuthController {
   @Roles(RolesEnum.SUPER_ADMIN, RolesEnum.ADMIN)
   @ApiParam({ name: 'sessionId', type: 'string' })
   @ApiOperation({ summary: 'Revoke one of my admin sessions' })
-  async revokeMySession(@CurrentUser() user: CurrentUserDto, @Param('sessionId') sessionId: string) {
+  async revokeMySession(
+    @CurrentUser() user: CurrentUserDto,
+    @Param('sessionId') sessionId: string,
+  ) {
     return this.adminAuthService.revokeMySession(user, sessionId);
   }
 

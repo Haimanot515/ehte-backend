@@ -1,13 +1,3 @@
-// src/services/chapa/chapa.service.ts
-//
-// Ehte version. Differences from the Pitron Entertainment service:
-//   - base URL via ConfigService (with default), no process.env reads
-//   - safe webhook signature check (no RangeError on bad header)
-//   - exact Decimal amount match, no float tolerance
-//   - opaque tx_ref (no user/profile ids ever reach Chapa)
-//   - no PII in logs
-//   - transfer() for payouts
-
 import {
   BadRequestException,
   Injectable,
@@ -66,15 +56,8 @@ export class ChapaService {
   private readonly webhookSecret: string;
   private readonly baseUrl: string;
 
-  // Single source of truth for the settlement currency. Was hardcoded as
-  // 'ETB' independently in initialize() and transfer() — now read once here
-  // from the same SUPPORT_CURRENCY config the rest of billing uses, so the
-  // two call sites can't drift out of sync with each other again.
   private readonly currency: string;
 
-  // Request timeout, checkout title/description length caps. Were literals
-  // (15_000 / 16 / 50) inline at each call site; now config-driven so they
-  // can be tuned per environment without a code change.
   private readonly requestTimeoutMs: number;
   private readonly titleMaxLength: number;
   private readonly descriptionMaxLength: number;
@@ -198,13 +181,6 @@ export class ChapaService {
     const received = Buffer.from(signature, 'hex');
     return received.length === expected.length && crypto.timingSafeEqual(received, expected);
   }
-
-  // ── Payouts ───────────────────────────────────────────────────────────────
-  // Chapa transfers may sit in a validation/approval step before they are
-  // queued, so a successful call means "accepted", not "paid". Not safe to
-  // retry blindly on failure — confirm with Chapa's docs whether a repeated
-  // call with the same `reference` is rejected as a duplicate before adding
-  // any automatic retry logic around this method.
 
   async transfer(input: ChapaTransferInput): Promise<void> {
     await this.request('POST', '/transfers', {

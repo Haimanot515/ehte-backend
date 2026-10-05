@@ -1,6 +1,3 @@
-// src/modules/billing/service/billing-admin.helpers.ts
-//
-// Small helpers shared by the new billing admin services.
 import { BadRequestException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 
@@ -80,6 +77,8 @@ export function toCsv(headers: string[], rows: unknown[][]): string {
 }
 
 // Postgres date_trunc unit for a granularity.
-export function truncUnit(granularity: 'day' | 'week' | 'month' | undefined): 'day' | 'week' | 'month' {
+export function truncUnit(
+  granularity: 'day' | 'week' | 'month' | undefined,
+): 'day' | 'week' | 'month' {
   return granularity ?? 'day';
 }

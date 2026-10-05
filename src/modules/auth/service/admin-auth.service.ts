@@ -202,9 +202,6 @@ export class AdminAuthService {
     });
   }
 
-  // GAP FIX #4: was hard-coded to [ADMIN, SUPER_ADMIN], which locked custom roles
-  // (created via POST /roles) out of admin login and every admin password flow.
-  // "Admin" now means "staff": any role other than USER / SYSTEM.
   private hasAdminRole(roles: string[]): boolean {
     return hasStaffRole(roles);
   }
@@ -270,9 +267,6 @@ export class AdminAuthService {
 
     const email = this.normalizeEmailOrThrow(data.email);
 
-    // Any configured role may be granted except USER / SYSTEM (an account with those
-    // would never be able to use the email-based admin login). Existence is checked
-    // against the role table below.
     if (data.roles.some((role) => NON_INVITABLE_ROLE_NAMES.includes(role))) {
       this.emitAudit({
         userId: creator.id,
@@ -1902,10 +1896,6 @@ export class AdminAuthService {
     }
   }
 
-  // ═══════════════════════════════════════════════════════════════════════
-  // NEW (AR-13 … AR-22, AR-24, AR-25, AR-28, AR-78, AR-79). Everything above is unchanged.
-  // ═══════════════════════════════════════════════════════════════════════
-
   private maskEmail(email: string): string {
     const [local, domain] = email.split('@');
     if (!domain) return '***';
@@ -2170,7 +2160,10 @@ export class AdminAuthService {
         renderEmailChangeVerificationHtml({ changeEmailLink, expiresInHours }),
       );
     } catch (error) {
-      console.error(`[EHTE EMAIL] Failed to resend email-change verification to ${admin.email}`, error);
+      console.error(
+        `[EHTE EMAIL] Failed to resend email-change verification to ${admin.email}`,
+        error,
+      );
     }
 
     if (this.configService.get<boolean>('app.debug', false)) {
@@ -2486,8 +2479,11 @@ export class AdminAuthService {
     this.assertSuperAdmin(actor, AuditEventEnum.LOGIN_SUCCESS);
 
     const to = query.to ? new Date(query.to) : new Date();
-    const from = query.from ? new Date(query.from) : new Date(to.getTime() - 30 * 24 * 60 * 60 * 1000);
-    const interval = query.interval === 'week' || query.interval === 'month' ? query.interval : 'day';
+    const from = query.from
+      ? new Date(query.from)
+      : new Date(to.getTime() - 30 * 24 * 60 * 60 * 1000);
+    const interval =
+      query.interval === 'week' || query.interval === 'month' ? query.interval : 'day';
 
     if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || from > to) {
       throw new BadRequestException('invalid_period');

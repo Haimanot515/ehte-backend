@@ -1,9 +1,3 @@
-// src/modules/billing/controller/payer-billing.controller.ts
-//
-// New user-facing billing routes (BL-01 to BL-09, BL-13 to BL-15).
-// Registered BEFORE PaymentController and FundingController in BillingModule so
-// literal paths like `payments/mine/summary` and `rewards/mine/summary` win over
-// `payments/mine/:id` and `rewards/mine/:claimId`.
 import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
@@ -62,7 +56,8 @@ export class PayerBillingController {
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @ApiOperation({
     summary: 'Start a new checkout for one of my failed or expired payments',
-    description: 'Creates a new payment through the normal checkout flow. The old payment is left as it is.',
+    description:
+      'Creates a new payment through the normal checkout flow. The old payment is left as it is.',
   })
   retry(@CurrentUser() user: CurrentUserDto, @Param('txRef') txRef: string) {
     return this.payer.retry(user, txRef);

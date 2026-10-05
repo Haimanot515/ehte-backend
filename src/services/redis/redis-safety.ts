@@ -1,8 +1,3 @@
-// src/services/redis/redis-safety.ts
-//
-// Startup checks for the Redis connections. Standalone so RedisService and
-// SecurityRedisService only need a one-line call each.
-
 import type Redis from 'ioredis';
 
 export interface RedisConnInfo {

@@ -35,9 +35,6 @@ export class CreatePostDto {
   @IsEnum(PostType)
   type!: PostType;
 
-  // Flags content involving a child, driving the additional-review
-  // gate required by PRD §32. Optional so existing clients that
-  // don't send it keep working (defaults to false in the service).
   @ApiPropertyOptional({
     default: false,
     description: 'Triggers additional child-safety review (PRD §32).',
@@ -73,9 +70,6 @@ export class CreatePostDto {
   @IsString({ each: true })
   audio?: string[];
 
-  // NOTE: MEDIA_ALLOWED_MIME_TYPES must include application/pdf for
-  // this field to be usable — PostService.validateMediaFilesExist()
-  // rejects any attached object whose content-type isn't on that list.
   @ApiPropertyOptional({
     type: [String],
     description: 'MinIO filepaths returned by POST /media/upload-url',
@@ -105,16 +99,6 @@ export class CreatePostDto {
   @IsString({ each: true })
   other?: string[];
 
-  // ─────────────────────────────────────────
-  // RE-AUTHENTICATION
-  //
-  // Verified and stripped by ReauthGuard before this DTO's data
-  // reaches PostService.create() — never persisted or returned.
-  // Optional here since it can instead be supplied via the
-  // X-Reauth-Credential header; the guard accepts either.
-  // Only relevant on POST /posts (create), which is the only
-  // CreatePostDto-based endpoint gated by @RequireReauthentication().
-  // ─────────────────────────────────────────
   @ApiPropertyOptional({
     description:
       'Account password (or Discreet Mode passcode, if enabled) confirming this sensitive action. Optional here if provided instead via the X-Reauth-Credential header.',
@@ -124,12 +108,6 @@ export class CreatePostDto {
   @IsString()
   credential?: string;
 }
-
-// ─────────────────────────────────────────────
-// Owner edit, PATCH /posts/me/:id.
-// Allowed only while DRAFT or CHANGES_REQUESTED
-// (enforced in PostService, not here).
-// ─────────────────────────────────────────────
 
 export class UpdatePostDto {
   @ApiPropertyOptional({ maxLength: 200 })
@@ -209,33 +187,12 @@ export class UpdatePostDto {
   other?: string[];
 }
 
-// ─────────────────────────────────────────────
-// Admin "Request changes", PRD §24.
-// PATCH /posts/:id/request-changes
-// ─────────────────────────────────────────────
-
 export class RequestPostChangesDto {
   @ApiProperty({ minLength: 3, example: 'Please blur the second photo before resubmitting.' })
   @IsString()
   @MinLength(3)
   message!: string;
 }
-
-// ─────────────────────────────────────────────
-// Admin approve body. childSafetyConfirmed is
-// required (enforced in PostService.approve)
-// whenever the post has involvesChild = true.
-//
-// NOTE (dual-control fix, item #10): a single true
-// here is no longer sufficient on its own to approve
-// a child-involving post. The FIRST admin to send
-// childSafetyConfirmed=true only records their own
-// confirmation (childSafetyFirstConfirmedByUserId);
-// the post only actually moves to APPROVED once a
-// SECOND, different admin also sends
-// childSafetyConfirmed=true. See
-// PostService.ensureChildSafetySatisfied().
-// ─────────────────────────────────────────────
 
 export class ApprovePostDto {
   @ApiPropertyOptional({
@@ -247,10 +204,6 @@ export class ApprovePostDto {
   childSafetyConfirmed?: boolean;
 }
 
-// ─────────────────────────────────────────────
-// Admin reject body, PRD §24 + §40 (Transparency).
-// ─────────────────────────────────────────────
-
 export class RejectPostDto {
   @ApiProperty({ minLength: 3, example: 'Content does not comply with platform guidelines.' })
   @IsString()
@@ -258,27 +211,7 @@ export class RejectPostDto {
   reason!: string;
 }
 
-// ─────────────────────────────────────────────
-// Admin "official Post" creation, PRD §13.
-// Mirrors ApprovePostDto: when involvesChild is true
-// AND publishImmediately is true (the straight-to-
-// APPROVED path), childSafetyConfirmed must be
-// explicitly true. Enforced in PostService.createOfficial.
-//
-// NOTE: the dual-control rule (#10) is NOT re-applied
-// here on purpose — createOfficial is already gated
-// behind PermissionsEnum.POST_CREATE_OFFICIAL, a
-// higher-trust action than the normal review queue.
-// If you want dual-control here too, route
-// publishImmediately+involvesChild posts through the
-// normal PENDING → approve() path instead.
-// ─────────────────────────────────────────────
-
 export class AdminCreatePostDto extends CreatePostDto {
-  // If true (default), the post is created directly as APPROVED,
-  // ready for an explicit /publish call. If false, it is created
-  // as PENDING and goes through the normal approve/reject/
-  // request-changes flow like a user post.
   @ApiPropertyOptional({
     default: true,
     description:
@@ -288,9 +221,6 @@ export class AdminCreatePostDto extends CreatePostDto {
   @IsBoolean()
   publishImmediately?: boolean;
 
-  // Required when involvesChild is true AND publishImmediately
-  // is true. Not required on the PENDING path, since that path
-  // still goes through approve()'s own gate later.
   @ApiPropertyOptional({
     description:
       'Required (must be true) when involvesChild is true and publishImmediately is true.',
@@ -299,15 +229,6 @@ export class AdminCreatePostDto extends CreatePostDto {
   @IsBoolean()
   childSafetyConfirmed?: boolean;
 }
-
-// ─────────────────────────────────────────────
-// Admin list filters/pagination for GET /posts,
-// matching AdminReportQueryDto's shape.
-//
-// involvesChild uses a string-aware @Transform
-// (the naive @Type(() => Boolean) would turn the
-// string "false" into `true` via JS's Boolean()).
-// ─────────────────────────────────────────────
 
 export class AdminPostQueryDto {
   @ApiPropertyOptional({ enum: PostStatus })
@@ -347,11 +268,6 @@ export class AdminPostQueryDto {
   limit?: number = 20;
 }
 
-// ─────────────────────────────────────────────
-// Pagination for GET /posts/published. PRD §30
-// (Low Bandwidth Requirements).
-// ─────────────────────────────────────────────
-
 export class PublishedPostsQueryDto {
   @ApiPropertyOptional({ enum: PostType })
   @IsOptional()
@@ -374,22 +290,11 @@ export class PublishedPostsQueryDto {
   limit?: number = 20;
 }
 
-// ─────────────────────────────────────────────
-// PATCH /posts/:id/status body. Routed through a
-// real DTO with @IsEnum so no unvalidated string
-// reaches Prisma.
-// ─────────────────────────────────────────────
-
 export class UpdatePostStatusDto {
   @ApiProperty({ enum: PostStatus })
   @IsEnum(PostStatus)
   status!: PostStatus;
 
-  // Required whenever the target status is APPROVED or
-  // PUBLISHED and the post has involvesChild = true. Closes
-  // the bypass where this generic endpoint could skip
-  // approve()'s child-safety gate entirely. Same dual-control
-  // rule as ApprovePostDto applies (#10).
   @ApiPropertyOptional({
     description:
       'Required (must be true) when moving an involvesChild post to APPROVED or PUBLISHED. Two DIFFERENT admins must each send true.',
@@ -398,14 +303,6 @@ export class UpdatePostStatusDto {
   @IsBoolean()
   childSafetyConfirmed?: boolean;
 }
-
-// ─────────────────────────────────────────────
-// Bulk admin actions (item #8).
-// Low-risk posts only: any id whose post has
-// involvesChild = true is skipped and reported back
-// as requiring individual review, never silently
-// bulk-approved.
-// ─────────────────────────────────────────────
 
 export class BulkPostIdsDto {
   @ApiProperty({ type: [String], description: 'Post ids to act on in one request.' })
@@ -421,15 +318,6 @@ export class BulkRejectPostDto extends BulkPostIdsDto {
   @MinLength(3)
   reason!: string;
 }
-
-// ═════════════════════════════════════════════
-// NEW DTOs for the added post routes
-// ═════════════════════════════════════════════
-
-// ─────────────────────────────────────────────
-// Shared pagination for the new admin list routes.
-// Same defaults as AdminPostQueryDto (page 1, limit 20).
-// ─────────────────────────────────────────────
 
 export class PostPageQueryDto {
   @ApiPropertyOptional({ default: 1, minimum: 1 })
@@ -448,10 +336,6 @@ export class PostPageQueryDto {
   limit?: number = 20;
 }
 
-// ─────────────────────────────────────────────
-// GET /posts/unread. Read state is stored per admin.
-// ─────────────────────────────────────────────
-
 export class UnreadPostsQueryDto extends PostPageQueryDto {
   @ApiPropertyOptional({ enum: PostStatus })
   @IsOptional()
@@ -463,10 +347,6 @@ export class UnreadPostsQueryDto extends PostPageQueryDto {
   @IsEnum(PostType)
   type?: PostType;
 }
-
-// ─────────────────────────────────────────────
-// GET /posts/by-author: one row per author.
-// ─────────────────────────────────────────────
 
 export class PostAuthorRollupQueryDto extends PostPageQueryDto {
   @ApiPropertyOptional({ enum: ['totalPosts', 'lastPostAt', 'pending'] })
@@ -480,10 +360,6 @@ export class PostAuthorRollupQueryDto extends PostPageQueryDto {
   order?: 'asc' | 'desc';
 }
 
-// ─────────────────────────────────────────────
-// GET /posts/by-author/:authorId: all posts of one author.
-// ─────────────────────────────────────────────
-
 export class PostsByAuthorQueryDto extends PostPageQueryDto {
   @ApiPropertyOptional({ enum: PostStatus })
   @IsOptional()
@@ -495,10 +371,6 @@ export class PostsByAuthorQueryDto extends PostPageQueryDto {
   @IsEnum(PostType)
   type?: PostType;
 }
-
-// ─────────────────────────────────────────────
-// GET /posts/flags and GET /posts/appeals.
-// ─────────────────────────────────────────────
 
 export class FlaggedPostsQueryDto extends PostPageQueryDto {
   @ApiPropertyOptional({ enum: ['OPEN', 'DISMISSED', 'ACTIONED'], default: 'OPEN' })
@@ -513,10 +385,6 @@ export class PostAppealsQueryDto extends PostPageQueryDto {
   @IsIn(['OPEN', 'UPHELD', 'OVERTURNED'])
   appealStatus?: 'OPEN' | 'UPHELD' | 'OVERTURNED';
 }
-
-// ─────────────────────────────────────────────
-// GET /posts/stats/timeline: totals over time.
-// ─────────────────────────────────────────────
 
 export class PostTimelineQueryDto {
   @ApiProperty({ example: '2026-09-01T00:00:00.000Z' })
@@ -548,12 +416,6 @@ export class PostTimelineQueryDto {
   authorId?: string;
 }
 
-// ─────────────────────────────────────────────
-// Owner appeal, POST /posts/me/:id/appeal.
-// Only for REJECTED or taken-down posts, one open
-// appeal at a time (enforced in PostService).
-// ─────────────────────────────────────────────
-
 export class AppealPostDto {
   @ApiProperty({
     minLength: 20,
@@ -565,12 +427,6 @@ export class AppealPostDto {
   @MaxLength(2000)
   message!: string;
 }
-
-// ─────────────────────────────────────────────
-// User flag, POST /posts/:id/flag.
-// One flag per user per post; flagging your own
-// post is refused (enforced in PostService).
-// ─────────────────────────────────────────────
 
 export class FlagPostDto {
   @ApiProperty({
@@ -586,10 +442,6 @@ export class FlagPostDto {
   details?: string;
 }
 
-// ─────────────────────────────────────────────
-// Admin flag resolution, PATCH /posts/:id/flags/resolve.
-// ─────────────────────────────────────────────
-
 export class ResolvePostFlagsDto {
   @ApiProperty({ enum: ['DISMISSED', 'ACTIONED'] })
   @IsIn(['DISMISSED', 'ACTIONED'])
@@ -601,12 +453,6 @@ export class ResolvePostFlagsDto {
   @MaxLength(1000)
   note?: string;
 }
-
-// ─────────────────────────────────────────────
-// Admin takedown, PATCH /posts/:id/takedown.
-// Unlike unpublish, the reason is required, is
-// stored on the post and opens the appeal window.
-// ─────────────────────────────────────────────
 
 export class TakedownPostDto {
   @ApiProperty({ minLength: 10, maxLength: 1000, example: 'Shows an identifiable minor.' })
@@ -623,11 +469,6 @@ export class TakedownPostDto {
   @IsBoolean()
   notifyAuthor?: boolean;
 }
-
-// ─────────────────────────────────────────────
-// Admin appeal decision,
-// PATCH /posts/:id/appeals/:appealId/decide.
-// ─────────────────────────────────────────────
 
 export class DecidePostAppealDto {
   @ApiProperty({ enum: ['UPHELD', 'OVERTURNED'] })

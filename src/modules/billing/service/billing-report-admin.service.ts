@@ -1,10 +1,3 @@
-// src/modules/billing/service/billing-report-admin.service.ts
-//
-// Ledger, daily close, liabilities, CSV exports and statistics
-// (BL-77 to BL-82, BL-85 to BL-92). Read-only: nothing here moves money.
-//
-// Not included: BL-83 and BL-84 (background export jobs). The CSV exports below
-// are capped at MAX_EXPORT_ROWS and say so in the response headers.
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { AuditSeverity, PaymentStatus, Prisma } from '@prisma/client';
 
@@ -49,10 +42,6 @@ export class BillingReportAdminService {
     private readonly events: BillingEventsService,
   ) {}
 
-  // ═════════════════════════════════════════════
-  // SUMMARY AND LEDGER
-  // ═════════════════════════════════════════════
-
   // BL-77
   async summary(q: DateRangeDto) {
     const { from, to } = resolveRange(q.from, q.to);
@@ -93,7 +82,11 @@ export class BillingReportAdminService {
     return {
       range: { from, to },
       collected: { count: collected._count._all, amount: money(collected._sum.amount) },
-      byType: byType.map((t) => ({ type: t.type, count: t._count._all, amount: money(t._sum.amount) })),
+      byType: byType.map((t) => ({
+        type: t.type,
+        count: t._count._all,
+        amount: money(t._sum.amount),
+      })),
       gatewayFees: money(fees._sum.chapaFee),
       allocated: money(allocated._sum.amount),
       refunded: { count: refunds._count._all, amount: money(refunds._sum.refundAmount) },
@@ -292,7 +285,13 @@ export class BillingReportAdminService {
 
     const groups = new Map<
       string,
-      { partyType: string; institutionId: string | null; institutionName: string | null; owed: Prisma.Decimal; count: number }
+      {
+        partyType: string;
+        institutionId: string | null;
+        institutionName: string | null;
+        owed: Prisma.Decimal;
+        count: number;
+      }
     >();
 
     for (const r of rows) {
@@ -323,10 +322,6 @@ export class BillingReportAdminService {
       items,
     };
   }
-
-  // ═════════════════════════════════════════════
-  // CSV EXPORTS (audited)
-  // ═════════════════════════════════════════════
 
   // BL-81
   async exportPayments(adminId: string, q: BillingExportQueryDto) {
@@ -364,18 +359,43 @@ export class BillingReportAdminService {
     // Payer identity is not part of this export.
     const csv = toCsv(
       [
-        'id', 'txRef', 'type', 'status', 'amount', 'currency', 'gatewayFee',
-        'refundStatus', 'refundAmount', 'victimProfileId', 'missingPersonId', 'paidAt', 'createdAt',
+        'id',
+        'txRef',
+        'type',
+        'status',
+        'amount',
+        'currency',
+        'gatewayFee',
+        'refundStatus',
+        'refundAmount',
+        'victimProfileId',
+        'missingPersonId',
+        'paidAt',
+        'createdAt',
       ],
       data.map((r) => [
-        r.id, r.txRef, r.type, r.status, money(r.amount), r.currency,
-        r.chapaFee ? money(r.chapaFee) : '', r.refundStatus ?? '',
-        r.refundAmount ? money(r.refundAmount) : '', r.victimProfileId ?? '',
-        r.missingPersonId ?? '', r.paidAt ?? '', r.createdAt,
+        r.id,
+        r.txRef,
+        r.type,
+        r.status,
+        money(r.amount),
+        r.currency,
+        r.chapaFee ? money(r.chapaFee) : '',
+        r.refundStatus ?? '',
+        r.refundAmount ? money(r.refundAmount) : '',
+        r.victimProfileId ?? '',
+        r.missingPersonId ?? '',
+        r.paidAt ?? '',
+        r.createdAt,
       ]),
     );
 
-    await this.auditExport(adminId, 'payments', data.length, truncated, { from, to, status: q.status, type: q.type });
+    await this.auditExport(adminId, 'payments', data.length, truncated, {
+      from,
+      to,
+      status: q.status,
+      type: q.type,
+    });
     return { csv, rowCount: data.length, truncated };
   }
 
@@ -415,18 +435,43 @@ export class BillingReportAdminService {
     // Destination account numbers are never exported.
     const csv = toCsv(
       [
-        'id', 'reference', 'externalReference', 'status', 'method', 'amount', 'currency',
-        'allocationId', 'rewardClaimId', 'createdBy', 'approvedBy', 'executedBy', 'executedAt', 'createdAt',
+        'id',
+        'reference',
+        'externalReference',
+        'status',
+        'method',
+        'amount',
+        'currency',
+        'allocationId',
+        'rewardClaimId',
+        'createdBy',
+        'approvedBy',
+        'executedBy',
+        'executedAt',
+        'createdAt',
       ],
       data.map((r) => [
-        r.id, r.reference, r.externalReference ?? '', r.status, r.method, money(r.amount), r.currency,
-        r.allocationId, r.rewardClaimId ?? '', r.createdById, r.approvedById ?? '',
-        r.executedById ?? '', r.executedAt ?? '', r.createdAt,
+        r.id,
+        r.reference,
+        r.externalReference ?? '',
+        r.status,
+        r.method,
+        money(r.amount),
+        r.currency,
+        r.allocationId,
+        r.rewardClaimId ?? '',
+        r.createdById,
+        r.approvedById ?? '',
+        r.executedById ?? '',
+        r.executedAt ?? '',
+        r.createdAt,
       ]),
     );
 
     await this.auditExport(adminId, 'disbursements', data.length, truncated, {
-      from, to, status: q.disbursementStatus,
+      from,
+      to,
+      status: q.disbursementStatus,
     });
     return { csv, rowCount: data.length, truncated };
   }
@@ -447,10 +492,6 @@ export class BillingReportAdminService {
       metadata: { rowCount, truncated, filter },
     });
   }
-
-  // ═════════════════════════════════════════════
-  // STATISTICS
-  // ═════════════════════════════════════════════
 
   private paymentFilterSql(q: BillingStatsQueryDto): Prisma.Sql {
     const parts: Prisma.Sql[] = [];
@@ -554,7 +595,10 @@ export class BillingReportAdminService {
       `),
     ]);
 
-    const buckets = new Map<number, { bucket: Date; gatewayFees: Prisma.Decimal; platformShare: Prisma.Decimal }>();
+    const buckets = new Map<
+      number,
+      { bucket: Date; gatewayFees: Prisma.Decimal; platformShare: Prisma.Decimal }
+    >();
     const slot = (d: Date) => {
       const key = d.getTime();
       const existing = buckets.get(key);
@@ -618,7 +662,9 @@ export class BillingReportAdminService {
     const unit = truncUnit(q.granularity);
 
     const [points, byType, queue] = await Promise.all([
-      this.prisma.$queryRaw<Array<{ bucket: Date; count: number; amount: Prisma.Decimal }>>(Prisma.sql`
+      this.prisma.$queryRaw<
+        Array<{ bucket: Date; count: number; amount: Prisma.Decimal }>
+      >(Prisma.sql`
         SELECT date_trunc(${unit}, p."refundedAt") AS bucket,
                COUNT(*)::int AS count,
                COALESCE(SUM(p."refundAmount"), 0) AS amount
@@ -642,7 +688,11 @@ export class BillingReportAdminService {
       granularity: unit,
       awaitingExecution: queue,
       points: points.map((p) => ({ bucket: p.bucket, count: p.count, amount: money(p.amount) })),
-      byType: byType.map((t) => ({ type: t.type, count: t._count._all, amount: money(t._sum.refundAmount) })),
+      byType: byType.map((t) => ({
+        type: t.type,
+        count: t._count._all,
+        amount: money(t._sum.refundAmount),
+      })),
     };
   }
 
@@ -651,7 +701,13 @@ export class BillingReportAdminService {
     const { from, to } = resolveRange(q.from, q.to);
 
     const [row] = await this.prisma.$queryRaw<
-      Array<{ count: number; avg_h: number | null; p50_h: number | null; p90_h: number | null; max_h: number | null }>
+      Array<{
+        count: number;
+        avg_h: number | null;
+        p50_h: number | null;
+        p90_h: number | null;
+        max_h: number | null;
+      }>
     >(Prisma.sql`
       SELECT COUNT(*)::int AS count,
              AVG(EXTRACT(EPOCH FROM (d."executedAt" - p."paidAt")) / 3600) AS avg_h,
@@ -728,27 +784,37 @@ export class BillingReportAdminService {
     const dayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
     const monthStart = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
 
-    const [today, month, review, disputes, refundsOpen, payoutsWaiting, payoutsFailed, claimsOpen, appealsOpen, held] =
-      await Promise.all([
-        this.prisma.payment.aggregate({
-          where: { status: { in: ['PAID', 'REFUNDED'] }, paidAt: { gte: dayStart } },
-          _sum: { amount: true },
-          _count: { _all: true },
-        }),
-        this.prisma.payment.aggregate({
-          where: { status: { in: ['PAID', 'REFUNDED'] }, paidAt: { gte: monthStart } },
-          _sum: { amount: true },
-          _count: { _all: true },
-        }),
-        this.prisma.payment.count({ where: { status: PaymentStatus.REVIEW_REQUIRED } }),
-        this.prisma.paymentDispute.count({ where: { status: 'OPEN' } }),
-        this.prisma.payment.count({ where: { refundStatus: 'REQUESTED' } }),
-        this.prisma.disbursement.count({ where: { status: 'PENDING_APPROVAL' } }),
-        this.prisma.disbursement.count({ where: { status: 'FAILED' } }),
-        this.prisma.rewardClaim.count({ where: { status: { in: ['SUBMITTED', 'UNDER_REVIEW'] } } }),
-        this.prisma.rewardClaimAppeal.count({ where: { status: 'OPEN' } }),
-        this.prisma.payment.count({ where: { heldAt: { not: null } } }),
-      ]);
+    const [
+      today,
+      month,
+      review,
+      disputes,
+      refundsOpen,
+      payoutsWaiting,
+      payoutsFailed,
+      claimsOpen,
+      appealsOpen,
+      held,
+    ] = await Promise.all([
+      this.prisma.payment.aggregate({
+        where: { status: { in: ['PAID', 'REFUNDED'] }, paidAt: { gte: dayStart } },
+        _sum: { amount: true },
+        _count: { _all: true },
+      }),
+      this.prisma.payment.aggregate({
+        where: { status: { in: ['PAID', 'REFUNDED'] }, paidAt: { gte: monthStart } },
+        _sum: { amount: true },
+        _count: { _all: true },
+      }),
+      this.prisma.payment.count({ where: { status: PaymentStatus.REVIEW_REQUIRED } }),
+      this.prisma.paymentDispute.count({ where: { status: 'OPEN' } }),
+      this.prisma.payment.count({ where: { refundStatus: 'REQUESTED' } }),
+      this.prisma.disbursement.count({ where: { status: 'PENDING_APPROVAL' } }),
+      this.prisma.disbursement.count({ where: { status: 'FAILED' } }),
+      this.prisma.rewardClaim.count({ where: { status: { in: ['SUBMITTED', 'UNDER_REVIEW'] } } }),
+      this.prisma.rewardClaimAppeal.count({ where: { status: 'OPEN' } }),
+      this.prisma.payment.count({ where: { heldAt: { not: null } } }),
+    ]);
 
     return {
       today: { count: today._count._all, amount: money(today._sum.amount) },

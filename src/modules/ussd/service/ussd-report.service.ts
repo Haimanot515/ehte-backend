@@ -7,10 +7,6 @@ import { AuditEventEnum } from 'src/common/enums/shared/audit-events.enum';
 import { AuditEventPayload } from 'src/modules/misc/events/audit.events';
 import { NotificationEventEnum } from 'src/common/enums/shared/notification-events.enum';
 
-// How many times to retry case-reference generation on a unique
-// constraint collision before giving up. Mirrors ReportService's
-// own retry count — kept as a separate constant deliberately, since
-// this file has no dependency on ReportService at all.
 const CASE_REFERENCE_MAX_ATTEMPTS = 5;
 
 export interface CreateAnonymousReportInput {
@@ -23,29 +19,6 @@ export interface PublicReportStatus {
   status: ReportStatus;
 }
 
-// ─────────────────────────────────────────────
-// USSD-ONLY REPORT SERVICE
-//
-// Deliberately independent of the core ReportService: no shared
-// imports, no shared methods. The USSD module must not call into
-// the authenticated/core services (see conversation — USSD stays
-// decoupled from the "normal" application). If both services need
-// to change in the same way later (e.g. case-reference format),
-// that's a signal to extract a genuinely shared lower-level helper
-// — not to have one call the other.
-//
-// Scope, deliberately NOT included here (deferred per product
-// decision):
-//   - Idempotency/dedup on retried USSD writes. userId is always
-//     null for these rows, so ReportService's own
-//     (userId, idempotencyKey) unique constraint can never catch a
-//     duplicate here (Postgres NULL <> NULL). A real fix needs a
-//     ussdSessionId-keyed constraint — schema work, deferred.
-//   - Per-caller rate limiting / max-pending caps. USSD is reached
-//     only via the telco/aggregator's session gateway, which
-//     already throttles at the session layer.
-//   - Media attachments. USSD has no way to attach files.
-// ─────────────────────────────────────────────
 @Injectable()
 export class UssdReportService {
   constructor(
@@ -66,13 +39,6 @@ export class UssdReportService {
   async createAnonymous(input: CreateAnonymousReportInput): Promise<Report> {
     const report = await this.createWithUniqueCaseReference(input);
 
-    // ASSUMPTION: actorType has no real ANONYMOUS variant yet, same
-    // gap flagged in ReportService/MissingPersonService's own
-    // 'SYSTEM' casts. Using the same cast here for consistency
-    // rather than inventing a third ad-hoc value — but this really
-    // is a distinct case (an anonymous human caller, not a system-
-    // triggered event) and is worth a real ANONYMOUS enum variant
-    // whenever that enum is next touched.
     this.emitAudit({
       actorType: 'SYSTEM',
       action: AuditEventEnum.REPORT_CREATED,
@@ -83,11 +49,6 @@ export class UssdReportService {
       metadata: { category: report.category, channel: SubmissionChannel.USSD },
     });
 
-    // ASSUMPTION: NEW_REPORT is the correct listener key for the
-    // admin-facing "new report" notification — mirrors ReportService
-    // .create(). REPORT_RECEIVED (the reporter-facing "your report
-    // was received" notification) is deliberately NOT emitted here:
-    // there is no user account to notify.
     this.eventEmitter.emit(NotificationEventEnum.NEW_REPORT, {
       reportId: report.id,
       caseReference: report.caseReference,
@@ -115,9 +76,6 @@ export class UssdReportService {
     return report ?? null;
   }
 
-  // Mirrors ReportService.createReportWithUniqueCaseReference, minus
-  // the idempotencyKey race-handling branch (not applicable here —
-  // see the class-level note on deferred idempotency work).
   private async createWithUniqueCaseReference(input: CreateAnonymousReportInput): Promise<Report> {
     for (let attempt = 1; attempt <= CASE_REFERENCE_MAX_ATTEMPTS; attempt++) {
       try {

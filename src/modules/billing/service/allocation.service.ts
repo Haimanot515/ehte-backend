@@ -1,20 +1,3 @@
-// src/modules/billing/services/allocation.service.ts
-//
-// Produces the exact breakdown shown to the payer BEFORE paying.
-// The same object is stored on Payment.allocationSnapshot, so what was shown
-// is what is recorded, even if the agreement changes later.
-//
-// PRD alignment (Sep 2026): three financial directions share this same
-// rule-lookup + snapshot machinery (section 33) — Victim Profile support
-// (SUPPORT), Missing Person Reward (MISSING_PERSON_REWARD), and the two
-// posting/promotion fee flows (*_POSTING_FEE). Support and posting fees use
-// RECIPIENT / PLATFORM respectively as their "whatever the rules don't
-// claim" remainder party; reward funding uses REWARD_BENEFICIARY as the
-// remainder, representing the informant pool that RewardService later
-// splits across approved claims (section 12-14) — institution/platform
-// shares now come from the agreement's MISSING_PERSON_REWARD rules instead
-// of the reward being 100% beneficiary as before.
-
 import { BadRequestException, Injectable } from '@nestjs/common';
 import * as crypto from 'crypto';
 import { PartyType, PaymentType, Prisma, SupportAgreementType } from '@prisma/client';
@@ -93,7 +76,10 @@ export class AllocationService {
       );
     }
 
-    const agreement = await this.resolveActiveAgreement(mp.agreementId, PaymentType.MISSING_PERSON_REWARD);
+    const agreement = await this.resolveActiveAgreement(
+      mp.agreementId,
+      PaymentType.MISSING_PERSON_REWARD,
+    );
     if (!agreement || agreement.rules.length === 0) {
       return this.build(
         PaymentType.MISSING_PERSON_REWARD,

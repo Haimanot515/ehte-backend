@@ -10,10 +10,6 @@ type TokenPair = {
   refreshToken: string;
 };
 
-// Extracted from AuthService: JWT issuing + opaque-token (refresh/registration/
-// promotion/email-change) hashing, used across login, refresh, registration,
-// promotion, and email-change flows.
-
 @Injectable()
 export class TokenUtil {
   constructor(
@@ -46,13 +42,6 @@ export class TokenUtil {
 
     const expiresIn = expiresInStr as any;
 
-    // Generated up front so the same id can be embedded in both tokens (as
-    // `sid`) AND used as the Session row's own primary key below — one
-    // create, no separate update to attach it after the fact. Assumes
-    // Session.id is a plain string PK (e.g. `id String @id @default(uuid())`);
-    // @default() only applies when the field is omitted, so passing it
-    // explicitly here is safe. Confirm against schema.prisma if Session.id
-    // isn't a string uuid.
     const sessionId = randomUUID();
 
     const accessToken = this.jwtService.sign(

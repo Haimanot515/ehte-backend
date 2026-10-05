@@ -1,8 +1,3 @@
-// src/modules/billing/controller/institution-admin.controller.ts
-//
-// Institutions, agreements and payout destinations (BL-37 to BL-55).
-// Registered BEFORE AgreementController so `agreements/expiring` is not read as
-// `agreements/:id`. Creating, activating and retiring stay in AgreementController.
 import { Body, Controller, Get, Param, Patch, Post, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 
@@ -48,7 +43,9 @@ export class InstitutionAdminController {
   // BL-38
   @Get('institutions/:id')
   @RequirePermissions(P.INSTITUTIONS_MANAGE)
-  @ApiOperation({ summary: 'Admin: one institution with agreements and masked payout destinations' })
+  @ApiOperation({
+    summary: 'Admin: one institution with agreements and masked payout destinations',
+  })
   get(@Param('id') id: string) {
     return this.svc.getInstitution(id);
   }
@@ -71,7 +68,11 @@ export class InstitutionAdminController {
   @RequirePermissions(P.INSTITUTIONS_MANAGE)
   @RequireReauthentication()
   @ApiOperation({ summary: 'Super admin: suspend an institution without deleting history' })
-  deactivate(@CurrentUser() admin: CurrentUserDto, @Param('id') id: string, @Body() body: ReasonBodyDto) {
+  deactivate(
+    @CurrentUser() admin: CurrentUserDto,
+    @Param('id') id: string,
+    @Body() body: ReasonBodyDto,
+  ) {
     return this.svc.deactivate(admin.id, id, body.reason);
   }
 
@@ -81,7 +82,11 @@ export class InstitutionAdminController {
   @RequirePermissions(P.INSTITUTIONS_MANAGE)
   @RequireReauthentication()
   @ApiOperation({ summary: 'Super admin: bring a suspended institution back' })
-  reactivate(@CurrentUser() admin: CurrentUserDto, @Param('id') id: string, @Body() body: ReasonBodyDto) {
+  reactivate(
+    @CurrentUser() admin: CurrentUserDto,
+    @Param('id') id: string,
+    @Body() body: ReasonBodyDto,
+  ) {
     return this.svc.reactivate(admin.id, id, body.reason);
   }
 
@@ -217,7 +222,11 @@ export class InstitutionAdminController {
   @RequirePermissions(P.INSTITUTIONS_MANAGE)
   @RequireReauthentication()
   @ApiOperation({ summary: 'Super admin: clear verification, for example after a fraud report' })
-  unverify(@CurrentUser() admin: CurrentUserDto, @Param('id') id: string, @Body() body: ReasonBodyDto) {
+  unverify(
+    @CurrentUser() admin: CurrentUserDto,
+    @Param('id') id: string,
+    @Body() body: ReasonBodyDto,
+  ) {
     return this.svc.unverifyDestination(admin.id, id, body.reason);
   }
 

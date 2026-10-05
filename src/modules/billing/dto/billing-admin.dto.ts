@@ -1,7 +1,3 @@
-// src/modules/billing/dto/billing-admin.dto.ts
-//
-// DTOs for the new billing endpoints (BL-xx). Money amounts are strings with at
-// most two decimals, same convention as dto/payment.dto.ts.
 import { Type } from 'class-transformer';
 import {
   ArrayMaxSize,
@@ -78,7 +74,11 @@ export class ReasonBodyDto {
 // ── Payer ────────────────────────────────────────────────────────────
 
 export class OpenPaymentDisputeDto {
-  @ApiProperty({ minLength: 5, maxLength: 1000, example: 'I was charged twice for the same support.' })
+  @ApiProperty({
+    minLength: 5,
+    maxLength: 1000,
+    example: 'I was charged twice for the same support.',
+  })
   @IsString()
   @MinLength(5)
   @MaxLength(1000)
@@ -86,7 +86,10 @@ export class OpenPaymentDisputeDto {
 }
 
 export class AnnualStatementQueryDto {
-  @ApiPropertyOptional({ example: 2026, description: 'Calendar year. Defaults to the current year.' })
+  @ApiPropertyOptional({
+    example: 2026,
+    description: 'Calendar year. Defaults to the current year.',
+  })
   @IsOptional()
   @Type(() => Number)
   @IsInt()
@@ -118,7 +121,11 @@ export class WebhookEventsQueryDto extends PagingDto {
 }
 
 export class PaymentSearchQueryDto extends PagingDto {
-  @ApiProperty({ minLength: 3, maxLength: 100, description: 'txRef, chapa reference, payment id, payer id or profile id.' })
+  @ApiProperty({
+    minLength: 3,
+    maxLength: 100,
+    description: 'txRef, chapa reference, payment id, payer id or profile id.',
+  })
   @IsString()
   @MinLength(3)
   @MaxLength(100)
@@ -167,7 +174,10 @@ export class RequestRefundDto {
 }
 
 export class RefundListQueryDto extends PagingDto {
-  @ApiPropertyOptional({ enum: ['REQUESTED', 'REJECTED', 'REFUNDED', 'FAILED'], default: 'REQUESTED' })
+  @ApiPropertyOptional({
+    enum: ['REQUESTED', 'REJECTED', 'REFUNDED', 'FAILED'],
+    default: 'REQUESTED',
+  })
   @IsOptional()
   @IsIn(['REQUESTED', 'REJECTED', 'REFUNDED', 'FAILED'])
   status?: string;
@@ -179,7 +189,11 @@ export class RefundListQueryDto extends PagingDto {
 }
 
 export class ExecuteRefundDto {
-  @ApiProperty({ minLength: 3, maxLength: 200, description: 'Bank slip or transfer reference of the manual refund.' })
+  @ApiProperty({
+    minLength: 3,
+    maxLength: 200,
+    description: 'Bank slip or transfer reference of the manual refund.',
+  })
   @IsString()
   @MinLength(3)
   @MaxLength(200)
@@ -233,7 +247,12 @@ export class UpdateInstitutionDto {
 export class StatementQueryDto extends DateRangeDto {}
 
 export class ExpiringAgreementsQueryDto {
-  @ApiPropertyOptional({ default: 30, minimum: 1, maximum: 365, description: 'Days ahead to look.' })
+  @ApiPropertyOptional({
+    default: 30,
+    minimum: 1,
+    maximum: 365,
+    description: 'Days ahead to look.',
+  })
   @IsOptional()
   @Type(() => Number)
   @IsInt()
@@ -352,7 +371,11 @@ export class FailedDisbursementsQueryDto extends PagingDto {
 }
 
 export class MarkDisbursementPaidDto {
-  @ApiProperty({ minLength: 3, maxLength: 200, description: 'Bank slip or transfer reference proving the money left.' })
+  @ApiProperty({
+    minLength: 3,
+    maxLength: 200,
+    description: 'Bank slip or transfer reference proving the money left.',
+  })
   @IsString()
   @MinLength(3)
   @MaxLength(200)
@@ -468,7 +491,10 @@ export class LedgerQueryDto extends PagingDto {
 }
 
 export class DailyCloseQueryDto {
-  @ApiPropertyOptional({ example: '2026-10-03', description: 'Day to close (UTC). Defaults to today.' })
+  @ApiPropertyOptional({
+    example: '2026-10-03',
+    description: 'Day to close (UTC). Defaults to today.',
+  })
   @IsOptional()
   @IsDateString()
   date?: string;

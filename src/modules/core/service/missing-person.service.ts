@@ -95,12 +95,6 @@ const UPDATABLE_FIELD_NAMES = [
 
 type MissingPersonAuditRef = Pick<MissingPerson, 'id' | 'name' | 'personType' | 'userId'>;
 
-// Finished cases: never stale, and only REJECTED counts against a user.
-// ASSUMPTION TO VERIFY: EXPIRED/CANCELLED were added to the MissingPersonStatus
-// enum (schema change not included in this pass) with no other reference to
-// either value anywhere in this file, the controller, or notifications — so
-// there's nothing here to confirm the intended semantics against. Treated as
-// terminal, same bucket as REJECTED/FOUND, until confirmed otherwise.
 const TERMINAL_STATUSES: MissingPersonStatus[] = [
   MissingPersonStatus.REJECTED,
   MissingPersonStatus.FOUND,
@@ -137,14 +131,6 @@ export class MissingPersonService {
     MissingPersonStatus.MORE_INFORMATION_REQUESTED,
   ];
 
-  // Admin status workflow. PENDING must pass through UNDER_REVIEW first.
-  // ASSUMPTION TO VERIFY (see TERMINAL_STATUSES note above): EXPIRED reachable
-  // from every pre-FOUND state (a case going stale before resolution);
-  // CANCELLED reachable from PENDING/UNDER_REVIEW/MORE_INFORMATION_REQUESTED
-  // only (an APPROVED case is close enough to resolution that closing it
-  // should go through REJECTED/FOUND, which is what actually distinguishes
-  // it for the maybeFlagUserForRejections()/reward-refund paths). Confirm
-  // against the real product requirement before relying on this.
   private readonly ALLOWED_TRANSITIONS: Record<MissingPersonStatus, MissingPersonStatus[]> = {
     [MissingPersonStatus.PENDING]: [
       MissingPersonStatus.UNDER_REVIEW,
@@ -606,13 +592,6 @@ export class MissingPersonService {
     }
   }
 
-  // G6: both reward-edit write paths (owner update() and admin updateReward())
-  // need this same check — once a payer has actually funded the reward
-  // (a PAID Payment of type MISSING_PERSON_REWARD exists for this case),
-  // the terms shown at checkout time cannot change out from under the
-  // escrowed money. Funding itself is already blocked once any PAID
-  // payment exists (PaymentService.initiateRewardFunding), so this is the
-  // other half: block edits, not just top-ups.
   private async isRewardFunded(missingPersonId: string): Promise<boolean> {
     const count = await this.prisma.payment.count({
       where: { missingPersonId, type: 'MISSING_PERSON_REWARD', status: 'PAID' },
@@ -620,13 +599,6 @@ export class MissingPersonService {
     return count > 0;
   }
 
-  // PRD alignment (Sep 2026): RewardClaim is no longer one row per case, and
-  // a case-level refund-due state now lives on MissingPerson.fundingStatus
-  // (see reward-claim.prisma / missing-person.prisma) — not a synthetic
-  // per-case RewardClaim row. Delegate to RewardService.closeWithoutPayout(),
-  // which already rejects any still-open claims and marks fundingStatus
-  // REFUND_DUE; it's a no-op (throws BadRequestException) when there's
-  // nothing to close.
   private async syncRewardClaimOnClosure(
     adminId: string,
     missingPersonId: string,
@@ -638,10 +610,6 @@ export class MissingPersonService {
     if (!funded) return;
 
     if (status === MissingPersonStatus.FOUND) {
-      // A claim already approved or paid out means the reward is
-      // legitimately spoken for — closeWithoutPayout() must not run here,
-      // since it would flip fundingStatus to REFUND_DUE on money that's
-      // already committed (or already sent) to that informant.
       const settledForPayout = await this.prisma.rewardClaim.findFirst({
         where: {
           missingPersonId,
@@ -869,26 +837,6 @@ export class MissingPersonService {
     return missingPerson;
   }
 
-  // ─────────────────────────────────────────────
-  // ADMIN — DASHBOARD STATISTICS
-  // GET /missing-persons/stats
-  //
-  // Same "advanced stats" shape as Report/Post: counts by status and
-  // personType, reward metrics, claimed cases, pending child-safety
-  // dual-control confirmations, resolution rate (FOUND / total),
-  // average time PENDING->APPROVED and APPROVED->FOUND, tip volume
-  // from InformationSubmission (since tips are user-submitted against
-  // these cases), and a 30-day daily creation trend for charting.
-  // Uses $queryRaw for the aggregates Prisma's query builder can't
-  // express (date_trunc grouping, EPOCH-based duration averages) —
-  // same Postgres assumption as the rest of the schema.
-  //
-  // NOTE: a second, simpler getStats() was introduced further down
-  // this file (just before update()) by the azure/dev branch, which
-  // would have collided with this one (duplicate method name). It's
-  // been dropped in favor of this version, since this is the one
-  // both branches already agreed on before that change landed.
-  // ─────────────────────────────────────────────
   async getStats() {
     const [
       total,
@@ -1240,9 +1188,6 @@ export class MissingPersonService {
     }));
   }
 
-  // Only PENDING / MORE_INFORMATION_REQUESTED cases are editable (EDITABLE_STATUSES),
-  // and neither is ever public (findOne/findAll require APPROVED), so nothing this
-  // method touches can already be in the public cache — no invalidation needed here.
   async update(user: CurrentUserDto, id: string, data: UpdateMissingPersonDto) {
     const existing = await this.prisma.missingPerson.findUnique({ where: { id } });
 
@@ -1329,9 +1274,6 @@ export class MissingPersonService {
 
     const rewardUpdate = this.buildRewardProposalUpdate(data, existing);
 
-    // G6: rewardApproved (and therefore funding) is independent of case
-    // status — see updateReward()'s own comment — so EDITABLE_STATUSES
-    // above does not by itself guarantee a funded reward can't reach here.
     if (rewardUpdate !== null && (await this.isRewardFunded(id))) {
       this.emitCaseFailure(
         user,
@@ -1604,9 +1546,6 @@ export class MissingPersonService {
 
     const updated = await this.prisma.missingPerson.findUniqueOrThrow({ where: { id } });
 
-    // Only transitions into or out of APPROVED change public visibility, but every
-    // transition that reaches here has already passed ALLOWED_TRANSITIONS, so
-    // invalidating unconditionally is simple and cheap (short TTLs, no-op if unused).
     await this.cache.invalidateMissingPersonEverywhere(id);
 
     this.emitAudit({
@@ -1690,12 +1629,6 @@ export class MissingPersonService {
       throw new NotFoundException('missing_person_not_found');
     }
 
-    // G6: this is one of two write paths onto rewardApproved/rewardAmount
-    // (the other being RewardService.approveOffer, REWARDS_APPROVE) — once
-    // a PAID payment exists against this case, neither should be able to
-    // move the terms the payer actually funded. autoCorrect-free: there is
-    // no legitimate reason to touch this endpoint post-funding, so it's a
-    // hard block rather than a partial one.
     if (await this.isRewardFunded(id)) {
       this.emitCaseFailure(
         admin,
@@ -1781,11 +1714,6 @@ export class MissingPersonService {
 
     return updated;
   }
-
-  // ═════════════════════════════════════════════════════════════════
-  // NEW ENDPOINTS — everything below was added; nothing above changed
-  // except the import block and the two small constants near the top.
-  // ═════════════════════════════════════════════════════════════════
 
   // ───────────── shared helpers for the new methods ─────────────
 
@@ -2086,7 +2014,11 @@ export class MissingPersonService {
     }
 
     for (const m of messages) {
-      events.push({ type: m.kind === 'WARNING' ? 'WARNING' : 'MESSAGE', at: m.createdAt, message: m.message });
+      events.push({
+        type: m.kind === 'WARNING' ? 'WARNING' : 'MESSAGE',
+        at: m.createdAt,
+        message: m.message,
+      });
     }
     for (const u of updates) {
       events.push({
@@ -2126,9 +2058,15 @@ export class MissingPersonService {
     const existing = await this.loadOwnCase(user, id);
 
     if (existing.status !== MissingPersonStatus.APPROVED) {
-      this.emitCaseFailure(user, AuditEventEnum.MISSING_PERSON_UPDATED, existing, 'found_report_requires_approved_case', {
-        diff: { currentStatus: existing.status },
-      });
+      this.emitCaseFailure(
+        user,
+        AuditEventEnum.MISSING_PERSON_UPDATED,
+        existing,
+        'found_report_requires_approved_case',
+        {
+          diff: { currentStatus: existing.status },
+        },
+      );
       throw new BadRequestException('found_report_requires_approved_case');
     }
     if (existing.foundReportedAt && !existing.foundReportResolvedAt) {
@@ -2160,9 +2098,15 @@ export class MissingPersonService {
     reason?: string,
   ) {
     if (existing.status !== MissingPersonStatus.APPROVED || existing.deletedAt) {
-      this.emitCaseFailure(actor, AuditEventEnum.MISSING_PERSON_UPDATED, existing, 'renewal_requires_approved_case', {
-        diff: { currentStatus: existing.status },
-      });
+      this.emitCaseFailure(
+        actor,
+        AuditEventEnum.MISSING_PERSON_UPDATED,
+        existing,
+        'renewal_requires_approved_case',
+        {
+          diff: { currentStatus: existing.status },
+        },
+      );
       throw new BadRequestException('renewal_requires_approved_case');
     }
 
@@ -2303,11 +2247,22 @@ export class MissingPersonService {
   }
 
   // Shared by owner and admin media removal. Legal hold blocks it for everyone.
-  private async removeMediaKey(actor: CurrentUserDto, existing: MissingPerson, key: string, operation: string) {
+  private async removeMediaKey(
+    actor: CurrentUserDto,
+    existing: MissingPerson,
+    key: string,
+    operation: string,
+  ) {
     if (existing.legalHold) {
-      this.emitCaseFailure(actor, AuditEventEnum.MISSING_PERSON_UPDATED, existing, 'case_under_legal_hold', {
-        outcome: AuditOutcome.DENIED,
-      });
+      this.emitCaseFailure(
+        actor,
+        AuditEventEnum.MISSING_PERSON_UPDATED,
+        existing,
+        'case_under_legal_hold',
+        {
+          outcome: AuditOutcome.DENIED,
+        },
+      );
       throw new ConflictException('case_under_legal_hold');
     }
 
@@ -2324,7 +2279,9 @@ export class MissingPersonService {
     const updated = await this.prisma.missingPerson.update({
       where: { id: existing.id },
       data: {
-        ...({ [field]: existing[field].filter((k) => k !== key) } as Prisma.MissingPersonUpdateInput),
+        ...({
+          [field]: existing[field].filter((k) => k !== key),
+        } as Prisma.MissingPersonUpdateInput),
         mediaTotalBytes: Math.max(0, existing.mediaTotalBytes - removedBytes),
       },
     });
@@ -2532,9 +2489,7 @@ export class MissingPersonService {
 
   async getPoster(id: string) {
     const mp = await this.loadApprovedPublic(id);
-    const photoUrl = mp.photo[0]
-      ? ((await this.presignKeys([mp.photo[0]]))[0]?.url ?? null)
-      : null;
+    const photoUrl = mp.photo[0] ? ((await this.presignKeys([mp.photo[0]]))[0]?.url ?? null) : null;
 
     const contactPhone = this.configService.get<string>('MISSING_PERSON_POSTER_CONTACT') ?? null;
     const reward =
@@ -2548,7 +2503,9 @@ export class MissingPersonService {
       `<!doctype html><html><head><meta charset="utf-8"><title>Missing: ${e(mp.name ?? 'Unknown')}</title></head>` +
       `<body style="font-family:sans-serif;max-width:700px;margin:24px auto;text-align:center">` +
       `<h1 style="font-size:48px;margin:0">MISSING</h1>` +
-      (photoUrl ? `<img src="${e(photoUrl)}" style="max-width:100%;max-height:420px" alt="">` : '') +
+      (photoUrl
+        ? `<img src="${e(photoUrl)}" style="max-width:100%;max-height:420px" alt="">`
+        : '') +
       `<h2>${e(mp.name ?? 'Name not provided')}</h2>` +
       `<p>Last seen ${e(mp.dateLastSeen.toISOString().slice(0, 10))} near ${e(mp.lastKnownArea)}</p>` +
       `<p>${e(mp.description)}</p>` +
@@ -2783,7 +2740,14 @@ export class MissingPersonService {
     const { page, limit, skip } = this.pageArgs(query);
 
     const rows = await this.prisma.$queryRaw<
-      { ownerId: string; total: number; read: number; unread: number; pending: number; owners: number }[]
+      {
+        ownerId: string;
+        total: number;
+        read: number;
+        unread: number;
+        pending: number;
+        owners: number;
+      }[]
     >`
       SELECT mp."userId" AS "ownerId",
              COUNT(*)::int AS total,
@@ -2808,7 +2772,10 @@ export class MissingPersonService {
     const total = rows[0]?.owners ?? 0;
 
     return {
-      data: rows.map(({ owners: _owners, ...r }) => ({ ...r, ownerName: nameOf.get(r.ownerId) ?? null })),
+      data: rows.map(({ owners: _owners, ...r }) => ({
+        ...r,
+        ownerName: nameOf.get(r.ownerId) ?? null,
+      })),
       meta: this.pageMeta(page, limit, total),
     };
   }
@@ -2851,7 +2818,10 @@ export class MissingPersonService {
     const nameOf = new Map(users.map((u) => [u.id, u.name]));
 
     return {
-      data: rows.map(({ owners: _owners, ...r }) => ({ ...r, ownerName: nameOf.get(r.ownerId) ?? null })),
+      data: rows.map(({ owners: _owners, ...r }) => ({
+        ...r,
+        ownerName: nameOf.get(r.ownerId) ?? null,
+      })),
       meta: this.pageMeta(page, limit, rows[0]?.owners ?? 0),
     };
   }
@@ -2994,11 +2964,7 @@ export class MissingPersonService {
         result.succeeded.push(id);
       } catch (err) {
         const reason =
-          err instanceof Error
-            ? err.message
-            : typeof err === 'string'
-              ? err
-              : 'unknown_error';
+          err instanceof Error ? err.message : typeof err === 'string' ? err : 'unknown_error';
         result.failed.push({ id, reason });
       }
     }
@@ -3180,7 +3146,13 @@ export class MissingPersonService {
       }
     }
 
-    this.auditOp(admin, mp, 'flag_resolved', { flagId, action: data.action }, { reason: data.reason });
+    this.auditOp(
+      admin,
+      mp,
+      'flag_resolved',
+      { flagId, action: data.action },
+      { reason: data.reason },
+    );
     return this.prisma.missingPersonFlag.findUniqueOrThrow({ where: { id: flagId } });
   }
 
@@ -3233,9 +3205,15 @@ export class MissingPersonService {
 
     if (existing.deletedAt) throw new ConflictException('case_already_deleted');
     if (existing.legalHold) {
-      this.emitCaseFailure(admin, AuditEventEnum.MISSING_PERSON_DELETED, existing, 'case_under_legal_hold', {
-        outcome: AuditOutcome.DENIED,
-      });
+      this.emitCaseFailure(
+        admin,
+        AuditEventEnum.MISSING_PERSON_DELETED,
+        existing,
+        'case_under_legal_hold',
+        {
+          outcome: AuditOutcome.DENIED,
+        },
+      );
       throw new ConflictException('case_under_legal_hold');
     }
     if (Number(existing.fundedAmount) > 0 || (await this.isRewardFunded(id))) {
@@ -3263,7 +3241,10 @@ export class MissingPersonService {
       admin,
       existing,
       'admin_soft_delete',
-      { previousStatus: existing.status, newStatus: wasTerminal ? existing.status : MissingPersonStatus.CANCELLED },
+      {
+        previousStatus: existing.status,
+        newStatus: wasTerminal ? existing.status : MissingPersonStatus.CANCELLED,
+      },
       { action: AuditEventEnum.MISSING_PERSON_DELETED, severity: AuditSeverity.CRITICAL, reason },
     );
     return { message: 'missing_person_deleted', id };
@@ -3324,13 +3305,20 @@ export class MissingPersonService {
   async setLegalHold(admin: CurrentUserDto, id: string, legalHold: boolean, reason: string) {
     const existing = await this.loadCase(id);
     if (existing.legalHold === legalHold) {
-      throw new ConflictException(legalHold ? 'legal_hold_already_set' : 'no_legal_hold_to_release');
+      throw new ConflictException(
+        legalHold ? 'legal_hold_already_set' : 'no_legal_hold_to_release',
+      );
     }
 
     const updated = await this.prisma.missingPerson.update({
       where: { id },
       data: legalHold
-        ? { legalHold: true, legalHoldReason: reason, legalHoldAt: new Date(), legalHoldById: admin.id }
+        ? {
+            legalHold: true,
+            legalHoldReason: reason,
+            legalHoldAt: new Date(),
+            legalHoldById: admin.id,
+          }
         : { legalHold: false, legalHoldReason: null, legalHoldAt: null, legalHoldById: null },
     });
 
@@ -3516,7 +3504,8 @@ export class MissingPersonService {
 
     if (existing.deletedAt) throw new BadRequestException('deleted_case_must_be_restored_first');
     if (existing.mergedIntoId) throw new BadRequestException('merged_case_cannot_be_reopened');
-    if (existing.takedownAt) throw new BadRequestException('use_lift_takedown_for_taken_down_cases');
+    if (existing.takedownAt)
+      throw new BadRequestException('use_lift_takedown_for_taken_down_cases');
     if (!reopenable.includes(existing.status)) {
       throw new BadRequestException('only_expired_cancelled_or_found_cases_can_be_reopened');
     }
@@ -3605,11 +3594,19 @@ export class MissingPersonService {
       patch.name = data.name;
     }
     if (data.description !== undefined && data.description !== existing.description) {
-      changes.push({ field: 'description', oldValue: existing.description, newValue: data.description });
+      changes.push({
+        field: 'description',
+        oldValue: existing.description,
+        newValue: data.description,
+      });
       patch.description = data.description;
     }
     if (data.lastKnownArea !== undefined && data.lastKnownArea !== existing.lastKnownArea) {
-      changes.push({ field: 'lastKnownArea', oldValue: existing.lastKnownArea, newValue: data.lastKnownArea });
+      changes.push({
+        field: 'lastKnownArea',
+        oldValue: existing.lastKnownArea,
+        newValue: data.lastKnownArea,
+      });
       patch.lastKnownArea = data.lastKnownArea;
     }
     if (data.dateLastSeen !== undefined) {
@@ -3680,7 +3677,12 @@ export class MissingPersonService {
 
   // The child flag is personType: CHILD turns on the two-admin approval rules. A change needs two
   // distinct admins to propose the same value, the second call applies it.
-  async correctChildFlag(admin: CurrentUserDto, id: string, involvesChild: boolean, reason: string) {
+  async correctChildFlag(
+    admin: CurrentUserDto,
+    id: string,
+    involvesChild: boolean,
+    reason: string,
+  ) {
     const existing = await this.loadCase(id);
     const target = involvesChild ? MissingPersonType.CHILD : MissingPersonType.WOMAN;
 
@@ -3779,7 +3781,10 @@ export class MissingPersonService {
     return {
       data: rows.map(({ total: _total, name, ...row }) => ({
         ...row,
-        label: row.personType === MissingPersonType.CHILD ? `Child case ${row.caseId.slice(0, 8)}` : name,
+        label:
+          row.personType === MissingPersonType.CHILD
+            ? `Child case ${row.caseId.slice(0, 8)}`
+            : name,
       })),
       meta: this.pageMeta(page, limit, rows[0]?.total ?? 0),
     };
@@ -3826,7 +3831,11 @@ export class MissingPersonService {
     return {
       data: candidates.map((c) => {
         const matchedOn: string[] = [];
-        if (existing.name && c.name && existing.name.trim().toLowerCase() === c.name.trim().toLowerCase()) {
+        if (
+          existing.name &&
+          c.name &&
+          existing.name.trim().toLowerCase() === c.name.trim().toLowerCase()
+        ) {
           matchedOn.push('name');
         }
         if (
@@ -3846,8 +3855,10 @@ export class MissingPersonService {
 
     const [primary, duplicate] = await Promise.all([this.loadCase(id), this.loadCase(duplicateId)]);
 
-    if (primary.deletedAt || primary.mergedIntoId) throw new BadRequestException('target_case_not_available');
-    if (duplicate.deletedAt || duplicate.mergedIntoId) throw new BadRequestException('duplicate_case_not_available');
+    if (primary.deletedAt || primary.mergedIntoId)
+      throw new BadRequestException('target_case_not_available');
+    if (duplicate.deletedAt || duplicate.mergedIntoId)
+      throw new BadRequestException('duplicate_case_not_available');
     if (duplicate.legalHold) throw new ConflictException('duplicate_under_legal_hold');
     if (
       Number(duplicate.fundedAmount) > 0 ||
@@ -3902,7 +3913,11 @@ export class MissingPersonService {
       admin,
       duplicate,
       'merged_into',
-      { mergedIntoId: id, previousStatus: duplicate.status, newStatus: MissingPersonStatus.CANCELLED },
+      {
+        mergedIntoId: id,
+        previousStatus: duplicate.status,
+        newStatus: MissingPersonStatus.CANCELLED,
+      },
       { reason: reason ?? null },
     );
 
@@ -3944,7 +3959,10 @@ export class MissingPersonService {
   }
 
   // Column names here are fixed internal constants, never user input.
-  private async facet(column: string, limit = 50): Promise<Array<{ value: string; count: number }>> {
+  private async facet(
+    column: string,
+    limit = 50,
+  ): Promise<Array<{ value: string; count: number }>> {
     const col = Prisma.raw(`mp."${column}"::text`);
     return this.prisma.$queryRaw<Array<{ value: string; count: number }>>`
       SELECT ${col} AS value, COUNT(*)::int AS count
@@ -4000,7 +4018,8 @@ export class MissingPersonService {
       select: { mediaKey: true, status: true, mode: true, createdAt: true },
     });
     const latestRedaction = new Map<string, (typeof redactions)[number]>();
-    for (const r of redactions) if (!latestRedaction.has(r.mediaKey)) latestRedaction.set(r.mediaKey, r);
+    for (const r of redactions)
+      if (!latestRedaction.has(r.mediaKey)) latestRedaction.set(r.mediaKey, r);
 
     const entries = MEDIA_FIELD_NAMES.flatMap((field) =>
       existing[field].map((key) => ({ field, key })),
@@ -4037,7 +4056,12 @@ export class MissingPersonService {
   }
 
   // Records the request. Pixel processing needs image tooling, so a worker completes PENDING rows.
-  async redactMedia(admin: CurrentUserDto, id: string, key: string, data: RedactMissingPersonMediaDto) {
+  async redactMedia(
+    admin: CurrentUserDto,
+    id: string,
+    key: string,
+    data: RedactMissingPersonMediaDto,
+  ) {
     const existing = await this.loadCase(id);
     if (existing.legalHold) throw new ConflictException('case_under_legal_hold');
     if (!this.collectMediaFields(existing).includes(key)) {
@@ -4127,7 +4151,15 @@ export class MissingPersonService {
         orderBy: { createdAt: 'desc' },
         skip,
         take: limit,
-        select: { id: true, userId: true, actorName: true, action: true, outcome: true, createdAt: true, ipAddress: true },
+        select: {
+          id: true,
+          userId: true,
+          actorName: true,
+          action: true,
+          outcome: true,
+          createdAt: true,
+          ipAddress: true,
+        },
       }),
       this.prisma.auditLog.count({ where }),
       this.prisma.missingPersonReadState.findMany({
@@ -4138,7 +4170,11 @@ export class MissingPersonService {
     ]);
 
     return {
-      readers: readers.map((r) => ({ adminId: r.adminId, adminName: r.admin.name, readAt: r.readAt })),
+      readers: readers.map((r) => ({
+        adminId: r.adminId,
+        adminName: r.admin.name,
+        readAt: r.readAt,
+      })),
       data: events,
       meta: this.pageMeta(page, limit, total),
     };
@@ -4174,7 +4210,9 @@ export class MissingPersonService {
 
   // CHILD names are replaced with the same redacted label the audit log uses.
   private async buildExportCsv(query: AdminMissingPersonExportDto) {
-    const maxRows = Number(this.configService.get<string>('MISSING_PERSON_EXPORT_MAX_ROWS') ?? 5000);
+    const maxRows = Number(
+      this.configService.get<string>('MISSING_PERSON_EXPORT_MAX_ROWS') ?? 5000,
+    );
 
     const rows = await this.prisma.missingPerson.findMany({
       where: this.exportWhere(query),
@@ -4256,7 +4294,9 @@ export class MissingPersonService {
   }
 
   async startExportJob(admin: CurrentUserDto, data: AdminMissingPersonExportDto) {
-    const ttlHours = Number(this.configService.get<string>('MISSING_PERSON_EXPORT_TTL_HOURS') ?? 24);
+    const ttlHours = Number(
+      this.configService.get<string>('MISSING_PERSON_EXPORT_TTL_HOURS') ?? 24,
+    );
     const job = await this.prisma.missingPersonExportJob.create({
       data: {
         requestedById: admin.id,
@@ -4321,7 +4361,8 @@ export class MissingPersonService {
 
     const roles = (admin.roles ?? []) as unknown as string[];
     const isSuper = roles.includes(String(RolesEnum.SUPER_ADMIN));
-    if (job.requestedById !== admin.id && !isSuper) throw new NotFoundException('export_job_not_found');
+    if (job.requestedById !== admin.id && !isSuper)
+      throw new NotFoundException('export_job_not_found');
 
     if (job.expiresAt < new Date()) {
       if (job.content) {
@@ -4376,19 +4417,25 @@ export class MissingPersonService {
   // ───────────── admin: statistics ─────────────
 
   // Builds the shared WHERE for the stats queries. Table is aliased mp, enum params are cast.
-  private statsWhereSql(query: MissingPersonStatsQueryDto, opts: { skipDates?: boolean } = {}): Prisma.Sql {
+  private statsWhereSql(
+    query: MissingPersonStatsQueryDto,
+    opts: { skipDates?: boolean } = {},
+  ): Prisma.Sql {
     const c: Prisma.Sql[] = [
       Prisma.sql`mp."deletedAt" IS NULL`,
       Prisma.sql`mp."mergedIntoId" IS NULL`,
     ];
-    if (!opts.skipDates && query.from) c.push(Prisma.sql`mp."createdAt" >= ${new Date(query.from)}`);
+    if (!opts.skipDates && query.from)
+      c.push(Prisma.sql`mp."createdAt" >= ${new Date(query.from)}`);
     if (!opts.skipDates && query.to) c.push(Prisma.sql`mp."createdAt" <= ${new Date(query.to)}`);
     if (query.status) c.push(Prisma.sql`mp.status = ${query.status}::"MissingPersonStatus"`);
     if (query.area) c.push(Prisma.sql`mp."lastKnownArea" ILIKE ${`%${query.area}%`}`);
     if (query.gender) c.push(Prisma.sql`UPPER(mp.gender) = ${query.gender.toUpperCase()}`);
     if (query.ageGroup) c.push(Prisma.sql`mp."ageGroup" = ${query.ageGroup}`);
-    if (query.involvesChild === true) c.push(Prisma.sql`mp."personType" = 'CHILD'::"MissingPersonType"`);
-    if (query.involvesChild === false) c.push(Prisma.sql`mp."personType" <> 'CHILD'::"MissingPersonType"`);
+    if (query.involvesChild === true)
+      c.push(Prisma.sql`mp."personType" = 'CHILD'::"MissingPersonType"`);
+    if (query.involvesChild === false)
+      c.push(Prisma.sql`mp."personType" <> 'CHILD'::"MissingPersonType"`);
     if (query.assignedTo) c.push(Prisma.sql`mp."assignedToUserId" = ${query.assignedTo}`);
     return Prisma.join(c, ' AND ');
   }
@@ -4486,9 +4533,15 @@ export class MissingPersonService {
       ORDER BY count DESC
     `;
 
-    const regions = new Map<string, { total: number; areas: Array<{ area: string; count: number }> }>();
+    const regions = new Map<
+      string,
+      { total: number; areas: Array<{ area: string; count: number }> }
+    >();
     for (const row of rows) {
-      const parts = row.area.split(',').map((p) => p.trim()).filter(Boolean);
+      const parts = row.area
+        .split(',')
+        .map((p) => p.trim())
+        .filter(Boolean);
       const region = parts.length > 1 ? parts[parts.length - 1] : 'Unspecified';
       const area = parts.length > 1 ? parts.slice(0, -1).join(', ') : row.area;
       const entry = regions.get(region) ?? { total: 0, areas: [] };
@@ -4555,7 +4608,9 @@ export class MissingPersonService {
   // Cases grouped by the month they were created, with how many of them ended up found.
   async getStatsFoundRate(query: MissingPersonStatsQueryDto) {
     const w = this.statsWhereSql(query);
-    const rows = await this.prisma.$queryRaw<{ bucket: Date; created: number; found: number; open: number }[]>`
+    const rows = await this.prisma.$queryRaw<
+      { bucket: Date; created: number; found: number; open: number }[]
+    >`
       SELECT date_trunc('month', mp."createdAt") AS bucket,
              COUNT(*)::int AS created,
              COUNT(*) FILTER (WHERE mp.status = 'FOUND')::int AS found,
@@ -4659,7 +4714,9 @@ export class MissingPersonService {
       ORDER BY d
     `;
 
-    return { data: rows.map((r) => ({ date: r.day.toISOString().slice(0, 10), pending: r.count })) };
+    return {
+      data: rows.map((r) => ({ date: r.day.toISOString().slice(0, 10), pending: r.count })),
+    };
   }
 
   async getStatsAging(query: MissingPersonStatsQueryDto) {
@@ -4733,7 +4790,13 @@ export class MissingPersonService {
 
     const [decisions, workload] = await Promise.all([
       this.prisma.$queryRaw<
-        { adminId: string; decisions: number; approved: number; rejected: number; avgHours: number | null }[]
+        {
+          adminId: string;
+          decisions: number;
+          approved: number;
+          rejected: number;
+          avgHours: number | null;
+        }[]
       >`
         SELECT a."userId" AS "adminId",
                COUNT(*)::int AS decisions,
@@ -4756,7 +4819,9 @@ export class MissingPersonService {
       `,
     ]);
 
-    const ids = [...new Set([...decisions.map((d) => d.adminId), ...workload.map((x) => x.adminId)])];
+    const ids = [
+      ...new Set([...decisions.map((d) => d.adminId), ...workload.map((x) => x.adminId)]),
+    ];
     const users = await this.prisma.user.findMany({
       where: { id: { in: ids } },
       select: { id: true, name: true },
@@ -4803,7 +4868,9 @@ export class MissingPersonService {
       this.getStatsResolutionTime(query),
       this.getStatsTips(query),
       this.prisma.missingPersonFlag.count({ where: { status: MissingPersonFlagState.OPEN } }),
-      this.prisma.missingPersonAppeal.count({ where: { status: MissingPersonAppealState.PENDING } }),
+      this.prisma.missingPersonAppeal.count({
+        where: { status: MissingPersonAppealState.PENDING },
+      }),
       this.prisma.missingPerson.count({
         where: {
           ...this.adminBaseWhere,
@@ -4816,8 +4883,7 @@ export class MissingPersonService {
       this.getStatsTimeline({ ...query, interval: MissingPersonStatsInterval.DAY }),
     ]);
 
-    const count = (s: MissingPersonStatus) =>
-      byStatus.data.find((r) => r.status === s)?.count ?? 0;
+    const count = (s: MissingPersonStatus) => byStatus.data.find((r) => r.status === s)?.count ?? 0;
 
     return {
       total: byStatus.total,

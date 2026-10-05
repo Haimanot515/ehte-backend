@@ -109,7 +109,6 @@ type ForgotPasswordResult = {
 
 export type SocialProvider = 'google' | 'facebook' | 'apple';
 
-
 type UserRoleWithPermissions = {
   role: {
     name: string;
@@ -776,35 +775,11 @@ export class AuthService {
     return this.socialAuth('facebook', profile);
   }
 
-  // SOCIAL LOGIN — APPLE. `name` is only ever present on a user's first-ever
-  // Apple authorization (Apple sends it to the client that one time, never
-  // inside the token) — the controller forwards it through if given.
   async loginWithApple(data: { idToken: string; name?: string }): Promise<TokenPair> {
     const profile = await this.socialAuthUtil.verifyAppleIdToken(data.idToken, data.name);
     return this.socialAuth('apple', profile);
   }
 
-  // Shared find-or-create-or-link logic for all three social providers. One
-  // endpoint per provider covers both signup and login: a first-time sign-in
-  // creates the account, a repeat one just logs in. If the verified email
-  // already belongs to an account (e.g. they signed up with phone+password
-  // first, or used a different social provider before), we LINK this provider
-  // to that account rather than creating a duplicate — safe only because
-  // `profile.emailVerified` came from the provider's own signed token, never
-  // from anything the client told us directly.
-  //
-  // Deliberately does NOT reuse login()'s `!user.isPhoneVerified` gate: that
-  // gate exists because phone is the trusted credential for password login,
-  // and it sends an SMS OTP — which would throw outright for a social user
-  // with no phone at all (requirePhone() rejects null). Here the provider's
-  // own verification already proved identity, so a social user proceeds
-  // straight to a token regardless of phone/isPhoneVerified state. One
-  // consequence worth knowing: linking by email also bypasses that gate for a
-  // *pre-existing* phone+password account whose phone was never verified, if
-  // its stored email happens to match. Low-risk in this codebase today since
-  // SignupDto never collects email — email only reaches a phone account via a
-  // separate profile-update flow the user (not an attacker) performed — but
-  // flagging it here rather than leaving it implicit.
   private async socialAuth(provider: SocialProvider, profile: SocialProfile): Promise<TokenPair> {
     if (!profile.emailVerified) {
       throw new UnauthorizedException('unverified_social_email');
@@ -907,9 +882,6 @@ export class AuthService {
       throw new UnauthorizedException('use_admin_login');
     }
 
-    // Same lockout check login() does, in the same position relative to the
-    // role check: a locked account stays locked no matter which credential
-    // type is used to prove who's asking.
     try {
       this.lockoutUtil.assertNotLocked(user);
     } catch (err) {
@@ -1348,9 +1320,6 @@ export class AuthService {
     });
   }
 
-  // REDIS: cached per user (TTL.PROFILE). Every writer of these fields must call
-  // cache.invalidateProfile(userId) or cache.purgeUserCache(userId): name, email, phone,
-  // isActive, discreet mode, roles. UserService already does for its own writers.
   async me(currentUser: CurrentUserDto) {
     return this.cache.wrapProfile(currentUser.id, async () => {
       const user = await this.prisma.user.findUnique({
@@ -1697,15 +1666,8 @@ export class AuthService {
     }
   }
 
-  // ═══════════════════════════════════════════════════════════════════════
-  // NEW (AR-01 … AR-12, AR-61 … AR-69). Everything above is unchanged.
-  // ═══════════════════════════════════════════════════════════════════════
-
   // ─── shared helpers for the new methods ────────────────────────────────
 
-  // Checks a one-time code the same way resetPassword does, without a second copy of the rules.
-  // consume=false only checks (verify-reset-otp). consume=true also claims the code and runs
-  // `onValid` in the same transaction (reactivation).
   private async checkOtpOrThrow(args: {
     verificationId: string;
     otp: string;
@@ -1895,7 +1857,11 @@ export class AuthService {
     secret: { secretEncrypted: string; lastUsedStep: number | null },
     code: string,
   ): number | null {
-    return verifyTotp(decryptSecret(secret.secretEncrypted, this.twoFactorKey), code, secret.lastUsedStep);
+    return verifyTotp(
+      decryptSecret(secret.secretEncrypted, this.twoFactorKey),
+      code,
+      secret.lastUsedStep,
+    );
   }
 
   private async issueRecoveryCodes(
@@ -2014,7 +1980,10 @@ export class AuthService {
   }
 
   // AR-03
-  async logoutAll(user: CurrentUserDto, _req: any): Promise<{ message: string; sessionsRevoked: number }> {
+  async logoutAll(
+    user: CurrentUserDto,
+    _req: any,
+  ): Promise<{ message: string; sessionsRevoked: number }> {
     const deleted = await this.prisma.session.deleteMany({ where: { userId: user.id } });
 
     await this.cache.purgeUserCache(user.id);
@@ -2032,9 +2001,6 @@ export class AuthService {
     return { message: 'logout_all_successful', sessionsRevoked: deleted.count };
   }
 
-  // AR-04. POLICY CHOICE: off unless auth.selfReactivationEnabled is true. The User table has no
-  // "who deactivated this" field, so with it on, an account an admin suspended could also
-  // reactivate itself. Add a deactivation reason before switching it on.
   async reactivateInitiate(data: ReactivateInitiateDto): Promise<{ verificationId: string }> {
     if (!this.configService.get<boolean>('auth.selfReactivationEnabled', false)) {
       return { verificationId: '' };
@@ -2245,7 +2211,9 @@ export class AuthService {
 
     await this.cache.purgeUserCache(user.id);
 
-    this.emitSecurityAudit(current, roles, AuditEventEnum.PASSWORD_SET, { method: 'social_account_add_password' });
+    this.emitSecurityAudit(current, roles, AuditEventEnum.PASSWORD_SET, {
+      method: 'social_account_add_password',
+    });
 
     const changedEvent: PasswordChangedEvent = { userId: user.id };
     this.eventEmitter.emit(NotificationEventEnum.PASSWORD_CHANGED, changedEvent);
@@ -2270,7 +2238,11 @@ export class AuthService {
     });
 
     return {
-      roles: userRoles.map((ur) => ({ id: ur.role.id, name: ur.role.name, assignedAt: ur.assignedAt })),
+      roles: userRoles.map((ur) => ({
+        id: ur.role.id,
+        name: ur.role.name,
+        assignedAt: ur.assignedAt,
+      })),
       permissions: this.derivePermissions(userRoles).sort(),
     };
   }
@@ -2527,7 +2499,12 @@ export class AuthService {
       return this.issueRecoveryCodes(tx, user.id);
     });
 
-    this.emitSecurityAudit(current, roles, AuditEventEnum.TWO_FACTOR_RECOVERY_CODES_REGENERATED, {});
+    this.emitSecurityAudit(
+      current,
+      roles,
+      AuditEventEnum.TWO_FACTOR_RECOVERY_CODES_REGENERATED,
+      {},
+    );
 
     return { recoveryCodes };
   }

@@ -1,6 +1,3 @@
-// Sign-in history for admin login history and login stats (AR-28, AR-78).
-// Written for every admin/user login attempt, including failures and lockouts.
-// Keep ipAddress and userAgent out of any message a third party could read (discreet mode).
 model LoginAttempt {
   id            String             @id @default(uuid())
   userId        String?

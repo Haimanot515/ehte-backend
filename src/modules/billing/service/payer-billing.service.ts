@@ -1,8 +1,3 @@
-// src/modules/billing/service/payer-billing.service.ts
-//
-// User-facing additions: receipts, retry, payer summary and statement, payer
-// disputes (BL-01, BL-02, BL-04 to BL-08) and informant reward views and
-// appeals (BL-09, BL-13 to BL-15).
 import {
   BadRequestException,
   ConflictException,
@@ -44,9 +39,6 @@ export class PayerBillingService {
     private readonly events: BillingEventsService,
   ) {}
 
-  // ─────────────────────────────────────────────
-  // BL-01  Receipt
-  // ─────────────────────────────────────────────
   async receipt(userId: string, paymentId: string) {
     const p = await this.prisma.payment.findFirst({
       where: { id: paymentId, payerUserId: userId },
@@ -77,9 +69,6 @@ export class PayerBillingService {
     };
   }
 
-  // ─────────────────────────────────────────────
-  // BL-02  Retry a failed or expired checkout
-  // ─────────────────────────────────────────────
   async retry(user: CurrentUserDto, txRef: string) {
     const p = await this.prisma.payment.findFirst({
       where: { txRef, payerUserId: user.id },
@@ -114,9 +103,6 @@ export class PayerBillingService {
     }
   }
 
-  // ─────────────────────────────────────────────
-  // BL-04  My totals by type and status
-  // ─────────────────────────────────────────────
   async summary(userId: string) {
     const rows = await this.prisma.payment.groupBy({
       by: ['type', 'status'],
@@ -136,9 +122,6 @@ export class PayerBillingService {
     };
   }
 
-  // ─────────────────────────────────────────────
-  // BL-05  What I gave
-  // ─────────────────────────────────────────────
   async stats(userId: string) {
     const paid = { payerUserId: userId, status: PaymentStatus.PAID };
 
@@ -175,9 +158,6 @@ export class PayerBillingService {
     };
   }
 
-  // ─────────────────────────────────────────────
-  // BL-06  Dispute a charge
-  // ─────────────────────────────────────────────
   async openDispute(userId: string, paymentId: string, dto: OpenPaymentDisputeDto) {
     const p = await this.prisma.payment.findFirst({
       where: { id: paymentId, payerUserId: userId },
@@ -210,9 +190,6 @@ export class PayerBillingService {
     return { id: dispute.id, status: dispute.status, createdAt: dispute.createdAt };
   }
 
-  // ─────────────────────────────────────────────
-  // BL-07  Refund status for my payment
-  // ─────────────────────────────────────────────
   async refundStatus(userId: string, paymentId: string) {
     const p = await this.prisma.payment.findFirst({
       where: { id: paymentId, payerUserId: userId },
@@ -239,9 +216,6 @@ export class PayerBillingService {
     };
   }
 
-  // ─────────────────────────────────────────────
-  // BL-08  Yearly statement
-  // ─────────────────────────────────────────────
   async annualStatement(userId: string, year?: number) {
     const y = year ?? new Date().getUTCFullYear();
     const from = new Date(Date.UTC(y, 0, 1));
@@ -296,10 +270,6 @@ export class PayerBillingService {
     };
   }
 
-  // ═════════════════════════════════════════════
-  // INFORMANT REWARD VIEWS
-  // ═════════════════════════════════════════════
-
   private async ownClaim(userId: string, claimId: string) {
     const claim = await this.prisma.rewardClaim.findFirst({
       where: { id: claimId, informantUserId: userId },
@@ -329,8 +299,7 @@ export class PayerBillingService {
       approvedAt: c.approvedAt,
       createdAt: c.createdAt,
       canAppeal:
-        APPEALABLE_CLAIM_STATUSES.includes(c.status) &&
-        !appeals.some((a) => a.status === 'OPEN'),
+        APPEALABLE_CLAIM_STATUSES.includes(c.status) && !appeals.some((a) => a.status === 'OPEN'),
       appeals,
     };
   }

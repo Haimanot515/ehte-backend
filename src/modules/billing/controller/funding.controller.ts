@@ -1,15 +1,3 @@
-// src/modules/billing/controller/funding.controller.ts
-//
-// Section 3's public/donor/case-owner/finder funding endpoints, plus the
-// admin per-entity funding breakdowns (which naturally share
-// FundingQueryService with the public/donor views of the same profile or
-// case). Billing-wide admin reports (payments list, allocations queue,
-// disbursements list, liabilities) live in billing-report.controller.ts
-// instead, so this controller stays scoped to "funding for one thing".
-//
-// Route order: literal/public routes are declared before ':id' routes
-// within each group, same convention as AuditLogController.
-
 import { Controller, Get, Param, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 

@@ -1,10 +1,3 @@
-// src/modules/billing/dto/billing-report.dto.ts
-//
-// Query/body DTOs for BillingReportController (section 3 admin reports).
-// Shapes are derived directly from how the controller and
-// FundingQueryService consume `query`/`dto` — adjust the Prisma enum
-// imports below if your generated enum names differ.
-
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
@@ -81,15 +74,6 @@ export class GetPaymentsDto extends PaginationDto {
   @IsDateString()
   endDate?: string;
 }
-
-// ── POST admin/billing/payments/:id/resolve-review (G9) ────────────────
-//
-// PaymentService.resolveReview(adminId, id, dto) still needs to be
-// written (see the controller's file-level note). This is the contract
-// it should accept: an admin either clears a REVIEW_REQUIRED payment to
-// proceed as PAID, or rejects it — either way a reason is required for
-// the audit trail. Adjust the `decision` values/fields if payment.service.ts's
-// actual G9 handling expects something different once you paste it.
 
 export enum ReviewDecision {
   APPROVE = 'APPROVE',

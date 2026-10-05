@@ -1,15 +1,3 @@
-// src/modules/billing/controller/reward.controller.ts   (admin: reward offers + claims)
-//
-// Split out of disbursement.controller.ts so Swagger gives this its own tag
-// instead of merging with the disbursement-execution endpoints (NestJS
-// Swagger always resolves one base tag per controller class — a shared
-// class with per-method @ApiTags still shows every endpoint under the
-// class's default tag as well, which duplicated entries under both).
-//
-// PRD alignment (Sep 2026): the single approve-claim endpoint is replaced by the
-// full per-informant flow (section 11-12 / 16 / 20) — funding method, evaluation
-// weights, claim creation from a submission, scoring, decision, and splitting.
-
 import { Body, Controller, Param, Post } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { RequirePermissions } from '../../../common/decorators/require-permissions.decorator';

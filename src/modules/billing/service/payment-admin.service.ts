@@ -1,12 +1,3 @@
-// src/modules/billing/service/payment-admin.service.ts
-//
-// Admin payment tools (BL-16 to BL-29) and refunds (BL-30 to BL-36).
-//
-// Refunds: ChapaService has no refund call, so a refund is executed as a
-// MANUAL refund: the admin sends the money out of band and records the bank
-// or transfer reference. The request and the execution must be two different
-// admins. Reward funding payments are not refundable here (use the reward
-// close flow).
 import {
   BadRequestException,
   ConflictException,
@@ -14,13 +5,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import {
-  AuditOutcome,
-  AuditSeverity,
-  PaymentStatus,
-  PaymentType,
-  Prisma,
-} from '@prisma/client';
+import { AuditOutcome, AuditSeverity, PaymentStatus, PaymentType, Prisma } from '@prisma/client';
 
 import { PrismaService } from '../../../prisma/prisma.service';
 import { AuditEventEnum } from '../../../common/enums/shared/audit-events.enum';
@@ -29,14 +14,7 @@ import { CurrentUserDto } from '../../../common/dtos/current-user.dto';
 
 import { BillingEventsService } from './billing-events.service';
 import { PaymentService } from './payment.service';
-import {
-  dec,
-  maskName,
-  money,
-  pageArgs,
-  pageResult,
-  parseMoney,
-} from './billing-admin.helpers';
+import { dec, maskName, money, pageArgs, pageResult, parseMoney } from './billing-admin.helpers';
 import {
   ExecuteRefundDto,
   PaymentDisputesQueryDto,
@@ -74,10 +52,6 @@ export class PaymentAdminService {
     return p;
   }
 
-  // ═════════════════════════════════════════════
-  // RECONCILE AND WEBHOOK EVENTS
-  // ═════════════════════════════════════════════
-
   // BL-16
   async reconcileNow(adminId: string, txRef: string) {
     const p = await this.prisma.payment.findUnique({
@@ -101,7 +75,9 @@ export class PaymentAdminService {
 
   // Used by ChapaWebhookController. Both calls swallow their own errors so a
   // logging problem can never make the gateway think the webhook failed.
-  async recordWebhookEvent(body: { tx_ref?: string } & Record<string, unknown>): Promise<string | null> {
+  async recordWebhookEvent(
+    body: { tx_ref?: string } & Record<string, unknown>,
+  ): Promise<string | null> {
     try {
       const e = await this.prisma.paymentWebhookEvent.create({
         data: {
@@ -209,10 +185,6 @@ export class PaymentAdminService {
 
     return { id, txRef: e.txRef, result, error, paymentStatus: status };
   }
-
-  // ═════════════════════════════════════════════
-  // PAYERS AND PROFILES
-  // ═════════════════════════════════════════════
 
   // BL-20
   async byPayer(admin: CurrentUserDto, q: PagingDto) {
@@ -441,10 +413,6 @@ export class PaymentAdminService {
     return pageResult(items, total, page, limit);
   }
 
-  // ═════════════════════════════════════════════
-  // HOLD AND RELEASE
-  // ═════════════════════════════════════════════
-
   // BL-24
   async hold(adminId: string, id: string, reason: string) {
     const p = await this.loadPayment(id);
@@ -491,10 +459,6 @@ export class PaymentAdminService {
 
     return { id, held: false };
   }
-
-  // ═════════════════════════════════════════════
-  // TIMELINE
-  // ═════════════════════════════════════════════
 
   // BL-26
   async timeline(id: string) {
@@ -569,10 +533,6 @@ export class PaymentAdminService {
     };
   }
 
-  // ═════════════════════════════════════════════
-  // PAYER DISPUTES
-  // ═════════════════════════════════════════════
-
   // BL-27
   async listDisputes(q: PaymentDisputesQueryDto) {
     const { page, limit, skip } = pageArgs(q);
@@ -631,10 +591,6 @@ export class PaymentAdminService {
       nextStep: dto.outcome === 'UPHELD' ? 'create_a_refund_if_money_is_owed' : null,
     };
   }
-
-  // ═════════════════════════════════════════════
-  // REFUNDS
-  // ═════════════════════════════════════════════
 
   // BL-30. Records a refund REQUEST. No money moves until BL-33.
   async requestRefund(adminId: string, paymentId: string, dto: RequestRefundDto) {
@@ -721,7 +677,9 @@ export class PaymentAdminService {
     const p = await this.prisma.payment.findUnique({
       where: { id: paymentId },
       include: {
-        allocations: { include: { disbursements: { select: { id: true, status: true, amount: true } } } },
+        allocations: {
+          include: { disbursements: { select: { id: true, status: true, amount: true } } },
+        },
         disputes: true,
       },
     });
@@ -733,7 +691,8 @@ export class PaymentAdminService {
   async executeRefund(admin: CurrentUserDto, paymentId: string, dto: ExecuteRefundDto) {
     const p = await this.loadPayment(paymentId);
 
-    if (p.refundStatus !== 'REQUESTED') throw new BadRequestException('no_refund_is_awaiting_execution');
+    if (p.refundStatus !== 'REQUESTED')
+      throw new BadRequestException('no_refund_is_awaiting_execution');
     if (p.refundRequestedById === admin.id) {
       throw new ForbiddenException('refund_must_be_executed_by_a_different_admin');
     }
@@ -845,7 +804,8 @@ export class PaymentAdminService {
   // BL-34
   async rejectRefund(adminId: string, paymentId: string, reason: string) {
     const p = await this.loadPayment(paymentId);
-    if (p.refundStatus !== 'REQUESTED') throw new BadRequestException('no_refund_is_awaiting_execution');
+    if (p.refundStatus !== 'REQUESTED')
+      throw new BadRequestException('no_refund_is_awaiting_execution');
 
     const { count } = await this.prisma.payment.updateMany({
       where: { id: paymentId, refundStatus: 'REQUESTED' },
@@ -895,7 +855,10 @@ export class PaymentAdminService {
   }
 
   // BL-36. Each item succeeds or fails on its own.
-  async bulkExecuteRefunds(admin: CurrentUserDto, items: { paymentId: string; reference: string }[]) {
+  async bulkExecuteRefunds(
+    admin: CurrentUserDto,
+    items: { paymentId: string; reference: string }[],
+  ) {
     const results: Array<{ paymentId: string; ok: boolean; error?: string }> = [];
 
     for (const item of items) {

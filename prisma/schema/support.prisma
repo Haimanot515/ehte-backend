@@ -61,10 +61,6 @@ model Support {
   agreementVersion   Int?
   allocationSnapshot Json?
 
-  // Total pledged by the payer. recipientAmount/organizationAmount/platformAmount
-  // are the same allocation split payment.service.ts stores on
-  // Payment/PaymentAllocation, mirrored here so a CONFIRMED support's
-  // breakdown survives independently of its originating Payment row.
   amount             Decimal? @db.Decimal(14, 2)
   recipientAmount    Decimal? @db.Decimal(14, 2)
   organizationAmount Decimal? @db.Decimal(14, 2)
@@ -120,9 +116,6 @@ model Support {
   @@index([userId, lastUpdateAt])
 }
 
-// ─────────────────────────────────────────────
-// Support: status history, proof files, messages, disputes, flags, restrictions, exports
-// ─────────────────────────────────────────────
 
 enum SupportDisputeReason {
   NOT_DELIVERED
@@ -180,9 +173,6 @@ enum SupportExportJobStatus {
   EXPIRED
 }
 
-// One row per status change. Written by the SupportService listeners on the audit events, so the
-// supporter-facing timeline never has to read the audit log. `reason` is internal: never returned
-// to the supporter.
 model SupportStatusEvent {
   id          String         @id @default(uuid())
   supportId   String

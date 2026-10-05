@@ -168,9 +168,6 @@ model AuditPurgeRun {
   @@map("audit_purge_run")
 }
 
-// ─────────────────────────────────────────────
-// Legal hold (AL-01 to AL-07)
-// ─────────────────────────────────────────────
 
 /// A hold covers the rows that matched `filter` at `appliedAt`; rows written later are not covered.
 /// kind: FILTER | ROW. status: ACTIVE | RELEASED.
@@ -219,9 +216,6 @@ model AuditApprovalRequest {
   @@map("audit_approval_request")
 }
 
-// ─────────────────────────────────────────────
-// Purge schedule and retention (AL-11 to AL-15)
-// ─────────────────────────────────────────────
 
 /// status: SCHEDULED | RUNNING | EXECUTED | FAILED | CANCELLED
 model AuditPurgeSchedule {
@@ -258,9 +252,6 @@ model AuditRetentionPolicy {
   @@map("audit_retention_policy")
 }
 
-// ─────────────────────────────────────────────
-// Integrity and pipeline health (AL-17 to AL-20)
-// ─────────────────────────────────────────────
 
 /// trigger: MANUAL | SCHEDULED
 model AuditIntegrityRun {
@@ -309,9 +300,6 @@ model AuditHealthSnapshot {
   @@map("audit_health_snapshot")
 }
 
-// ─────────────────────────────────────────────
-// Alert firing history (AL-22, AL-26, AL-27)
-// ─────────────────────────────────────────────
 
 model AuditAlertTrigger {
   id               String    @id @default(uuid())
@@ -332,9 +320,6 @@ model AuditAlertTrigger {
   @@map("audit_alert_trigger")
 }
 
-// ─────────────────────────────────────────────
-// Saved filter sharing (AL-32, AL-33)
-// ─────────────────────────────────────────────
 
 model AuditSavedFilterShare {
   id        String   @id @default(uuid())
