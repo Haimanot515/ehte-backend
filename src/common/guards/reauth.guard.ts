@@ -34,18 +34,6 @@ export class ReauthGuard {
       throw new UnauthorizedException('authentication_required');
     }
 
-    // FIX: renamed from "password" to "credential" — this can be
-    // either the account password or (when Discreet Mode is on)
-    // the Discreet Mode passcode; calling it "password" everywhere
-    // was misleading given what it actually accepts.
-    //
-    // GET requests carry it via the X-Reauth-Credential header
-    // (no request body). POST/PATCH requests carry it in
-    // body.credential.
-    //
-    // Backward compatibility: the old X-Reauth-Password header and
-    // body.password field are still accepted. Remove these two
-    // fallbacks once every client has migrated to the new names.
     const credential =
       request.headers['x-reauth-credential'] ??
       request.headers['x-reauth-password'] ??
@@ -56,10 +44,6 @@ export class ReauthGuard {
       throw new UnauthorizedException('reauthentication_required');
     }
 
-    // FIX: call verifyCredential() directly instead of the
-    // verifyPassword() alias, since this guard is the primary
-    // caller ReauthService.verifyPassword()'s docstring names as
-    // still needing migration.
     const validCredential = await this.reauthService.verifyCredential(user.id, credential);
 
     if (!validCredential) {

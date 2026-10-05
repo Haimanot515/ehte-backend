@@ -46,9 +46,6 @@ import {
   InformationSubmissionRejectedEvent,
   NewMissingPersonInformationEvent,
   SecurityAlertEvent,
-  // NEW — billing (see service/payment.service.ts, service/reward.service.ts,
-  // service/disbursement.service.ts). Add these three interfaces to
-  // notification.events.ts if they aren't there yet.
   PaymentVerifiedEvent,
   RewardClaimApprovedEvent,
   DisbursementPaidOutEvent,
@@ -111,10 +108,6 @@ export class NotificationListener {
 
   constructor(private readonly notificationService: NotificationService) {}
 
-  // ───────────────────────────────────────────
-  // helpers
-  // ───────────────────────────────────────────
-
   private async safely(handler: string, fn: () => Promise<unknown>): Promise<void> {
     try {
       await fn();
@@ -152,10 +145,6 @@ export class NotificationListener {
       this.notificationService.createForAdmins({ ...content, excludeUserId }),
     );
   }
-
-  // ───────────────────────────────────────────
-  // REPORT
-  // ───────────────────────────────────────────
 
   @OnEvent(NotificationEventEnum.REPORT_RECEIVED)
   async handleReportReceived(event: ReportReceivedEvent) {
@@ -249,10 +238,6 @@ export class NotificationListener {
     );
   }
 
-  // ───────────────────────────────────────────
-  // POST
-  // ───────────────────────────────────────────
-
   @OnEvent(NotificationEventEnum.NEW_POST)
   async handleNewPost(event: NewPostEvent) {
     await this.toAdmins(
@@ -321,10 +306,6 @@ export class NotificationListener {
       actionUrl: URLS.post(event.postId),
     });
   }
-
-  // ───────────────────────────────────────────
-  // MISSING PERSON
-  // ───────────────────────────────────────────
 
   @OnEvent(NotificationEventEnum.NEW_MISSING_PERSON_REQUEST)
   async handleNewMissingPersonRequest(event: NewMissingPersonRequestEvent) {
@@ -405,10 +386,6 @@ export class NotificationListener {
     });
   }
 
-  // ───────────────────────────────────────────
-  // INFORMATION SUBMISSION
-  // ───────────────────────────────────────────
-
   @OnEvent(NotificationEventEnum.INFORMATION_SUBMISSION_REVIEWED)
   async handleInformationSubmissionReviewed(event: InformationSubmissionReviewedEvent) {
     await this.toUser(
@@ -460,10 +437,6 @@ export class NotificationListener {
     );
   }
 
-  // ───────────────────────────────────────────
-  // SUPPORT
-  // ───────────────────────────────────────────
-
   // Now sent only when a supporter submits a non-financial offer (financial support has no pledge step).
   // Uses the same payload shape as SUPPORT_PAYMENT_CONFIRMED ({ userId, supportId, amount? }).
   @OnEvent(NotificationEventEnum.SUPPORT_PLEDGE_CREATED)
@@ -483,9 +456,6 @@ export class NotificationListener {
     );
   }
 
-  // Supporter-facing. Amount is left out of the body; open the linked page for details.
-  // Sent when an admin accepts a non-financial offer (financial supports are confirmed by payment,
-  // and the payer already gets PAYMENT_VERIFIED).
   @OnEvent(NotificationEventEnum.SUPPORT_PAYMENT_CONFIRMED)
   async handleSupportPaymentConfirmed(event: SupportPaymentConfirmedEvent) {
     await this.toUser(
@@ -579,21 +549,6 @@ export class NotificationListener {
     );
   }
 
-  // ───────────────────────────────────────────
-  // BILLING
-  //
-  // NEW — payment.service.ts (reconcile -> PAID), reward.service.ts
-  // (approveClaim), disbursement.service.ts (markPaidOut, both the
-  // MANUAL_BANK branch of execute() and the CHAPA_TRANSFER branch of
-  // syncProcessing()). Amount/fees are deliberately left out of every body
-  // below, same rule as SUPPORT_PAYMENT_CONFIRMED above — open the linked
-  // page for financial specifics.
-  //
-  // REQUIRES: NotificationType.PAYMENT_VERIFIED, .REWARD_CLAIM_APPROVED and
-  // .DISBURSEMENT_PAID_OUT added to the Prisma enum in notification.prisma
-  // (new migration) — this file only references them, it can't create them.
-  // ───────────────────────────────────────────
-
   @OnEvent(NotificationEventEnum.PAYMENT_VERIFIED)
   async handlePaymentVerified(event: PaymentVerifiedEvent) {
     await this.toUser(
@@ -644,22 +599,6 @@ export class NotificationListener {
       `DISBURSEMENT_PAID_OUT:${event.disbursementId}`,
     );
   }
-
-  // ───────────────────────────────────────────
-  // AGREEMENTS / INSTITUTIONS
-  //
-  // Back-office actions — nobody outside the admin team is waiting on these,
-  // so they broadcast to admins (toAdmins) rather than targeting a userId,
-  // same pattern as NEW_REPORT/NEW_POST. excludeUserId keeps the admin who
-  // performed the action off their own notification feed.
-  //
-  // REQUIRES: NotificationType.INSTITUTION_SIGNED, .AGREEMENT_CREATED,
-  // .AGREEMENT_ACTIVATED, .AGREEMENT_RETIRED and
-  // .VICTIM_PROFILE_AGREEMENT_ASSIGNED added to the Prisma enum in
-  // notification.prisma (new migration) — this file only references them,
-  // it can't create them. Same for NotificationEventEnum.INSTITUTION_SIGNED
-  // etc. in notification-events.enum.ts.
-  // ───────────────────────────────────────────
 
   @OnEvent(NotificationEventEnum.INSTITUTION_SIGNED)
   async handleInstitutionSigned(event: InstitutionSignedEvent) {
@@ -741,14 +680,6 @@ export class NotificationListener {
       event.actorId,
     );
   }
-
-  // ───────────────────────────────────────────
-  // VICTIM PROFILE
-  //
-  // Recipient: event.userId = VictimProfile.createdByUserId. Handlers skip
-  // quietly when it is missing. Revisit if some of these should go to all
-  // admins instead of the creator.
-  // ───────────────────────────────────────────
 
   private victimProfile(
     handler: string,
@@ -893,10 +824,6 @@ export class NotificationListener {
       `A victim profile you created has been resubmitted for review. Status: ${event.status}.`,
     );
   }
-
-  // ───────────────────────────────────────────
-  // SECURITY / AUTH
-  // ───────────────────────────────────────────
 
   // TODO: confirm emit site (see notification.events.ts). Per-user only when userId is present.
   @OnEvent(NotificationEventEnum.SECURITY_ALERT)

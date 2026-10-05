@@ -1,0 +1,111 @@
+// Two-factor authentication (AR-61 … AR-77). Behind the TWO_FACTOR_ENABLED flag, off by default.
+// Secrets are stored encrypted by the application; never store or log them in plain text.
+
+model TwoFactorSecret {
+  id              String            @id @default(uuid())
+  userId          String            @unique
+  method          TwoFactorMethodEnum @default(TOTP)
+  secretEncrypted String
+  // false while the setup is pending; true once /auth/2fa/verify has confirmed a code.
+  isEnabled       Boolean           @default(false)
+  confirmedAt     DateTime?
+  // Last accepted time step, so the same TOTP code cannot be replayed.
+  lastUsedStep    Int?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("two_factor_secret")
+}
+
+model TwoFactorRecoveryCode {
+  id        String    @id @default(uuid())
+  userId    String
+  codeHash  String
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, usedAt])
+  @@map("two_factor_recovery_code")
+}
+
+// Created when login (or step-up) needs a second step; returned to the client as challengeId.
+model TwoFactorChallenge {
+  id          String              @id @default(uuid())
+  userId      String
+  purpose     TwoFactorChallengePurposeEnum @default(LOGIN)
+  // Methods offered to the user for this challenge, e.g. ["TOTP","SMS"].
+  methods     TwoFactorMethodEnum[]
+  // Set only when an SMS code was sent.
+  smsCodeHash String?
+  attempts    Int                 @default(0)
+  expiresAt   DateTime
+  consumedAt  DateTime?
+  ipAddress   String?
+  createdAt   DateTime            @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, consumedAt])
+  @@index([expiresAt])
+  @@map("two_factor_challenge")
+}
+
+// Reset of an admin's 2FA always needs a second Super Admin (AR-75, AR-76, AR-77).
+model TwoFactorResetRequest {
+  id            String                      @id @default(uuid())
+  targetUserId  String
+  requestedById String
+  reason        String
+  status        TwoFactorResetRequestStatus @default(PENDING)
+  reviewedById  String?
+  reviewNote    String?
+  reviewedAt    DateTime?
+  expiresAt     DateTime
+  createdAt     DateTime                    @default(now())
+  updatedAt     DateTime                    @updatedAt
+
+  targetUser  User  @relation("TwoFactorResetTarget", fields: [targetUserId], references: [id], onDelete: Cascade)
+  requestedBy User  @relation("TwoFactorResetRequester", fields: [requestedById], references: [id], onDelete: Cascade)
+  reviewedBy  User? @relation("TwoFactorResetReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+
+  @@index([status, expiresAt])
+  @@index([targetUserId])
+  @@index([requestedById])
+  @@map("two_factor_reset_request")
+}
+
+// Company rule (AR-70, AR-71): one row, id = 'default'.
+// Required for admins, optional for users, with a grace period for people not yet enrolled.
+model TwoFactorPolicy {
+  id            String   @id @default("default")
+  adminRequired Boolean  @default(true)
+  userRequired  Boolean  @default(false)
+  graceDays     Int      @default(7)
+  updatedById   String?
+  updatedAt     DateTime @updatedAt
+
+  updatedBy User? @relation("TwoFactorPolicyUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+
+  @@map("two_factor_policy")
+}
+
+enum TwoFactorMethodEnum {
+  TOTP
+  SMS
+}
+
+enum TwoFactorChallengePurposeEnum {
+  LOGIN
+  STEP_UP
+}
+
+enum TwoFactorResetRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  EXPIRED
+}

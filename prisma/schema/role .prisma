@@ -8,5 +8,15 @@ model Role {
   rolePermissions RolePermission[]
   userRoles       UserRole[]
 
+  // Archive retires a role without deleting history (AR-42, AR-43)
+  archivedAt   DateTime?
+  archivedById String?
+  archivedBy   User?     @relation("RoleArchivedBy", fields: [archivedById], references: [id], onDelete: SetNull)
+
+  assignmentRequests   RoleAssignmentRequest[]
+  temporaryAssignments RoleTemporaryAssignment[]
+  accessReviewItems    AccessReviewItem[]
+
+  @@index([archivedAt])
   @@map("role")
 }

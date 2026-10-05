@@ -14,10 +14,8 @@ type AccessTokenPayload = {
   sid?: string;
 };
 
-// What the guards need, loaded from Postgres and cached briefly in Redis.
-// A dead session is cached too (as { alive: false }) so a revoked-but-validly-signed
-// token can't be used to hammer the database.
-export type SessionAuth = { alive: false } | { alive: true; roles: string[]; permissions: string[] };
+export type SessionAuth =
+  { alive: false } | { alive: true; roles: string[]; permissions: string[] };
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy, 'jwt-access') {
@@ -35,10 +33,6 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt-access') {
     });
   }
 
-  // A valid signature only proves the token was issued once. The session must still exist
-  // and the user must still be active, and roles/permissions come from the database (via a
-  // short-lived cache), not from the token, so logout, deactivation, password change and
-  // role changes take effect within seconds instead of when the access token expires.
   async validate(payload: AccessTokenPayload) {
     // Every token issued by TokenUtil carries a session id. One without it predates this
     // check; the client gets a new one through /refresh.

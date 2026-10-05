@@ -25,9 +25,12 @@ import {
   AssignPermissionsDto,
   RevokePermissionsDto,
   SetPermissionsDto,
+  SimulatePermissionDto,
+  PermissionDiffQueryDto,
 } from '../dto/permission.dto';
 
 import { isPermissionLockedRole } from '../util/role-protection.util';
+import { findDutyConflicts, isSensitivePermission } from 'src/common/utils/permission-risk.util';
 
 // Permission table is seeded 1:1 from PermissionsEnum; rolePermission is the
 // (roleId, permissionId) join table. Requires the AuditEventEnum additions.
@@ -170,19 +173,6 @@ export class PermissionService {
     return permissions;
   }
 
-  // GAP FIX #2: permissions are baked into the JWT at login, so a change to a
-  // role used to have no effect until the token expired.
-  //
-  //  - revokeSessions=true  (something was REMOVED): delete every session of
-  //    every holder, so their refresh token dies and the next login/refresh
-  //    rebuilds permissions from the DB. Sessions are deleted (not marked
-  //    revokedAt) because AuthService.refresh() treats a revokedAt session as
-  //    a stolen-token replay and raises a false SECURITY_ALERT.
-  //  - revokeSessions=false (only ADDED): just purge the Redis profile/session
-  //    cache; holders pick the new permission up on next refresh.
-  //
-  // Failures here must not undo a committed permission change, so they are
-  // logged and reported in the audit metadata instead of thrown.
   private async invalidateRoleHolders(
     roleId: string,
     revokeSessions: boolean,
@@ -377,11 +367,7 @@ export class PermissionService {
     roleId: string,
     data: RevokePermissionsDto,
   ): Promise<Permission[]> {
-    const role = await this.loadRoleOrThrow(
-      actor,
-      roleId,
-      AuditEventEnum.PERMISSIONS_BULK_REVOKED,
-    );
+    const role = await this.loadRoleOrThrow(actor, roleId, AuditEventEnum.PERMISSIONS_BULK_REVOKED);
 
     this.assertPermissionsEditable(
       actor,
@@ -428,9 +414,6 @@ export class PermissionService {
     return this.findForRole(roleId);
   }
 
-  // Replace the role's entire permission list in ONE serializable transaction.
-  // GAP FIX: the current-state read used to happen outside the transaction, so
-  // two concurrent PUTs computed diffs from stale data (last write silently won).
   async setForRole(
     actor: CurrentUserDto,
     roleId: string,
@@ -615,5 +598,373 @@ export class PermissionService {
     });
 
     return { message: 'permission_revoked' };
+  }
+
+  private groupOf(name: string): string {
+    const cut = name.indexOf('_');
+    return cut > 0 ? name.slice(0, cut) : name;
+  }
+
+  // AR-47
+  async groups() {
+    const permissions = await this.prisma.permission.findMany({
+      orderBy: { name: 'asc' },
+      select: { id: true, name: true, description: true },
+    });
+
+    const groups = new Map<string, typeof permissions>();
+
+    for (const permission of permissions) {
+      const key = this.groupOf(permission.name);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(permission);
+    }
+
+    return [...groups.entries()].map(([group, items]) => ({
+      group,
+      count: items.length,
+      permissions: items,
+    }));
+  }
+
+  // AR-48
+  async findOneWithRoles(name: PermissionsEnum) {
+    const permission = await this.prisma.permission.findUnique({
+      where: { name },
+      include: {
+        rolePermissions: { select: { role: { select: { id: true, name: true } } } },
+      },
+    });
+
+    if (!permission) {
+      throw new NotFoundException('permission_not_found');
+    }
+
+    return {
+      id: permission.id,
+      name: permission.name,
+      description: permission.description,
+      group: this.groupOf(permission.name),
+      sensitive: isSensitivePermission(permission.name),
+      roles: permission.rolePermissions
+        .map((rp) => rp.role)
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    };
+  }
+
+  // AR-49. Each role lists the permission names it holds; the client draws the grid.
+  async matrix() {
+    const [permissions, roles] = await Promise.all([
+      this.prisma.permission.findMany({ orderBy: { name: 'asc' }, select: { name: true } }),
+      this.prisma.role.findMany({
+        orderBy: { name: 'asc' },
+        select: {
+          id: true,
+          name: true,
+          archivedAt: true,
+          rolePermissions: { select: { permission: { select: { name: true } } } },
+        },
+      }),
+    ]);
+
+    return {
+      permissions: permissions.map((p) => p.name),
+      roles: roles.map((role) => ({
+        id: role.id,
+        name: role.name,
+        archived: role.archivedAt !== null,
+        granted: role.rolePermissions.map((rp) => rp.permission.name).sort(),
+      })),
+    };
+  }
+
+  // AR-50. Route usage is not checked here: that needs the route metadata scan,
+  // which this service cannot see. Only "held by no role" is reported.
+  async unused() {
+    const permissions = await this.prisma.permission.findMany({
+      where: { rolePermissions: { none: {} } },
+      orderBy: { name: 'asc' },
+      select: { id: true, name: true, description: true },
+    });
+
+    return { heldByNoRole: permissions, routeUsageChecked: false };
+  }
+
+  // AR-51. Adds any PermissionsEnum value missing from the table. Never deletes or edits rows.
+  async sync(actor: CurrentUserDto) {
+    const wanted = Object.values(PermissionsEnum) as string[];
+
+    const existing = await this.prisma.permission.findMany({ select: { name: true } });
+    const existingNames = new Set(existing.map((p) => p.name));
+
+    const missing = wanted.filter((name) => !existingNames.has(name));
+    const orphaned = [...existingNames].filter((name) => !wanted.includes(name));
+
+    if (missing.length > 0) {
+      await this.prisma.permission.createMany({
+        data: missing.map((name) => ({ name })),
+        skipDuplicates: true,
+      });
+    }
+
+    this.emitAudit({
+      userId: actor.id,
+      actorType: resolveActorType(actor.roles ?? []),
+      action: AuditEventEnum.PERMISSIONS_SYNCED,
+      entity: 'Permission',
+      entityId: null,
+      diff: { result: 'success', created: missing, orphaned },
+      metadata: { createdCount: missing.length, orphanedCount: orphaned.length },
+    });
+
+    return { created: missing, orphanedInDatabase: orphaned, total: wanted.length };
+  }
+
+  // AR-52. Read-only. Pass roleIds, or a userId to test that person's current roles.
+  async simulate(data: SimulatePermissionDto) {
+    let roleFilter: Prisma.RoleWhereInput;
+    let subject: { type: 'roles' | 'user'; id?: string };
+
+    if (data.userId) {
+      const user = await this.prisma.user.findUnique({
+        where: { id: data.userId },
+        select: { id: true },
+      });
+      if (!user) {
+        throw new NotFoundException('user_not_found');
+      }
+      roleFilter = { userRoles: { some: { userId: user.id } } };
+      subject = { type: 'user', id: user.id };
+    } else if (data.roleIds && data.roleIds.length > 0) {
+      roleFilter = { id: { in: data.roleIds } };
+      subject = { type: 'roles' };
+    } else {
+      throw new BadRequestException('role_ids_or_user_id_required');
+    }
+
+    const roles = await this.prisma.role.findMany({
+      where: roleFilter,
+      select: {
+        id: true,
+        name: true,
+        rolePermissions: {
+          where: { permission: { name: data.permission } },
+          select: { permissionId: true },
+        },
+      },
+    });
+
+    if (data.roleIds && !data.userId && roles.length !== new Set(data.roleIds).size) {
+      throw new NotFoundException('role_not_found');
+    }
+
+    const grantedBy = roles.filter((r) => r.rolePermissions.length > 0).map((r) => r.name);
+
+    return {
+      permission: data.permission,
+      subject,
+      decision: grantedBy.length > 0 ? 'allow' : 'deny',
+      grantedBy,
+      evaluatedRoles: roles.map((r) => r.name),
+    };
+  }
+
+  // AR-53
+  async sensitive() {
+    const permissions = await this.prisma.permission.findMany({
+      orderBy: { name: 'asc' },
+      select: {
+        id: true,
+        name: true,
+        description: true,
+        rolePermissions: { select: { role: { select: { id: true, name: true } } } },
+      },
+    });
+
+    return permissions
+      .filter((p) => isSensitivePermission(p.name))
+      .map((p) => ({
+        id: p.id,
+        name: p.name,
+        description: p.description,
+        roles: p.rolePermissions.map((rp) => rp.role),
+      }));
+  }
+
+  // AR-54. Conflicts inside one role, and conflicts that appear when a person holds several roles.
+  async conflicts() {
+    const roles = await this.prisma.role.findMany({
+      select: {
+        id: true,
+        name: true,
+        rolePermissions: { select: { permission: { select: { name: true } } } },
+      },
+    });
+
+    const permissionsByRole = new Map(
+      roles.map((r) => [r.id, new Set(r.rolePermissions.map((rp) => rp.permission.name))]),
+    );
+
+    const withinRole = roles
+      .map((role) => ({
+        role: { id: role.id, name: role.name },
+        conflicts: findDutyConflicts(permissionsByRole.get(role.id)!),
+      }))
+      .filter((entry) => entry.conflicts.length > 0);
+
+    // Staff only (anyone holding more than one role), capped so the call stays fast.
+    const staff = await this.prisma.user.findMany({
+      where: { userRoles: { some: {} }, isActive: true },
+      take: 500,
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        userRoles: { select: { role: { select: { id: true, name: true } } } },
+      },
+    });
+
+    const acrossRoles = staff
+      .filter((user) => user.userRoles.length > 1)
+      .map((user) => {
+        const union = new Set<string>();
+        for (const ur of user.userRoles) {
+          for (const name of permissionsByRole.get(ur.role.id) ?? []) union.add(name);
+        }
+        return {
+          user: { id: user.id, name: user.name, email: user.email },
+          roles: user.userRoles.map((ur) => ur.role.name),
+          conflicts: findDutyConflicts(union),
+        };
+      })
+      .filter((entry) => entry.conflicts.length > 0);
+
+    // Conflicts already inside one role would repeat for every holder; keep the second list to
+    // conflicts that only appear because of the combination.
+    const roleConflictKeys = new Set(
+      withinRole.flatMap((e) => e.conflicts.map((c) => `${e.role.id}:${c.permissions.join('|')}`)),
+    );
+
+    return {
+      withinRole,
+      acrossRoles: acrossRoles.filter((entry) => entry.roles.length > 1 || !roleConflictKeys.size),
+    };
+  }
+
+  // AR-55. Built from audit events, so it shows what changed and when, not a full before/after
+  // snapshot of the permission set.
+  async diffForUser(userId: string, query: PermissionDiffQueryDto) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { id: true } });
+
+    if (!user) {
+      throw new NotFoundException('user_not_found');
+    }
+
+    const from = new Date(query.from);
+    const to = query.to ? new Date(query.to) : new Date();
+
+    if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || from > to) {
+      throw new BadRequestException('invalid_period');
+    }
+
+    const heldRoleIds = (
+      await this.prisma.userRole.findMany({ where: { userId }, select: { roleId: true } })
+    ).map((ur) => ur.roleId);
+
+    const events = await this.prisma.auditLog.findMany({
+      where: {
+        createdAt: { gte: from, lte: to },
+        outcome: 'SUCCESS',
+        OR: [
+          {
+            targetUserId: userId,
+            action: {
+              in: [
+                AuditEventEnum.USER_ROLE_ASSIGNED,
+                AuditEventEnum.USER_ROLE_REVOKED,
+                AuditEventEnum.ROLE_TEMPORARY_GRANTED,
+                AuditEventEnum.ROLE_TEMPORARY_EXPIRED,
+                AuditEventEnum.ROLE_ASSIGNMENT_APPROVED,
+              ],
+            },
+          },
+          {
+            entity: 'Role',
+            entityId: { in: heldRoleIds },
+            action: {
+              in: [
+                AuditEventEnum.PERMISSIONS_SET_REPLACED,
+                AuditEventEnum.PERMISSION_REVOKED,
+                AuditEventEnum.PERMISSION_ASSIGNED,
+                AuditEventEnum.PERMISSIONS_BULK_REVOKED,
+              ],
+            },
+          },
+        ],
+      },
+      orderBy: { createdAt: 'asc' },
+      take: 500,
+      select: {
+        createdAt: true,
+        action: true,
+        entity: true,
+        entityId: true,
+        entityLabel: true,
+        diff: true,
+      },
+    });
+
+    return {
+      userId,
+      period: { from, to },
+      currentEffective: (await this.getEffectivePermissionsForUser(userId)).map((p) => p.name),
+      events,
+    };
+  }
+
+  // AR-81
+  async statsUsage() {
+    const permissions = await this.prisma.permission.findMany({
+      orderBy: { name: 'asc' },
+      select: {
+        name: true,
+        rolePermissions: {
+          select: { role: { select: { id: true, _count: { select: { userRoles: true } } } } },
+        },
+      },
+    });
+
+    // Distinct holders per permission need a second pass, since one user can hold several roles.
+    const holders = await this.prisma.userRole.findMany({
+      select: { userId: true, roleId: true },
+    });
+    const usersByRole = new Map<string, Set<string>>();
+    for (const h of holders) {
+      if (!usersByRole.has(h.roleId)) usersByRole.set(h.roleId, new Set());
+      usersByRole.get(h.roleId)!.add(h.userId);
+    }
+
+    const rows = permissions.map((permission) => {
+      const users = new Set<string>();
+      for (const rp of permission.rolePermissions) {
+        for (const id of usersByRole.get(rp.role.id) ?? []) users.add(id);
+      }
+      return {
+        name: permission.name,
+        roleCount: permission.rolePermissions.length,
+        userCount: users.size,
+        sensitive: isSensitivePermission(permission.name),
+      };
+    });
+
+    return {
+      permissions: rows,
+      totals: {
+        permissions: rows.length,
+        heldByNoRole: rows.filter((r) => r.roleCount === 0).length,
+        heldByNoUser: rows.filter((r) => r.userCount === 0).length,
+      },
+      routeUsageChecked: false,
+    };
   }
 }

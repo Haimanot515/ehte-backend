@@ -5,9 +5,16 @@ model Session {
   expiresAt    DateTime
   createdAt    DateTime  @default(now())
   revokedAt    DateTime?
+
+  // Device details for session lists and "revoke all other sessions" (AR-23 … AR-27)
+  ipAddress    String?
+  userAgent    String?
+  deviceLabel  String?
+  lastActiveAt DateTime?
   user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
   @@index([expiresAt])
+  @@index([userId, revokedAt])
   @@map("session")
 }

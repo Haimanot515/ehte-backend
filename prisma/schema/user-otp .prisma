@@ -27,6 +27,7 @@ enum UserOtpPurposeEnum {
   admin_invite_activation
   promotion_verification
   phone_change
+  account_reactivation
 }
 
 enum OtpChannelEnum {

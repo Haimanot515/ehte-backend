@@ -70,7 +70,16 @@ import {
   PromoteUserDto,
   PromoteUserResendDto,
   PromoteVerifyDto,
+  PromoteCancelDto,
+  AdminChangeEmailResendDto,
+  DemoteAdminDto,
+  AdminStatsQueryDto,
+  AdminLoginHistoryQueryDto,
 } from '../dto/admin-auth.dto';
+
+import { RefreshTokenDto } from '../dto/auth.dto';
+import { AuthService } from './auth.service';
+import { CacheService } from 'src/services/redis/cache.service';
 
 type TokenPair = {
   accessToken: string;
@@ -91,6 +100,12 @@ type UserRoleWithPermissions = {
   };
 };
 
+// ── constants for the new admin auth features ──
+const OTP_RESEND_COOLDOWN_MS = 30 * 1000;
+const OTP_RESEND_HOURLY_CAP = 5;
+// Admin login events carry this context in their audit diff (see adminLoginByEmail).
+const ADMIN_LOGIN_CONTEXT = 'admin_login_email';
+
 @Injectable()
 export class AdminAuthService {
   constructor(
@@ -101,6 +116,8 @@ export class AdminAuthService {
     private readonly lockoutUtil: LockoutUtil,
     private readonly tokenUtil: TokenUtil,
     private readonly emailService: EmailService,
+    private readonly authService: AuthService,
+    private readonly cache: CacheService,
   ) {}
 
   private emitAudit(payload: AuditEventPayload): void {
@@ -185,9 +202,6 @@ export class AdminAuthService {
     });
   }
 
-  // GAP FIX #4: was hard-coded to [ADMIN, SUPER_ADMIN], which locked custom roles
-  // (created via POST /roles) out of admin login and every admin password flow.
-  // "Admin" now means "staff": any role other than USER / SYSTEM.
   private hasAdminRole(roles: string[]): boolean {
     return hasStaffRole(roles);
   }
@@ -253,9 +267,6 @@ export class AdminAuthService {
 
     const email = this.normalizeEmailOrThrow(data.email);
 
-    // Any configured role may be granted except USER / SYSTEM (an account with those
-    // would never be able to use the email-based admin login). Existence is checked
-    // against the role table below.
     if (data.roles.some((role) => NON_INVITABLE_ROLE_NAMES.includes(role))) {
       this.emitAudit({
         userId: creator.id,
@@ -1883,5 +1894,673 @@ export class AdminAuthService {
     } catch {
       throw new BadRequestException('invalid_email');
     }
+  }
+
+  private maskEmail(email: string): string {
+    const [local, domain] = email.split('@');
+    if (!domain) return '***';
+    return `${local.slice(0, 1)}***@${domain}`;
+  }
+
+  // AR-13. Undoes a pending promotion: the emailed link stops working and the unverified
+  // email that initiate wrote on the account is cleared. The user keeps their normal account.
+  async promoteUserCancel(
+    actor: CurrentUserDto,
+    data: PromoteCancelDto,
+  ): Promise<{ message: string }> {
+    const actorType = resolveActorType(actor.roles ?? []);
+
+    this.assertSuperAdmin(actor, AuditEventEnum.USER_PROMOTION_CANCELLED);
+
+    const phone = this.normalizePhoneOrThrow(data.phone);
+
+    const user = await this.prisma.user.findUnique({
+      where: { phone },
+      include: { userRoles: { include: { role: true } } },
+    });
+
+    if (!user) {
+      throw new NotFoundException('user_not_found');
+    }
+
+    const roles = user.userRoles.map((userRole) => userRole.role.name);
+
+    if (this.hasAdminRole(roles) || user.isEmailVerified) {
+      this.emitAudit({
+        userId: actor.id,
+        targetUserId: user.id,
+        actorType,
+        action: AuditEventEnum.USER_PROMOTION_CANCELLED,
+        outcome: AuditOutcome.FAILURE,
+        severity: AuditSeverity.WARNING,
+        entity: 'User',
+        entityId: user.id,
+        entityLabel: this.userLabel(user),
+        diff: { result: 'failure', reason: 'promotion_already_completed' },
+      });
+      throw new BadRequestException('promotion_already_completed');
+    }
+
+    const pending = await this.prisma.userOtp.findFirst({
+      where: { userId: user.id, purpose: UserOtpPurposeEnum.promotion_verification, usedAt: null },
+      select: { id: true },
+    });
+
+    if (!pending) {
+      throw new NotFoundException('no_pending_promotion');
+    }
+
+    const cancelledEmail = user.email;
+
+    await this.prisma.$transaction([
+      this.prisma.userOtp.updateMany({
+        where: {
+          userId: user.id,
+          purpose: UserOtpPurposeEnum.promotion_verification,
+          usedAt: null,
+        },
+        data: { usedAt: new Date() },
+      }),
+      this.prisma.user.update({ where: { id: user.id }, data: { email: null } }),
+    ]);
+
+    this.emitAudit({
+      userId: actor.id,
+      targetUserId: user.id,
+      actorType,
+      action: AuditEventEnum.USER_PROMOTION_CANCELLED,
+      entity: 'User',
+      entityId: user.id,
+      entityLabel: this.userLabel(user),
+      diff: { result: 'success', context: 'promotion_cancelled' },
+      metadata: { cancelledEmail },
+    });
+
+    return { message: 'promotion_cancelled' };
+  }
+
+  // AR-14
+  async listPendingPromotions(actor: CurrentUserDto) {
+    this.assertSuperAdmin(actor, AuditEventEnum.USER_PROMOTION_INITIATED);
+
+    const pending = await this.prisma.userOtp.findMany({
+      where: { purpose: UserOtpPurposeEnum.promotion_verification, usedAt: null },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        createdAt: true,
+        expiresAt: true,
+        user: { select: { id: true, name: true, phone: true, email: true } },
+      },
+    });
+
+    const now = new Date();
+
+    return pending.map((item) => ({
+      id: item.id,
+      userId: item.user.id,
+      name: item.user.name,
+      phone: item.user.phone,
+      email: item.user.email,
+      createdAt: item.createdAt,
+      expiresAt: item.expiresAt,
+      expired: item.expiresAt < now,
+    }));
+  }
+
+  // AR-15. A registration is pending while the invited admin has not set a password yet.
+  async listPendingRegistrations(actor: CurrentUserDto) {
+    this.assertSuperAdmin(actor, AuditEventEnum.ADMIN_REGISTERED);
+
+    const pending = await this.prisma.user.findMany({
+      where: { passwordHash: null, inviteTokenHash: { not: null } },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        createdAt: true,
+        inviteTokenExpiresAt: true,
+      },
+    });
+
+    const now = new Date();
+
+    return pending.map((item) => ({
+      id: item.id,
+      name: item.name,
+      email: item.email,
+      createdAt: item.createdAt,
+      expiresAt: item.inviteTokenExpiresAt,
+      expired: item.inviteTokenExpiresAt ? item.inviteTokenExpiresAt < now : true,
+    }));
+  }
+
+  // AR-16. Same empty-handed refusals as adminForgotPassword, plus a 30-second gap and an hourly cap.
+  async adminResendForgotPasswordOtp(verificationId: string): Promise<{ verificationId: string }> {
+    const oldOtp = await this.prisma.userOtp.findUnique({
+      where: { id: verificationId },
+      include: {
+        user: {
+          select: {
+            id: true,
+            email: true,
+            isActive: true,
+            userRoles: { select: { role: { select: { name: true } } } },
+          },
+        },
+      },
+    });
+
+    if (!oldOtp || oldOtp.purpose !== UserOtpPurposeEnum.password_reset) {
+      throw new BadRequestException('invalid_verification');
+    }
+
+    // Used up by a reset, or replaced by a newer code: either way this id is finished.
+    if (oldOtp.usedAt) {
+      throw new BadRequestException('invalid_verification');
+    }
+
+    const roles = oldOtp.user.userRoles.map((userRole) => userRole.role.name);
+
+    if (!oldOtp.user.isActive || !oldOtp.user.email || !this.hasAdminRole(roles)) {
+      throw new BadRequestException('invalid_verification');
+    }
+
+    // OtpUtil silently returns the SAME id inside its own cooldown, so refuse out loud instead.
+    const cooldownMs = this.configService.get<number>('otp.resendCooldownSeconds', 60) * 1000;
+
+    if (Date.now() - oldOtp.createdAt.getTime() < cooldownMs) {
+      throw new BadRequestException('resend_too_soon');
+    }
+
+    const recent = await this.prisma.userOtp.count({
+      where: {
+        userId: oldOtp.userId,
+        purpose: UserOtpPurposeEnum.password_reset,
+        createdAt: { gt: new Date(Date.now() - 60 * 60 * 1000) },
+      },
+    });
+
+    if (recent >= OTP_RESEND_HOURLY_CAP) {
+      throw new BadRequestException('too_many_resend_requests');
+    }
+
+    const { verificationId: newVerificationId } = await this.otpUtil.issueAndSendOtp(
+      oldOtp.userId,
+      oldOtp.user.email,
+      UserOtpPurposeEnum.password_reset,
+      OtpChannelEnum.email,
+    );
+
+    return { verificationId: newVerificationId };
+  }
+
+  // AR-17. Sends a fresh link to the pending new email; the old link stops working.
+  async adminChangeEmailResend(
+    actor: CurrentUserDto,
+    data: AdminChangeEmailResendDto,
+  ): Promise<{ message: string }> {
+    const actorType = resolveActorType(actor.roles ?? []);
+
+    this.assertActorIsAdmin(actor, AuditEventEnum.ADMIN_EMAIL_CHANGE_INITIATED);
+
+    const admin = await this.prisma.user.findUnique({ where: { id: actor.id } });
+
+    if (!admin) {
+      throw new NotFoundException('user_not_found');
+    }
+
+    // An email change in progress is an unverified email on the account.
+    if (!admin.email || admin.isEmailVerified) {
+      throw new BadRequestException('no_pending_email_change');
+    }
+
+    if (data.newEmail && this.normalizeEmailOrThrow(data.newEmail) !== admin.email) {
+      throw new BadRequestException('email_does_not_match_pending_change');
+    }
+
+    const lastOtp = await this.prisma.userOtp.findFirst({
+      where: { userId: admin.id, purpose: UserOtpPurposeEnum.email_verification },
+      orderBy: { createdAt: 'desc' },
+      select: { createdAt: true },
+    });
+
+    if (lastOtp && Date.now() - lastOtp.createdAt.getTime() < OTP_RESEND_COOLDOWN_MS) {
+      throw new BadRequestException('resend_too_soon');
+    }
+
+    const rawToken = randomBytes(32).toString('hex');
+    const tokenHash = this.tokenUtil.hashOpaqueToken(rawToken, 'email_change');
+    const expiresAt = new Date(Date.now() + EMAIL_CHANGE_TOKEN_EXPIRES_MINUTES * 60 * 1000);
+
+    await this.prisma.userOtp.updateMany({
+      where: { userId: admin.id, purpose: UserOtpPurposeEnum.email_verification, usedAt: null },
+      data: { usedAt: new Date() },
+    });
+
+    await this.prisma.userOtp.create({
+      data: {
+        userId: admin.id,
+        otpHash: tokenHash,
+        purpose: UserOtpPurposeEnum.email_verification,
+        channel: OtpChannelEnum.email,
+        expiresAt,
+      },
+    });
+
+    const appUrl = this.configService.get<string>('app.adminUrl', 'https://ehte.org');
+    const changeEmailLink = `${appUrl}/admin/change-email/verify?token=${rawToken}`;
+    const expiresInHours = Math.round(EMAIL_CHANGE_TOKEN_EXPIRES_MINUTES / 60) || 1;
+
+    try {
+      await this.emailService.send(
+        admin.email,
+        renderEmailChangeVerificationSubject(),
+        renderEmailChangeVerificationHtml({ changeEmailLink, expiresInHours }),
+      );
+    } catch (error) {
+      console.error(
+        `[EHTE EMAIL] Failed to resend email-change verification to ${admin.email}`,
+        error,
+      );
+    }
+
+    if (this.configService.get<boolean>('app.debug', false)) {
+      console.log(`[EHTE DEV] Resent email-change link for ${admin.email}: ${changeEmailLink}`);
+    }
+
+    this.emitAudit({
+      userId: admin.id,
+      actorType,
+      action: AuditEventEnum.ADMIN_EMAIL_CHANGE_INITIATED,
+      entity: 'User',
+      entityId: admin.id,
+      entityLabel: this.userLabel(admin),
+      diff: { result: 'success', context: 'admin_email_change_resent' },
+      metadata: { pendingEmail: this.maskEmail(admin.email) },
+    });
+
+    return { message: 'email_change_verification_resent' };
+  }
+
+  // AR-18 / AR-19 / AR-20. These reuse the user-side logic, which already handles the refresh
+  // token, the session cache and the audit trail, so there is one implementation to maintain.
+  async adminLogout(actor: CurrentUserDto, req: any): Promise<{ message: string }> {
+    this.assertActorIsAdmin(actor, AuditEventEnum.LOGOUT);
+    return this.authService.logout(actor, req);
+  }
+
+  async adminRefresh(data: RefreshTokenDto): Promise<TokenPair> {
+    return this.authService.refresh(data);
+  }
+
+  async adminLogoutAll(actor: CurrentUserDto, req: any) {
+    this.assertActorIsAdmin(actor, AuditEventEnum.LOGOUT);
+    return this.authService.logoutAll(actor, req);
+  }
+
+  // AR-21
+  async adminMe(actor: CurrentUserDto) {
+    this.assertActorIsAdmin(actor, AuditEventEnum.LOGIN_SUCCESS);
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: actor.id },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        phone: true,
+        isActive: true,
+        isEmailVerified: true,
+        createdAt: true,
+        userRoles: {
+          select: {
+            role: {
+              select: {
+                name: true,
+                rolePermissions: { select: { permission: { select: { name: true } } } },
+              },
+            },
+          },
+        },
+        twoFactorSecret: { select: { isEnabled: true } },
+      },
+    });
+
+    if (!user) {
+      throw new NotFoundException('user_not_found');
+    }
+
+    // The newest sign-in is this session's own; the one before it is the "last sign-in" to show.
+    const signIns = await this.prisma.auditLog.findMany({
+      where: { userId: actor.id, action: AuditEventEnum.LOGIN_SUCCESS },
+      orderBy: { createdAt: 'desc' },
+      take: 2,
+      select: { createdAt: true, ipAddress: true, country: true, city: true, userAgent: true },
+    });
+
+    const { userRoles, twoFactorSecret, ...profile } = user;
+
+    return {
+      ...profile,
+      roles: userRoles.map((userRole) => userRole.role.name),
+      permissions: this.derivePermissions(userRoles).sort(),
+      twoFactorEnabled: Boolean(twoFactorSecret?.isEnabled),
+      currentSignIn: signIns[0] ?? null,
+      lastSignIn: signIns[1] ?? null,
+    };
+  }
+
+  // AR-22. Removes only the ADMIN role. The user keeps every other role; if that would leave
+  // them with none, they go back to USER. Sessions are ended so the old permissions stop at once.
+  async demoteAdmin(
+    actor: CurrentUserDto,
+    data: DemoteAdminDto,
+  ): Promise<{ message: string; remainingRoles: string[] }> {
+    const actorType = resolveActorType(actor.roles ?? []);
+
+    this.assertSuperAdmin(actor, AuditEventEnum.ADMIN_DEMOTED);
+
+    const reason = (data.reason ?? '').trim();
+
+    if (reason.length < 5) {
+      throw new BadRequestException('reason_required');
+    }
+
+    const deny = (code: string, targetId: string, label?: string): never => {
+      this.emitAudit({
+        userId: actor.id,
+        targetUserId: targetId,
+        actorType,
+        action: AuditEventEnum.ADMIN_DEMOTED,
+        outcome: AuditOutcome.DENIED,
+        severity: AuditSeverity.WARNING,
+        entity: 'User',
+        entityId: targetId,
+        entityLabel: label,
+        diff: { result: 'denied', reason: code },
+      });
+      throw new BadRequestException(code);
+    };
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: data.userId },
+      include: { userRoles: { include: { role: true } } },
+    });
+
+    if (!user) {
+      throw new NotFoundException('user_not_found');
+    }
+
+    const roles = user.userRoles.map((userRole) => userRole.role.name);
+
+    if (user.id === actor.id) deny('cannot_demote_self', user.id, this.userLabel(user));
+
+    // The last Super Admin (and any Super Admin) is never demoted through this route.
+    if (roles.includes(RolesEnum.SUPER_ADMIN)) {
+      deny('cannot_demote_super_admin', user.id, this.userLabel(user));
+    }
+
+    const adminRow = user.userRoles.find((userRole) => userRole.role.name === RolesEnum.ADMIN);
+
+    if (!adminRow) deny('user_is_not_admin', user.id, this.userLabel(user));
+
+    const remaining = roles.filter((name) => name !== RolesEnum.ADMIN);
+    const needsUserRole = remaining.length === 0;
+
+    let sessionsRevoked = 0;
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.userRole.delete({ where: { id: adminRow!.id } });
+
+      if (needsUserRole) {
+        const userRole = await tx.role.findUnique({ where: { name: RolesEnum.USER } });
+
+        if (!userRole) {
+          throw new BadRequestException('user_role_not_configured');
+        }
+
+        await tx.userRole.create({
+          data: { userId: user.id, roleId: userRole.id, assignedBy: actor.id },
+        });
+      }
+
+      const revoked = await tx.session.deleteMany({ where: { userId: user.id } });
+      sessionsRevoked = revoked.count;
+    });
+
+    await this.cache.purgeUserCache(user.id);
+
+    const remainingRoles = needsUserRole ? [RolesEnum.USER] : remaining;
+
+    this.emitAudit({
+      userId: actor.id,
+      targetUserId: user.id,
+      actorType,
+      action: AuditEventEnum.ADMIN_DEMOTED,
+      entity: 'User',
+      entityId: user.id,
+      entityLabel: this.userLabel(user),
+      diff: {
+        result: 'success',
+        reason,
+        previousRoles: roles,
+        removedRole: RolesEnum.ADMIN,
+        remainingRoles,
+      },
+      metadata: { sessionsRevoked },
+    });
+
+    return { message: 'admin_demoted', remainingRoles };
+  }
+
+  // AR-24
+  async listMySessions(actor: CurrentUserDto) {
+    this.assertActorIsAdmin(actor, AuditEventEnum.LOGIN_SUCCESS);
+
+    return this.prisma.session.findMany({
+      where: { userId: actor.id, revokedAt: null, expiresAt: { gt: new Date() } },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        createdAt: true,
+        expiresAt: true,
+        lastActiveAt: true,
+        deviceLabel: true,
+        userAgent: true,
+        ipAddress: true,
+      },
+    });
+  }
+
+  // AR-25. Deletes the session; marking it revoked would look like a stolen token on refresh.
+  async revokeMySession(actor: CurrentUserDto, sessionId: string): Promise<{ message: string }> {
+    this.assertActorIsAdmin(actor, AuditEventEnum.ADMIN_SESSION_REVOKED);
+
+    const deleted = await this.prisma.session.deleteMany({
+      where: { id: sessionId, userId: actor.id },
+    });
+
+    if (deleted.count === 0) {
+      throw new NotFoundException('session_not_found');
+    }
+
+    await this.cache.purgeUserCache(actor.id);
+
+    this.emitAudit({
+      userId: actor.id,
+      actorType: resolveActorType(actor.roles ?? []),
+      action: AuditEventEnum.ADMIN_SESSION_REVOKED,
+      entity: 'Session',
+      entityId: sessionId,
+      diff: { result: 'success' },
+    });
+
+    return { message: 'session_revoked' };
+  }
+
+  // AR-28. Built from the audit trail, so it needs no extra writes in the login code.
+  async loginHistory(actor: CurrentUserDto, query: AdminLoginHistoryQueryDto) {
+    this.assertSuperAdmin(actor, AuditEventEnum.LOGIN_SUCCESS);
+
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 20;
+
+    const actions =
+      query.result === 'SUCCESS'
+        ? [AuditEventEnum.LOGIN_SUCCESS]
+        : query.result
+          ? [AuditEventEnum.LOGIN_FAILED]
+          : [AuditEventEnum.LOGIN_SUCCESS, AuditEventEnum.LOGIN_FAILED];
+
+    const where: Prisma.AuditLogWhereInput = {
+      action: { in: actions },
+      diff: { path: ['context'], equals: ADMIN_LOGIN_CONTEXT },
+      ...(query.adminId ? { userId: query.adminId } : {}),
+      ...(query.from || query.to
+        ? {
+            createdAt: {
+              ...(query.from ? { gte: new Date(query.from) } : {}),
+              ...(query.to ? { lte: new Date(query.to) } : {}),
+            },
+          }
+        : {}),
+    };
+
+    const [rows, total] = await Promise.all([
+      this.prisma.auditLog.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+        select: {
+          id: true,
+          createdAt: true,
+          action: true,
+          userId: true,
+          actorName: true,
+          entityLabel: true,
+          ipAddress: true,
+          userAgent: true,
+          country: true,
+          city: true,
+          diff: true,
+        },
+      }),
+      this.prisma.auditLog.count({ where }),
+    ]);
+
+    const items = rows.map(({ diff, action, ...row }) => {
+      const reason =
+        diff && typeof diff === 'object' && !Array.isArray(diff) && typeof diff.reason === 'string'
+          ? diff.reason
+          : null;
+      const result =
+        action === AuditEventEnum.LOGIN_SUCCESS
+          ? 'SUCCESS'
+          : reason && reason.includes('lock')
+            ? 'LOCKED'
+            : 'FAILED';
+
+      return { ...row, result, reason };
+    });
+
+    return {
+      items: query.result === 'LOCKED' ? items.filter((i) => i.result === 'LOCKED') : items,
+      total,
+      page,
+      limit,
+    };
+  }
+
+  // AR-78
+  async statsLogins(actor: CurrentUserDto, query: AdminStatsQueryDto) {
+    this.assertSuperAdmin(actor, AuditEventEnum.LOGIN_SUCCESS);
+
+    const to = query.to ? new Date(query.to) : new Date();
+    const from = query.from
+      ? new Date(query.from)
+      : new Date(to.getTime() - 30 * 24 * 60 * 60 * 1000);
+    const interval =
+      query.interval === 'week' || query.interval === 'month' ? query.interval : 'day';
+
+    if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || from > to) {
+      throw new BadRequestException('invalid_period');
+    }
+
+    const rows = await this.prisma.$queryRaw<{ bucket: Date; action: string; count: bigint }[]>(
+      Prisma.sql`
+        SELECT date_trunc(${interval}::text, "createdAt") AS bucket, action, COUNT(*)::bigint AS count
+        FROM audit_log
+        WHERE "createdAt" >= ${from}
+          AND "createdAt" <= ${to}
+          AND action IN (${Prisma.join([AuditEventEnum.LOGIN_SUCCESS, AuditEventEnum.LOGIN_FAILED])})
+          AND diff->>'context' = ${ADMIN_LOGIN_CONTEXT}
+        GROUP BY 1, 2
+        ORDER BY 1
+      `,
+    );
+
+    const buckets = new Map<string, { date: string; signIns: number; failures: number }>();
+
+    for (const row of rows) {
+      const key = row.bucket.toISOString();
+      if (!buckets.has(key)) buckets.set(key, { date: key, signIns: 0, failures: 0 });
+      const bucket = buckets.get(key)!;
+      if (row.action === AuditEventEnum.LOGIN_SUCCESS) bucket.signIns = Number(row.count);
+      else bucket.failures = Number(row.count);
+    }
+
+    const series = [...buckets.values()];
+
+    const lockedNow = await this.prisma.user.count({
+      where: {
+        lockedUntil: { gt: new Date() },
+        userRoles: { some: { role: { name: { notIn: NON_INVITABLE_ROLE_NAMES } } } },
+      },
+    });
+
+    return {
+      period: { from, to, interval },
+      totals: {
+        signIns: series.reduce((sum, b) => sum + b.signIns, 0),
+        failures: series.reduce((sum, b) => sum + b.failures, 0),
+        // Lockouts are a point-in-time count: admin accounts locked right now.
+        adminsLockedNow: lockedNow,
+      },
+      series,
+    };
+  }
+
+  // AR-79. Staff roles only; the USER role is excluded so the counts stay fast and meaningful.
+  async stats2faAdoption(actor: CurrentUserDto) {
+    this.assertSuperAdmin(actor, AuditEventEnum.LOGIN_SUCCESS);
+
+    const roles = await this.prisma.role.findMany({
+      where: { name: { notIn: NON_INVITABLE_ROLE_NAMES } },
+      orderBy: { name: 'asc' },
+      select: { id: true, name: true },
+    });
+
+    const rows = await Promise.all(
+      roles.map(async (role) => {
+        const [total, enrolled] = await Promise.all([
+          this.prisma.userRole.count({ where: { roleId: role.id } }),
+          this.prisma.userRole.count({
+            where: { roleId: role.id, user: { twoFactorSecret: { isEnabled: true } } },
+          }),
+        ]);
+
+        return {
+          role: role.name,
+          accounts: total,
+          withTwoFactor: enrolled,
+          percent: total === 0 ? 0 : Math.round((enrolled / total) * 1000) / 10,
+        };
+      }),
+    );
+
+    return { roles: rows };
   }
 }

@@ -6,10 +6,6 @@ import { Response } from 'express';
 
 import { AllowAnonymous } from 'src/common/decorators/public.decorator';
 
-// Public smart-redirect endpoint the Ehte QR code points to. No Swagger
-// tags/operations — this is not a documented API contract, just a
-// device-detecting redirect, so it stays excluded from /docs like the
-// rest of the QR/app-access surface.
 @ApiExcludeController()
 @AllowAnonymous()
 @Throttle({ default: { limit: 120, ttl: 60000 } })

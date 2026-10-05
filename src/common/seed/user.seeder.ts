@@ -5,22 +5,6 @@ import * as bcrypt from 'bcrypt';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RolesEnum } from '../enums/roles.enum';
 
-// Seeds the initial USER account on boot, keyed by PHONE.
-// This matches the USER authentication flow in AuthController/AuthService.
-//
-// Configure via:
-// USER_PHONE     (default: +251900000000)
-// USER_NAME      (default: Ehte Test User)
-// USER_PASSWORD  (default: P@ssw0rd)
-//
-// All three fall back to the defaults below if the corresponding
-// env var is missing from .env — so this seeder never throws just
-// because .env is incomplete. It DOES throw if the RolesEnum.USER
-// role row doesn't exist yet (see below) — that one's load-bearing.
-//
-// NOTE: role lookup now happens BEFORE user creation, so a missing
-// USER role fails fast instead of leaving a roleless user behind.
-
 @Injectable()
 export class UserSeeder {
   private readonly logger = new Logger(UserSeeder.name);

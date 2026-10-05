@@ -27,10 +27,6 @@ import { NotificationPriority, NotificationType } from '@prisma/client';
 
 import { GetAuditLogsDto } from './audit-log.dto';
 
-// ─────────────────────────────────────────────
-// Shared constants
-// ─────────────────────────────────────────────
-
 export const EVENT_CATEGORIES = ['USER', 'ADMIN', 'SUPER_ADMIN', 'SYSTEM'] as const;
 export type EventCategoryValue = (typeof EVENT_CATEGORIES)[number];
 
@@ -47,6 +43,9 @@ export const BROADCAST_STATUSES = [
   'COMPLETED',
   'CANCELLED',
   'FAILED',
+  'AWAITING_APPROVAL',
+  'REJECTED',
+  'STOPPED',
 ] as const;
 
 /** Channels that leave the app. In-app is always on and has no setting. */
@@ -66,10 +65,6 @@ const parseBoolean = ({ value }: { value: unknown }) => {
   if (value === 'false' || value === false) return false;
   return value;
 };
-
-// ─────────────────────────────────────────────
-// Paging
-// ─────────────────────────────────────────────
 
 /**
  * Cursor paging when `cursor` is set or `page` is absent (no COUNT).
@@ -96,10 +91,6 @@ export class NotificationPagingDto {
   @Max(100)
   limit?: number = 20;
 }
-
-// ─────────────────────────────────────────────
-// Send
-// ─────────────────────────────────────────────
 
 /**
  * Body of POST /notifications/admin.
@@ -354,10 +345,6 @@ export class NotificationSummaryQueryDto {
   entity?: string;
 }
 
-// ─────────────────────────────────────────────
-// Read
-// ─────────────────────────────────────────────
-
 export class MarkBulkReadDto {
   @ApiProperty({
     type: [String],
@@ -393,10 +380,6 @@ export class NotificationQueryDto extends NotificationPagingDto {
   @IsBoolean()
   isRead?: boolean;
 }
-
-// ─────────────────────────────────────────────
-// Preferences and devices
-// ─────────────────────────────────────────────
 
 /**
  * One notification type. For each channel:
@@ -467,10 +450,6 @@ export class RegisterDeviceDto {
   platform: (typeof DEVICE_PLATFORMS)[number];
 }
 
-// ─────────────────────────────────────────────
-// Deliveries
-// ─────────────────────────────────────────────
-
 export class FailedDeliveriesQueryDto extends NotificationPagingDto {
   @ApiPropertyOptional({ enum: DELIVERY_CHANNELS })
   @IsOptional()
@@ -486,10 +465,6 @@ export class RetryDeliveriesDto {
   @IsUUID('4', { each: true })
   ids: string[];
 }
-
-// ─────────────────────────────────────────────
-// Templates
-// ─────────────────────────────────────────────
 
 export class CreateNotificationTemplateDto {
   @ApiProperty({ enum: NotificationType })
@@ -538,4 +513,367 @@ export class UpdateNotificationTemplateDto {
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
+}
+
+export const OUTBOUND_CHANNELS_LIST = ['EMAIL', 'SMS', 'PUSH'] as const;
+export type OutboundChannelValue = (typeof OUTBOUND_CHANNELS_LIST)[number];
+
+export const TEST_CHANNELS = ['IN_APP', 'EMAIL', 'SMS', 'PUSH'] as const;
+export const DELIVERY_STATUSES = ['PENDING', 'SENDING', 'SENT', 'FAILED', 'SKIPPED'] as const;
+export const BOUNCE_STATUSES = ['ACTIVE', 'CLEARED'] as const;
+export const STATS_BUCKETS = ['hour', 'day', 'week', 'month'] as const;
+export type StatsBucket = (typeof STATS_BUCKETS)[number];
+
+/** PATCH /notifications/preferences/:type. The type comes from the path. Same rules as the bulk update. */
+export class UpdateTypePreferenceDto extends OmitType(NotificationPreferenceItemDto, [
+  'type',
+] as const) {}
+
+export class SnoozeDto {
+  @ApiProperty({
+    example: 8,
+    minimum: 1,
+    maximum: 168,
+    description: 'How long to mute non-security notifications: 1 hour to 7 days (168 hours).',
+  })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(168)
+  hours: number;
+}
+
+export class BulkNotificationIdsDto {
+  @ApiProperty({ type: [String], example: ['notification-id-1', 'notification-id-2'] })
+  @IsArray()
+  @ArrayNotEmpty()
+  @ArrayMaxSize(500)
+  @IsUUID('4', { each: true })
+  ids: string[];
+}
+
+export class MarkReadByTypeDto {
+  @ApiProperty({ enum: NotificationType })
+  @IsEnum(NotificationType)
+  type: NotificationType;
+}
+
+export class SearchNotificationsQueryDto extends NotificationPagingDto {
+  @ApiProperty({ description: 'Search title and body.', minLength: 2, maxLength: 100 })
+  @IsString()
+  @MinLength(2)
+  @MaxLength(100)
+  q: string;
+}
+
+/** Render a saved template, or loose text, with sample values. Nothing is sent or saved. */
+export class PreviewTemplateDto {
+  @ApiPropertyOptional({ description: 'Preview a saved template.' })
+  @IsOptional()
+  @IsUUID()
+  templateId?: string;
+
+  @ApiPropertyOptional({
+    description: 'Or preview text that is not saved yet (title and body together).',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  title?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  body?: string;
+
+  @ApiPropertyOptional({
+    example: { name: 'Sample name' },
+    description: 'Values for {{placeholders}}. Missing ones are shown as <placeholder>.',
+  })
+  @IsOptional()
+  @IsObject()
+  variables?: Record<string, string | number | boolean>;
+}
+
+/** Edit a broadcast that has not started. Only the fields you send change. */
+export class UpdateBroadcastDto {
+  @ApiPropertyOptional({ enum: NotificationType })
+  @IsOptional()
+  @IsEnum(NotificationType)
+  type?: NotificationType;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MinLength(1)
+  @MaxLength(200)
+  title?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MinLength(1)
+  @MaxLength(2000)
+  body?: string;
+
+  @ApiPropertyOptional({ enum: NotificationPriority })
+  @IsOptional()
+  @IsEnum(NotificationPriority)
+  priority?: NotificationPriority;
+
+  @ApiPropertyOptional({
+    example: '2026-10-10T09:00:00.000Z',
+    description: 'ISO date in the future (up to 90 days).',
+  })
+  @IsOptional()
+  @IsISO8601()
+  scheduledAt?: string;
+}
+
+export class RejectBroadcastDto {
+  @ApiProperty({ example: 'Audience is too broad for this message.' })
+  @IsString()
+  @MinLength(5)
+  @MaxLength(500)
+  reason: string;
+}
+
+export class BroadcastRecipientsQueryDto extends NotificationPagingDto {
+  @ApiPropertyOptional({ description: 'true = read only, false = unread only' })
+  @IsOptional()
+  @Transform(parseBoolean)
+  @IsBoolean()
+  isRead?: boolean;
+}
+
+export class SendTestNotificationDto {
+  @ApiProperty({ enum: TEST_CHANNELS, description: 'IN_APP only creates the inbox copy.' })
+  @IsIn(TEST_CHANNELS)
+  channel: (typeof TEST_CHANNELS)[number];
+}
+
+export class DeliveriesQueryDto extends NotificationPagingDto {
+  @ApiPropertyOptional({ enum: DELIVERY_CHANNELS })
+  @IsOptional()
+  @IsIn(DELIVERY_CHANNELS)
+  channel?: (typeof DELIVERY_CHANNELS)[number];
+
+  @ApiPropertyOptional({ enum: DELIVERY_STATUSES })
+  @IsOptional()
+  @IsIn(DELIVERY_STATUSES)
+  status?: (typeof DELIVERY_STATUSES)[number];
+
+  @ApiPropertyOptional({ description: 'Only deliveries to this user.' })
+  @IsOptional()
+  @IsUUID()
+  userId?: string;
+
+  @ApiPropertyOptional({ description: 'Only deliveries of this notification.' })
+  @IsOptional()
+  @IsUUID()
+  notificationId?: string;
+
+  @ApiPropertyOptional({ example: '2026-09-01T00:00:00.000Z' })
+  @IsOptional()
+  @IsISO8601()
+  from?: string;
+
+  @ApiPropertyOptional({ example: '2026-09-30T23:59:59.999Z' })
+  @IsOptional()
+  @IsISO8601()
+  to?: string;
+}
+
+export class UserDeliveriesQueryDto extends OmitType(DeliveriesQueryDto, ['userId'] as const) {}
+
+/** Retry every FAILED delivery that matches. All fields are optional filters. */
+export class RetryAllFailedDeliveriesDto {
+  @ApiPropertyOptional({ enum: DELIVERY_CHANNELS })
+  @IsOptional()
+  @IsIn(DELIVERY_CHANNELS)
+  channel?: (typeof DELIVERY_CHANNELS)[number];
+
+  @ApiPropertyOptional({ enum: NotificationType })
+  @IsOptional()
+  @IsEnum(NotificationType)
+  type?: NotificationType;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsUUID()
+  userId?: string;
+
+  @ApiPropertyOptional({ description: 'Only deliveries of this broadcast.' })
+  @IsOptional()
+  @IsUUID()
+  broadcastId?: string;
+
+  @ApiPropertyOptional({ example: '2026-09-01T00:00:00.000Z' })
+  @IsOptional()
+  @IsISO8601()
+  from?: string;
+
+  @ApiPropertyOptional({ example: '2026-09-30T23:59:59.999Z' })
+  @IsOptional()
+  @IsISO8601()
+  to?: string;
+
+  @ApiPropertyOptional({ default: 5000, maximum: 10000, description: 'Safety cap for one call.' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(10_000)
+  limit?: number;
+}
+
+export class StatsRangeQueryDto {
+  @ApiPropertyOptional({ description: 'Default: 30 days before now. Window is at most 90 days.' })
+  @IsOptional()
+  @IsISO8601()
+  from?: string;
+
+  @ApiPropertyOptional({ description: 'Default: now.' })
+  @IsOptional()
+  @IsISO8601()
+  to?: string;
+}
+
+export class DeliveryTimelineQueryDto extends StatsRangeQueryDto {
+  @ApiPropertyOptional({ enum: DELIVERY_CHANNELS })
+  @IsOptional()
+  @IsIn(DELIVERY_CHANNELS)
+  channel?: (typeof DELIVERY_CHANNELS)[number];
+
+  @ApiPropertyOptional({ enum: ['hour', 'day'], default: 'day' })
+  @IsOptional()
+  @IsIn(['hour', 'day'])
+  bucket?: 'hour' | 'day';
+}
+
+export class BouncesQueryDto extends NotificationPagingDto {
+  @ApiPropertyOptional({ enum: ['EMAIL', 'SMS'] })
+  @IsOptional()
+  @IsIn(['EMAIL', 'SMS'])
+  channel?: 'EMAIL' | 'SMS';
+
+  @ApiPropertyOptional({ enum: BOUNCE_STATUSES, description: 'Default ACTIVE.' })
+  @IsOptional()
+  @IsIn(BOUNCE_STATUSES)
+  status?: (typeof BOUNCE_STATUSES)[number];
+}
+
+export class ClearBounceDto {
+  @ApiPropertyOptional({ example: 'User confirmed the new address by phone.' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  note?: string;
+}
+
+/** A short reason (for example the support ticket) that is written to the audit log. */
+export class AdminReasonDto {
+  @ApiProperty({ example: 'Support ticket #4821: phone reported stolen.' })
+  @IsString()
+  @MinLength(5)
+  @MaxLength(500)
+  reason: string;
+}
+
+export class ByRecipientQueryDto extends NotificationPagingDto {
+  @ApiPropertyOptional({ example: '2026-09-01T00:00:00.000Z' })
+  @IsOptional()
+  @IsISO8601()
+  from?: string;
+
+  @ApiPropertyOptional({ example: '2026-09-30T23:59:59.999Z' })
+  @IsOptional()
+  @IsISO8601()
+  to?: string;
+
+  @ApiPropertyOptional({ enum: NotificationType })
+  @IsOptional()
+  @IsEnum(NotificationType)
+  type?: NotificationType;
+
+  @ApiPropertyOptional({ enum: NotificationPriority })
+  @IsOptional()
+  @IsEnum(NotificationPriority)
+  priority?: NotificationPriority;
+
+  @ApiPropertyOptional({ example: 'Report' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  entity?: string;
+
+  @ApiPropertyOptional({ enum: ['total', 'unread', 'last'], default: 'total' })
+  @IsOptional()
+  @IsIn(['total', 'unread', 'last'])
+  sortBy?: 'total' | 'unread' | 'last';
+}
+
+export class AllTimelineQueryDto extends StatsRangeQueryDto {
+  @ApiPropertyOptional({ enum: ['day', 'week', 'month'], default: 'day' })
+  @IsOptional()
+  @IsIn(['day', 'week', 'month'])
+  bucket?: 'day' | 'week' | 'month';
+
+  @ApiPropertyOptional({ enum: NotificationType })
+  @IsOptional()
+  @IsEnum(NotificationType)
+  type?: NotificationType;
+
+  @ApiPropertyOptional({ example: 'Report' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  entity?: string;
+}
+
+/** Same filters as GET /notifications/admin/all. Paging fields are ignored: a job exports everything that matches. */
+export class NotificationExportJobDto extends OmitType(AllNotificationsQueryDto, [
+  'cursor',
+  'page',
+  'limit',
+] as const) {}
+
+export class UpdateRetentionDto {
+  @ApiProperty({
+    example: 180,
+    minimum: 0,
+    maximum: 3650,
+    description:
+      'Days to keep a notification after it was read. 0 keeps read notifications forever.',
+  })
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(3650)
+  readRetentionDays: number;
+
+  @ApiProperty({ example: 'Policy review 2026-Q4.' })
+  @IsString()
+  @MinLength(5)
+  @MaxLength(500)
+  reason: string;
+}
+
+export class QueuePauseDto {
+  @ApiProperty({ enum: OUTBOUND_CHANNELS_LIST })
+  @IsIn(OUTBOUND_CHANNELS_LIST)
+  channel: OutboundChannelValue;
+
+  @ApiProperty({ example: 'SMS provider outage, incident #77.' })
+  @IsString()
+  @MinLength(5)
+  @MaxLength(500)
+  reason: string;
+}
+
+export class QueueResumeDto {
+  @ApiProperty({ enum: OUTBOUND_CHANNELS_LIST })
+  @IsIn(OUTBOUND_CHANNELS_LIST)
+  channel: OutboundChannelValue;
 }

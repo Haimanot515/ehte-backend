@@ -1,12 +1,3 @@
-// src/modules/billing/dto/reward-claim.dto.ts
-//
-// DTOs for the PRD-aligned reward flow: funding method selection (section 7),
-// admin-selected evaluation weights (section 11), per-claim scoring and decision
-// (section 11 / 16 / 20), and reward splitting among approved informants
-// (section 12). Replaces the single-claim ApproveClaimDto/ReasonDto pair in
-// payment.dto.ts for anything beyond the simple one-informant case, though those
-// two DTOs still work for a case that only ever has one claim.
-
 import { Type } from 'class-transformer';
 import {
   ArrayMaxSize,
@@ -46,10 +37,6 @@ export class ScoreClaimDto {
   @IsInt() @Min(0) @Max(100) credibilityScore!: number;
 }
 
-// Section 20: duplicate/competing-claim outcomes. APPROVED_FOR_REWARD is NOT a
-// decision here — that only happens via splitReward() once every claim on the
-// case has already been decided VALID, so a claim can't be split into a reward
-// before its eligibility is settled.
 export enum ClaimDecision {
   VALID = 'VALID',
   INVALID = 'INVALID',

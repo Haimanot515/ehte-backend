@@ -1,14 +1,21 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
+  ArrayMaxSize,
+  ArrayNotEmpty,
+  IsArray,
   IsBoolean,
   IsDateString,
+  IsEnum,
   IsIn,
+  IsInt,
   IsNotEmpty,
   IsOptional,
   IsString,
   IsUUID,
   Matches,
+  Max,
   MaxLength,
+  Min,
   MinLength,
   ValidateIf,
 } from 'class-validator';
@@ -92,9 +99,6 @@ export class UpdateUserDto {
   occupation?: string;
 }
 
-// PATCH /users/:id (admin). Same safe fields as a self-edit and nothing more.
-// Role, email, phone and active status are deliberately NOT editable here;
-// they have their own guarded routes (promote flow, change-phone, deactivate).
 export class AdminUpdateUserDto extends UpdateUserDto {
   @ApiPropertyOptional({ description: 'Admin justification, stored in the audit log' })
   @IsOptional()
@@ -141,11 +145,6 @@ export class AdminActionReasonDto {
   reason?: string;
 }
 
-// PATCH /users/:id/role  — SUPER_ADMIN escalation ONLY.
-// ADMIN is never granted here: the only way to become ADMIN is the
-// email-verified flow (POST /admin/auth/promote -> user clicks the link ->
-// POST /admin/auth/promote/verify). This route exists because that flow
-// cannot produce a SUPER_ADMIN (see the KNOWN LIMITATION in PromoteUserDto).
 export class AssignUserRoleDto {
   @ApiProperty({
     example: RolesEnum.SUPER_ADMIN,
@@ -238,4 +237,319 @@ export class UpdateProfilePictureDto {
   @IsString()
   @MaxLength(500)
   filepath: string;
+}
+
+// ── New DTOs for the /users endpoints (US-01 .. US-70) ──
+
+export enum RestrictionAbility {
+  POST_CONTENT = 'POST_CONTENT',
+  LIST_CASE = 'LIST_CASE',
+  OFFER_SUPPORT = 'OFFER_SUPPORT',
+  TIP = 'TIP',
+}
+
+export enum DeletionRequestStatus {
+  PENDING = 'PENDING',
+  APPROVED = 'APPROVED',
+  DELAYED = 'DELAYED',
+  DECLINED = 'DECLINED',
+  CANCELLED = 'CANCELLED',
+}
+
+export enum DeletionDecision {
+  APPROVE = 'APPROVE',
+  DELAY = 'DELAY',
+  DECLINE = 'DECLINE',
+}
+
+export enum StatsInterval {
+  DAY = 'day',
+  WEEK = 'week',
+  MONTH = 'month',
+}
+
+// Shared pagination for new list routes.
+export class UsersPagedQueryDto {
+  @ApiPropertyOptional({ example: 1 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number = 1;
+
+  @ApiPropertyOptional({ example: 20 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  limit?: number = 20;
+}
+
+// Required reason for admin routes that must leave a justification.
+export class AdminRequiredReasonDto {
+  @ApiProperty({ description: 'Admin justification, stored in the audit log' })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(500)
+  reason: string;
+}
+
+/* ── Self-service ── */
+
+export class UpdateLanguageDto {
+  @ApiProperty({ example: 'am', enum: ['am', 'en'] })
+  @IsString()
+  @IsIn(['am', 'en'])
+  preferredLanguage: string;
+}
+
+// POST /users/me/delete-request. Re-auth is enforced by the route.
+export class RequestAccountDeletionDto {
+  @ApiPropertyOptional({ description: 'Why the user wants the account deleted' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  reason?: string;
+}
+
+export class ResendPhoneOtpDto {
+  @ApiProperty({ description: 'Verification id returned by change-phone/initiate' })
+  @IsUUID('4')
+  verificationId: string;
+}
+
+/* ── Restrictions and warnings ── */
+
+export class CreateRestrictionDto {
+  @ApiProperty({ enum: RestrictionAbility })
+  @IsEnum(RestrictionAbility)
+  ability: RestrictionAbility;
+
+  @ApiProperty({ description: 'Why the restriction is applied' })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(500)
+  reason: string;
+
+  @ApiPropertyOptional({ description: 'When the restriction ends. Omit for open-ended.' })
+  @IsOptional()
+  @IsDateString()
+  endsAt?: string;
+}
+
+export class CreateWarningDto {
+  @ApiProperty({ description: 'Warning text sent to the user' })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(1000)
+  message: string;
+
+  @ApiPropertyOptional({ description: 'Internal justification, stored in the audit log' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  reason?: string;
+}
+
+/* ── Bulk actions ── */
+
+export class BulkUserIdsDto {
+  @ApiProperty({ type: [String], description: 'Up to 100 user ids' })
+  @IsArray()
+  @ArrayNotEmpty()
+  @ArrayMaxSize(100)
+  @IsUUID('4', { each: true })
+  userIds: string[];
+
+  @ApiPropertyOptional({ description: 'Admin justification, stored in the audit log' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  reason?: string;
+}
+
+export class BulkUserReasonDto {
+  @ApiProperty({ type: [String], description: 'Up to 100 user ids' })
+  @IsArray()
+  @ArrayNotEmpty()
+  @ArrayMaxSize(100)
+  @IsUUID('4', { each: true })
+  userIds: string[];
+
+  @ApiProperty({ description: 'Admin justification, stored in the audit log' })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(500)
+  reason: string;
+}
+
+export class BulkWarningDto {
+  @ApiProperty({ type: [String], description: 'Up to 100 user ids' })
+  @IsArray()
+  @ArrayNotEmpty()
+  @ArrayMaxSize(100)
+  @IsUUID('4', { each: true })
+  userIds: string[];
+
+  @ApiProperty({ description: 'Warning text sent to every user' })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(1000)
+  message: string;
+}
+
+export class BulkRestrictionDto extends CreateRestrictionDto {
+  @ApiProperty({ type: [String], description: 'Up to 100 user ids' })
+  @IsArray()
+  @ArrayNotEmpty()
+  @ArrayMaxSize(100)
+  @IsUUID('4', { each: true })
+  userIds: string[];
+}
+
+/* ── Deletion, erasure, retention ── */
+
+export class ListDeleteRequestsQueryDto extends UsersPagedQueryDto {
+  @ApiPropertyOptional({ enum: DeletionRequestStatus })
+  @IsOptional()
+  @IsEnum(DeletionRequestStatus)
+  status?: DeletionRequestStatus;
+}
+
+export class DecideDeletionRequestDto {
+  @ApiProperty({ enum: DeletionDecision })
+  @IsEnum(DeletionDecision)
+  decision: DeletionDecision;
+
+  @ApiProperty({ description: 'Reason for the decision, stored in the audit log' })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(500)
+  reason: string;
+
+  @ApiPropertyOptional({ description: 'New earliest deletion date. Used when delaying.' })
+  @ValidateIf((o) => o.decision === DeletionDecision.DELAY)
+  @IsDateString()
+  delayUntil?: string;
+}
+
+export class LegalHoldDto {
+  @ApiProperty({ description: 'true places the hold, false lifts it' })
+  @IsBoolean()
+  legalHold: boolean;
+
+  @ApiProperty({ description: 'Reason, stored in the audit log' })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(500)
+  reason: string;
+}
+
+export class InactiveUsersQueryDto extends UsersPagedQueryDto {
+  @ApiPropertyOptional({ example: 90, description: 'Days since last sign-in' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  days?: number = 90;
+}
+
+/* ── Merge and verification ── */
+
+export class MergeUserDto {
+  @ApiProperty({ description: 'Id of the duplicate account to merge into this one' })
+  @IsUUID('4')
+  duplicateUserId: string;
+
+  @ApiProperty({ description: 'Reason, stored in the audit log' })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(500)
+  reason: string;
+}
+
+// PATCH /users/:id/phone (admin, on a support request). A code is sent to newPhone.
+export class AdminChangePhoneDto {
+  @ApiProperty({ example: '+251911223344' })
+  @IsString()
+  @Matches(/^\+?[0-9]{6,15}$/, { message: 'invalid_phone_number_format' })
+  newPhone: string;
+
+  @ApiProperty({ description: 'Support request reference or reason, stored in the audit log' })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(500)
+  reason: string;
+}
+
+/* ── Search, export, statistics ── */
+
+export class UserStatsQueryDto {
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsDateString()
+  from?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsDateString()
+  to?: string;
+
+  @ApiPropertyOptional({ description: 'Role name' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
+  role?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  region?: string;
+
+  @ApiPropertyOptional({ description: 'Account status, for example active or inactive' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
+  status?: string;
+}
+
+export class UserStatsTimelineQueryDto extends UserStatsQueryDto {
+  @ApiPropertyOptional({ enum: StatsInterval })
+  @IsOptional()
+  @IsEnum(StatsInterval)
+  interval?: StatsInterval = StatsInterval.DAY;
+}
+
+export class UserSearchQueryDto extends UserStatsQueryDto {
+  @ApiProperty({ example: 'haim', description: 'Reference, name or phone' })
+  @IsString()
+  @MinLength(2)
+  @MaxLength(100)
+  q: string;
+
+  @ApiPropertyOptional({ example: 1 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number = 1;
+
+  @ApiPropertyOptional({ example: 20 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  limit?: number = 20;
+}
+
+// GET /users/export query and POST /users/export-jobs body.
+export class UserExportQueryDto extends UserStatsQueryDto {
+  @ApiPropertyOptional({ description: 'Matches against name or phone' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  search?: string;
 }

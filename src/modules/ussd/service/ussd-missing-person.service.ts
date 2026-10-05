@@ -29,25 +29,6 @@ const PUBLIC_SELECT = {
   createdAt: true,
 } as const;
 
-// ─────────────────────────────────────────────
-// USSD-ONLY MISSING PERSON SERVICE
-//
-// Deliberately independent of the core MissingPersonService — see
-// the note at the top of ussd-report.service.ts for why.
-//
-// Deliberately NOT included here (deferred / out of scope for USSD):
-//   - Idempotency/dedup, rate limiting, max-pending caps — same
-//     reasoning as UssdReportService.
-//   - Media attachments — USSD has no way to attach files, so this
-//     always creates with empty media arrays.
-//   - Reward fields — USSD has no reward-offer flow; every
-//     anonymous case is created with rewardOffered: false.
-//   - Two-admin CHILD-safety confirmation is unaffected: an
-//     anonymous CHILD case is created PENDING, same as any other,
-//     so it still passes through the admin review workflow (which
-//     is entirely in MissingPersonService.updateStatus) before it
-//     can ever become APPROVED. Nothing here bypasses that.
-// ─────────────────────────────────────────────
 @Injectable()
 export class UssdMissingPersonService {
   constructor(

@@ -1,0 +1,77 @@
+// Payer disputes, stored payment webhook events and informant reward appeals. User ids are plain strings, so user.prisma needs no change
+
+enum PaymentDisputeStatus {
+  OPEN
+  RESOLVED
+}
+
+enum PaymentDisputeOutcome {
+  UPHELD
+  DISMISSED
+}
+
+enum RewardClaimAppealStatus {
+  OPEN
+  UPHELD
+  DECLINED
+}
+
+model PaymentDispute {
+  id               String                 @id @default(uuid())
+  paymentId        String
+  payerUserId      String
+  reason           String
+  status           PaymentDisputeStatus   @default(OPEN)
+  outcome          PaymentDisputeOutcome?
+  resolutionNote   String?
+  resolvedByUserId String?
+  resolvedAt       DateTime?
+  createdAt        DateTime               @default(now())
+  updatedAt        DateTime               @updatedAt
+
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+
+  @@index([paymentId])
+  @@index([status, createdAt])
+  @@index([payerUserId])
+  @@map("payment_disputes")
+}
+
+model PaymentWebhookEvent {
+  id               String    @id @default(uuid())
+  provider         String    @default("chapa")
+  txRef            String?
+  payload          Json
+  result           String // RECEIVED, RECONCILED, IGNORED, ERROR
+  error            String?
+  replayCount      Int       @default(0)
+  lastReplayedAt   DateTime?
+  lastReplayedById String?
+  receivedAt       DateTime  @default(now())
+  processedAt      DateTime?
+
+  @@index([txRef])
+  @@index([receivedAt])
+  @@index([result])
+  @@map("payment_webhook_events")
+}
+
+model RewardClaimAppeal {
+  id              String                  @id @default(uuid())
+  claimId         String
+  informantUserId String
+  message         String
+  status          RewardClaimAppealStatus @default(OPEN)
+  decisionNote    String?
+  decidedByUserId String?
+  decidedAt       DateTime?
+  createdAt       DateTime                @default(now())
+  updatedAt       DateTime                @updatedAt
+
+  claim RewardClaim @relation(fields: [claimId], references: [id], onDelete: Cascade)
+
+  @@index([claimId])
+  @@index([status, createdAt])
+  @@index([informantUserId])
+  @@map("reward_claim_appeals")
+}

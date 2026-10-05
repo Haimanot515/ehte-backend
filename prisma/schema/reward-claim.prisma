@@ -1,42 +1,27 @@
-// prisma/schema/reward-claim.prisma
-//
-// MissingPerson carries the reward OFFER and the funding/fee state (rewardOffered,
-// rewardAmount, rewardApproved, rewardDetails, funding*/postingFee* fields — see
-// missing-person.prisma). RewardClaim is the per-informant record: WHO submitted
-// what, how it scored, and what share (if any) of the funded reward pool they earn.
-//
-// PRD alignment (Sep 2026): the platform supports one, two, three or more informants
-// per case (section 11), so this is now a one-to-many relation to MissingPerson
-// instead of one row per case. Reward splitting (section 12) lives here as
-// rewardPercentage/rewardAmount per approved claim. A case with a single informant
-// still uses this model — that informant's claim just gets rewardPercentage = 100.
-
 enum RewardClaimStatus {
-  SUBMITTED // informationSubmission escalated to a claim, not yet reviewed
+  SUBMITTED
   UNDER_REVIEW
   VALID
   INVALID
-  DUPLICATE // materially the same tip as another claim on this case
-  ALREADY_KNOWN // information the case already had before this submission
-  INELIGIBLE // valid information that does not meet the published reward conditions
-  APPROVED_FOR_REWARD // admin decided this claim earns a share; rewardPercentage/rewardAmount set
+  DUPLICATE
+  ALREADY_KNOWN
+  INELIGIBLE
+  APPROVED_FOR_REWARD
   REJECTED
   PAID_OUT
-  REFUND_DUE // funded, case closed, no valid claim on this row — money owed back to sponsor
+  REFUND_DUE
   REFUNDED
 }
 
 model RewardClaim {
-  id                      String            @id @default(uuid())
+  id                      String  @id @default(uuid())
   missingPersonId         String
-  informationSubmissionId String? // set once an admin links a specific confidential tip
-  informantUserId         String? // denormalized from the submission for query convenience
+  informationSubmissionId String?
+  informantUserId         String?
 
   status RewardClaimStatus @default(SUBMITTED)
 
-  // Section 11 / 16: scoring inputs and the weighted result. Weights are copied
-  // from MissingPerson.time/evidence/credibilityWeight at scoring time so a later
-  // change to the case's weights never silently reweights an already-scored claim.
+  // Weights are copied from the case at scoring time so later changes never reweight a scored claim
   timeScore         Int?
   evidenceScore     Int?
   credibilityScore  Int?
@@ -45,18 +30,13 @@ model RewardClaim {
   credibilityWeight Int?
   weightedScore     Decimal? @db.Decimal(6, 2)
 
-  // Section 12 / 14: this claim's share of the informant pool once approved.
-  // rewardPercentage is this claim's percentage of the informant pool (not of the
-  // gross reward); rewardAmount is the resulting ETB amount, frozen at decision time.
   rewardPercentage Decimal? @db.Decimal(5, 2)
   rewardAmount     Decimal? @db.Decimal(14, 2)
 
-  // Frozen at approval time, same reasoning as Payment.agreementId/agreementVersion:
-  // a later agreement change must never recalculate an already-decided claim.
   agreementId      String?
   agreementVersion Int?
 
-  duplicateOfClaimId String? // set when status=DUPLICATE, points at the original claim
+  duplicateOfClaimId String?
 
   decisionReason String?
   reviewedById   String?
@@ -69,8 +49,9 @@ model RewardClaim {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  missingPerson MissingPerson @relation(fields: [missingPersonId], references: [id], onDelete: Cascade)
+  missingPerson MissingPerson       @relation(fields: [missingPersonId], references: [id], onDelete: Cascade)
   disbursements Disbursement[]
+  appeals       RewardClaimAppeal[]
 
   informationSubmission InformationSubmission? @relation(fields: [informationSubmissionId], references: [id], onDelete: SetNull)
   informantUser         User?                  @relation("RewardClaimInformant", fields: [informantUserId], references: [id], onDelete: SetNull)
@@ -80,7 +61,7 @@ model RewardClaim {
   reviewedBy            User?                  @relation("RewardClaimReviewedBy", fields: [reviewedById], references: [id], onDelete: Restrict)
   approvedBy            User?                  @relation("RewardClaimApprovedBy", fields: [approvedById], references: [id], onDelete: Restrict)
 
-  // One claim per confidential submission — the same tip cannot be claimed twice.
+  // One claim per confidential submission, so the same tip cannot be claimed twice
   @@unique([missingPersonId, informationSubmissionId])
   @@index([missingPersonId, status])
   @@index([informantUserId])

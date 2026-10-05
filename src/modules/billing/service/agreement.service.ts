@@ -1,21 +1,9 @@
-// src/modules/billing/service/agreement.service.ts
-//
-// Agreements drive every payment split. Rules:
-//   - a DRAFT can be created freely; once ACTIVE it is immutable
-//   - to change terms, create a new version and re-point the profile
-//   - RECIPIENT is never a rule (it is the remainder)
-//   - an institution must be AGREEMENT_SIGNED before it can be used in an agreement
-
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PartyType, Prisma } from '@prisma/client';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { CreateAgreementDto, RetireAgreementDto } from '../dto/agreement.dto';
 import { BillingEventsService } from './billing-events.service';
 import { AuditEventEnum } from '../../../common/enums/shared/audit-events.enum';
-// FIX: this file logged every mutation but never notified anyone — see
-// NotificationEventEnum import and the events.notify() call added to each
-// method below. Mirrors the pattern already used in payment.service.ts /
-// reward.service.ts / disbursement.service.ts.
 import { NotificationEventEnum } from '../../../common/enums/shared/notification-events.enum';
 import {
   InstitutionSignedEvent,
@@ -240,18 +228,6 @@ export class AgreementService {
     }
   }
 
-  // FIX: createDraft() used to read the latest version (findFirst orderBy
-  // version desc) and create with `version + 1` as two separate steps — two
-  // concurrent createDraft calls for the same (type, institutionId) could read
-  // the same `last.version` and either both succeed with a duplicate version
-  // number (if no DB constraint existed) or the loser would throw an uncaught
-  // P2002. Same race class ReportService.createReportWithUniqueCaseReference
-  // already guards against for caseReference collisions.
-  //
-  // Requires @@unique([type, institutionId, version]) on Agreement (see
-  // agreement.prisma) — without that constraint at the DB level, this retry
-  // loop has nothing to actually catch and two racing requests could still
-  // both succeed with the same version number.
   private async createAgreementWithUniqueVersion(dto: CreateAgreementDto) {
     for (let attempt = 1; attempt <= AGREEMENT_VERSION_MAX_ATTEMPTS; attempt++) {
       const last = await this.prisma.agreement.findFirst({

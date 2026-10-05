@@ -114,10 +114,10 @@ const REDIS_URL_SCHEMES = { scheme: ['redis', 'rediss'] };
         PORT: Joi.number().default(3000),
         APP_NAME: Joi.string().default('Ehte'),
 
-        // Public HTTPS PNG shown in the header of every email. Optional: when
-        // unset, EmailTemplateService uses its built-in default logo URL.
-        // https only, because mail apps block insecure images.
-        EMAIL_LOGO_URL: Joi.string().uri({ scheme: ['https'] }).optional().allow(''),
+        EMAIL_LOGO_URL: Joi.string()
+          .uri({ scheme: ['https'] })
+          .optional()
+          .allow(''),
 
         CORS_ORIGIN: Joi.string().required(),
         CORS_CREDENTIALS: Joi.boolean().default(true),
@@ -134,14 +134,6 @@ const REDIS_URL_SCHEMES = { scheme: ['redis', 'rediss'] };
         JWT_REFRESH_SECRET: Joi.string().min(32).optional(),
         JWT_REFRESH_EXPIRES_IN: Joi.string().default('7d'),
 
-        // Social login (SocialAuthUtil, src/common/utils/social-auth.util.ts).
-        // Optional at the schema level — the app boots fine with social login
-        // entirely unconfigured — but SocialAuthUtil reads all three via
-        // getOrThrow(), so setting only HALF of a pair (e.g. FACEBOOK_APP_ID
-        // without FACEBOOK_APP_SECRET) used to fail silently at boot and only
-        // surface on the first real request. The .and(...) below at least
-        // catches that one Facebook case at boot; Google/Apple are single
-        // values so there's no pair to enforce.
         GOOGLE_CLIENT_ID: Joi.string().optional(),
         FACEBOOK_APP_ID: Joi.string().optional(),
         FACEBOOK_APP_SECRET: Joi.string().optional(),
@@ -177,11 +169,6 @@ const REDIS_URL_SCHEMES = { scheme: ['redis', 'rediss'] };
         SENDET_SENDER_NAME: Joi.string().optional(),
         SENDET_TIMEOUT_MS: Joi.number().default(10000),
 
-        // Optional: PUSH delivery is disabled when unset, everything else still boots.
-        // All three optional individually, but if you set ANY one of them you must
-        // set all three — a partial config used to fail silently (push just stayed
-        // off with no error), which made misconfiguration hard to notice. Enforced
-        // below via .and(...) on the schema.
         FIREBASE_PROJECT_ID: Joi.string().optional(),
         FIREBASE_CLIENT_EMAIL: Joi.string().email().optional(),
         FIREBASE_PRIVATE_KEY: Joi.string().optional(),
@@ -189,7 +176,9 @@ const REDIS_URL_SCHEMES = { scheme: ['redis', 'rediss'] };
         MINIO_ENDPOINT: Joi.string().required(),
         MINIO_PORT: Joi.number().default(9000),
         // Optional: public https origin the browser uses to reach MinIO (presigned URLs).
-        MINIO_PUBLIC_URL: Joi.string().uri({ scheme: ['http', 'https'] }).optional(),
+        MINIO_PUBLIC_URL: Joi.string()
+          .uri({ scheme: ['http', 'https'] })
+          .optional(),
         MINIO_ACCESS_KEY: Joi.string().required(),
         MINIO_SECRET_KEY: Joi.string().required(),
         MINIO_BUCKET_NAME: Joi.string().required(),
@@ -197,10 +186,6 @@ const REDIS_URL_SCHEMES = { scheme: ['redis', 'rediss'] };
         MINIO_REGION: Joi.string().default('us-east-1'),
         DURATION_OF_PRE_SIGNED_DOCUMENT: Joi.number().default(600),
 
-        // Redis. In production the server refuses to start unless Redis is
-        // reached over TLS (rediss://) with a password. REDIS_URL wins over
-        // host/port; host/port mode has no TLS support, so in production it is
-        // only accepted with REDIS_ALLOW_INSECURE=true.
         REDIS_ALLOW_INSECURE: Joi.boolean().default(false),
         REDIS_URL: Joi.string()
           .uri(REDIS_URL_SCHEMES)
@@ -230,7 +215,10 @@ const REDIS_URL_SCHEMES = { scheme: ['redis', 'rediss'] };
         REDIS_DB: Joi.number().default(0),
         // Separate instance for throttle / lockout / reset state so cache
         // eviction can't drop it. Unset = same Redis as the cache.
-        REDIS_SECURITY_URL: Joi.string().uri(REDIS_URL_SCHEMES).custom(requireSecureRedisUrl).optional(),
+        REDIS_SECURITY_URL: Joi.string()
+          .uri(REDIS_URL_SCHEMES)
+          .custom(requireSecureRedisUrl)
+          .optional(),
         // Isolates environments that share one Redis. Empty string is allowed
         // (no prefix). Defaults are set in configuration.ts.
         REDIS_KEY_PREFIX: Joi.string()
@@ -243,16 +231,15 @@ const REDIS_URL_SCHEMES = { scheme: ['redis', 'rediss'] };
           'image/jpeg,image/png,image/webp,video/mp4,video/quicktime,audio/mpeg,audio/wav,audio/mp4,application/pdf',
         ),
 
-        // Payments (Chapa). Secrets and the return URL are only required
-        // once PAYMENTS_ENABLED=true, so payments can stay off elsewhere
-        // without needing dummy values.
         PAYMENTS_ENABLED: Joi.boolean().default(false),
         PAYMENTS_REWARDS_ENABLED: Joi.boolean().default(false),
-        PAYMENTS_RETURN_URL: Joi.string().uri().when('PAYMENTS_ENABLED', {
-          is: true,
-          then: Joi.required(),
-          otherwise: Joi.optional().allow(''),
-        }),
+        PAYMENTS_RETURN_URL: Joi.string()
+          .uri()
+          .when('PAYMENTS_ENABLED', {
+            is: true,
+            then: Joi.required(),
+            otherwise: Joi.optional().allow(''),
+          }),
         PAYMENTS_MIN_SUPPORT_ETB: Joi.number().default(10),
 
         // Days before an unanswered non-financial support offer is auto-cancelled.
@@ -282,10 +269,6 @@ const REDIS_URL_SCHEMES = { scheme: ['redis', 'rediss'] };
         PAYMENT_REPAIR_MIN_AGE_MINUTES: Joi.number().default(2),
         PAYMENT_REPAIR_MAX_AGE_DAYS: Joi.number().default(7),
 
-        // Drives both reconcileStale() and repairUnfulfilledPayments() cron
-        // cadences (currently still static @Cron decorators — see PaymentService
-        // notes; this key makes the interval *readable* pending a
-        // SchedulerRegistry.addCronJob() refactor for true dynamic scheduling).
         PAYMENT_RECONCILE_INTERVAL_MINUTES: Joi.number().default(10),
 
         // Named 'checkout' throttler profile (PaymentController: support checkout
@@ -386,14 +369,6 @@ const REDIS_URL_SCHEMES = { scheme: ['redis', 'rediss'] };
             limit: config.get<number>('THROTTLE_LIMIT', 20),
           },
           {
-            // Named profile for payment-initiating routes (checkout, reward
-            // funding). Activated on a route via @Throttle({ checkout: {} }).
-            //
-            // In @nestjs/throttler every named throttler runs on every route
-            // unless skipped, so without skipIf this 5/60s limit applied
-            // app-wide (and was causing 429s on /permissions, /posts, etc.).
-            // skipIf now makes it run ONLY where a handler or controller has
-            // opted in with @Throttle({ checkout: ... }).
             name: 'checkout',
             ttl: config.get<number>('PAYMENT_CHECKOUT_RATE_LIMIT_TTL_SECONDS', 60) * 1000,
             limit: config.get<number>('PAYMENT_CHECKOUT_RATE_LIMIT', 5),
@@ -406,9 +381,6 @@ const REDIS_URL_SCHEMES = { scheme: ['redis', 'rediss'] };
             },
           },
         ],
-        // Shared counters across instances (was unset, so ThrottlerGuard used
-        // per-instance in-memory storage). Falls back to in-memory only while
-        // Redis is unreachable.
         storage,
       }),
     }),

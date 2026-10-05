@@ -5,14 +5,6 @@ import * as bcrypt from 'bcrypt';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RolesEnum } from '../enums/roles.enum';
 
-// Seeds the initial SUPER_ADMIN account on boot, keyed by EMAIL — matching
-// AuthService.adminLoginByEmail(), the only admin login path. Phone-based
-// admin seeding/login has been removed; this seeder no longer touches
-// phone at all. Configure via ADMIN_EMAIL / ADMIN_NAME / ADMIN_PASSWORD.
-//
-// NOTE: role lookup now happens BEFORE user creation, so a missing
-// SUPER_ADMIN role fails fast instead of leaving a roleless user behind.
-
 @Injectable()
 export class AdminSeeder {
   private readonly logger = new Logger(AdminSeeder.name);

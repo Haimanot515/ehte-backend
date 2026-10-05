@@ -1,6 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 import {
+  IsEnum,
   IsNotEmpty,
   IsNumberString,
   IsOptional,
@@ -9,10 +10,6 @@ import {
   MaxLength,
   MinLength,
 } from 'class-validator';
-
-// ─────────────────────────────────────────────
-// SIGN UP
-// ─────────────────────────────────────────────
 
 export class SignupDto {
   @ApiPropertyOptional({
@@ -44,10 +41,6 @@ export class SignupDto {
   password: string;
 }
 
-// ─────────────────────────────────────────────
-// SIGN UP — VERIFY OTP
-// ─────────────────────────────────────────────
-
 export class SignupVerifyDto {
   @ApiProperty({
     description: 'Verification ID returned from signup',
@@ -76,25 +69,14 @@ export class SignupVerifyDto {
   otp: string;
 }
 
-// ─────────────────────────────────────────────
-// SOCIAL SIGNUP / LOGIN — GOOGLE
-//
-// One endpoint handles both signup and login: the client gets an ID token from
-// Google's own SDK, we verify it server-side, and find-or-create the account.
-// ─────────────────────────────────────────────
-
 export class GoogleAuthDto {
   @ApiProperty({
-    description: "ID token returned by Google Sign-In on the client (NOT an access token)",
+    description: 'ID token returned by Google Sign-In on the client (NOT an access token)',
   })
   @IsString()
   @IsNotEmpty()
   idToken: string;
 }
-
-// ─────────────────────────────────────────────
-// SOCIAL SIGNUP / LOGIN — FACEBOOK
-// ─────────────────────────────────────────────
 
 export class FacebookAuthDto {
   @ApiProperty({
@@ -104,14 +86,6 @@ export class FacebookAuthDto {
   @IsNotEmpty()
   accessToken: string;
 }
-
-// ─────────────────────────────────────────────
-// SOCIAL SIGNUP / LOGIN — APPLE
-//
-// `name` is optional and only meaningful on a user's very first-ever
-// "Sign in with Apple" — Apple sends it to the client just that once, never
-// inside the token itself, so the client forwards it to us if present.
-// ─────────────────────────────────────────────
 
 export class AppleAuthDto {
   @ApiProperty({
@@ -128,10 +102,6 @@ export class AppleAuthDto {
   @IsString()
   name?: string;
 }
-
-// ─────────────────────────────────────────────
-// LOGIN
-// ─────────────────────────────────────────────
 
 export class LoginDto {
   @ApiProperty({
@@ -151,10 +121,6 @@ export class LoginDto {
   password: string;
 }
 
-// ─────────────────────────────────────────────
-// REFRESH TOKEN
-// ─────────────────────────────────────────────
-
 export class RefreshTokenDto {
   @ApiProperty({
     description: 'Refresh token issued after successful authentication',
@@ -163,10 +129,6 @@ export class RefreshTokenDto {
   @IsNotEmpty()
   refreshToken: string;
 }
-
-// ─────────────────────────────────────────────
-// FORGOT PASSWORD
-// ─────────────────────────────────────────────
 
 export class ForgotPasswordDto {
   @ApiProperty({
@@ -177,17 +139,6 @@ export class ForgotPasswordDto {
   @IsNotEmpty()
   phone: string;
 }
-
-// ─────────────────────────────────────────────
-// RESET PASSWORD
-//
-// Shared shape: also used by AdminAuthController's /admin/auth/reset-password and
-// /admin/auth/change-password/verify (imported there from this file — see
-// admin-auth/dto/admin-auth.dto.ts), AND by AuthController's own
-// /auth/change-password/verify below. It's channel-agnostic (verificationId + otp
-// only, no phone/email), so one class covers every OTP-verify call site without
-// needing a channel-specific variant.
-// ─────────────────────────────────────────────
 
 export class ResetPasswordDto {
   @ApiProperty({
@@ -221,17 +172,6 @@ export class ResetPasswordDto {
   newPassword: string;
 }
 
-// ─────────────────────────────────────────────
-// CHANGE PASSWORD (STEP 1) — authenticated USER proves their current password;
-// an OTP is then sent by SMS to their own registered phone number. Step 2 reuses
-// ResetPasswordDto above (verificationId + otp + newPassword).
-//
-// Mirrors AdminChangePasswordInitiateDto in admin-auth.dto.ts, but that flow emails
-// its OTP instead of texting it — USER accounts are phone-first (no guaranteed
-// email), ADMIN accounts are email-first (no guaranteed phone), so each flow uses
-// whichever contact channel that account type is required to have.
-// ─────────────────────────────────────────────
-
 export class ChangePasswordInitiateDto {
   @ApiProperty({
     description: 'Current password of the authenticated user',
@@ -241,9 +181,6 @@ export class ChangePasswordInitiateDto {
   currentPassword: string;
 }
 
-// Retained for any existing callers still on the single-step shape; no longer used
-// by AuthController, which now requires the OTP step below via ChangePasswordInitiateDto
-// + ResetPasswordDto instead of accepting currentPassword + newPassword in one call.
 export class ChangePasswordDto {
   @ApiProperty({
     description: 'Current password of the authenticated user',
@@ -265,10 +202,6 @@ export class ChangePasswordDto {
   newPassword: string;
 }
 
-// ─────────────────────────────────────────────
-// LOGOUT
-// ─────────────────────────────────────────────
-
 export class LogoutDto {
   @ApiPropertyOptional({
     description: 'Refresh token to revoke. If omitted, all sessions are revoked.',
@@ -276,4 +209,179 @@ export class LogoutDto {
   @IsOptional()
   @IsString()
   refreshToken?: string;
+}
+
+export enum SocialProviderEnum {
+  GOOGLE = 'google',
+  FACEBOOK = 'facebook',
+  APPLE = 'apple',
+}
+
+export enum TwoFactorMethodEnum {
+  TOTP = 'TOTP',
+  SMS = 'SMS',
+}
+
+export class VerifyResetOtpDto {
+  @ApiProperty({ description: 'Verification ID returned from forgot-password' })
+  @IsString()
+  @IsNotEmpty()
+  verificationId: string;
+
+  @ApiProperty({ description: 'OTP sent to the user', example: '123456' })
+  @IsString()
+  @IsNotEmpty()
+  @IsNumberString()
+  @Length(6, 6)
+  otp: string;
+}
+
+export class ReactivateInitiateDto {
+  @ApiProperty({ description: 'Phone number of the deactivated account', example: '+251943257078' })
+  @IsString()
+  @IsNotEmpty()
+  phone: string;
+}
+
+export class ReactivateVerifyDto {
+  @ApiProperty({ description: 'Verification ID returned from reactivate/initiate' })
+  @IsString()
+  @IsNotEmpty()
+  verificationId: string;
+
+  @ApiProperty({ description: 'OTP sent to the user', example: '123456' })
+  @IsString()
+  @IsNotEmpty()
+  @IsNumberString()
+  @Length(6, 6)
+  otp: string;
+}
+
+export class LinkSocialDto {
+  @ApiProperty({
+    description: 'ID token (Google, Apple) or access token (Facebook) for the account to link',
+  })
+  @IsString()
+  @IsNotEmpty()
+  token: string;
+}
+
+export class SetPasswordDto {
+  @ApiProperty({
+    description: 'Password to add to the account',
+    example: 'StrongPassword123',
+    minLength: 8,
+    maxLength: 128,
+  })
+  @IsString()
+  @IsNotEmpty()
+  @MinLength(8)
+  @MaxLength(128)
+  newPassword: string;
+}
+
+export class SignupStatusDto {
+  @ApiProperty({ description: 'Verification ID returned from signup' })
+  @IsString()
+  @IsNotEmpty()
+  verificationId: string;
+}
+
+export class RevokeRefreshTokenDto {
+  @ApiProperty({ description: 'Refresh token to revoke' })
+  @IsString()
+  @IsNotEmpty()
+  refreshToken: string;
+}
+
+export class TwoFactorSetupDto {
+  @ApiPropertyOptional({
+    enum: TwoFactorMethodEnum,
+    default: TwoFactorMethodEnum.TOTP,
+    description: 'Method to enrol. Defaults to an authenticator app (TOTP).',
+  })
+  @IsOptional()
+  @IsEnum(TwoFactorMethodEnum)
+  method?: TwoFactorMethodEnum;
+}
+
+export class TwoFactorVerifyDto {
+  @ApiProperty({ description: '6-digit code from the authenticator app', example: '123456' })
+  @IsString()
+  @IsNotEmpty()
+  @IsNumberString()
+  @Length(6, 6)
+  code: string;
+}
+
+export class TwoFactorDisableDto {
+  @ApiPropertyOptional({ description: 'Current password (also read by the re-auth guard)' })
+  @IsOptional()
+  @IsString()
+  password?: string;
+
+  @ApiProperty({ description: 'Current 6-digit 2FA code', example: '123456' })
+  @IsString()
+  @IsNotEmpty()
+  @IsNumberString()
+  @Length(6, 6)
+  code: string;
+}
+
+export class TwoFactorRegenerateDto {
+  @ApiProperty({ description: 'Current 6-digit 2FA code', example: '123456' })
+  @IsString()
+  @IsNotEmpty()
+  @IsNumberString()
+  @Length(6, 6)
+  code: string;
+}
+
+export class TwoFactorLoginVerifyDto {
+  @ApiProperty({ description: 'challengeId returned by login when requires2fa is true' })
+  @IsString()
+  @IsNotEmpty()
+  challengeId: string;
+
+  @ApiProperty({ description: '6-digit code', example: '123456' })
+  @IsString()
+  @IsNotEmpty()
+  @IsNumberString()
+  @Length(6, 6)
+  code: string;
+}
+
+export class TwoFactorLoginRecoveryDto {
+  @ApiProperty({ description: 'challengeId returned by login when requires2fa is true' })
+  @IsString()
+  @IsNotEmpty()
+  challengeId: string;
+
+  @ApiProperty({ description: 'Single-use recovery code', example: 'ABCD-EFGH-IJKL' })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(64)
+  recoveryCode: string;
+}
+
+export class TwoFactorLoginResendDto {
+  @ApiProperty({ description: 'challengeId returned by login when requires2fa is true' })
+  @IsString()
+  @IsNotEmpty()
+  challengeId: string;
+}
+
+export class TwoFactorStepUpDto {
+  @ApiProperty({ description: '6-digit code', example: '123456' })
+  @IsString()
+  @IsNotEmpty()
+  @IsNumberString()
+  @Length(6, 6)
+  code: string;
+
+  @ApiPropertyOptional({ description: 'Action the fresh code is for, kept in the audit event' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  action?: string;
 }

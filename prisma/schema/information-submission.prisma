@@ -1,8 +1,78 @@
+
 enum InformationStatus {
   PENDING
   UNDER_REVIEW
   REVIEWED
   REJECTED
+}
+
+enum InformationPriority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+
+enum InformationCredibility {
+  UNVERIFIED
+  LOW
+  MEDIUM
+  HIGH
+}
+
+// Set only together with status = REJECTED.
+enum InformationResolution {
+  DUPLICATE // same information as another tip on this case
+  ALREADY_KNOWN // the case already had this information
+}
+
+// What the informant sees on their tip timeline. Status changes are NOT stored
+// here; they are read from the audit trail so changes made by any code path show up.
+enum InformationTimelineEventType {
+  QUESTION_ASKED
+  QUESTION_ANSWERED
+  MESSAGE
+  EVIDENCE_ADDED
+  APPEAL_FILED
+}
+
+enum InformationAppealStatus {
+  PENDING
+  UPHELD // rejection stands
+  OVERTURNED
+}
+
+enum InformationScanStatus {
+  PENDING
+  CLEAN
+  INFECTED
+  FAILED
+  SKIPPED
+}
+
+enum InformationRedactionMode {
+  BLUR_FACES
+  BLUR_REGION
+}
+
+enum InformationRedactionStatus {
+  NONE
+  REQUESTED
+  COMPLETED
+  FAILED
+}
+
+enum InformationIdentityAccessKind {
+  REVEAL // one tip, identity shown with a reason
+  INFORMANT_LOOKUP // all tips of one informant listed
+}
+
+enum InformationExportJobStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+  EXPIRED
 }
 
 model InformationSubmission {
@@ -21,6 +91,7 @@ model InformationSubmission {
   document String[]
   other    String[]
 
+  // Running total of attached media bytes, computed from statObject() results.
   mediaTotalBytes Int @default(0)
 
   status     InformationStatus @default(PENDING)
@@ -30,15 +101,248 @@ model InformationSubmission {
 
   idempotencyKey String?
 
-  missingPerson MissingPerson @relation(fields: [missingPersonId], references: [id], onDelete: Cascade)
-  user          User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // ── Triage ──────────────────────────────────
+  priority           InformationPriority    @default(NORMAL)
+  credibility        InformationCredibility @default(UNVERIFIED)
+  credibilityReason  String?
+  credibilitySetById String?
+  credibilitySetAt   DateTime?
+
+  resolution    InformationResolution?
+  duplicateOfId String?
+
+  // ── Reviewer assignment (claim / assign) ────
+  assignedToId String?
+  assignedAt   DateTime?
+  assignedById String?
+
+  informantSeenStatus InformationStatus @default(PENDING)
+  informantSeenAt     DateTime?
+
+  // ── Retention ───────────────────────────────
+  legalHold       Boolean   @default(false)
+  legalHoldReason String?
+  legalHoldAt     DateTime?
+  legalHoldById   String?
+
+  // Soft delete. Every normal list query must filter deletedAt IS NULL.
+  deletedAt    DateTime?
+  deletedById  String?
+  deleteReason String?
+
+  anonymizedAt   DateTime?
+  anonymizedById String?
+
+  missingPerson MissingPerson          @relation(fields: [missingPersonId], references: [id], onDelete: Cascade)
+  user          User?                  @relation("InformationSubmissionOwner", fields: [userId], references: [id], onDelete: Cascade)
+  assignedTo    User?                  @relation("InformationSubmissionAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
+  duplicateOf   InformationSubmission?  @relation("InformationSubmissionDuplicate", fields: [duplicateOfId], references: [id], onDelete: SetNull)
+  duplicates    InformationSubmission[] @relation("InformationSubmissionDuplicate")
   rewardClaims  RewardClaim[]
 
-  // Running total of attached media bytes, computed from statObject() results.
+  adminReads     InformationAdminRead[]
+  questions      InformationQuestion[]
+  timelineEvents InformationTimelineEvent[]
+  appeal         InformationAppeal?
+  escalations    InformationEscalation[]
+  attachments    InformationAttachment[]
+  revisions      InformationRevision[]
+  accessLogs     InformationAccessLog[]
+  identityAccess InformationIdentityAccess[]
+
   @@unique([userId, idempotencyKey])
   @@index([userId])
+  @@index([userId, status])
   @@index([missingPersonId])
+  @@index([missingPersonId, status])
   @@index([status])
   @@index([status, createdAt])
+  @@index([assignedToId, status])
+  @@index([priority])
+  @@index([deletedAt])
+  @@index([duplicateOfId])
   @@map("information_submission")
+}
+
+// A row exists = this admin has read the tip (same pattern as ReportAdminRead).
+// Informant activity (answer, new evidence, appeal) deletes the rows so the tip is unread again.
+model InformationAdminRead {
+  submissionId String
+  adminId      String
+  readAt       DateTime @default(now())
+
+  submission InformationSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  admin      User                  @relation("InformationAdminReadAdmin", fields: [adminId], references: [id], onDelete: Cascade)
+
+  @@id([submissionId, adminId])
+  @@index([adminId])
+  @@map("information_admin_read")
+}
+
+// A question from the review team. answeredAt IS NULL = still open.
+model InformationQuestion {
+  id           String    @id @default(uuid())
+  submissionId String
+  askedById    String?
+  question     String
+  answer       String?
+  answeredAt   DateTime?
+  createdAt    DateTime  @default(now())
+
+  submission InformationSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  @@index([submissionId, answeredAt])
+  @@index([createdAt])
+  @@map("information_question")
+}
+
+// Informant-facing history: questions, answers, messages, new evidence, appeal.
+model InformationTimelineEvent {
+  id           String                       @id @default(uuid())
+  submissionId String
+  type         InformationTimelineEventType
+  actorId      String?
+  message      String?
+  data         Json?
+  createdAt    DateTime                     @default(now())
+
+  submission InformationSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  @@index([submissionId, createdAt])
+  @@map("information_timeline_event")
+}
+
+// One appeal per tip. No endpoint decides appeals yet; the decision columns are ready for one.
+model InformationAppeal {
+  id           String                  @id @default(uuid())
+  submissionId String                  @unique
+  userId       String?
+  reason       String
+  status       InformationAppealStatus @default(PENDING)
+  decidedById  String?
+  decidedAt    DateTime?
+  decisionNote String?
+  createdAt    DateTime                @default(now())
+
+  submission InformationSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  @@index([status, createdAt])
+  @@map("information_appeal")
+}
+
+model InformationEscalation {
+  id            String              @id @default(uuid())
+  submissionId  String
+  escalatedById String
+  priority      InformationPriority
+  note          String
+  createdAt     DateTime            @default(now())
+
+  submission InformationSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  @@index([submissionId, createdAt])
+  @@index([createdAt])
+  @@map("information_escalation")
+}
+
+model InformationAttachment {
+  id           String                @id @default(uuid())
+  submissionId String
+  key          String
+  field        String // photo | video | audio | pdf | document | other
+  size         Int                   @default(0)
+  contentType  String?
+  etag         String?
+  sha256       String?
+  scanStatus   InformationScanStatus @default(PENDING)
+  scannedAt    DateTime?
+
+  redactionStatus InformationRedactionStatus @default(NONE)
+  redactionMode   InformationRedactionMode?
+  redactionReason String?
+  redactionById   String?
+  redactionAt     DateTime?
+  redactedKey     String? // set by the worker when the redacted copy exists
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  submission InformationSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  @@unique([submissionId, key])
+  @@index([scanStatus])
+  @@index([redactionStatus])
+  @@map("information_attachment")
+}
+
+// Field-level change history written by the review and informant actions.
+model InformationRevision {
+  id           String   @id @default(uuid())
+  submissionId String
+  actorId      String?
+  field        String
+  oldValue     Json?
+  newValue     Json?
+  reason       String?
+  createdAt    DateTime @default(now())
+
+  submission InformationSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  @@index([submissionId, createdAt])
+  @@map("information_revision")
+}
+
+// Who opened a tip in the admin area (the audit trail covers writes).
+model InformationAccessLog {
+  id           String   @id @default(uuid())
+  submissionId String
+  adminId      String
+  action       String // READ | other view kinds
+  createdAt    DateTime @default(now())
+
+  submission InformationSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  @@index([submissionId, createdAt])
+  @@index([adminId, createdAt])
+  @@map("information_access_log")
+}
+
+// Every time an admin saw who an informant is. submissionId is null for an informant lookup.
+model InformationIdentityAccess {
+  id           String                        @id @default(uuid())
+  submissionId String?
+  informantId  String?
+  adminId      String
+  kind         InformationIdentityAccessKind
+  reason       String?
+  createdAt    DateTime                      @default(now())
+
+  submission InformationSubmission? @relation(fields: [submissionId], references: [id], onDelete: SetNull)
+
+  @@index([submissionId, createdAt])
+  @@index([informantId, createdAt])
+  @@index([adminId, createdAt])
+  @@map("information_identity_access")
+}
+
+model InformationExportJob {
+  id            String                     @id @default(uuid())
+  requestedById String
+  filters       Json?
+  status        InformationExportJobStatus @default(QUEUED)
+  storageKey    String?
+  rowCount      Int?
+  truncated     Boolean                    @default(false)
+  error         String?
+  startedAt     DateTime?
+  completedAt   DateTime?
+  expiresAt     DateTime?
+  createdAt     DateTime                   @default(now())
+
+  requestedBy User @relation("InformationExportJobRequester", fields: [requestedById], references: [id], onDelete: Cascade)
+
+  @@index([requestedById, createdAt])
+  @@index([status])
+  @@index([expiresAt])
+  @@map("information_export_job")
 }

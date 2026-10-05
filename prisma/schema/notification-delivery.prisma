@@ -78,6 +78,20 @@ model NotificationBroadcast {
   createdAt      DateTime             @default(now())
   updatedAt      DateTime             @default(now()) @updatedAt
 
+  // Two-person approval for large broadcasts (NF-31, NF-32).
+  // Extra statuses used with these fields: AWAITING_APPROVAL, REJECTED.
+  requiresApproval Boolean   @default(false)
+  approvedById     String?
+  approvedAt       DateTime?
+  rejectedById     String?
+  rejectedAt       DateTime?
+  rejectionReason  String?
+
+  // Halting a broadcast that is already sending (NF-33). Extra status: STOPPED.
+  stopRequestedAt   DateTime?
+  stopRequestedById String?
+  stoppedAt         DateTime?
+
   notifications Notification[]
   createdBy     User?                 @relation(fields: [createdById], references: [id], onDelete: SetNull)
   template      NotificationTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
@@ -98,6 +112,10 @@ model NotificationTemplate {
   createdAt   DateTime         @default(now())
   updatedAt   DateTime         @default(now()) @updatedAt
 
+  // Soft retire (NF-24) and bring back (NF-25)
+  retiredAt   DateTime?
+  retiredById String?
+
   broadcasts NotificationBroadcast[]
 
   @@unique([type, language])
@@ -114,4 +132,86 @@ model NotificationIdempotencyKey {
   @@unique([actorId, key])
   @@index([createdAt])
   @@map("notification_idempotency_key")
+}
+
+
+/// One row per user while snoozed. Non-security notifications still land in the inbox
+/// but are not sent by push, email or SMS until `until` passes.
+model NotificationSnooze {
+  id        String   @id @default(uuid())
+  userId    String   @unique
+  until     DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([until])
+  @@map("notification_snooze")
+}
+
+/// One mute system for every record type (replaces per-report and per-post mutes).
+model NotificationEntityMute {
+  id        String   @id @default(uuid())
+  userId    String
+  entity    String
+  entityId  String
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, entity, entityId])
+  @@index([entity, entityId])
+  @@map("notification_entity_mute")
+}
+
+
+/// Addresses and numbers a provider reported as bounced or blocked.
+/// channel: EMAIL | SMS. status: ACTIVE | CLEARED.
+/// address is stored normalised (lower-case email, digits-only phone) and is masked in every API response.
+model NotificationBounce {
+  id             String    @id @default(uuid())
+  channel        String
+  address        String
+  userId         String?
+  reason         String
+  providerCode   String?
+  status         String    @default("ACTIVE")
+  bounceCount    Int       @default(1)
+  firstBouncedAt DateTime  @default(now())
+  lastBouncedAt  DateTime  @default(now())
+  clearedAt      DateTime?
+  clearedById    String?
+  clearNote      String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @default(now()) @updatedAt
+
+  @@unique([channel, address])
+  @@index([status, lastBouncedAt])
+  @@index([userId])
+  @@map("notification_bounce")
+}
+
+/// Small key/value store for admin-changed settings. Key used today: 'retention'.
+model NotificationSetting {
+  key         String   @id
+  value       Json
+  updatedById String?
+  updatedAt   DateTime @default(now()) @updatedAt
+
+  @@map("notification_setting")
+}
+
+/// One row per outside channel that has ever been paused. channel: EMAIL | SMS | PUSH.
+model NotificationQueueState {
+  channel     String    @id
+  paused      Boolean   @default(false)
+  reason      String?
+  pausedAt    DateTime?
+  pausedById  String?
+  resumedAt   DateTime?
+  resumedById String?
+  updatedAt   DateTime  @default(now()) @updatedAt
+
+  @@map("notification_queue_state")
 }

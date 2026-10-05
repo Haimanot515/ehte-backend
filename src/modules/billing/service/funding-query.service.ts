@@ -1,18 +1,3 @@
-// src/modules/billing/service/funding-query.service.ts
-// Read side only — no writes here. Backs every endpoint in section 3 of the billing review
-// except the two mutations (resolve-review stays on PaymentService; cancel/refund stay on
-// DisbursementService / RewardService). This file is new; it does not replace any of those.
-// DESIGN RULE (section 4): one source of truth. Every total here is computed from
-// Payment(status=PAID) and PaymentAllocation — never from Support.amount/recipientAmount and
-// never from VictimProfile.totalRaised, which section 4 and G22 flag as a cache that can drift.
-// Money is always returned as a decimal string, never a JS number (G22's Number() bug).
-// G43 RESOLVED (Sep 2026 migration): RewardClaim now has a real FK to MissingPerson and a
-// unique(missingPersonId, informationSubmissionId), plus its own informantUserId column, so
-// "my reward claims" for a finder is a plain findMany() again — no more hand-joining through
-// InformationSubmission. RewardClaim is also no longer one row per case (see
-// reward-claim.prisma): a case can have several informants, so several of the queries below
-// changed from findUnique({missingPersonId}) to findMany / aggregate.
-
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma, InformationStatus } from '@prisma/client';
 import { PrismaService } from '../../../prisma/prisma.service';
@@ -132,9 +117,6 @@ export class FundingQueryService {
     };
   }
 
-  // GET payments/mine/:id — receipt view
-  // Includes the allocation snapshot shown at checkout time (Payment.allocationSnapshot) so
-  // the receipt matches what the donor actually agreed to pay.
   async getMyPaymentById(userId: string, paymentId: string) {
     const payment = await this.prisma.payment.findFirst({
       where: { id: paymentId, payerUserId: userId },
@@ -187,7 +169,13 @@ export class FundingQueryService {
     // on the case, not "the" claim — the case owner sees the whole picture.
     const claims = await this.prisma.rewardClaim.findMany({
       where: { missingPersonId },
-      select: { id: true, status: true, rewardPercentage: true, rewardAmount: true, approvedAt: true },
+      select: {
+        id: true,
+        status: true,
+        rewardPercentage: true,
+        rewardAmount: true,
+        approvedAt: true,
+      },
       orderBy: { createdAt: 'asc' },
     });
 
@@ -202,17 +190,15 @@ export class FundingQueryService {
       claims,
       // Case-level refund state now lives on MissingPerson.fundingStatus (section 21) —
       // a single claim's own REFUND_DUE/REFUNDED only ever concerns that claim's share.
-      refundState: mp.fundingStatus === 'REFUND_DUE' || mp.fundingStatus === 'REFUNDED' ? mp.fundingStatus : null,
+      refundState:
+        mp.fundingStatus === 'REFUND_DUE' || mp.fundingStatus === 'REFUNDED'
+          ? mp.fundingStatus
+          : null,
     };
   }
 
   // ── FINDER ───────────────────────────────────────────────────────────
 
-  // GET rewards/mine
-  // informantUserId is set directly on RewardClaim now (from the submission at
-  // claim-creation time), so this is a plain query — no more reconstructing it
-  // by hand through InformationSubmission (G43 is resolved by the FK/relation
-  // this migration added; see reward-claim.prisma).
   async getMyRewardClaims(userId: string) {
     const claims = await this.prisma.rewardClaim.findMany({
       where: { informantUserId: userId },
@@ -229,10 +215,6 @@ export class FundingQueryService {
     });
     if (claims.length === 0) return { data: [] };
 
-    // Payout status: this claim's own disbursement, if one has been created for
-    // it (a reward pool can be split across several informants — see
-    // disbursement.service.ts — so this is keyed on rewardClaimId, not on the
-    // shared allocation). Small N (one finder's own claims), so N+1 is acceptable.
     const data = await Promise.all(
       claims.map(async (c) => {
         const disbursement = await this.prisma.disbursement.findFirst({
@@ -267,9 +249,6 @@ export class FundingQueryService {
 
     const [grossAgg, allocations] = await Promise.all([
       this.prisma.payment.aggregate({
-        // SUPPORT only: posting-fee payments share victimProfileId but are a
-        // separate financial movement (section 33) and must never be summed
-        // into supporter funding totals.
         where: { victimProfileId: profileId, type: 'SUPPORT', status: 'PAID' },
         _sum: { amount: true, chapaFee: true },
       }),
@@ -365,7 +344,10 @@ export class FundingQueryService {
 
     const [payments, claims] = await Promise.all([
       this.prisma.payment.findMany({
-        where: { missingPersonId, type: { in: ['MISSING_PERSON_REWARD', 'MISSING_PERSON_POSTING_FEE'] } },
+        where: {
+          missingPersonId,
+          type: { in: ['MISSING_PERSON_REWARD', 'MISSING_PERSON_POSTING_FEE'] },
+        },
         select: { id: true, type: true, status: true, amount: true, createdAt: true, paidAt: true },
         orderBy: { createdAt: 'desc' },
       }),
@@ -376,7 +358,9 @@ export class FundingQueryService {
       }),
     ]);
 
-    const submissionIds = claims.map((c) => c.informationSubmissionId).filter((id): id is string => !!id);
+    const submissionIds = claims
+      .map((c) => c.informationSubmissionId)
+      .filter((id): id is string => !!id);
     const submissions = submissionIds.length
       ? await this.prisma.informationSubmission.findMany({
           where: { id: { in: submissionIds } },
@@ -403,14 +387,15 @@ export class FundingQueryService {
     const claimsView = claims.map((c) => ({
       ...c,
       rewardAmount: c.rewardAmount ? money(c.rewardAmount) : null,
-      submission: c.informationSubmissionId ? submissionById.get(c.informationSubmissionId) ?? null : null,
+      submission: c.informationSubmissionId
+        ? (submissionById.get(c.informationSubmissionId) ?? null)
+        : null,
       disbursements: disbursementsByClaim.get(c.id) ?? [],
     }));
 
-    // The pool total is the funded reward's REWARD_BENEFICIARY allocation, same
-    // computation RewardService.splitReward() uses — shown here so an admin can
-    // see it before deciding a split.
-    const paidPaymentIds = payments.filter((p) => p.status === 'PAID' && p.type === 'MISSING_PERSON_REWARD').map((p) => p.id);
+    const paidPaymentIds = payments
+      .filter((p) => p.status === 'PAID' && p.type === 'MISSING_PERSON_REWARD')
+      .map((p) => p.id);
     let poolAmount: string | null = null;
     if (paidPaymentIds.length > 0) {
       const pool = await this.prisma.paymentAllocation.aggregate({
@@ -444,7 +429,10 @@ export class FundingQueryService {
           : null,
       payments: payments.map((p) => ({ ...p, amount: money(p.amount) })),
       claims: claimsView,
-      refundState: mp.fundingStatus === 'REFUND_DUE' || mp.fundingStatus === 'REFUNDED' ? mp.fundingStatus : null,
+      refundState:
+        mp.fundingStatus === 'REFUND_DUE' || mp.fundingStatus === 'REFUNDED'
+          ? mp.fundingStatus
+          : null,
     };
   }
 
@@ -485,16 +473,14 @@ export class FundingQueryService {
     };
   }
 
-  async listAllocations(
-    where: Prisma.PaymentAllocationWhereInput,
-    page = 1,
-    limit = 20,
-  ) {
+  async listAllocations(where: Prisma.PaymentAllocationWhereInput, page = 1, limit = 20) {
     const [rows, total] = await this.prisma.$transaction([
       this.prisma.paymentAllocation.findMany({
         where,
         orderBy: { createdAt: 'desc' },
-        include: { payment: { select: { victimProfileId: true, missingPersonId: true, status: true } } },
+        include: {
+          payment: { select: { victimProfileId: true, missingPersonId: true, status: true } },
+        },
         ...paginate(page, limit),
       }),
       this.prisma.paymentAllocation.count({ where }),
@@ -532,16 +518,14 @@ export class FundingQueryService {
       allocation: {
         ...disbursement.allocation,
         amount: money(disbursement.allocation.amount),
-        payment: { ...disbursement.allocation.payment, amount: money(disbursement.allocation.payment.amount) },
+        payment: {
+          ...disbursement.allocation.payment,
+          amount: money(disbursement.allocation.payment.amount),
+        },
       },
     };
   }
 
-  // GET admin/billing/liabilities (G27)
-  // Compares what Ehte still owes (unpaid allocations) against Chapa's reported balance.
-  // chapa.getBalance() is not confirmed to exist yet (section 8, G27) — this degrades
-  // gracefully to "unknown" rather than failing the whole report if the method or the Chapa
-  // call is unavailable.
   async getLiabilities() {
     const unpaid = await this.prisma.paymentAllocation.groupBy({
       by: ['partyType', 'settlementStatus'],
@@ -558,8 +542,9 @@ export class FundingQueryService {
     let chapaBalance: string | null = null;
     let chapaBalanceError: string | null = null;
     try {
-      const getBalance = (this.chapa as unknown as { getBalance?: () => Promise<{ available: number }> })
-        .getBalance;
+      const getBalance = (
+        this.chapa as unknown as { getBalance?: () => Promise<{ available: number }> }
+      ).getBalance;
       if (typeof getBalance === 'function') {
         const balance = await getBalance.call(this.chapa);
         chapaBalance = money(balance.available);

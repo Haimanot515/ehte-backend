@@ -6,17 +6,6 @@ import * as bcrypt from 'bcrypt';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { CacheService } from 'src/services/redis/cache.service'; // REDIS
 
-// Re-auth gate: the password is always accepted, the Discreet Mode passcode only when Discreet Mode is on
-//
-// REDIS: this had no rate limiting at all — unlike login(), which goes through LockoutUtil,
-// a stolen/replayed access token could call this endpoint as many times as it wants to brute
-// force the password (or the Discreet Mode passcode, which is typically a short PIN) with
-// nothing but bcrypt's own cost factor slowing it down. Failures are now counted and the gate
-// locks for a short window once the limit is hit — kept on the security Redis connection and
-// deliberately separate from LockoutUtil's login counter, since a reauth failure from an
-// already-authenticated session is a different signal from a failed login and shouldn't share
-// a key (or a lockout) with it. See CacheService: isReauthLocked / recordReauthFailure /
-// resetReauthFailures.
 @Injectable()
 export class ReauthService {
   constructor(

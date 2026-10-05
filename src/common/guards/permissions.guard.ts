@@ -35,10 +35,6 @@ export class PermissionsGuard implements CanActivate {
 
     const userPermissions = new Set(user.permissions.map(normalize));
 
-    // Every required permission must be present — unlike RolesGuard's
-    // "any one role matches" semantics, permissions are additive checks
-    // per endpoint (e.g. an endpoint needing both 'user:create' AND
-    // 'user:assign-role' shouldn't pass with just one of them).
     const hasAllPermissions = requiredPermissions.every((permission) =>
       userPermissions.has(normalize(permission)),
     );

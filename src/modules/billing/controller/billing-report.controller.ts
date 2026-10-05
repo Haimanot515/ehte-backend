@@ -1,13 +1,3 @@
-// src/modules/billing/controller/billing-report.controller.ts
-//
-// Section 3's billing-wide admin reports: the payout queue (G23), the
-// payments list/detail and REVIEW_REQUIRED resolution (G9), the
-// disbursements list/detail, and the liabilities report (G27).
-//
-// Cancel/refund for disbursements and rewards stay on
-// disbursement.controller.ts (it already injects DisbursementService and
-// RewardService) rather than being duplicated here.
-
 import { Controller, Get, Param, Post, Body, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Prisma } from '@prisma/client';
@@ -52,7 +42,10 @@ export class BillingReportController {
       payerUserId: query.payerUserId,
       createdAt:
         query.startDate || query.endDate
-          ? { gte: query.startDate ? new Date(query.startDate) : undefined, lte: query.endDate ? new Date(query.endDate) : undefined }
+          ? {
+              gte: query.startDate ? new Date(query.startDate) : undefined,
+              lte: query.endDate ? new Date(query.endDate) : undefined,
+            }
           : undefined,
     };
     return this.funding.listPayments(where, query.page, query.limit);
@@ -60,7 +53,9 @@ export class BillingReportController {
 
   @Get('payments/:id')
   @RequirePermissions(PermissionsEnum.SUPPORT_PAYMENT_READ)
-  @ApiOperation({ summary: 'Admin: full detail for one payment, with allocations and disbursements' })
+  @ApiOperation({
+    summary: 'Admin: full detail for one payment, with allocations and disbursements',
+  })
   getPayment(@Param('id') id: string) {
     return this.funding.getPaymentById(id);
   }

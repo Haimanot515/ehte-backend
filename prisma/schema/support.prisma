@@ -61,23 +61,294 @@ model Support {
   agreementVersion   Int?
   allocationSnapshot Json?
 
-  // Total pledged by the payer. recipientAmount/organizationAmount/platformAmount
-  // are the same allocation split payment.service.ts stores on
-  // Payment/PaymentAllocation, mirrored here so a CONFIRMED support's
-  // breakdown survives independently of its originating Payment row.
   amount             Decimal? @db.Decimal(14, 2)
   recipientAmount    Decimal? @db.Decimal(14, 2)
   organizationAmount Decimal? @db.Decimal(14, 2)
   platformAmount     Decimal? @db.Decimal(14, 2)
 
-  agreement     Agreement?    @relation(fields: [agreementId], references: [id])
-  user          User?         @relation(fields: [userId], references: [id])
-  victimProfile VictimProfile @relation(fields: [victimProfileId], references: [id], onDelete: Cascade)
+  // ── Case management (SP-01 .. SP-68) ── NEW
+  assignedReviewerId String?
+  assignedAt         DateTime?
+
+  // Stamped by the status listeners in SupportService (never by hand), used for timeline,
+  // fulfilment-time and aging stats. Cleared again when an offer is reopened.
+  confirmedAt DateTime?
+  completedAt DateTime?
+  cancelledAt DateTime?
+  failedAt    DateTime?
+
+  // Supporter-side "something changed" marker. lastUpdateAt moves when someone other than the
+  // supporter changes the offer or replies; supporterSeenAt moves when the supporter opens it.
+  lastUpdateAt    DateTime?
+  supporterSeenAt DateTime?
+
+  // Recipient side (the user who claimed the profile).
+  recipientOpenedAt DateTime?
+  declinedAt        DateTime?
+  declineReason     String?
+  declinedByUserId  String?
+  thanksSentAt      DateTime?
+
+  agreement        Agreement?    @relation(fields: [agreementId], references: [id])
+  user             User?         @relation(fields: [userId], references: [id])
+  victimProfile    VictimProfile @relation(fields: [victimProfileId], references: [id], onDelete: Cascade)
+  assignedReviewer User?         @relation("SupportAssignedReviewer", fields: [assignedReviewerId], references: [id], onDelete: SetNull)
   // One Support can have several Payment attempts (retries after FAILED); only one ends up PAID.
-  payments      Payment[]
+  payments         Payment[]
+
+  statusEvents SupportStatusEvent[]
+  attachments  SupportAttachment[]
+  messages     SupportMessage[]
+  disputes     SupportDispute[]
+  flags        SupportFlag[]
+  adminReads   SupportAdminRead[]
+  revisions    SupportRevision[]
 
   @@index([victimProfileId])
   @@index([userId])
   @@index([status])
   // Backs VictimProfileService reconciliation queries on victimProfileId + status.
+  @@index([victimProfileId, status])
+  @@index([type, status])
+  @@index([status, createdAt])
+  @@index([createdAt])
+  @@index([assignedReviewerId])
+  @@index([userId, lastUpdateAt])
+}
+
+
+enum SupportDisputeReason {
+  NOT_DELIVERED
+  MISMATCH
+  RECIPIENT_DENIES_RECEIPT
+  OTHER
+}
+
+enum SupportDisputeStatus {
+  OPEN
+  RESOLVED
+}
+
+enum SupportDisputeOutcome {
+  DELIVERED
+  NOT_DELIVERED
+  CANCELLED
+}
+
+// Who opened the dispute.
+enum SupportDisputeSide {
+  SUPPORTER
+  RECIPIENT
+}
+
+enum SupportFlagReason {
+  ASKS_FOR_CONTACT
+  ASKS_FOR_PAYMENT
+  ASKS_FOR_MEETING
+  OTHER
+}
+
+enum SupportMessageAuthor {
+  SUPPORTER
+  STAFF
+}
+
+enum SupportAttachmentScanStatus {
+  PENDING
+  CLEAN
+  INFECTED
+  SKIPPED
+}
+
+enum SupportAttachmentAccessAction {
+  VIEWED
+  DOWNLOADED
+}
+
+enum SupportExportJobStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+  EXPIRED
+}
+
+model SupportStatusEvent {
+  id          String         @id @default(uuid())
+  supportId   String
+  fromStatus  SupportStatus?
+  toStatus    SupportStatus
+  actorUserId String?
+  actorType   ActorType?
+  reason      String?
+  createdAt   DateTime       @default(now())
+
+  support Support @relation(fields: [supportId], references: [id], onDelete: Cascade)
+
+  @@index([supportId, createdAt])
+  @@index([toStatus, createdAt])
+  @@map("support_status_event")
+}
+
+// Proof of delivery (photo, receipt, PDF). Soft-removed so the custody trail survives.
+model SupportAttachment {
+  id               String                      @id @default(uuid())
+  supportId        String
+  key              String
+  kind             String // photo | pdf | document
+  mimeType         String?
+  sizeBytes        Int?
+  sha256           String?
+  scanStatus       SupportAttachmentScanStatus @default(PENDING)
+  note             String?
+  uploadedByUserId String?
+  createdAt        DateTime                    @default(now())
+  removedAt        DateTime?
+  removedByUserId  String?
+  removalReason    String?
+
+  support  Support                   @relation(fields: [supportId], references: [id], onDelete: Cascade)
+  accesses SupportAttachmentAccess[]
+
+  @@index([supportId, removedAt])
+  @@index([supportId, key])
+  @@map("support_attachment")
+}
+
+// Who viewed or downloaded a proof file (SP-54). Written by SupportService.recordProofAccess().
+model SupportAttachmentAccess {
+  id           String                        @id @default(uuid())
+  attachmentId String
+  userId       String?
+  action       SupportAttachmentAccessAction
+  createdAt    DateTime                      @default(now())
+
+  attachment SupportAttachment @relation(fields: [attachmentId], references: [id], onDelete: Cascade)
+
+  @@index([attachmentId, createdAt])
+  @@map("support_attachment_access")
+}
+
+model SupportMessage {
+  id           String               @id @default(uuid())
+  supportId    String
+  authorUserId String?
+  authorType   SupportMessageAuthor
+  body         String
+  createdAt    DateTime             @default(now())
+
+  support Support @relation(fields: [supportId], references: [id], onDelete: Cascade)
+
+  @@index([supportId, createdAt])
+  @@map("support_message")
+}
+
+model SupportDispute {
+  id               String                 @id @default(uuid())
+  supportId        String
+  // Copied from Support.userId so repeat-dispute queries need no join.
+  supporterUserId  String?
+  raisedByUserId   String?
+  side             SupportDisputeSide
+  reason           SupportDisputeReason
+  details          String
+  status           SupportDisputeStatus   @default(OPEN)
+  outcome          SupportDisputeOutcome?
+  resolutionReason String?
+  resolvedByUserId String?
+  resolvedAt       DateTime?
+  createdAt        DateTime               @default(now())
+
+  support Support @relation(fields: [supportId], references: [id], onDelete: Cascade)
+
+  @@index([supportId])
+  @@index([status, createdAt])
+  @@index([supporterUserId])
+  @@map("support_dispute")
+}
+
+model SupportFlag {
+  id              String            @id @default(uuid())
+  supportId       String
+  reason          SupportFlagReason
+  details         String?
+  flaggedByUserId String?
+  createdAt       DateTime          @default(now())
+
+  support Support @relation(fields: [supportId], references: [id], onDelete: Cascade)
+
+  @@index([supportId])
+  @@index([reason, createdAt])
+  @@map("support_flag")
+}
+
+// Active when liftedAt is null and (endsAt is null or in the future).
+model SupporterRestriction {
+  id                 String    @id @default(uuid())
+  userId             String
+  reason             String
+  restrictedByUserId String?
+  startsAt           DateTime  @default(now())
+  endsAt             DateTime?
+  liftedAt           DateTime?
+  liftedByUserId     String?
+  createdAt          DateTime  @default(now())
+
+  user User @relation("SupporterRestrictionUser", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, liftedAt])
+  @@map("supporter_restriction")
+}
+
+// A row exists = this admin has read the offer (same pattern as ReportAdminRead).
+model SupportAdminRead {
+  supportId String
+  adminId   String
+  readAt    DateTime @default(now())
+
+  support Support @relation(fields: [supportId], references: [id], onDelete: Cascade)
+  admin   User    @relation("SupportAdminReadAdmin", fields: [adminId], references: [id], onDelete: Cascade)
+
+  @@id([supportId, adminId])
+  @@index([adminId])
+  @@map("support_admin_read")
+}
+
+// Field-level change history (SP-50). Status changes live in SupportStatusEvent instead.
+model SupportRevision {
+  id          String   @id @default(uuid())
+  supportId   String
+  actorUserId String?
+  field       String
+  oldValue    Json?
+  newValue    Json?
+  createdAt   DateTime @default(now())
+
+  support Support @relation(fields: [supportId], references: [id], onDelete: Cascade)
+
+  @@index([supportId, createdAt])
+  @@map("support_revision")
+}
+
+// Background CSV export (SP-58..60). The CSV text is kept on the row until expiresAt, then cleared.
+// Swap `csv` for a storage key if you move exports to object storage.
+model SupportExportJob {
+  id            String                 @id @default(uuid())
+  requestedById String
+  filters       Json?
+  status        SupportExportJobStatus @default(QUEUED)
+  rowCount      Int?
+  csv           String?
+  error         String?
+  startedAt     DateTime?
+  completedAt   DateTime?
+  expiresAt     DateTime?
+  createdAt     DateTime               @default(now())
+
+  requestedBy User @relation("SupportExportJobRequester", fields: [requestedById], references: [id], onDelete: Cascade)
+
+  @@index([requestedById, createdAt])
+  @@index([status])
+  @@index([expiresAt])
+  @@map("support_export_job")
 }
