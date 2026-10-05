@@ -7,6 +7,7 @@ import {
   ParseEnumPipe,
   Post,
   Put,
+  Query,
 } from '@nestjs/common';
 
 import { ApiBearerAuth, ApiOperation, ApiParam, ApiTags } from '@nestjs/swagger';
@@ -27,6 +28,8 @@ import {
   AssignPermissionsDto,
   RevokePermissionsDto,
   SetPermissionsDto,
+  SimulatePermissionDto,
+  PermissionDiffQueryDto,
 } from '../dto/permission.dto';
 
 // Every route here is admin-only by design — no self-service "/my-permissions" route exists.
@@ -48,6 +51,103 @@ export class PermissionController {
   @ApiOperation({ summary: 'List all permission definitions' })
   async findAll() {
     return this.service.findAll();
+  }
+
+  // ───────────────────────────── NEW ENDPOINTS ─────────────────────────────
+  // Static paths are declared above ':name' on purpose, and above the existing
+  // 'roles/:roleId' routes, so they are never read as a permission name.
+
+  // AR-47
+  @Get('groups')
+  @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.PERMISSION_READ)
+  @ApiOperation({ summary: 'Permissions grouped by area, for a role editor' })
+  async groups() {
+    return this.service.groups();
+  }
+
+  // AR-49
+  @Get('matrix')
+  @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.PERMISSION_READ)
+  @ApiOperation({ summary: 'Role by permission grid, for review and export' })
+  async matrix() {
+    return this.service.matrix();
+  }
+
+  // AR-50
+  @Get('unused')
+  @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.PERMISSION_READ)
+  @ApiOperation({ summary: 'Permissions no role holds, or no route uses' })
+  async unused() {
+    return this.service.unused();
+  }
+
+  // AR-53
+  @Get('sensitive')
+  @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.PERMISSION_READ)
+  @ApiOperation({ summary: 'Permissions flagged high risk (refunds, purge, identity reveal)' })
+  async sensitive() {
+    return this.service.sensitive();
+  }
+
+  // AR-54
+  @Get('conflicts')
+  @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.PERMISSION_READ)
+  @ApiOperation({ summary: 'Role combinations that break separation of duties' })
+  async conflicts() {
+    return this.service.conflicts();
+  }
+
+  // AR-81
+  @Get('stats/usage')
+  @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.PERMISSION_READ)
+  @ApiOperation({ summary: 'Which permissions are actually used, by routes and by users' })
+  async statsUsage() {
+    return this.service.statsUsage();
+  }
+
+  // AR-51 — re-runs the seeder so new enum values reach the database.
+  @Post('sync')
+  @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.PERMISSION_MANAGE)
+  @RequireReauthentication()
+  @ApiOperation({ summary: 'Re-run the permission seeder so new enum values reach the database' })
+  async sync(@CurrentUser() actor: CurrentUserDto) {
+    return this.service.sync(actor);
+  }
+
+  // AR-52 — read-only dry run; changes nothing.
+  @Post('simulate')
+  @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.PERMISSION_READ)
+  @ApiOperation({ summary: 'Would these roles be allowed to do X? Returns allow or deny' })
+  async simulate(@Body() data: SimulatePermissionDto) {
+    return this.service.simulate(data);
+  }
+
+  // AR-55
+  @Get('users/:userId/diff')
+  @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.PERMISSION_READ)
+  @ApiOperation({ summary: "What changed in a user's effective permissions over a period" })
+  @ApiParam({ name: 'userId', type: 'string' })
+  async diffForUser(@Param('userId') userId: string, @Query() query: PermissionDiffQueryDto) {
+    return this.service.diffForUser(userId, query);
+  }
+
+  // AR-48 — single-segment catch, so it stays after every static GET above.
+  @Get(':name')
+  @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.PERMISSION_READ)
+  @ApiOperation({ summary: 'One permission with its description and the roles that hold it' })
+  @ApiParam({ name: 'name', enum: PermissionsEnum })
+  async findOne(@Param('name', new ParseEnumPipe(PermissionsEnum)) name: PermissionsEnum) {
+    return this.service.findOneWithRoles(name);
   }
 
   // Reverse lookup: which roles have a given permission.

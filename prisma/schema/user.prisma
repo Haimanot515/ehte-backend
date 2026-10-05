@@ -1,4 +1,3 @@
-// Holds a not-yet-verified new phone during the change-phone flow
 model User {
   id                       String    @id @default(uuid())
   name                     String?
@@ -18,18 +17,23 @@ model User {
   inviteTokenHash          String?   @unique
   isEmailVerified          Boolean   @default(false)
 
-  // Social login — one nullable+unique column per provider, same pattern as
-  // the rest of this model. NULL is fine on all three for local (phone/
-  // password) accounts; Postgres unique indexes allow multiple NULLs.
+  legalHold    Boolean   @default(false)
+  deletedAt    DateTime?
+  anonymizedAt DateTime?
+
+  // Set by POST /users/:id/2fa/require: must enrol at next sign-in (AR-74)
+  twoFactorRequiredAt DateTime?
+
   googleId   String? @unique
   facebookId String? @unique
   appleId    String? @unique
 
+  // Holds a not-yet-verified new phone during the change-phone flow
   pendingPhone String?
 
   auditLogs            AuditLog[]                 @relation("AuditLogActor")
   auditLogsAsTarget    AuditLog[]                 @relation("AuditLogTarget")
-  informationReports   InformationSubmission[]
+  informationReports   InformationSubmission[]    @relation("InformationSubmissionOwner")
   missingPersons       MissingPerson[]            @relation("MissingPersonOwner")
   notifications        Notification[]
   posts                Post[]                     @relation("PostOwner")
@@ -37,40 +41,195 @@ model User {
   reports              Report[]                   @relation("ReportReporter")
   requestedInformation ReportInformationRequest[] @relation("InfoRequestRequestedBy")
   sessions             Session[]
+  loginAttempts        LoginAttempt[]
   supports             Support[]
   payments             Payment[]
   otps                 UserOtp[]
   userRoles            UserRole[]
   assignedRoles        UserRole[]                 @relation("UserRoleAssignedBy")
 
-  // FIX: added to match the new @relation on DeviceToken/NotificationPreference
-  // in notification-delivery.prisma — both sides required for a Prisma relation.
   deviceTokens            DeviceToken[]
   notificationPreferences NotificationPreference[]
+  notificationSnoozes     NotificationSnooze[]
+  notificationEntityMutes NotificationEntityMute[]
 
   profile UserProfile?
 
-  sponsoredMissingPersons        MissingPerson[] @relation("MissingPersonSponsor")
-  claimedMissingPersons          MissingPerson[] @relation("MissingPersonClaimedBy")
-  firstConfirmedMissingPersons   MissingPerson[] @relation("MissingPersonChildSafetyFirst")
-  claimedPosts                   Post[]          @relation("PostClaimedBy")
-  firstConfirmedPosts            Post[]          @relation("PostChildSafetyFirst")
-  createdVictimProfiles          VictimProfile[] @relation("VictimProfileCreatedBy")
-  claimedVictimProfiles          VictimProfile[] @relation("VictimProfileClaimedBy")
-  firstConfirmedVictimProfiles   VictimProfile[] @relation("VictimProfileChildSafetyFirst")
-  informantRewardClaims          RewardClaim[]   @relation("RewardClaimInformant")
-  reviewedRewardClaims           RewardClaim[]   @relation("RewardClaimReviewedBy")
-  approvedRewardClaims           RewardClaim[]   @relation("RewardClaimApprovedBy")
-  createdDisbursements           Disbursement[]  @relation("DisbursementCreatedBy")
-  approvedDisbursements          Disbursement[]  @relation("DisbursementApprovedBy")
-  executedDisbursements          Disbursement[]  @relation("DisbursementExecutedBy")
-  approvedAgreements             Agreement[]     @relation("AgreementApprovedBy")
-  retiredAgreements              Agreement[]     @relation("AgreementRetiredBy")
-  createdBroadcasts              NotificationBroadcast[]
-  createdAuditAlerts             AuditAlert[]
-  auditSavedFilters              AuditSavedFilter[]
-  auditExports                   AuditExport[]
-  requestedAuditPurgeRuns        AuditPurgeRun[]
+  deletionRequests    UserDeletionRequest[] @relation("DeletionRequestUser")
+  userRestrictions    UserRestriction[]     @relation("UserRestrictionUser")
+  userWarnings        UserWarning[]         @relation("UserWarningUser")
+  userConsents        UserConsent[]         @relation("UserConsentUser")
+  abuseReportsAgainst AbuseReport[]         @relation("AbuseReportTarget")
+
+  sponsoredMissingPersons      MissingPerson[]         @relation("MissingPersonSponsor")
+  claimedMissingPersons        MissingPerson[]         @relation("MissingPersonClaimedBy")
+  firstConfirmedMissingPersons MissingPerson[]         @relation("MissingPersonChildSafetyFirst")
+  claimedPosts                 Post[]                  @relation("PostClaimedBy")
+  firstConfirmedPosts          Post[]                  @relation("PostChildSafetyFirst")
+  createdVictimProfiles        VictimProfile[]         @relation("VictimProfileCreatedBy")
+  claimedVictimProfiles        VictimProfile[]         @relation("VictimProfileClaimedBy")
+  firstConfirmedVictimProfiles VictimProfile[]         @relation("VictimProfileChildSafetyFirst")
+  informantRewardClaims        RewardClaim[]           @relation("RewardClaimInformant")
+  reviewedRewardClaims         RewardClaim[]           @relation("RewardClaimReviewedBy")
+  approvedRewardClaims         RewardClaim[]           @relation("RewardClaimApprovedBy")
+  createdDisbursements         Disbursement[]          @relation("DisbursementCreatedBy")
+  approvedDisbursements        Disbursement[]          @relation("DisbursementApprovedBy")
+  executedDisbursements        Disbursement[]          @relation("DisbursementExecutedBy")
+  approvedAgreements           Agreement[]             @relation("AgreementApprovedBy")
+  retiredAgreements            Agreement[]             @relation("AgreementRetiredBy")
+  createdBroadcasts            NotificationBroadcast[]
+  createdAuditAlerts           AuditAlert[]
+  auditSavedFilters            AuditSavedFilter[]
+  auditExports                 AuditExport[]
+  requestedAuditPurgeRuns      AuditPurgeRun[]
+
+  postReadStates     PostReadState[]     @relation("PostReadStateAdmin")
+  postFlags          PostFlag[]          @relation("PostFlagReporter")
+  postAppeals        PostAppeal[]        @relation("PostAppealAuthor")
+  reportDrafts       ReportDraft[]       @relation("ReportDraftOwner")
+  reportAdminReads   ReportAdminRead[]   @relation("ReportAdminReadAdmin")
+  reportWatchers     ReportWatcher[]     @relation("ReportWatcherAdmin")
+  reportFollowUps    ReportFollowUp[]    @relation("ReportFollowUpAdmin")
+  reportSavedViews   ReportSavedView[]   @relation("ReportSavedViewAdmin")
+  reportAccessGrants ReportAccessGrant[] @relation("ReportAccessGrantee")
+  reportExportJobs   ReportExportJob[]   @relation("ReportExportJobRequester")
+
+  assignedInformationSubmissions InformationSubmission[] @relation("InformationSubmissionAssignee")
+  informationAdminReads          InformationAdminRead[]  @relation("InformationAdminReadAdmin")
+  informationExportJobs          InformationExportJob[]  @relation("InformationExportJobRequester")
+
+  assignedMissingPersons  MissingPerson[]          @relation("MissingPersonAssignee")
+  missingPersonReadStates MissingPersonReadState[] @relation("MissingPersonReadStateAdmin")
+  missingPersonFlags      MissingPersonFlag[]      @relation("MissingPersonFlagReporter")
+  missingPersonAppeals    MissingPersonAppeal[]    @relation("MissingPersonAppealAuthor")
+  missingPersonUpdates    MissingPersonUpdate[]    @relation("MissingPersonUpdateAuthor")
+  missingPersonMessages   MissingPersonMessage[]   @relation("MissingPersonMessageAuthor")
+  missingPersonRevisions  MissingPersonRevision[]  @relation("MissingPersonRevisionAuthor")
+  missingPersonRedactions MissingPersonRedaction[] @relation("MissingPersonRedactionRequester")
+  missingPersonViews      MissingPersonView[]      @relation("MissingPersonViewer")
+  missingPersonExportJobs MissingPersonExportJob[] @relation("MissingPersonExportRequester")
+
+  assignedVictimProfiles  VictimProfile[]          @relation("VictimProfileAssignedReviewer")
+  victimProfileReadStates VictimProfileReadState[] @relation("VictimProfileReadStateAdmin")
+  victimProfileUpdates    VictimProfileUpdate[]    @relation("VictimProfileUpdateAuthor")
+  victimProfileFlags      VictimProfileFlag[]      @relation("VictimProfileFlagReporter")
+  victimProfileAppeals    VictimProfileAppeal[]    @relation("VictimProfileAppealAuthor")
+  victimProfileFollows    VictimProfileFollow[]    @relation("VictimProfileFollower")
+  victimProfileViews      VictimProfileView[]      @relation("VictimProfileViewer")
+  victimProfileRevisions  VictimProfileRevision[]  @relation("VictimProfileRevisionEditor")
+  victimProfileExportJobs VictimProfileExportJob[] @relation("VictimProfileExportJobRequester")
+
+  supportsAssigned      Support[]              @relation("SupportAssignedReviewer")
+  supportAdminReads     SupportAdminRead[]     @relation("SupportAdminReadAdmin")
+  supporterRestrictions SupporterRestriction[] @relation("SupporterRestrictionUser")
+  supportExportJobs     SupportExportJob[]     @relation("SupportExportJobRequester")
+
+  archivedRoles                  Role[]                    @relation("RoleArchivedBy")
+  roleAssignmentRequestsTargeted RoleAssignmentRequest[]   @relation("RoleAssignmentRequestTarget")
+  roleAssignmentRequestsMade     RoleAssignmentRequest[]   @relation("RoleAssignmentRequestRequester")
+  roleAssignmentRequestsReviewed RoleAssignmentRequest[]   @relation("RoleAssignmentRequestReviewer")
+  temporaryRoles                 RoleTemporaryAssignment[] @relation("TemporaryRoleHolder")
+  temporaryRolesGranted          RoleTemporaryAssignment[] @relation("TemporaryRoleGrantedBy")
+  accessReviewsStarted           AccessReview[]            @relation("AccessReviewStartedBy")
+  accessReviewItems              AccessReviewItem[]        @relation("AccessReviewItemUser")
+  accessReviewDecisions          AccessReviewItem[]        @relation("AccessReviewItemDecidedBy")
+
+  twoFactorSecret         TwoFactorSecret?
+  twoFactorRecoveryCodes  TwoFactorRecoveryCode[]
+  twoFactorChallenges     TwoFactorChallenge[]
+  twoFactorResetTargets   TwoFactorResetRequest[] @relation("TwoFactorResetTarget")
+  twoFactorResetsMade     TwoFactorResetRequest[] @relation("TwoFactorResetRequester")
+  twoFactorResetsReviewed TwoFactorResetRequest[] @relation("TwoFactorResetReviewer")
+  twoFactorPolicyUpdates  TwoFactorPolicy[]       @relation("TwoFactorPolicyUpdatedBy")
 
   @@map("user")
+}
+
+model UserDeletionRequest {
+  id             String    @id @default(uuid())
+  userId         String
+  user           User      @relation("DeletionRequestUser", fields: [userId], references: [id], onDelete: Cascade)
+  reason         String?
+  status         String    @default("PENDING")
+  scheduledFor   DateTime
+  decidedById    String?
+  decidedAt      DateTime?
+  decisionReason String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([userId, status])
+  @@index([status, scheduledFor])
+  @@map("user_deletion_request")
+}
+
+model UserRestriction {
+  id          String    @id @default(uuid())
+  userId      String
+  user        User      @relation("UserRestrictionUser", fields: [userId], references: [id], onDelete: Cascade)
+  ability     String
+  reason      String
+  endsAt      DateTime?
+  liftedAt    DateTime?
+  liftedById  String?
+  liftReason  String?
+  createdById String
+  createdAt   DateTime  @default(now())
+
+  @@index([userId, liftedAt])
+  @@map("user_restriction")
+}
+
+model UserWarning {
+  id         String   @id @default(uuid())
+  userId     String
+  user       User     @relation("UserWarningUser", fields: [userId], references: [id], onDelete: Cascade)
+  message    String
+  issuedById String
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+  @@map("user_warning")
+}
+
+model UserConsent {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation("UserConsentUser", fields: [userId], references: [id], onDelete: Cascade)
+  document  String
+  version   String
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@map("user_consent")
+}
+
+model UserExportJob {
+  id            String    @id @default(uuid())
+  requestedById String
+  filters       Json
+  status        String    @default("QUEUED")
+  rowCount      Int?
+  truncated     Boolean   @default(false)
+  resultCsv     String?   @db.Text
+  error         String?
+  createdAt     DateTime  @default(now())
+  finishedAt    DateTime?
+  expiresAt     DateTime?
+
+  @@index([requestedById])
+  @@map("user_export_job")
+}
+
+model AbuseReport {
+  id           String   @id @default(uuid())
+  targetUserId String?
+  target       User?    @relation("AbuseReportTarget", fields: [targetUserId], references: [id], onDelete: SetNull)
+  reporterId   String?
+  reason       String
+  status       String   @default("OPEN")
+  createdAt    DateTime @default(now())
+
+  @@index([targetUserId, status])
+  @@map("abuse_report")
 }

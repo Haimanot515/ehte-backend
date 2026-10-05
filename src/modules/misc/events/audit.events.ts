@@ -1,3 +1,4 @@
+import { NotificationEventEnum } from 'src/common/enums/shared/notification-events.enum';
 import { ActorType, AuditOutcome, AuditSeverity, AuditSource } from '@prisma/client';
 
 export interface AuditEventPayload {
@@ -31,4 +32,22 @@ export interface AuditEventPayload {
   method?: string | null;
   path?: string | null;
   requestId?: string | null;
+}
+
+/**
+ * Emitted by AuditLogService when something needs the Super Admins' attention:
+ * an alert rule fired, an integrity check found a break, a scheduled purge failed.
+ * NotificationService listens and creates the inbox notices (see handleAuditAlertTriggered).
+ * The audit side never imports the notification side, so there is no circular dependency.
+ */
+export const AUDIT_ALERT_TRIGGERED_EVENT = NotificationEventEnum.AUDIT_ALERT_TRIGGERED;
+
+export interface AuditAlertTriggeredEvent {
+  kind: 'ALERT_RULE' | 'INTEGRITY_BREAK' | 'SCHEDULED_PURGE_FAILED';
+  title: string;
+  body: string;
+  entity: string;
+  entityId: string;
+  /** Unique per occurrence. Used so a retried event never notifies twice. */
+  occurrenceId: string;
 }

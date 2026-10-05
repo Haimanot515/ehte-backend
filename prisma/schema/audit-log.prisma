@@ -109,7 +109,12 @@ model AuditSavedFilter {
   filter    Json
   createdAt DateTime @default(now())
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // Editing and sharing (AL-31 to AL-33)
+  updatedAt        DateTime @default(now()) @updatedAt
+  sharedWithAdmins Boolean  @default(false)
+
+  user   User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  shares AuditSavedFilterShare[]
 
   @@unique([userId, name])
   @@map("audit_saved_filter")
@@ -132,6 +137,8 @@ model AuditAlert {
   updatedAt       DateTime       @updatedAt
 
   createdBy User? @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  triggers AuditAlertTrigger[]
 
   @@map("audit_alert")
 }
@@ -159,4 +166,185 @@ model AuditPurgeRun {
   requestedBy User? @relation(fields: [requestedById], references: [id], onDelete: SetNull)
 
   @@map("audit_purge_run")
+}
+
+// ─────────────────────────────────────────────
+// Legal hold (AL-01 to AL-07)
+// ─────────────────────────────────────────────
+
+/// A hold covers the rows that matched `filter` at `appliedAt`; rows written later are not covered.
+/// kind: FILTER | ROW. status: ACTIVE | RELEASED.
+/// AuditLog.legalHold stays the single flag that purge and anonymize respect.
+model AuditLegalHold {
+  id                   String    @id @default(uuid())
+  kind                 String    @default("FILTER")
+  caseReference        String
+  reason               String
+  filter               Json
+  status               String    @default("ACTIVE")
+  rowCount             Int       @default(0)
+  appliedAt            DateTime  @default(now())
+  createdById          String?
+  releasedAt           DateTime?
+  releasedById         String?
+  releaseRequestedById String?
+  releaseReason        String?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @default(now()) @updatedAt
+
+  @@index([status, createdAt])
+  @@index([caseReference])
+  @@map("audit_legal_hold")
+}
+
+/// Two-person rule. A request is created by one Super Admin and approved by a different one.
+/// kind: HOLD_RELEASE | RETENTION_CHANGE | ARCHIVE_RETRIEVAL.
+/// status: PENDING | APPROVED | CONSUMED | EXPIRED.
+model AuditApprovalRequest {
+  id            String    @id @default(uuid())
+  kind          String
+  targetKey     String
+  payloadHash   String
+  payload       Json?
+  reason        String?
+  status        String    @default("PENDING")
+  requestedById String
+  approvedById  String?
+  expiresAt     DateTime
+  decidedAt     DateTime?
+  createdAt     DateTime  @default(now())
+
+  @@index([kind, targetKey, status])
+  @@index([status, expiresAt])
+  @@map("audit_approval_request")
+}
+
+// ─────────────────────────────────────────────
+// Purge schedule and retention (AL-11 to AL-15)
+// ─────────────────────────────────────────────
+
+/// status: SCHEDULED | RUNNING | EXECUTED | FAILED | CANCELLED
+model AuditPurgeSchedule {
+  id            String    @id @default(uuid())
+  olderThan     DateTime
+  runAt         DateTime
+  reason        String
+  status        String    @default("SCHEDULED")
+  createdById   String
+  cancelledById String?
+  cancelReason  String?
+  cancelledAt   DateTime?
+  purgeRunId    String?
+  error         String?
+  executedAt    DateTime?
+  createdAt     DateTime  @default(now())
+
+  @@index([status, runAt])
+  @@map("audit_purge_schedule")
+}
+
+/// scope: DEFAULT | ENTITY | SEVERITY. key is 'DEFAULT', an entity name or a severity.
+/// This is the declared policy. Rows are only removed by a purge.
+model AuditRetentionPolicy {
+  id            String   @id @default(uuid())
+  scope         String
+  key           String
+  retentionDays Int
+  updatedById   String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @default(now()) @updatedAt
+
+  @@unique([scope, key])
+  @@map("audit_retention_policy")
+}
+
+// ─────────────────────────────────────────────
+// Integrity and pipeline health (AL-17 to AL-20)
+// ─────────────────────────────────────────────
+
+/// trigger: MANUAL | SCHEDULED
+model AuditIntegrityRun {
+  id            String    @id @default(uuid())
+  trigger       String
+  requestedById String?
+  ok            Boolean
+  complete      Boolean
+  checked       Int
+  unchainedRows Int
+  rangeFrom     DateTime?
+  rangeTo       DateTime?
+  firstBreak    Json?
+  head          Json?
+  createdAt     DateTime  @default(now())
+
+  @@index([createdAt])
+  @@index([ok, createdAt])
+  @@map("audit_integrity_run")
+}
+
+/// A single row (id 'default').
+model AuditIntegritySchedule {
+  id            String    @id @default("default")
+  enabled       Boolean   @default(false)
+  intervalHours Int       @default(24)
+  lastRunAt     DateTime?
+  nextRunAt     DateTime?
+  updatedById   String?
+  updatedAt     DateTime  @default(now()) @updatedAt
+
+  @@map("audit_integrity_schedule")
+}
+
+model AuditHealthSnapshot {
+  id            String    @id @default(uuid())
+  createdAt     DateTime  @default(now())
+  lastWriteAt   DateTime?
+  lagSeconds    Int?
+  writeFailures Int       @default(0)
+  estimatedRows Float?
+  sizeBytes     Float?
+  unchainedRows Int       @default(0)
+
+  @@index([createdAt])
+  @@map("audit_health_snapshot")
+}
+
+// ─────────────────────────────────────────────
+// Alert firing history (AL-22, AL-26, AL-27)
+// ─────────────────────────────────────────────
+
+model AuditAlertTrigger {
+  id               String    @id @default(uuid())
+  alertId          String
+  firedAt          DateTime  @default(now())
+  matchCount       Int
+  windowStart      DateTime
+  windowEnd        DateTime
+  sampleIds        Json?
+  acknowledgedAt   DateTime?
+  acknowledgedById String?
+  acknowledgeNote  String?
+
+  alert AuditAlert @relation(fields: [alertId], references: [id], onDelete: Cascade)
+
+  @@index([alertId, firedAt])
+  @@index([acknowledgedAt, firedAt])
+  @@map("audit_alert_trigger")
+}
+
+// ─────────────────────────────────────────────
+// Saved filter sharing (AL-32, AL-33)
+// ─────────────────────────────────────────────
+
+model AuditSavedFilterShare {
+  id        String   @id @default(uuid())
+  filterId  String
+  userId    String
+  createdAt DateTime @default(now())
+
+  filter AuditSavedFilter @relation(fields: [filterId], references: [id], onDelete: Cascade)
+
+  @@unique([filterId, userId])
+  @@index([userId])
+  @@map("audit_saved_filter_share")
 }

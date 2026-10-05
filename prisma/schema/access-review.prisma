@@ -1,0 +1,54 @@
+// Periodic review of who holds which role (AR-58, AR-59, AR-60).
+// Starting a review snapshots every current assignment into AccessReviewItem rows.
+model AccessReview {
+  id          String             @id @default(uuid())
+  title       String
+  status      AccessReviewStatus @default(OPEN)
+  startedById String
+  dueAt       DateTime?
+  completedAt DateTime?
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+
+  startedBy User               @relation("AccessReviewStartedBy", fields: [startedById], references: [id], onDelete: Cascade)
+  items     AccessReviewItem[]
+
+  @@index([status])
+  @@index([startedById])
+  @@map("access_review")
+}
+
+model AccessReviewItem {
+  id          String                @id @default(uuid())
+  reviewId    String
+  userId      String
+  roleId      String
+  decision    AccessReviewDecision  @default(PENDING)
+  decidedById String?
+  note        String?
+  decidedAt   DateTime?
+  createdAt   DateTime              @default(now())
+
+  review    AccessReview @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+  user      User         @relation("AccessReviewItemUser", fields: [userId], references: [id], onDelete: Cascade)
+  role      Role         @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  decidedBy User?        @relation("AccessReviewItemDecidedBy", fields: [decidedById], references: [id], onDelete: SetNull)
+
+  @@unique([reviewId, userId, roleId])
+  @@index([reviewId, decision])
+  @@index([userId])
+  @@index([roleId])
+  @@map("access_review_item")
+}
+
+enum AccessReviewStatus {
+  OPEN
+  COMPLETED
+  CANCELLED
+}
+
+enum AccessReviewDecision {
+  PENDING
+  KEEP
+  REVOKE
+}

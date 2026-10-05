@@ -51,18 +51,84 @@ model VictimProfile {
 
   agreementId String?
 
-  agreement         Agreement?         @relation(fields: [agreementId], references: [id])
-  createdByUser                   User? @relation("VictimProfileCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
-  claimedByUser                   User? @relation("VictimProfileClaimedBy", fields: [claimedByUserId], references: [id], onDelete: SetNull)
-  childSafetyFirstConfirmedByUser User? @relation("VictimProfileChildSafetyFirst", fields: [childSafetyFirstConfirmedByUserId], references: [id], onDelete: SetNull)
-  supports          Support[]
-  payments          Payment[]
-  payoutDestination PayoutDestination? // was: payoutDestinations PayoutDestination[]
+  // ───────────────────────────────────────────────────────────────
+  // NEW (VP-01 .. VP-102 service pass)
+  // ───────────────────────────────────────────────────────────────
+
+  // Creator-facing review message (change request text or rejection reason).
+  reviewNote    String?
+  reviewNoteAt  DateTime?
+  // Last time the creator opened the profile; unseen = a staff action newer than this.
+  creatorSeenAt DateTime?
+
+  // Case management
+  assignedReviewerId String?
+  assignedAt         DateTime?
+
+  // Completion (need fulfilled, funding closed)
+  completedAt    DateTime?
+  completionNote String?
+
+  // Public presentation / funding controls
+  isFeatured            Boolean   @default(false)
+  featuredAt            DateTime?
+  fundingEndsAt         DateTime?
+  donationsPaused       Boolean   @default(false)
+  donationsPausedReason String?
+  donationsPausedAt     DateTime?
+
+  // Emergency takedown (status moves to UNPUBLISHED; these tell it apart from a plain unpublish)
+  takedownReason String?
+  takedownAt     DateTime?
+  takedownById   String?
+
+  // Soft delete + retention
+  deletedAt       DateTime?
+  deletedById     String?
+  deleteReason    String?
+  legalHold       Boolean   @default(false)
+  legalHoldReason String?
+  legalHoldAt     DateTime?
+  legalHoldById   String?
+  anonymizedAt    DateTime?
+
+  // Recorded consent (signed form is stored as media keys)
+  consentedBy      String?
+  consentNotes     String?
+  consentDocuments String[]
+
+  // Dual-admin confirmation for correcting involvesChild (VP-64)
+  childFlagProposedValue  Boolean?
+  childFlagProposedById   String?
+  childFlagProposedAt     DateTime?
+  childFlagProposedReason String?
+
+  agreement                       Agreement?         @relation(fields: [agreementId], references: [id])
+  createdByUser                   User?              @relation("VictimProfileCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  claimedByUser                   User?              @relation("VictimProfileClaimedBy", fields: [claimedByUserId], references: [id], onDelete: SetNull)
+  childSafetyFirstConfirmedByUser User?              @relation("VictimProfileChildSafetyFirst", fields: [childSafetyFirstConfirmedByUserId], references: [id], onDelete: SetNull)
+  assignedReviewer                User?              @relation("VictimProfileAssignedReviewer", fields: [assignedReviewerId], references: [id], onDelete: SetNull)
+  supports                        Support[]
+  payments                        Payment[]
+  payoutDestination               PayoutDestination? // was: payoutDestinations PayoutDestination[]
+
+  readStates VictimProfileReadState[]
+  updates    VictimProfileUpdate[]
+  flags      VictimProfileFlag[]
+  appeals    VictimProfileAppeal[]
+  follows    VictimProfileFollow[]
+  views      VictimProfileView[]
+  revisions  VictimProfileRevision[]
 
   @@unique([createdByUserId, idempotencyKey])
   @@index([status])
   @@index([involvesChild])
   @@index([status, createdAt])
+  @@index([createdByUserId, createdAt])
+  @@index([assignedReviewerId])
+  @@index([claimedByUserId])
+  @@index([deletedAt])
+  @@index([isFeatured, status])
   @@map("victim_profile")
 }
 
@@ -75,4 +141,169 @@ enum VictimProfileStatus {
   PUBLISHED
   REJECTED
   UNPUBLISHED
+  // NEW
+  CHANGES_REQUESTED
+  WITHDRAWN
+  COMPLETED
+}
+
+// A row exists = this admin has read the profile; markUnread deletes the row.
+model VictimProfileReadState {
+  profileId String
+  adminId   String
+  readAt    DateTime @default(now())
+
+  profile VictimProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  admin   User          @relation("VictimProfileReadStateAdmin", fields: [adminId], references: [id], onDelete: Cascade)
+
+  @@id([profileId, adminId])
+  @@index([adminId])
+  @@map("victim_profile_read_state")
+}
+
+// Progress updates for supporters, posted by the creator or by staff.
+model VictimProfileUpdate {
+  id        String   @id @default(uuid())
+  profileId String
+  authorId  String?
+  isStaff   Boolean  @default(false)
+  title     String?
+  body      String
+  createdAt DateTime @default(now())
+
+  profile VictimProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  author  User?         @relation("VictimProfileUpdateAuthor", fields: [authorId], references: [id], onDelete: SetNull)
+
+  @@index([profileId, createdAt])
+  @@map("victim_profile_update")
+}
+
+model VictimProfileFlag {
+  id           String                  @id @default(uuid())
+  profileId    String
+  reporterId   String
+  reason       String
+  details      String?
+  status       VictimProfileFlagStatus @default(OPEN)
+  // DISMISS | UNPUBLISH | PAUSE_DONATIONS
+  resolution   String?
+  resolvedById String?
+  resolvedAt   DateTime?
+  note         String?
+  createdAt    DateTime                @default(now())
+
+  profile  VictimProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  reporter User          @relation("VictimProfileFlagReporter", fields: [reporterId], references: [id], onDelete: Cascade)
+
+  // One flag per user per profile
+  @@unique([profileId, reporterId])
+  @@index([status, createdAt])
+  @@index([profileId, status])
+  @@map("victim_profile_flag")
+}
+
+model VictimProfileAppeal {
+  id           String                    @id @default(uuid())
+  profileId    String
+  authorId     String
+  message      String
+  status       VictimProfileAppealStatus @default(OPEN)
+  decidedById  String?
+  decidedAt    DateTime?
+  decisionNote String?
+  createdAt    DateTime                  @default(now())
+
+  profile VictimProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  author  User          @relation("VictimProfileAppealAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@index([status, createdAt])
+  @@index([profileId])
+  @@index([authorId, createdAt])
+  @@map("victim_profile_appeal")
+}
+
+model VictimProfileFollow {
+  profileId String
+  userId    String
+  createdAt DateTime @default(now())
+
+  profile VictimProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  user    User          @relation("VictimProfileFollower", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([profileId, userId])
+  @@index([userId])
+  @@map("victim_profile_follow")
+}
+
+model VictimProfileView {
+  id        String   @id @default(uuid())
+  profileId String
+  userId    String?
+  createdAt DateTime @default(now())
+
+  profile VictimProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  user    User?         @relation("VictimProfileViewer", fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([profileId, createdAt])
+  @@index([profileId, userId, createdAt])
+  @@map("victim_profile_view")
+}
+
+// Field-level history for adminEdit (VP-63 / VP-70).
+model VictimProfileRevision {
+  id         String   @id @default(uuid())
+  profileId  String
+  editedById String?
+  reason     String
+  // { field: { from, to } }
+  changes    Json
+  createdAt  DateTime @default(now())
+
+  profile  VictimProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  editedBy User?         @relation("VictimProfileRevisionEditor", fields: [editedById], references: [id], onDelete: SetNull)
+
+  @@index([profileId, createdAt])
+  @@map("victim_profile_revision")
+}
+
+model VictimProfileExportJob {
+  id            String                       @id @default(uuid())
+  requestedById String
+  filters       Json?
+  status        VictimProfileExportJobStatus @default(QUEUED)
+  storageKey    String?
+  rowCount      Int?
+  truncated     Boolean                      @default(false)
+  error         String?
+  startedAt     DateTime?
+  completedAt   DateTime?
+  expiresAt     DateTime?
+  createdAt     DateTime                     @default(now())
+
+  requestedBy User @relation("VictimProfileExportJobRequester", fields: [requestedById], references: [id], onDelete: Cascade)
+
+  @@index([requestedById, createdAt])
+  @@index([status])
+  @@index([expiresAt])
+  @@map("victim_profile_export_job")
+}
+
+enum VictimProfileFlagStatus {
+  OPEN
+  DISMISSED
+  ACTIONED
+}
+
+enum VictimProfileAppealStatus {
+  OPEN
+  UPHELD
+  OVERTURNED
+}
+
+enum VictimProfileExportJobStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+  EXPIRED
 }

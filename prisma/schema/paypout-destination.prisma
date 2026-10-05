@@ -3,9 +3,6 @@ enum PayoutRail {
   TELEBIRR
 }
 
-// Financial Account (section 18 / 24): where a recipient's allocated money is paid.
-// Deliberately separate from Agreement (which defines who gets what share) and from
-// payment-provider configuration (which is platform-side, not tied to one recipient).
 model PayoutDestination {
   id            String     @id @default(uuid())
   rail          PayoutRail
@@ -16,29 +13,29 @@ model PayoutDestination {
   country       String     @default("ET")
   currency      String     @default("ETB")
   isVerified    Boolean    @default(false)
-  createdAt     DateTime   @default(now())
-  updatedAt     DateTime   @updatedAt
+
+  lastEditedById String?
+  verifiedById   String?
+  verifiedAt     DateTime?
+  verifiedNote   String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   institutionId   String?
-  victimProfileId String?    @unique // was: String?
+  victimProfileId String? @unique
 
   institution   Institution?   @relation(fields: [institutionId], references: [id])
   victimProfile VictimProfile? @relation(fields: [victimProfileId], references: [id])
   disbursements Disbursement[]
 
   @@index([institutionId])
-  // removed @@index([victimProfileId]); @unique already creates the index
   @@map("payout_destinations")
 }
 
 model Disbursement {
   id                  String             @id @default(uuid())
   allocationId        String
-  // Set only for REWARD_BENEFICIARY disbursements against a split reward pool
-  // allocation: which informant's approved RewardClaim this specific payout is for.
-  // Lets one PaymentAllocation be paid out across several disbursements (section 12) —
-  // execute()/markPaidOut() total the claim's own disbursements against
-  // rewardClaim.rewardAmount instead of the whole allocation amount.
   rewardClaimId       String?
   payoutDestinationId String?
   method              DisbursementMethod
@@ -55,7 +52,11 @@ model Disbursement {
   failureReason       String?
   createdAt           DateTime           @default(now())
 
-  // Snapshot of PayoutDestination at execution time; the standing record can change later.
+  heldAt     DateTime?
+  holdReason String?
+  heldById   String?
+
+  // Snapshot of PayoutDestination at execution time; the standing record can change later
   destinationSnapshot Json?
 
   allocation        PaymentAllocation  @relation(fields: [allocationId], references: [id], onDelete: Restrict)

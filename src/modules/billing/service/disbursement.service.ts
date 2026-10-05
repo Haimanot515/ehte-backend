@@ -51,6 +51,8 @@ export class DisbursementService {
     if (!allocation) throw new NotFoundException('Allocation not found');
     if (allocation.payment.status !== 'PAID')
       throw new BadRequestException('Payment is not settled');
+    // BL-24: a held payment cannot be paid out until it is released.
+    if (allocation.payment.heldAt) throw new BadRequestException('Payment is on hold');
     if (!['PENDING', 'PARTIALLY_PAID_OUT'].includes(allocation.settlementStatus)) {
       throw new BadRequestException('Allocation is not payable');
     }
@@ -115,6 +117,8 @@ export class DisbursementService {
   async approve(adminId: string, id: string) {
     const d = await this.prisma.disbursement.findUnique({ where: { id } });
     if (!d) throw new NotFoundException('Disbursement not found');
+    // BL-58: a held disbursement cannot be approved until it is released.
+    if (d.heldAt) throw new BadRequestException('Disbursement is on hold');
     if (d.createdById === adminId) {
       await this.events.log({
         actorId: adminId,
@@ -182,6 +186,8 @@ export class DisbursementService {
       include: { allocation: { include: { payment: true } } },
     });
     if (!d) throw new NotFoundException('Disbursement not found');
+    // BL-58: a held disbursement cannot be executed until it is released.
+    if (d.heldAt) throw new BadRequestException('Disbursement is on hold');
 
     let account: { accountName: string; accountNumber: string } | null = null;
     if (d.allocation.partyType === 'RECIPIENT') {
@@ -272,6 +278,42 @@ export class DisbursementService {
   }
 
   // Only an explicit 4xx from Chapa proves the transfer was not accepted; timeouts, 5xx and network errors may have gone through
+  /**
+   * BL-60. Records that a payout stuck in PROCESSING was in fact paid, proven by
+   * an external reference (bank slip or Chapa dashboard). Uses the same
+   * settlement bookkeeping as a normal paid-out transition.
+   */
+  async markPaidManually(adminId: string, id: string, externalReference: string, reason: string) {
+    const d = await this.prisma.disbursement.findUnique({ where: { id } });
+    if (!d) throw new NotFoundException('Disbursement not found');
+    if (d.status !== 'PROCESSING') {
+      throw new BadRequestException('Only a disbursement that is PROCESSING can be marked paid');
+    }
+    if (d.executedById === adminId) {
+      throw new ForbiddenException('A different admin must confirm a manual payout');
+    }
+
+    const outcome = await this.prisma.$transaction(async (tx) => {
+      await tx.disbursement.update({ where: { id }, data: { externalReference } });
+      return this.markPaidOut(tx, id);
+    });
+    if (!outcome.paid) throw new BadRequestException('Disbursement was already settled');
+
+    await this.notifyPaidOut(id, outcome.partyType, outcome.missingPersonId, outcome.rewardClaimId);
+
+    await this.events.log({
+      actorId: adminId,
+      action: AuditEventEnum.DISBURSEMENT_MARKED_PAID,
+      entityType: 'Disbursement',
+      entityId: id,
+      reason,
+      severity: AuditSeverity.WARNING,
+      metadata: { externalReference, executedById: d.executedById },
+    });
+
+    return { id, status: 'PAID_OUT' };
+  }
+
   private isDefiniteRejection(err: unknown): boolean {
     const e = err as {
       status?: number;

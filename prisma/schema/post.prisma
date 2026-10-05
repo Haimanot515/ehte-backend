@@ -29,9 +29,19 @@ model Post {
 
   ownerSuspendedAt DateTime?
 
+  // Emergency takedown of a PUBLISHED post. The status moves to UNPUBLISHED;
+  // these fields tell a takedown apart from a normal unpublish.
+  takedownReason String?
+  takedownAt     DateTime?
+  takedownById   String?
+
   user                            User  @relation("PostOwner", fields: [userId], references: [id], onDelete: Cascade)
   claimedByUser                   User? @relation("PostClaimedBy", fields: [claimedByUserId], references: [id], onDelete: SetNull)
   childSafetyFirstConfirmedByUser User? @relation("PostChildSafetyFirst", fields: [childSafetyFirstConfirmedByUserId], references: [id], onDelete: SetNull)
+
+  readStates PostReadState[]
+  flags      PostFlag[]
+  appeals    PostAppeal[]
 
   @@unique([userId, idempotencyKey])
   @@index([userId])
@@ -41,6 +51,7 @@ model Post {
   @@index([claimedByUserId])
   @@index([status, createdAt])
   @@index([status, updatedAt])
+  @@index([takedownAt])
   @@map("post")
 }
 
@@ -57,4 +68,79 @@ enum PostStatus {
   REJECTED
   UNPUBLISHED
   CHANGES_REQUESTED
+}
+
+// A row exists = this admin has read the post, markUnread deletes the row
+model PostReadState {
+  postId  String
+  adminId String
+  readAt  DateTime @default(now())
+
+  post  Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+  admin User @relation("PostReadStateAdmin", fields: [adminId], references: [id], onDelete: Cascade)
+
+  @@id([postId, adminId])
+  @@index([adminId])
+  @@map("post_read_state")
+}
+
+model PostFlag {
+  id           String         @id @default(uuid())
+  postId       String
+  reporterId   String
+  reason       String
+  details      String?
+  status       PostFlagStatus @default(OPEN)
+  resolvedById String?
+  resolvedAt   DateTime?
+  note         String?
+  createdAt    DateTime       @default(now())
+
+  post     Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+  reporter User @relation("PostFlagReporter", fields: [reporterId], references: [id], onDelete: Cascade)
+
+  // One flag per user per post
+  @@unique([postId, reporterId])
+  @@index([status, createdAt])
+  @@index([postId, status])
+  @@map("post_flag")
+}
+
+model PostAppeal {
+  id           String           @id @default(uuid())
+  postId       String
+  authorId     String
+  // What is being appealed, so an overturn knows what to undo
+  target       PostAppealTarget
+  message      String
+  status       PostAppealStatus @default(OPEN)
+  decidedById  String?
+  decidedAt    DateTime?
+  decisionNote String?
+  createdAt    DateTime         @default(now())
+
+  post   Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+  author User @relation("PostAppealAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@index([status, createdAt])
+  @@index([postId])
+  @@index([authorId, createdAt])
+  @@map("post_appeal")
+}
+
+enum PostFlagStatus {
+  OPEN
+  DISMISSED
+  ACTIONED
+}
+
+enum PostAppealStatus {
+  OPEN
+  UPHELD
+  OVERTURNED
+}
+
+enum PostAppealTarget {
+  REJECTION
+  TAKEDOWN
 }

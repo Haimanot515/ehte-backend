@@ -1,7 +1,9 @@
 import {
   IsArray,
   IsBoolean,
+  IsDateString,
   IsEnum,
+  IsIn,
   IsInt,
   IsOptional,
   IsString,
@@ -418,4 +420,223 @@ export class BulkRejectPostDto extends BulkPostIdsDto {
   @IsString()
   @MinLength(3)
   reason!: string;
+}
+
+// ═════════════════════════════════════════════
+// NEW DTOs for the added post routes
+// ═════════════════════════════════════════════
+
+// ─────────────────────────────────────────────
+// Shared pagination for the new admin list routes.
+// Same defaults as AdminPostQueryDto (page 1, limit 20).
+// ─────────────────────────────────────────────
+
+export class PostPageQueryDto {
+  @ApiPropertyOptional({ default: 1, minimum: 1 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number = 1;
+
+  @ApiPropertyOptional({ default: 20, minimum: 1, maximum: 100 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  limit?: number = 20;
+}
+
+// ─────────────────────────────────────────────
+// GET /posts/unread. Read state is stored per admin.
+// ─────────────────────────────────────────────
+
+export class UnreadPostsQueryDto extends PostPageQueryDto {
+  @ApiPropertyOptional({ enum: PostStatus })
+  @IsOptional()
+  @IsEnum(PostStatus)
+  status?: PostStatus;
+
+  @ApiPropertyOptional({ enum: PostType })
+  @IsOptional()
+  @IsEnum(PostType)
+  type?: PostType;
+}
+
+// ─────────────────────────────────────────────
+// GET /posts/by-author: one row per author.
+// ─────────────────────────────────────────────
+
+export class PostAuthorRollupQueryDto extends PostPageQueryDto {
+  @ApiPropertyOptional({ enum: ['totalPosts', 'lastPostAt', 'pending'] })
+  @IsOptional()
+  @IsIn(['totalPosts', 'lastPostAt', 'pending'])
+  sortBy?: 'totalPosts' | 'lastPostAt' | 'pending';
+
+  @ApiPropertyOptional({ enum: ['asc', 'desc'] })
+  @IsOptional()
+  @IsIn(['asc', 'desc'])
+  order?: 'asc' | 'desc';
+}
+
+// ─────────────────────────────────────────────
+// GET /posts/by-author/:authorId: all posts of one author.
+// ─────────────────────────────────────────────
+
+export class PostsByAuthorQueryDto extends PostPageQueryDto {
+  @ApiPropertyOptional({ enum: PostStatus })
+  @IsOptional()
+  @IsEnum(PostStatus)
+  status?: PostStatus;
+
+  @ApiPropertyOptional({ enum: PostType })
+  @IsOptional()
+  @IsEnum(PostType)
+  type?: PostType;
+}
+
+// ─────────────────────────────────────────────
+// GET /posts/flags and GET /posts/appeals.
+// ─────────────────────────────────────────────
+
+export class FlaggedPostsQueryDto extends PostPageQueryDto {
+  @ApiPropertyOptional({ enum: ['OPEN', 'DISMISSED', 'ACTIONED'], default: 'OPEN' })
+  @IsOptional()
+  @IsIn(['OPEN', 'DISMISSED', 'ACTIONED'])
+  flagStatus?: 'OPEN' | 'DISMISSED' | 'ACTIONED';
+}
+
+export class PostAppealsQueryDto extends PostPageQueryDto {
+  @ApiPropertyOptional({ enum: ['OPEN', 'UPHELD', 'OVERTURNED'], default: 'OPEN' })
+  @IsOptional()
+  @IsIn(['OPEN', 'UPHELD', 'OVERTURNED'])
+  appealStatus?: 'OPEN' | 'UPHELD' | 'OVERTURNED';
+}
+
+// ─────────────────────────────────────────────
+// GET /posts/stats/timeline: totals over time.
+// ─────────────────────────────────────────────
+
+export class PostTimelineQueryDto {
+  @ApiProperty({ example: '2026-09-01T00:00:00.000Z' })
+  @IsDateString()
+  from!: string;
+
+  @ApiProperty({ example: '2026-10-01T00:00:00.000Z' })
+  @IsDateString()
+  to!: string;
+
+  @ApiPropertyOptional({ enum: ['day', 'week', 'month'], default: 'day' })
+  @IsOptional()
+  @IsIn(['day', 'week', 'month'])
+  bucket?: 'day' | 'week' | 'month';
+
+  @ApiPropertyOptional({ enum: PostStatus })
+  @IsOptional()
+  @IsEnum(PostStatus)
+  status?: PostStatus;
+
+  @ApiPropertyOptional({ enum: PostType })
+  @IsOptional()
+  @IsEnum(PostType)
+  type?: PostType;
+
+  @ApiPropertyOptional({ description: 'Filter by post author (userId).' })
+  @IsOptional()
+  @IsString()
+  authorId?: string;
+}
+
+// ─────────────────────────────────────────────
+// Owner appeal, POST /posts/me/:id/appeal.
+// Only for REJECTED or taken-down posts, one open
+// appeal at a time (enforced in PostService).
+// ─────────────────────────────────────────────
+
+export class AppealPostDto {
+  @ApiProperty({
+    minLength: 20,
+    maxLength: 2000,
+    example: 'The photo shows a public event and no one is identifiable. Please review again.',
+  })
+  @IsString()
+  @MinLength(20)
+  @MaxLength(2000)
+  message!: string;
+}
+
+// ─────────────────────────────────────────────
+// User flag, POST /posts/:id/flag.
+// One flag per user per post; flagging your own
+// post is refused (enforced in PostService).
+// ─────────────────────────────────────────────
+
+export class FlagPostDto {
+  @ApiProperty({
+    enum: ['MISINFORMATION', 'ABUSE', 'PRIVACY', 'CHILD_SAFETY', 'SPAM', 'OTHER'],
+  })
+  @IsIn(['MISINFORMATION', 'ABUSE', 'PRIVACY', 'CHILD_SAFETY', 'SPAM', 'OTHER'])
+  reason!: 'MISINFORMATION' | 'ABUSE' | 'PRIVACY' | 'CHILD_SAFETY' | 'SPAM' | 'OTHER';
+
+  @ApiPropertyOptional({ maxLength: 1000 })
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  details?: string;
+}
+
+// ─────────────────────────────────────────────
+// Admin flag resolution, PATCH /posts/:id/flags/resolve.
+// ─────────────────────────────────────────────
+
+export class ResolvePostFlagsDto {
+  @ApiProperty({ enum: ['DISMISSED', 'ACTIONED'] })
+  @IsIn(['DISMISSED', 'ACTIONED'])
+  outcome!: 'DISMISSED' | 'ACTIONED';
+
+  @ApiPropertyOptional({ maxLength: 1000 })
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  note?: string;
+}
+
+// ─────────────────────────────────────────────
+// Admin takedown, PATCH /posts/:id/takedown.
+// Unlike unpublish, the reason is required, is
+// stored on the post and opens the appeal window.
+// ─────────────────────────────────────────────
+
+export class TakedownPostDto {
+  @ApiProperty({ minLength: 10, maxLength: 1000, example: 'Shows an identifiable minor.' })
+  @IsString()
+  @MinLength(10)
+  @MaxLength(1000)
+  reason!: string;
+
+  @ApiPropertyOptional({
+    default: true,
+    description: 'Notify the author of the takedown and their right to appeal.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  notifyAuthor?: boolean;
+}
+
+// ─────────────────────────────────────────────
+// Admin appeal decision,
+// PATCH /posts/:id/appeals/:appealId/decide.
+// ─────────────────────────────────────────────
+
+export class DecidePostAppealDto {
+  @ApiProperty({ enum: ['UPHELD', 'OVERTURNED'] })
+  @IsIn(['UPHELD', 'OVERTURNED'])
+  decision!: 'UPHELD' | 'OVERTURNED';
+
+  @ApiProperty({ minLength: 10, maxLength: 1000 })
+  @IsString()
+  @MinLength(10)
+  @MaxLength(1000)
+  note!: string;
 }

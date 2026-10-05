@@ -8,6 +8,7 @@ import { EmailModule } from 'src/services/email/email.module';
 import { SmsModule } from 'src/services/sms/sms.module';
 
 import { AuditLogController } from './controller/audit-log.controller';
+import { MyAuditController } from './controller/my-audit.controller';
 import { NotificationController } from './controller/notification.controller';
 import { ExplorerController } from './controller/explorer.controller';
 
@@ -20,6 +21,8 @@ import { NOTIFICATION_CHANNEL_PROVIDERS } from './service/notification-channel.p
 import { FirebasePushProvider } from '../../services/firebase/firebase-push.provider';
 import { EmailNotificationProvider } from './service/email-notification.provider';
 import { SmsNotificationProvider } from './service/sms-notification.provider';
+import { ExportJobService } from './service/export-job.service';
+import { MISC_OBJECT_STORAGE, MinioMiscObjectStorage } from './service/misc-object-storage';
 
 import { AuditLogListener } from './listeners/audit-log.listener';
 import { NotificationListener } from './listeners/notification.listener';
@@ -27,7 +30,8 @@ import { NotificationListener } from './listeners/notification.listener';
 @Module({
   imports: [PrismaModule, EventEmitterModule, MinioModule, FirebaseModule, EmailModule, SmsModule],
 
-  controllers: [AuditLogController, NotificationController, ExplorerController],
+  // MyAuditController must stay FIRST: its 'me' routes have to be matched before AuditLogController's 'GET :id'.
+  controllers: [MyAuditController, AuditLogController, NotificationController, ExplorerController],
 
   providers: [
     AuditLogService,
@@ -36,6 +40,8 @@ import { NotificationListener } from './listeners/notification.listener';
     AuditLogListener,
     NotificationListener,
     { provide: AUDIT_ARCHIVE_STORAGE, useClass: MinioAuditArchiveStorage },
+    { provide: MISC_OBJECT_STORAGE, useClass: MinioMiscObjectStorage },
+    ExportJobService,
 
     FirebasePushProvider,
     EmailNotificationProvider,

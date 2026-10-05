@@ -1,13 +1,23 @@
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { Type } from 'class-transformer';
+import {
+  ApiProperty,
+  ApiPropertyOptional,
+} from '@nestjs/swagger';
 
 import {
   ArrayNotEmpty,
   ArrayUnique,
   IsArray,
+  IsDateString,
   IsEmail,
+  IsInt,
   IsNotEmpty,
+  IsOptional,
   IsString,
+  IsUUID,
+  Max,
   MaxLength,
+  Min,
   MinLength,
 } from 'class-validator';
 
@@ -267,4 +277,103 @@ export class AdminChangeEmailVerifyDto {
   @IsString()
   @IsNotEmpty()
   token: string;
+}
+
+// ═════════════════════════════════════════════
+// NEW ENDPOINTS (AR-xx) — added to the existing DTOs
+// ═════════════════════════════════════════════
+
+// New DTOs for the endpoints added to AdminAuthController (AR-13 … AR-28, AR-78, AR-79).
+
+// ADMIN — CANCEL PENDING PROMOTION (AR-13). Same lookup key as promote/resend.
+export class PromoteCancelDto {
+  @ApiProperty({
+    description: 'Phone number of the user whose pending promotion should be cancelled',
+    example: '+251943257078',
+  })
+  @IsString()
+  @IsNotEmpty()
+  phone: string;
+}
+
+// ADMIN — RESEND EMAIL CHANGE VERIFICATION (AR-17). The pending change belongs to the caller,
+// so nothing is needed; kept as a class so the route can grow without a breaking change.
+export class AdminChangeEmailResendDto {
+  @ApiPropertyOptional({ description: 'New email the pending change was requested for' })
+  @IsOptional()
+  @IsEmail()
+  newEmail?: string;
+}
+
+// ADMIN — DEMOTE (AR-22). Re-auth `password` is read and stripped by the guard.
+export class DemoteAdminDto {
+  @ApiProperty({ description: 'ID of the admin to demote' })
+  @IsUUID()
+  userId: string;
+
+  @ApiProperty({
+    description: 'Why the ADMIN role is being removed (kept in the audit event)',
+    minLength: 5,
+    maxLength: 500,
+  })
+  @IsString()
+  @MinLength(5)
+  @MaxLength(500)
+  reason: string;
+}
+
+// ADMIN — LOGIN HISTORY (AR-28)
+export class AdminLoginHistoryQueryDto {
+  @ApiPropertyOptional({ description: 'Only this admin' })
+  @IsOptional()
+  @IsUUID()
+  adminId?: string;
+
+  @ApiPropertyOptional({ enum: ['SUCCESS', 'FAILED', 'LOCKED'] })
+  @IsOptional()
+  @IsString()
+  result?: 'SUCCESS' | 'FAILED' | 'LOCKED';
+
+  @ApiPropertyOptional({ description: 'ISO date, inclusive' })
+  @IsOptional()
+  @IsDateString()
+  from?: string;
+
+  @ApiPropertyOptional({ description: 'ISO date, inclusive' })
+  @IsOptional()
+  @IsDateString()
+  to?: string;
+
+  @ApiPropertyOptional({ default: 1, minimum: 1 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number;
+
+  @ApiPropertyOptional({ default: 20, minimum: 1, maximum: 100 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  limit?: number;
+}
+
+// ADMIN — STATS (AR-78)
+export class AdminStatsQueryDto {
+  @ApiPropertyOptional({ description: 'ISO date, inclusive' })
+  @IsOptional()
+  @IsDateString()
+  from?: string;
+
+  @ApiPropertyOptional({ description: 'ISO date, inclusive' })
+  @IsOptional()
+  @IsDateString()
+  to?: string;
+
+  @ApiPropertyOptional({ enum: ['day', 'week', 'month'], default: 'day' })
+  @IsOptional()
+  @IsString()
+  interval?: 'day' | 'week' | 'month';
 }

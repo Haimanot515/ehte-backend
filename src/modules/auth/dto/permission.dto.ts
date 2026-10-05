@@ -1,5 +1,17 @@
-import { ApiProperty } from '@nestjs/swagger';
-import { ArrayMinSize, ArrayUnique, IsArray, IsEnum } from 'class-validator';
+import {
+  ApiProperty,
+  ApiPropertyOptional,
+} from '@nestjs/swagger';
+import {
+  ArrayMinSize,
+  ArrayUnique,
+  IsArray,
+  IsDateString,
+  IsEnum,
+  IsOptional,
+  IsString,
+  IsUUID,
+} from 'class-validator';
 import { PermissionsEnum } from 'src/common/enums/permissions.enum';
 
 export class AssignPermissionsDto {
@@ -49,4 +61,42 @@ export class SetPermissionsDto {
   @ArrayUnique()
   @IsEnum(PermissionsEnum, { each: true })
   permissions: PermissionsEnum[];
+}
+
+// ═════════════════════════════════════════════
+// NEW ENDPOINTS (AR-xx) — added to the existing DTOs
+// ═════════════════════════════════════════════
+
+// New DTOs for the endpoints added to PermissionController (AR-52, AR-55).
+
+// AR-52 — read-only dry run. Give role IDs, or a user ID to use their current roles.
+export class SimulatePermissionDto {
+  @ApiProperty({ enum: PermissionsEnum, description: 'The permission to test' })
+  @IsEnum(PermissionsEnum)
+  permission: PermissionsEnum;
+
+  @ApiPropertyOptional({ type: [String], description: 'Roles to test as a set' })
+  @IsOptional()
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayUnique()
+  @IsString({ each: true })
+  roleIds?: string[];
+
+  @ApiPropertyOptional({ description: "Test a user's current roles instead of roleIds" })
+  @IsOptional()
+  @IsUUID()
+  userId?: string;
+}
+
+// AR-55 — GET /permissions/users/:userId/diff?from=&to=
+export class PermissionDiffQueryDto {
+  @ApiProperty({ description: 'Start of the period, ISO date' })
+  @IsDateString()
+  from: string;
+
+  @ApiPropertyOptional({ description: 'End of the period, ISO date. Defaults to now.' })
+  @IsOptional()
+  @IsDateString()
+  to?: string;
 }

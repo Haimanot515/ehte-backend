@@ -54,8 +54,8 @@ model MissingPerson {
   // Section 11-12: admin-selected evaluation weights for this case, as whole
   // percentages that must sum to 100. Nullable until an admin configures them
   // (a case with a single obvious informant may never need weighting at all).
-  timeWeight       Int?
-  evidenceWeight   Int?
+  timeWeight        Int?
+  evidenceWeight    Int?
   credibilityWeight Int?
 
   agreementId      String?
@@ -77,15 +77,87 @@ model MissingPerson {
   closureReason String?
   closedAt      DateTime?
 
-  informationSubmissions InformationSubmission[]
-  rewardClaims           RewardClaim[]
-  user                   User?                   @relation("MissingPersonOwner", fields: [userId], references: [id], onDelete: Cascade)
-  sponsorUser            User?                   @relation("MissingPersonSponsor", fields: [sponsorUserId], references: [id], onDelete: SetNull)
-  claimedByUser          User?                   @relation("MissingPersonClaimedBy", fields: [claimedByUserId], references: [id], onDelete: SetNull)
-  childSafetyFirstConfirmedByUser User?          @relation("MissingPersonChildSafetyFirst", fields: [childSafetyFirstConfirmedByUserId], references: [id], onDelete: SetNull)
-  agreement              Agreement?              @relation(fields: [agreementId], references: [id])
+  // Optional demographics for the stats dashboards. Intake does not collect these yet.
+  gender   String?
+  ageGroup String?
+
+  // Admin assignment (separate from claim: a claim is self-service, an assignment is by a super admin).
+  assignedToUserId String?
+  assignedById     String?
+  assignedAt       DateTime?
+
+  // Listing lifetime and renewal.
+  expiresAt     DateTime?
+  renewalCount  Int       @default(0)
+  lastRenewedAt DateTime?
+
+  // Owner-reported found claim, waiting for admin verification.
+  foundReportedAt       DateTime?
+  foundReportDetails    String?
+  foundReportDate       DateTime?
+  foundReportLocation   String?
+  foundReportResolvedAt DateTime?
+  foundReportConfirmed  Boolean?
+
+  // Emergency takedown. The status moves to CANCELLED, which the status workflow treats as terminal,
+  // so a takedown also blocks re-approval. These fields tell it apart from an owner cancel.
+  takedownReason         String?
+  takedownAt             DateTime?
+  takedownById           String?
+  takedownPreviousStatus MissingPersonStatus?
+
+  // Soft delete by a super admin. Same status trick as takedown, restore puts the status back.
+  deletedAt             DateTime?
+  deletedById           String?
+  deleteReason          String?
+  deletedPreviousStatus MissingPersonStatus?
+
+  // Legal hold blocks deletion, purge and media removal.
+  legalHold       Boolean   @default(false)
+  legalHoldReason String?
+  legalHoldAt     DateTime?
+  legalHoldById   String?
+
+  // Child flag correction needs two distinct admins, this holds the first proposal.
+  childFlagProposedValue  Boolean?
+  childFlagProposedById   String?
+  childFlagProposedAt     DateTime?
+  childFlagProposedReason String?
+
+  // Duplicate merge.
+  mergedIntoId String?
+  mergedAt     DateTime?
+  mergedById   String?
+
+  // Set when the case was created by duplicating another of the owner's cases.
+  copiedFromId String?
+
+  // When the owner last opened the case, used for the unread-updates badge.
+  ownerLastSeenAt DateTime?
+
+  informationSubmissions          InformationSubmission[]
+  rewardClaims                    RewardClaim[]
+  user                            User?                   @relation("MissingPersonOwner", fields: [userId], references: [id], onDelete: Cascade)
+  sponsorUser                     User?                   @relation("MissingPersonSponsor", fields: [sponsorUserId], references: [id], onDelete: SetNull)
+  claimedByUser                   User?                   @relation("MissingPersonClaimedBy", fields: [claimedByUserId], references: [id], onDelete: SetNull)
+  childSafetyFirstConfirmedByUser User?                   @relation("MissingPersonChildSafetyFirst", fields: [childSafetyFirstConfirmedByUserId], references: [id], onDelete: SetNull)
+  agreement                       Agreement?              @relation(fields: [agreementId], references: [id])
+
+  assignedToUser   User?            @relation("MissingPersonAssignee", fields: [assignedToUserId], references: [id], onDelete: SetNull)
+  mergedInto       MissingPerson?   @relation("MissingPersonMerge", fields: [mergedIntoId], references: [id], onDelete: SetNull)
+  mergedDuplicates MissingPerson[]  @relation("MissingPersonMerge")
+
+  readStates MissingPersonReadState[]
+  flags      MissingPersonFlag[]
+  appeals    MissingPersonAppeal[]
+  updates    MissingPersonUpdate[]
+  messages   MissingPersonMessage[]
+  revisions  MissingPersonRevision[]
+  redactions MissingPersonRedaction[]
+  views      MissingPersonView[]
+
   // Reward-funding and posting-fee payments that reference this case.
-  payments               Payment[]
+  payments Payment[]
 
   @@unique([userId, idempotencyKey])
   @@index([userId])
@@ -93,6 +165,14 @@ model MissingPerson {
   @@index([personType])
   @@index([status, createdAt])
   @@index([fundingStatus])
+  @@index([assignedToUserId])
+  @@index([claimedByUserId])
+  @@index([deletedAt])
+  @@index([takedownAt])
+  @@index([mergedIntoId])
+  @@index([foundReportedAt])
+  @@index([expiresAt])
+  @@index([lastKnownArea])
   @@map("missing_person")
 }
 
@@ -137,4 +217,204 @@ enum PostingFeeStatus {
   WAIVED
   REFUND_DUE
   REFUNDED
+}
+
+// A row exists = this admin has read the case, marking unread deletes the row.
+model MissingPersonReadState {
+  missingPersonId String
+  adminId         String
+  readAt          DateTime @default(now())
+
+  missingPerson MissingPerson @relation(fields: [missingPersonId], references: [id], onDelete: Cascade)
+  admin         User          @relation("MissingPersonReadStateAdmin", fields: [adminId], references: [id], onDelete: Cascade)
+
+  @@id([missingPersonId, adminId])
+  @@index([adminId])
+  @@map("missing_person_read_state")
+}
+
+enum MissingPersonFlagState {
+  OPEN
+  RESOLVED
+}
+
+// A reader's report on a public listing. One flag per user per case.
+model MissingPersonFlag {
+  id              String                 @id @default(uuid())
+  missingPersonId String
+  reporterId      String
+  reason          String
+  details         String?
+  status          MissingPersonFlagState @default(OPEN)
+  resolvedAction  String?
+  resolvedById    String?
+  resolvedAt      DateTime?
+  resolutionNote  String?
+  createdAt       DateTime               @default(now())
+
+  missingPerson MissingPerson @relation(fields: [missingPersonId], references: [id], onDelete: Cascade)
+  reporter      User          @relation("MissingPersonFlagReporter", fields: [reporterId], references: [id], onDelete: Cascade)
+
+  @@unique([missingPersonId, reporterId])
+  @@index([status, createdAt])
+  @@index([missingPersonId, status])
+  @@map("missing_person_flag")
+}
+
+enum MissingPersonAppealState {
+  PENDING
+  ACCEPTED
+  DECLINED
+}
+
+model MissingPersonAppeal {
+  id              String                   @id @default(uuid())
+  missingPersonId String
+  authorId        String
+  reason          String
+  status          MissingPersonAppealState @default(PENDING)
+  decidedById     String?
+  decidedAt       DateTime?
+  decisionNote    String?
+  createdAt       DateTime                 @default(now())
+
+  missingPerson MissingPerson @relation(fields: [missingPersonId], references: [id], onDelete: Cascade)
+  author        User          @relation("MissingPersonAppealAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@index([status, createdAt])
+  @@index([missingPersonId])
+  @@index([authorId, createdAt])
+  @@map("missing_person_appeal")
+}
+
+enum MissingPersonUpdateAuthorType {
+  OWNER
+  STAFF
+}
+
+// Public progress updates on an approved case.
+model MissingPersonUpdate {
+  id              String                        @id @default(uuid())
+  missingPersonId String
+  authorId        String?
+  authorType      MissingPersonUpdateAuthorType
+  message         String
+  photo           String[]
+  createdAt       DateTime                      @default(now())
+
+  missingPerson MissingPerson @relation(fields: [missingPersonId], references: [id], onDelete: Cascade)
+  author        User?         @relation("MissingPersonUpdateAuthor", fields: [authorId], references: [id], onDelete: SetNull)
+
+  @@index([missingPersonId, createdAt])
+  @@index([authorId])
+  @@map("missing_person_update")
+}
+
+enum MissingPersonMessageKind {
+  MESSAGE
+  WARNING
+}
+
+// Admin to owner messages, shown in the owner's timeline.
+model MissingPersonMessage {
+  id              String                   @id @default(uuid())
+  missingPersonId String
+  authorId        String?
+  kind            MissingPersonMessageKind @default(MESSAGE)
+  message         String
+  createdAt       DateTime                 @default(now())
+
+  missingPerson MissingPerson @relation(fields: [missingPersonId], references: [id], onDelete: Cascade)
+  author        User?         @relation("MissingPersonMessageAuthor", fields: [authorId], references: [id], onDelete: SetNull)
+
+  @@index([missingPersonId, createdAt])
+  @@map("missing_person_message")
+}
+
+// Field-level change history for admin edits.
+model MissingPersonRevision {
+  id              String   @id @default(uuid())
+  missingPersonId String
+  field           String
+  oldValue        Json?
+  newValue        Json?
+  changedById     String?
+  reason          String?
+  createdAt       DateTime @default(now())
+
+  missingPerson MissingPerson @relation(fields: [missingPersonId], references: [id], onDelete: Cascade)
+  changedBy     User?         @relation("MissingPersonRevisionAuthor", fields: [changedById], references: [id], onDelete: SetNull)
+
+  @@index([missingPersonId, createdAt])
+  @@map("missing_person_revision")
+}
+
+enum MissingPersonRedactionStatus {
+  PENDING
+  COMPLETED
+  FAILED
+}
+
+// A request to blur or hide part of a file. A worker with image tooling processes PENDING rows.
+model MissingPersonRedaction {
+  id              String                       @id @default(uuid())
+  missingPersonId String
+  mediaKey        String
+  mode            String
+  reason          String?
+  status          MissingPersonRedactionStatus @default(PENDING)
+  requestedById   String?
+  completedAt     DateTime?
+  createdAt       DateTime                     @default(now())
+
+  missingPerson MissingPerson @relation(fields: [missingPersonId], references: [id], onDelete: Cascade)
+  requestedBy   User?         @relation("MissingPersonRedactionRequester", fields: [requestedById], references: [id], onDelete: SetNull)
+
+  @@index([missingPersonId, mediaKey])
+  @@index([status, createdAt])
+  @@map("missing_person_redaction")
+}
+
+// One row per user per case per day, for view analytics.
+model MissingPersonView {
+  id              String   @id @default(uuid())
+  missingPersonId String
+  userId          String
+  viewedOn        DateTime @db.Date
+  createdAt       DateTime @default(now())
+
+  missingPerson MissingPerson @relation(fields: [missingPersonId], references: [id], onDelete: Cascade)
+  user          User          @relation("MissingPersonViewer", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([missingPersonId, userId, viewedOn])
+  @@index([missingPersonId])
+  @@map("missing_person_view")
+}
+
+enum MissingPersonExportStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+// Background CSV export. The CSV is kept in the row until expiresAt, then deleted.
+model MissingPersonExportJob {
+  id            String                    @id @default(uuid())
+  requestedById String
+  filter        Json?
+  status        MissingPersonExportStatus @default(PENDING)
+  rowCount      Int                       @default(0)
+  truncated     Boolean                   @default(false)
+  content       String?                   @db.Text
+  error         String?
+  createdAt     DateTime                  @default(now())
+  completedAt   DateTime?
+  expiresAt     DateTime
+
+  requestedBy User @relation("MissingPersonExportRequester", fields: [requestedById], references: [id], onDelete: Cascade)
+
+  @@index([requestedById, createdAt])
+  @@index([expiresAt])
+  @@map("missing_person_export_job")
 }

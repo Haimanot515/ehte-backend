@@ -86,7 +86,7 @@ export class PermissionsSeeder {
 
     if (!systemRole) {
       throw new Error(
-        `Required role "${RolesEnum.SYSTEM}" was not found. Ensure RolesSeederruns before PermissionsSeeder.`,
+        `Required role "${RolesEnum.SYSTEM}" was not found. Ensure RolesSeeder runs before PermissionsSeeder.`,
       );
     }
 
@@ -100,6 +100,13 @@ export class PermissionsSeeder {
       PermissionsEnum.REPORT_ESCALATE,
       PermissionsEnum.REPORT_CLOSE,
       PermissionsEnum.REPORT_EVIDENCE_READ,
+      PermissionsEnum.REPORT_TRIAGE,
+      PermissionsEnum.REPORT_EVIDENCE_MANAGE,
+      PermissionsEnum.REPORT_LOCATION_READ,
+      PermissionsEnum.REPORT_LOCATION_UPDATE,
+      PermissionsEnum.REPORT_EMAIL_REPLY,
+      // REPORT_AUDIT_READ, REPORT_DELETE, REPORT_EXPORT, REPORT_REVEAL_REPORTER,
+      // REPORT_SENSITIVITY_MANAGE: SUPER_ADMIN-only.
 
       PermissionsEnum.POST_READ,
       PermissionsEnum.POST_REVIEW,
@@ -110,6 +117,9 @@ export class PermissionsSeeder {
       PermissionsEnum.POST_UNPUBLISH,
       PermissionsEnum.POST_CREATE_OFFICIAL,
       PermissionsEnum.POST_DELETE,
+      PermissionsEnum.POST_FLAG_REVIEW,
+      PermissionsEnum.POST_TAKEDOWN,
+      PermissionsEnum.POST_APPEAL_DECIDE,
 
       PermissionsEnum.MISSING_PERSON_READ,
       PermissionsEnum.MISSING_PERSON_REVIEW,

@@ -1,6 +1,10 @@
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import {
+  ApiProperty,
+  ApiPropertyOptional,
+} from '@nestjs/swagger';
 
 import {
+  IsEnum,
   IsNotEmpty,
   IsNumberString,
   IsOptional,
@@ -276,4 +280,237 @@ export class LogoutDto {
   @IsOptional()
   @IsString()
   refreshToken?: string;
+}
+
+// ═════════════════════════════════════════════
+// NEW ENDPOINTS (AR-xx) — added to the existing DTOs
+// ═════════════════════════════════════════════
+
+// New DTOs for the endpoints added to AuthController (AR-01 … AR-12, AR-61 … AR-69).
+// Re-authentication routes read and strip `password` in the guard, so it is not a field here
+// unless the spec says the password is part of the request itself (2FA disable).
+
+export enum SocialProviderEnum {
+  GOOGLE = 'google',
+  FACEBOOK = 'facebook',
+  APPLE = 'apple',
+}
+
+export enum TwoFactorMethodEnum {
+  TOTP = 'TOTP',
+  SMS = 'SMS',
+}
+
+// ─────────────────────────────────────────────
+// FORGOT PASSWORD — VERIFY OTP (AR-02)
+// ─────────────────────────────────────────────
+
+export class VerifyResetOtpDto {
+  @ApiProperty({ description: 'Verification ID returned from forgot-password' })
+  @IsString()
+  @IsNotEmpty()
+  verificationId: string;
+
+  @ApiProperty({ description: 'OTP sent to the user', example: '123456' })
+  @IsString()
+  @IsNotEmpty()
+  @IsNumberString()
+  @Length(6, 6)
+  otp: string;
+}
+
+// ─────────────────────────────────────────────
+// REACTIVATION (AR-04, AR-05)
+// ─────────────────────────────────────────────
+
+export class ReactivateInitiateDto {
+  @ApiProperty({ description: 'Phone number of the deactivated account', example: '+251943257078' })
+  @IsString()
+  @IsNotEmpty()
+  phone: string;
+}
+
+export class ReactivateVerifyDto {
+  @ApiProperty({ description: 'Verification ID returned from reactivate/initiate' })
+  @IsString()
+  @IsNotEmpty()
+  verificationId: string;
+
+  @ApiProperty({ description: 'OTP sent to the user', example: '123456' })
+  @IsString()
+  @IsNotEmpty()
+  @IsNumberString()
+  @Length(6, 6)
+  otp: string;
+}
+
+// ─────────────────────────────────────────────
+// SOCIAL LINK (AR-06). Provider comes from the path; the token proves control of the
+// social account, same as the social login routes.
+// ─────────────────────────────────────────────
+
+export class LinkSocialDto {
+  @ApiProperty({
+    description: 'ID token (Google, Apple) or access token (Facebook) for the account to link',
+  })
+  @IsString()
+  @IsNotEmpty()
+  token: string;
+}
+
+// ─────────────────────────────────────────────
+// SET PASSWORD for a social-only account (AR-08)
+// ─────────────────────────────────────────────
+
+export class SetPasswordDto {
+  @ApiProperty({
+    description: 'Password to add to the account',
+    example: 'StrongPassword123',
+    minLength: 8,
+    maxLength: 128,
+  })
+  @IsString()
+  @IsNotEmpty()
+  @MinLength(8)
+  @MaxLength(128)
+  newPassword: string;
+}
+
+// ─────────────────────────────────────────────
+// SIGNUP STATUS (AR-11)
+// ─────────────────────────────────────────────
+
+export class SignupStatusDto {
+  @ApiProperty({ description: 'Verification ID returned from signup' })
+  @IsString()
+  @IsNotEmpty()
+  verificationId: string;
+}
+
+// ─────────────────────────────────────────────
+// REVOKE REFRESH TOKEN (AR-12)
+// ─────────────────────────────────────────────
+
+export class RevokeRefreshTokenDto {
+  @ApiProperty({ description: 'Refresh token to revoke' })
+  @IsString()
+  @IsNotEmpty()
+  refreshToken: string;
+}
+
+// ─────────────────────────────────────────────
+// TWO-FACTOR — SETUP (AR-62)
+// ─────────────────────────────────────────────
+
+export class TwoFactorSetupDto {
+  @ApiPropertyOptional({
+    enum: TwoFactorMethodEnum,
+    default: TwoFactorMethodEnum.TOTP,
+    description: 'Method to enrol. Defaults to an authenticator app (TOTP).',
+  })
+  @IsOptional()
+  @IsEnum(TwoFactorMethodEnum)
+  method?: TwoFactorMethodEnum;
+}
+
+// ─────────────────────────────────────────────
+// TWO-FACTOR — CONFIRM SETUP (AR-63)
+// ─────────────────────────────────────────────
+
+export class TwoFactorVerifyDto {
+  @ApiProperty({ description: '6-digit code from the authenticator app', example: '123456' })
+  @IsString()
+  @IsNotEmpty()
+  @IsNumberString()
+  @Length(6, 6)
+  code: string;
+}
+
+// ─────────────────────────────────────────────
+// TWO-FACTOR — DISABLE (AR-64). Needs the password AND a current code, so `password`
+// is a real field here (the re-auth guard strips it first; keep it for the service check).
+// ─────────────────────────────────────────────
+
+export class TwoFactorDisableDto {
+  @ApiPropertyOptional({ description: 'Current password (also read by the re-auth guard)' })
+  @IsOptional()
+  @IsString()
+  password?: string;
+
+  @ApiProperty({ description: 'Current 6-digit 2FA code', example: '123456' })
+  @IsString()
+  @IsNotEmpty()
+  @IsNumberString()
+  @Length(6, 6)
+  code: string;
+}
+
+// ─────────────────────────────────────────────
+// TWO-FACTOR — REGENERATE RECOVERY CODES (AR-65)
+// ─────────────────────────────────────────────
+
+export class TwoFactorRegenerateDto {
+  @ApiProperty({ description: 'Current 6-digit 2FA code', example: '123456' })
+  @IsString()
+  @IsNotEmpty()
+  @IsNumberString()
+  @Length(6, 6)
+  code: string;
+}
+
+// ─────────────────────────────────────────────
+// TWO-FACTOR — LOGIN (AR-66, AR-67, AR-68)
+// ─────────────────────────────────────────────
+
+export class TwoFactorLoginVerifyDto {
+  @ApiProperty({ description: 'challengeId returned by login when requires2fa is true' })
+  @IsString()
+  @IsNotEmpty()
+  challengeId: string;
+
+  @ApiProperty({ description: '6-digit code', example: '123456' })
+  @IsString()
+  @IsNotEmpty()
+  @IsNumberString()
+  @Length(6, 6)
+  code: string;
+}
+
+export class TwoFactorLoginRecoveryDto {
+  @ApiProperty({ description: 'challengeId returned by login when requires2fa is true' })
+  @IsString()
+  @IsNotEmpty()
+  challengeId: string;
+
+  @ApiProperty({ description: 'Single-use recovery code', example: 'ABCD-EFGH-IJKL' })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(64)
+  recoveryCode: string;
+}
+
+export class TwoFactorLoginResendDto {
+  @ApiProperty({ description: 'challengeId returned by login when requires2fa is true' })
+  @IsString()
+  @IsNotEmpty()
+  challengeId: string;
+}
+
+// ─────────────────────────────────────────────
+// TWO-FACTOR — STEP-UP (AR-69)
+// ─────────────────────────────────────────────
+
+export class TwoFactorStepUpDto {
+  @ApiProperty({ description: '6-digit code', example: '123456' })
+  @IsString()
+  @IsNotEmpty()
+  @IsNumberString()
+  @Length(6, 6)
+  code: string;
+
+  @ApiPropertyOptional({ description: 'Action the fresh code is for, kept in the audit event' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  action?: string;
 }

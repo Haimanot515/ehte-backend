@@ -1,10 +1,47 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Res } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  HttpCode,
+  Param,
+  ParseUUIDPipe,
+  Patch,
+  Post,
+  Query,
+  Res,
+} from '@nestjs/common';
 import { Response } from 'express';
 
 import { ApiBearerAuth, ApiOperation, ApiParam, ApiQuery, ApiTags } from '@nestjs/swagger';
 
 import { AuditLogService } from '../service/audit-log.service';
 import {
+  AcknowledgeTriggerDto,
+  AlertTriggersQueryDto,
+  ApplyAlertTemplateDto,
+  AuditBucketStatsQueryDto,
+  AuditStatsFilterDto,
+  AuditSummaryQueryDto,
+  CancelPurgeScheduleDto,
+  CreateAuditExportJobDto,
+  CreateLegalHoldDto,
+  DeniedStatsQueryDto,
+  HealthHistoryQueryDto,
+  IntegrityRunsQueryDto,
+  IntegrityScheduleDto,
+  LegalHoldsQueryDto,
+  PreviewLegalHoldDto,
+  PurgeRunsQueryDto,
+  PurgeScheduleQueryDto,
+  ReleaseLegalHoldDto,
+  SchedulePurgeDto,
+  SetRowLegalHoldDto,
+  ShareSavedFilterDto,
+  TestAlertDto,
+  UnshareSavedFilterDto,
+  UpdateRetentionDto,
+  UpdateSavedFilterDto,
   AuditPagingDto,
   AuditStatsQueryDto,
   AuditUserScopeQueryDto,
@@ -45,9 +82,9 @@ import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
  * ROUTE ORDER MATTERS. Literal paths first, then multi-segment, then
  * ':id' last so it can never shadow them.
  *
- * NOT INCLUDED: 'GET /audit-logs/me' (a user's own account activity).
- * This controller is admin-only by class-level @Roles; a user-facing
- * endpoint belongs in an account/profile controller.
+ * 'GET /audit-logs/me' and 'me/security' (a user's own account activity) are NOT here.
+ * This controller is admin-only by class-level @Roles, so they live in
+ * MyAuditController, which is registered BEFORE this controller in the module.
  *
  * RATE LIMITING: apply your throttler to export, purge and anonymize.
  */
@@ -372,6 +409,542 @@ export class AuditLogController {
   @ApiParam({ name: 'userId', description: 'User ID' })
   async anonymizeUser(@Param('userId') userId: string, @CurrentUser() actor: CurrentUserDto) {
     return this.auditLogService.anonymizeUser(userId, actor);
+  }
+
+  // ═════════════════════════════════════════════
+  // NEW ROUTES (AL-01 to AL-56 except me and me/security, see MyAuditController).
+  // Every literal path is above 'GET :id' and above the parameterised routes of its own group.
+  // ═════════════════════════════════════════════
+
+  // ── 1. Legal hold ────────────────────────────
+
+  @Post('legal-hold')
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_LEGAL_HOLD)
+  @ApiOperation({
+    summary: 'Apply a legal hold by filter (entity, user, date range) for a case',
+    description: 'Covers the rows that exist now. Held rows are never purged or anonymized.',
+  })
+  async createLegalHold(@Body() dto: CreateLegalHoldDto, @CurrentUser() actor: CurrentUserDto) {
+    return this.auditLogService.createLegalHold(dto, actor);
+  }
+
+  @Post('legal-holds/preview')
+  @HttpCode(200)
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_LEGAL_HOLD)
+  @ApiOperation({ summary: 'How many rows a hold filter would cover, before applying it' })
+  async previewLegalHold(@Body() dto: PreviewLegalHoldDto) {
+    return this.auditLogService.previewLegalHold(dto);
+  }
+
+  @Get('legal-holds')
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_READ)
+  @ApiOperation({ summary: 'List legal holds with case reference, reason, who set them and row count' })
+  async listLegalHolds(@Query() query: LegalHoldsQueryDto) {
+    return this.auditLogService.listLegalHolds(query);
+  }
+
+  @Get('legal-holds/:holdId/history')
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_READ)
+  @ApiOperation({ summary: 'Who created, changed and released a hold' })
+  @ApiParam({ name: 'holdId', description: 'Legal hold ID' })
+  async getLegalHoldHistory(
+    @Param('holdId', ParseUUIDPipe) holdId: string,
+    @Query() dto: AuditPagingDto,
+    @CurrentUser() viewer: CurrentUserDto,
+  ) {
+    return this.auditLogService.getLegalHoldHistory(holdId, dto, viewer);
+  }
+
+  @Get('legal-holds/:holdId')
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_READ)
+  @ApiOperation({ summary: 'One hold with its filter and the rows it covers' })
+  @ApiParam({ name: 'holdId', description: 'Legal hold ID' })
+  async getLegalHold(
+    @Param('holdId', ParseUUIDPipe) holdId: string,
+    @Query() dto: AuditPagingDto,
+    @CurrentUser() viewer: CurrentUserDto,
+  ) {
+    return this.auditLogService.getLegalHold(holdId, dto, viewer);
+  }
+
+  @Delete('legal-holds/:holdId')
+  @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_LEGAL_HOLD)
+  @ApiOperation({
+    summary: 'Super admin: release a hold (reason and a second Super Admin required)',
+    description:
+      'The first request is recorded. A different Super Admin must send the same request to approve it.',
+  })
+  @ApiParam({ name: 'holdId', description: 'Legal hold ID' })
+  async releaseLegalHold(
+    @Param('holdId', ParseUUIDPipe) holdId: string,
+    @Body() dto: ReleaseLegalHoldDto,
+    @CurrentUser() actor: CurrentUserDto,
+  ) {
+    return this.auditLogService.releaseLegalHold(holdId, dto, actor);
+  }
+
+  // ── 2. Purge and retention ───────────────────
+
+  @Get('purge/runs')
+  @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_PURGE)
+  @ApiOperation({ summary: 'Super admin: purge history (cutoff, reason, status, counts, errors)' })
+  async listPurgeRuns(@Query() query: PurgeRunsQueryDto) {
+    return this.auditLogService.listPurgeRuns(query);
+  }
+
+  @Get('purge/runs/:id/archive')
+  @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_PURGE)
+  @ApiOperation({
+    summary: 'Super admin: retrieve archived rows from cold storage (unredacted, audited, second approver)',
+    description: 'Returns short-lived download links once a second Super Admin has approved.',
+  })
+  @ApiParam({ name: 'id', description: 'Purge run ID' })
+  async retrievePurgeArchive(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() actor: CurrentUserDto) {
+    return this.auditLogService.retrievePurgeArchive(id, actor);
+  }
+
+  @Get('purge/runs/:id')
+  @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_PURGE)
+  @ApiOperation({ summary: 'Super admin: one purge run with archive key and failure details' })
+  @ApiParam({ name: 'id', description: 'Purge run ID' })
+  async getPurgeRun(@Param('id', ParseUUIDPipe) id: string) {
+    return this.auditLogService.getPurgeRun(id);
+  }
+
+  @Post('purge/schedule')
+  @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_PURGE)
+  @ApiOperation({
+    summary: 'Super admin: schedule a purge for a future date so others can object',
+    description: 'Needs minimum notice (default 72 hours). Archives first and skips held rows, like a manual purge.',
+  })
+  async schedulePurge(@Body() dto: SchedulePurgeDto, @CurrentUser() actor: CurrentUserDto) {
+    return this.auditLogService.schedulePurge(dto, actor);
+  }
+
+  @Get('purge/schedule')
+  @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_PURGE)
+  @ApiOperation({ summary: 'Super admin: scheduled purges' })
+  async listPurgeSchedule(@Query() query: PurgeScheduleQueryDto) {
+    return this.auditLogService.listPurgeSchedule(query);
+  }
+
+  @Delete('purge/schedule/:id')
+  @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_PURGE)
+  @ApiOperation({ summary: 'Super admin: cancel a scheduled purge (reason required)' })
+  @ApiParam({ name: 'id', description: 'Scheduled purge ID' })
+  async cancelPurgeSchedule(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: CancelPurgeScheduleDto,
+    @CurrentUser() actor: CurrentUserDto,
+  ) {
+    return this.auditLogService.cancelPurgeSchedule(id, dto, actor);
+  }
+
+  @Get('retention')
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_READ)
+  @ApiOperation({ summary: 'Retention period per entity or severity' })
+  async getRetention() {
+    return this.auditLogService.getRetention();
+  }
+
+  @Patch('retention')
+  @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_PURGE)
+  @ApiOperation({
+    summary: 'Super admin: change retention (audited, second Super Admin must approve)',
+    description: 'Re-authentication, if you require it, belongs in a guard on this route.',
+  })
+  async updateRetention(@Body() dto: UpdateRetentionDto, @CurrentUser() actor: CurrentUserDto) {
+    return this.auditLogService.updateRetention(dto, actor);
+  }
+
+  @Get('anonymizations')
+  @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_ANONYMIZE)
+  @ApiOperation({ summary: 'Super admin: history of anonymize runs (who, whom, when, rows touched)' })
+  async listAnonymizations(@Query() dto: AuditPagingDto, @CurrentUser() viewer: CurrentUserDto) {
+    return this.auditLogService.listAnonymizations(dto, viewer);
+  }
+
+  // ── 3. Integrity ─────────────────────────────
+
+  @Get('integrity/runs')
+  @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_VERIFY_INTEGRITY)
+  @ApiOperation({ summary: 'Super admin: history of integrity checks and their result' })
+  async listIntegrityRuns(@Query() query: IntegrityRunsQueryDto) {
+    return this.auditLogService.listIntegrityRuns(query);
+  }
+
+  @Post('integrity/schedule')
+  @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_VERIFY_INTEGRITY)
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Super admin: run the hash-chain check on a schedule and alert on a break' })
+  async setIntegritySchedule(@Body() dto: IntegrityScheduleDto, @CurrentUser() actor: CurrentUserDto) {
+    return this.auditLogService.setIntegritySchedule(dto, actor);
+  }
+
+  @Get('integrity/breaks')
+  @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_VERIFY_INTEGRITY)
+  @ApiOperation({ summary: 'Super admin: breaks found, with the first affected row' })
+  async listIntegrityBreaks(@Query() dto: AuditPagingDto) {
+    return this.auditLogService.listIntegrityBreaks(dto);
+  }
+
+  @Get('health/history')
+  @Roles(RolesEnum.SUPER_ADMIN)
+  @ApiOperation({ summary: 'Super admin: pipeline health over time (lag, failures, table size)' })
+  async getHealthHistory(@Query() query: HealthHistoryQueryDto) {
+    return this.auditLogService.getHealthHistory(query);
+  }
+
+  // ── 4. Alert rules (literals first, then ':id') ──
+
+  @Get('alerts/triggers')
+  @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.AUDIT_ALERT_MANAGE)
+  @ApiOperation({ summary: 'Super admin: queue of unacknowledged alert triggers' })
+  async listTriggerQueue(@Query() query: AlertTriggersQueryDto) {
+    return this.auditLogService.listTriggerQueue(query);
+  }
+
+  @Post('alerts/triggers/:triggerId/acknowledge')
+  @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.AUDIT_ALERT_MANAGE)
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Super admin: mark a fired alert as seen, with a note' })
+  @ApiParam({ name: 'triggerId', description: 'Alert trigger ID' })
+  async acknowledgeTrigger(
+    @Param('triggerId', ParseUUIDPipe) triggerId: string,
+    @Body() dto: AcknowledgeTriggerDto,
+    @CurrentUser() actor: CurrentUserDto,
+  ) {
+    return this.auditLogService.acknowledgeTrigger(triggerId, dto, actor);
+  }
+
+  @Get('alerts/templates')
+  @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.AUDIT_ALERT_MANAGE)
+  @ApiOperation({ summary: 'Super admin: ready-made alert rules (mass export, repeated denied access, ...)' })
+  listAlertTemplates() {
+    return this.auditLogService.listAlertTemplates();
+  }
+
+  @Post('alerts/templates/:templateId/apply')
+  @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.AUDIT_ALERT_MANAGE)
+  @ApiOperation({ summary: 'Super admin: create an alert rule from a template' })
+  @ApiParam({ name: 'templateId', example: 'mass-export' })
+  async applyAlertTemplate(
+    @Param('templateId') templateId: string,
+    @Body() dto: ApplyAlertTemplateDto,
+    @CurrentUser() actor: CurrentUserDto,
+  ) {
+    return this.auditLogService.applyAlertTemplate(templateId, dto, actor);
+  }
+
+  @Get('alerts/:id/triggers')
+  @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.AUDIT_ALERT_MANAGE)
+  @ApiOperation({ summary: 'Super admin: history of when a rule fired' })
+  @ApiParam({ name: 'id', description: 'Alert rule ID' })
+  async listAlertTriggers(@Param('id', ParseUUIDPipe) id: string, @Query() dto: AuditPagingDto) {
+    return this.auditLogService.listAlertTriggers(id, dto);
+  }
+
+  @Post('alerts/:id/test')
+  @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.AUDIT_ALERT_MANAGE)
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Super admin: dry-run a rule against recent data (nothing is recorded or sent)' })
+  @ApiParam({ name: 'id', description: 'Alert rule ID' })
+  async testAlert(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: TestAlertDto,
+    @CurrentUser() actor: CurrentUserDto,
+  ) {
+    return this.auditLogService.testAlert(id, dto, actor);
+  }
+
+  @Patch('alerts/:id/enable')
+  @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.AUDIT_ALERT_MANAGE)
+  @ApiOperation({ summary: 'Super admin: turn a rule on' })
+  @ApiParam({ name: 'id', description: 'Alert rule ID' })
+  async enableAlert(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() actor: CurrentUserDto) {
+    return this.auditLogService.setAlertEnabled(id, true, actor);
+  }
+
+  @Patch('alerts/:id/disable')
+  @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.AUDIT_ALERT_MANAGE)
+  @ApiOperation({ summary: 'Super admin: turn a rule off without deleting it' })
+  @ApiParam({ name: 'id', description: 'Alert rule ID' })
+  async disableAlert(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() actor: CurrentUserDto) {
+    return this.auditLogService.setAlertEnabled(id, false, actor);
+  }
+
+  @Get('alerts/:id')
+  @Roles(RolesEnum.SUPER_ADMIN)
+  @RequirePermissions(PermissionsEnum.AUDIT_ALERT_MANAGE)
+  @ApiOperation({ summary: 'Super admin: one alert rule' })
+  @ApiParam({ name: 'id', description: 'Alert rule ID' })
+  async getAlert(@Param('id', ParseUUIDPipe) id: string) {
+    return this.auditLogService.getAlert(id);
+  }
+
+  // ── 5. Saved filters (after the existing saved-filters routes) ──
+
+  @Get('saved-filters/:id')
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_READ)
+  @ApiOperation({ summary: 'One saved filter (mine, or shared with me)' })
+  @ApiParam({ name: 'id', description: 'Saved filter ID' })
+  async getSavedFilter(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() viewer: CurrentUserDto) {
+    return this.auditLogService.getSavedFilter(id, viewer);
+  }
+
+  @Patch('saved-filters/:id')
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_READ)
+  @ApiOperation({ summary: 'Rename or edit one of my saved filters' })
+  @ApiParam({ name: 'id', description: 'Saved filter ID' })
+  async updateSavedFilter(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateSavedFilterDto,
+    @CurrentUser() viewer: CurrentUserDto,
+  ) {
+    return this.auditLogService.updateSavedFilter(id, dto, viewer);
+  }
+
+  @Post('saved-filters/:id/share')
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_READ)
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Share one of my filters with other admins (omit userIds for all admins)' })
+  @ApiParam({ name: 'id', description: 'Saved filter ID' })
+  async shareSavedFilter(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: ShareSavedFilterDto,
+    @CurrentUser() viewer: CurrentUserDto,
+  ) {
+    return this.auditLogService.shareSavedFilter(id, dto, viewer);
+  }
+
+  @Delete('saved-filters/:id/share')
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_READ)
+  @ApiOperation({ summary: 'Stop sharing one of my filters (omit userIds to stop for everyone)' })
+  @ApiParam({ name: 'id', description: 'Saved filter ID' })
+  async unshareSavedFilter(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UnshareSavedFilterDto,
+    @CurrentUser() viewer: CurrentUserDto,
+  ) {
+    return this.auditLogService.unshareSavedFilter(id, dto, viewer);
+  }
+
+  @Post('saved-filters/:id/run')
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_READ)
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Run a saved filter and return the results',
+    description: 'Paging goes in the query string (cursor, page, limit). Redaction follows your own role.',
+  })
+  @ApiParam({ name: 'id', description: 'Saved filter ID' })
+  async runSavedFilter(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Query() dto: AuditPagingDto,
+    @CurrentUser() viewer: CurrentUserDto,
+  ) {
+    return this.auditLogService.runSavedFilter(id, dto, viewer);
+  }
+
+  // ── 6. Exports ───────────────────────────────
+
+  @Get('exports/all')
+  @Roles(RolesEnum.SUPER_ADMIN)
+  @ApiOperation({ summary: 'Super admin: every export by every admin, with per-admin totals' })
+  async listAllExports(@Query() dto: AuditPagingDto, @CurrentUser() viewer: CurrentUserDto) {
+    return this.auditLogService.listAllExports(dto, viewer);
+  }
+
+  @Get('exports/:id')
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_EXPORT)
+  @ApiOperation({ summary: 'One export record: filter, row count, whether it was truncated' })
+  @ApiParam({ name: 'id', description: 'Export record ID' })
+  async getExportRecord(@Param('id', ParseUUIDPipe) id: string) {
+    return this.auditLogService.getExportRecord(id);
+  }
+
+  @Post('export-jobs')
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_EXPORT)
+  @HttpCode(202)
+  @ApiOperation({
+    summary: 'Start a background export beyond the CSV cap',
+    description: 'Same filters as the list (in the body, no paging). Same redaction as the CSV export.',
+  })
+  async startExportJob(@Body() dto: CreateAuditExportJobDto, @CurrentUser() viewer: CurrentUserDto) {
+    return this.auditLogService.startExportJob(dto, viewer);
+  }
+
+  @Get('export-jobs')
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_EXPORT)
+  @ApiOperation({ summary: 'My export jobs' })
+  async listExportJobs(@Query() dto: AuditPagingDto, @CurrentUser() viewer: CurrentUserDto) {
+    return this.auditLogService.listExportJobs(viewer, dto);
+  }
+
+  @Get('export-jobs/:id/download')
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_EXPORT)
+  @ApiOperation({
+    summary: 'Short-lived download links for a finished export (audited)',
+    description: 'Links work for 5 minutes. Ask again for fresh ones.',
+  })
+  @ApiParam({ name: 'id', description: 'Export job ID' })
+  async downloadExportJob(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() viewer: CurrentUserDto) {
+    return this.auditLogService.downloadExportJob(id, viewer);
+  }
+
+  @Get('export-jobs/:id')
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_EXPORT)
+  @ApiOperation({ summary: 'Export job progress' })
+  @ApiParam({ name: 'id', description: 'Export job ID' })
+  async getExportJob(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() viewer: CurrentUserDto) {
+    return this.auditLogService.getExportJob(id, viewer);
+  }
+
+  // ── 7. Views for cases ───────────────────────
+
+  @Get('sensitive-access')
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_READ_SENSITIVE)
+  @ApiOperation({ summary: 'Who viewed sensitive data: informant identity, child cases, bank details' })
+  async getSensitiveAccess(@Query() dto: GetAuditLogsDto, @CurrentUser() viewer: CurrentUserDto) {
+    return this.auditLogService.findSensitiveAccess(dto, viewer);
+  }
+
+  @Get('privileged-actions')
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_READ)
+  @ApiOperation({ summary: 'Role, permission and security-setting changes' })
+  async getPrivilegedActions(@Query() dto: GetAuditLogsDto, @CurrentUser() viewer: CurrentUserDto) {
+    return this.auditLogService.findPrivilegedActions(dto, viewer);
+  }
+
+  @Get('money-actions')
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_READ)
+  @ApiOperation({ summary: 'Refunds, payout verification, disbursements and manual payments' })
+  async getMoneyActions(@Query() dto: GetAuditLogsDto, @CurrentUser() viewer: CurrentUserDto) {
+    return this.auditLogService.findMoneyActions(dto, viewer);
+  }
+
+  @Get('denied')
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_READ)
+  @ApiOperation({ summary: 'Denied and failed events, to spot probing' })
+  async getDenied(@Query() dto: GetAuditLogsDto, @CurrentUser() viewer: CurrentUserDto) {
+    return this.auditLogService.findDenied(dto, viewer);
+  }
+
+  // ── 8. Statistics ────────────────────────────
+
+  @Get('stats/overview')
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_READ)
+  @ApiOperation({ summary: 'Dashboard in one call' })
+  async statsOverview(@Query() f: AuditStatsFilterDto) {
+    return this.auditLogService.statsOverview(f);
+  }
+
+  @Get('stats/by-severity')
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_READ)
+  @ApiOperation({ summary: 'Severity breakdown for dashboard widgets' })
+  async statsBySeverity(@Query() f: AuditStatsFilterDto) {
+    return this.auditLogService.statsBySeverity(f);
+  }
+
+  @Get('stats/by-outcome')
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_READ)
+  @ApiOperation({ summary: 'Success, denied and failed' })
+  async statsByOutcome(@Query() f: AuditStatsFilterDto) {
+    return this.auditLogService.statsByOutcome(f);
+  }
+
+  @Get('stats/denied')
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_READ)
+  @ApiOperation({ summary: 'Denied and failed events over time, by path or action' })
+  async statsDenied(@Query() f: DeniedStatsQueryDto) {
+    return this.auditLogService.statsDenied(f);
+  }
+
+  @Get('stats/export-activity')
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_EXPORT)
+  @ApiOperation({ summary: 'Exports per admin over time, to spot unusual bulk exports' })
+  async statsExportActivity(@Query() f: AuditBucketStatsQueryDto) {
+    return this.auditLogService.statsExportActivity(f);
+  }
+
+  @Get('stats/by-entity')
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_READ)
+  @ApiOperation({ summary: 'Events per entity type' })
+  async statsByEntity(@Query() f: AuditStatsFilterDto) {
+    return this.auditLogService.statsByEntity(f);
+  }
+
+  @Get('stats/hourly')
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_READ)
+  @ApiOperation({ summary: 'Events by hour of day and weekday (UTC), to spot out-of-hours activity' })
+  async statsHourly(@Query() f: AuditStatsFilterDto) {
+    return this.auditLogService.statsHourly(f);
+  }
+
+  @Get('stats/sensitive-access')
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_READ_SENSITIVE)
+  @ApiOperation({ summary: 'Sensitive reads per admin over time' })
+  async statsSensitiveAccess(@Query() f: AuditBucketStatsQueryDto) {
+    return this.auditLogService.statsSensitiveAccess(f);
+  }
+
+  // ── Row-level hold and per-record / per-user summaries ──
+
+  @Get('entity/:entity/:entityId/summary')
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_READ)
+  @ApiOperation({ summary: 'Counts of actions on one record by type and actor' })
+  @ApiParam({ name: 'entity', example: 'MissingPerson' })
+  @ApiParam({ name: 'entityId' })
+  async summarizeEntity(
+    @Param('entity') entity: string,
+    @Param('entityId') entityId: string,
+    @Query() q: AuditSummaryQueryDto,
+  ) {
+    return this.auditLogService.summarizeEntity(entity, entityId, q);
+  }
+
+  @Get('user/:userId/summary')
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_READ)
+  @ApiOperation({ summary: 'What one user did over a period, grouped by area' })
+  @ApiParam({ name: 'userId', description: 'User ID' })
+  async summarizeUser(@Param('userId', ParseUUIDPipe) userId: string, @Query() q: AuditSummaryQueryDto) {
+    return this.auditLogService.summarizeUser(userId, q);
+  }
+
+  @Patch(':id/legal-hold')
+  @RequirePermissions(PermissionsEnum.AUDIT_LOG_LEGAL_HOLD)
+  @ApiOperation({
+    summary: 'Set or clear the hold on one row, with a required reason',
+    description:
+      'Setting a hold needs only the permission. Clearing a hold needs a Super Admin, and a ' +
+      'different Super Admin must repeat the request to approve it.',
+  })
+  @ApiParam({ name: 'id', description: 'Audit log ID' })
+  async setRowLegalHold(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: SetRowLegalHoldDto,
+    @CurrentUser() actor: CurrentUserDto,
+  ) {
+    return this.auditLogService.setRowLegalHold(id, dto, actor);
   }
 
   // ═════════════════════════════════════════════

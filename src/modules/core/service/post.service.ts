@@ -1,6 +1,15 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 
-import { AuditOutcome, AuditSeverity, PostStatus, PostType, Prisma } from '@prisma/client';
+import {
+  AuditOutcome,
+  AuditSeverity,
+  PostAppealStatus,
+  PostAppealTarget,
+  PostFlagStatus,
+  PostStatus,
+  PostType,
+  Prisma,
+} from '@prisma/client';
 
 import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { ConfigService } from '@nestjs/config';
@@ -34,6 +43,17 @@ import {
   AdminCreatePostDto,
   AdminPostQueryDto,
   PublishedPostsQueryDto,
+  AppealPostDto,
+  DecidePostAppealDto,
+  FlagPostDto,
+  ResolvePostFlagsDto,
+  TakedownPostDto,
+  UnreadPostsQueryDto,
+  PostAuthorRollupQueryDto,
+  PostsByAuthorQueryDto,
+  FlaggedPostsQueryDto,
+  PostAppealsQueryDto,
+  PostTimelineQueryDto,
 } from '../dto/post.dto';
 
 // Statuses the owner may edit/submit from; PENDING is frozen until admin action.
@@ -100,9 +120,25 @@ const PUBLIC_POST_OMIT_FIELDS = [
   'childSafetyFirstConfirmedByUserId',
   'childSafetyFirstConfirmedAt',
   'ownerSuspendedAt',
+  'takedownReason',
+  'takedownAt',
+  'takedownById',
 ] as const;
 
 type PublicPost = ReturnType<PostService['toPublicPost']>;
+
+// Open-state shortcuts for flags and appeals.
+const FLAG_OPEN = PostFlagStatus.OPEN;
+const APPEAL_OPEN = PostAppealStatus.OPEN;
+
+// Statuses of the author-facing summary, in the order the response lists them.
+const SUMMARY_STATUSES: PostStatus[] = Object.values(PostStatus);
+
+// Only these transitions are shown to the author in their review timeline.
+const AUTHOR_VISIBLE_REASON_STATUSES: string[] = [
+  PostStatus.REJECTED,
+  PostStatus.CHANGES_REQUESTED,
+];
 
 @Injectable()
 export class PostService {
@@ -1965,5 +2001,693 @@ export class PostService {
     });
 
     return updated;
+  }
+
+  // ═════════════════════════════════════════════
+  // NEW — everything below backs the new controller routes.
+  // Assumes Prisma models PostReadState, PostFlag, PostAppeal and Post.takedown* fields.
+  // ═════════════════════════════════════════════
+
+  private pageArgs(query: { page?: number; limit?: number }) {
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 20;
+    return { page, limit, skip: (page - 1) * limit, take: limit };
+  }
+
+  private pageMeta(total: number, page: number, limit: number) {
+    return { total, page, limit, totalPages: Math.ceil(total / limit) };
+  }
+
+  // ── Owner routes ──────────────────────────────
+
+  // GET /posts/me/summary
+  async getMyPostSummary(userId: string) {
+    const rows = await this.prisma.post.groupBy({
+      by: ['status'],
+      where: { userId },
+      _count: { status: true },
+      orderBy: { status: 'asc' },
+    });
+
+    const counts = Object.fromEntries(SUMMARY_STATUSES.map((s) => [s, 0])) as Record<
+      PostStatus,
+      number
+    >;
+    for (const row of rows) {
+      const rowCount = row._count as { status?: number } | undefined;
+      counts[row.status] = rowCount?.status ?? 0;
+    }
+
+    return {
+      total: Object.values(counts).reduce((sum, n) => sum + n, 0),
+      draft: counts[PostStatus.DRAFT],
+      pending: counts[PostStatus.PENDING],
+      changesRequested: counts[PostStatus.CHANGES_REQUESTED],
+      approved: counts[PostStatus.APPROVED],
+      published: counts[PostStatus.PUBLISHED],
+      unpublished: counts[PostStatus.UNPUBLISHED],
+      rejected: counts[PostStatus.REJECTED],
+    };
+  }
+
+  // GET /posts/me/:id/history (status changes only, no admin identities or internal notes)
+  async getMyPostHistory(userId: string, postId: string) {
+    await this.findMyPost(userId, postId);
+
+    const rows = await this.prisma.auditLog.findMany({
+      where: { entity: 'Post', entityId: postId },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    return rows.flatMap((row) => {
+      const diff = row.diff as Prisma.JsonObject | null;
+      const to = typeof diff?.newStatus === 'string' ? diff.newStatus : null;
+      if (!to || diff?.result !== 'success') return [];
+
+      const showReason = diff?.takedown === true || AUTHOR_VISIBLE_REASON_STATUSES.includes(to);
+      return [
+        {
+          at: row.createdAt,
+          from: typeof diff?.previousStatus === 'string' ? diff.previousStatus : null,
+          to,
+          reason: showReason ? (row.reason ?? null) : null,
+        },
+      ];
+    });
+  }
+
+  // POST /posts/me/:id/appeal
+  async appealMyPost(userId: string, postId: string, data: AppealPostDto) {
+    const post = await this.findMyPost(userId, postId);
+
+    const wasTakenDown = post.status === PostStatus.UNPUBLISHED && post.takedownAt !== null;
+    if (post.status !== PostStatus.REJECTED && !wasTakenDown) {
+      throw new BadRequestException('post_not_appealable');
+    }
+
+    const open = await this.prisma.postAppeal.findFirst({
+      where: { postId, status: APPEAL_OPEN },
+      select: { id: true },
+    });
+    if (open) {
+      throw new BadRequestException('appeal_already_open');
+    }
+
+    const target = wasTakenDown ? PostAppealTarget.TAKEDOWN : PostAppealTarget.REJECTION;
+
+    const appeal = await this.prisma.postAppeal.create({
+      data: { postId, authorId: userId, target, message: data.message },
+    });
+
+    this.emitAudit({
+      userId,
+      actorType: 'USER',
+      action: AuditEventEnum.POST_APPEAL_SUBMITTED,
+      entity: 'Post',
+      entityId: postId,
+      entityLabel: this.postLabel(post),
+      reason: 'post_appeal_submitted',
+      diff: { appealId: appeal.id, result: 'appeal_open' },
+      metadata: { postType: post.type, appealTarget: target },
+    });
+
+    return appeal;
+  }
+
+  // GET /posts/me/:id/appeals
+  async findMyPostAppeals(userId: string, postId: string) {
+    await this.findMyPost(userId, postId);
+
+    return this.prisma.postAppeal.findMany({
+      where: { postId },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        target: true,
+        message: true,
+        status: true,
+        decisionNote: true,
+        decidedAt: true,
+        createdAt: true,
+      },
+    });
+  }
+
+  // ── Admin read state ──────────────────────────
+
+  // PATCH /posts/:id/read
+  async markRead(admin: CurrentUserDto, postId: string) {
+    await this.findOne(postId);
+
+    await this.prisma.postReadState.upsert({
+      where: { postId_adminId: { postId, adminId: admin.id } },
+      create: { postId, adminId: admin.id },
+      update: {},
+    });
+
+    return { postId, read: true };
+  }
+
+  // PATCH /posts/:id/unread
+  async markUnread(admin: CurrentUserDto, postId: string) {
+    await this.findOne(postId);
+
+    await this.prisma.postReadState.deleteMany({ where: { postId, adminId: admin.id } });
+
+    return { postId, read: false };
+  }
+
+  // PATCH /posts/bulk/read
+  async bulkMarkRead(admin: CurrentUserDto, ids: string[]) {
+    const uniqueIds = [...new Set(ids)];
+    const existing = await this.prisma.post.findMany({
+      where: { id: { in: uniqueIds } },
+      select: { id: true },
+    });
+    const existingIds = existing.map((p) => p.id);
+
+    await this.prisma.postReadState.createMany({
+      data: existingIds.map((postId) => ({ postId, adminId: admin.id })),
+      skipDuplicates: true,
+    });
+
+    const found = new Set(existingIds);
+    return { marked: existingIds.length, notFound: uniqueIds.filter((id) => !found.has(id)) };
+  }
+
+  // PATCH /posts/read-all
+  async markAllRead(admin: CurrentUserDto) {
+    const unread = await this.prisma.post.findMany({
+      where: { readStates: { none: { adminId: admin.id } } },
+      select: { id: true },
+    });
+
+    await this.prisma.postReadState.createMany({
+      data: unread.map((p) => ({ postId: p.id, adminId: admin.id })),
+      skipDuplicates: true,
+    });
+
+    return { marked: unread.length };
+  }
+
+  // GET /posts/unread-count
+  async getUnreadCount(admin: CurrentUserDto) {
+    const [total, read] = await this.prisma.$transaction([
+      this.prisma.post.count(),
+      this.prisma.postReadState.count({ where: { adminId: admin.id } }),
+    ]);
+
+    return { total, read, unread: Math.max(0, total - read) };
+  }
+
+  // GET /posts/unread
+  async findUnread(admin: CurrentUserDto, query: UnreadPostsQueryDto) {
+    const { page, limit, skip, take } = this.pageArgs(query);
+
+    const where: Prisma.PostWhereInput = {
+      readStates: { none: { adminId: admin.id } },
+      ...(query.status ? { status: query.status } : {}),
+      ...(query.type ? { type: query.type } : {}),
+    };
+
+    const [items, total] = await this.prisma.$transaction([
+      this.prisma.post.findMany({ where, orderBy: { createdAt: 'desc' }, skip, take }),
+      this.prisma.post.count({ where }),
+    ]);
+
+    return { items, ...this.pageMeta(total, page, limit) };
+  }
+
+  // ── Admin per-author views ────────────────────
+
+  // GET /posts/by-author
+  async findAuthorRollup(query: PostAuthorRollupQueryDto) {
+    const { page, limit, skip } = this.pageArgs(query);
+
+    const rows = await this.prisma.post.groupBy({
+      by: ['userId', 'status'],
+      _count: { _all: true },
+      _max: { createdAt: true },
+      orderBy: [{ userId: 'asc' }, { status: 'asc' }],
+    });
+
+    const authors = new Map<
+      string,
+      {
+        userId: string;
+        totalPosts: number;
+        pending: number;
+        lastPostAt: Date | null;
+        byStatus: Record<string, number>;
+      }
+    >();
+
+    for (const row of rows) {
+      const count = (row._count as { _all?: number } | undefined)?._all ?? 0;
+      const last = row._max?.createdAt ?? null;
+      const entry = authors.get(row.userId) ?? {
+        userId: row.userId,
+        totalPosts: 0,
+        pending: 0,
+        lastPostAt: null,
+        byStatus: {},
+      };
+      entry.totalPosts += count;
+      entry.byStatus[row.status] = count;
+      if (row.status === PostStatus.PENDING) entry.pending = count;
+      if (last && (!entry.lastPostAt || last > entry.lastPostAt)) entry.lastPostAt = last;
+      authors.set(row.userId, entry);
+    }
+
+    const sortBy = query.sortBy ?? 'lastPostAt';
+    const dir = (query.order ?? 'desc') === 'asc' ? 1 : -1;
+    const sortValue = (a: { totalPosts: number; pending: number; lastPostAt: Date | null }) =>
+      sortBy === 'lastPostAt' ? (a.lastPostAt?.getTime() ?? 0) : a[sortBy];
+
+    const sorted = [...authors.values()].sort((a, b) => (sortValue(a) - sortValue(b)) * dir);
+
+    return { items: sorted.slice(skip, skip + limit), ...this.pageMeta(sorted.length, page, limit) };
+  }
+
+  // GET /posts/by-author/:authorId
+  async findPostsByAuthor(authorId: string, query: PostsByAuthorQueryDto) {
+    const { page, limit, skip, take } = this.pageArgs(query);
+
+    const where: Prisma.PostWhereInput = {
+      userId: authorId,
+      ...(query.status ? { status: query.status } : {}),
+      ...(query.type ? { type: query.type } : {}),
+    };
+
+    const [items, total] = await this.prisma.$transaction([
+      this.prisma.post.findMany({ where, orderBy: { createdAt: 'desc' }, skip, take }),
+      this.prisma.post.count({ where }),
+    ]);
+
+    return { items, ...this.pageMeta(total, page, limit) };
+  }
+
+  // ── Flags ─────────────────────────────────────
+
+  // POST /posts/:id/flag
+  async flagPost(user: CurrentUserDto, postId: string, data: FlagPostDto) {
+    const post = await this.prisma.post.findFirst({
+      where: { id: postId, status: PostStatus.PUBLISHED },
+    });
+    if (!post) {
+      throw new NotFoundException('post_not_found');
+    }
+    if (post.userId === user.id) {
+      throw new BadRequestException('cannot_flag_own_post');
+    }
+
+    const already = await this.prisma.postFlag.findFirst({
+      where: { postId, reporterId: user.id },
+      select: { id: true },
+    });
+    if (already) {
+      throw new BadRequestException('post_already_flagged');
+    }
+
+    let flag;
+    try {
+      flag = await this.prisma.postFlag.create({
+        data: {
+          postId,
+          reporterId: user.id,
+          reason: data.reason,
+          details: data.details ?? null,
+        },
+      });
+    } catch (err) {
+      // A parallel request won the unique (postId, reporterId) race.
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+        throw new BadRequestException('post_already_flagged');
+      }
+      throw err;
+    }
+
+    this.emitAudit({
+      userId: user.id,
+      targetUserId: this.auditTarget(post, user.id),
+      actorType: resolveActorType(user.roles ?? []),
+      action: AuditEventEnum.POST_FLAGGED,
+      entity: 'Post',
+      entityId: postId,
+      entityLabel: this.postLabel(post),
+      reason: 'post_flagged',
+      diff: { flagId: flag.id, flagReason: data.reason, result: 'flag_open' },
+      metadata: { postType: post.type, involvesChild: post.involvesChild },
+    });
+
+    return { id: flag.id, postId, status: flag.status };
+  }
+
+  // GET /posts/flags
+  async findFlaggedPosts(query: FlaggedPostsQueryDto) {
+    const { page, limit, skip } = this.pageArgs(query);
+    const flagStatus = query.flagStatus ?? FLAG_OPEN;
+
+    const groups = await this.prisma.postFlag.groupBy({
+      by: ['postId'],
+      where: { status: flagStatus },
+      _count: { _all: true },
+      _max: { createdAt: true },
+      orderBy: { _max: { createdAt: 'desc' } },
+    });
+
+    const pageGroups = groups.slice(skip, skip + limit);
+    const posts = await this.prisma.post.findMany({
+      where: { id: { in: pageGroups.map((g) => g.postId) } },
+    });
+    const byId = new Map(posts.map((p) => [p.id, p]));
+
+    const items = pageGroups.flatMap((g) => {
+      const post = byId.get(g.postId);
+      if (!post) return [];
+      return [
+        {
+          post,
+          flagCount: (g._count as { _all?: number } | undefined)?._all ?? 0,
+          lastFlaggedAt: g._max?.createdAt ?? null,
+        },
+      ];
+    });
+
+    return { items, ...this.pageMeta(groups.length, page, limit) };
+  }
+
+  // GET /posts/:id/flags
+  async findPostFlags(postId: string) {
+    await this.findOne(postId);
+
+    return this.prisma.postFlag.findMany({
+      where: { postId },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  // PATCH /posts/:id/flags/resolve
+  async resolveFlags(admin: CurrentUserDto, postId: string, data: ResolvePostFlagsDto) {
+    const post = await this.findOne(postId);
+
+    const result = await this.prisma.postFlag.updateMany({
+      where: { postId, status: FLAG_OPEN },
+      data: {
+        status: data.outcome,
+        note: data.note ?? null,
+        resolvedById: admin.id,
+        resolvedAt: new Date(),
+      },
+    });
+
+    if (result.count === 0) {
+      throw new BadRequestException('no_open_flags_on_post');
+    }
+
+    this.emitAudit({
+      userId: admin.id,
+      targetUserId: this.auditTarget(post, admin.id),
+      actorType: resolveActorType(admin.roles ?? []),
+      action: AuditEventEnum.POST_FLAGS_RESOLVED,
+      entity: 'Post',
+      entityId: postId,
+      entityLabel: this.postLabel(post),
+      reason: data.note ?? 'post_flags_resolved',
+      diff: { flagOutcome: data.outcome, flagsResolved: result.count, result: 'success' },
+      metadata: { postType: post.type },
+    });
+
+    return { postId, outcome: data.outcome, resolved: result.count };
+  }
+
+  // ── Takedown and appeals ──────────────────────
+
+  // PATCH /posts/:id/takedown
+  async takedown(admin: CurrentUserDto, postId: string, data: TakedownPostDto) {
+    const post = await this.findOne(postId);
+
+    this.assertTransitionAllowed(admin, post, PostStatus.UNPUBLISHED, AuditEventEnum.POST_TAKEN_DOWN);
+    if (post.status !== PostStatus.PUBLISHED) {
+      throw new BadRequestException('only_published_posts_can_be_taken_down');
+    }
+
+    const result = await this.prisma.post.updateMany({
+      where: { id: postId, status: PostStatus.PUBLISHED },
+      data: {
+        status: PostStatus.UNPUBLISHED,
+        takedownReason: data.reason,
+        takedownAt: new Date(),
+        takedownById: admin.id,
+      },
+    });
+
+    if (result.count === 0) {
+      this.emitBlockedAttempt({
+        outcome: AuditOutcome.FAILURE,
+        user: admin,
+        post,
+        action: AuditEventEnum.POST_TAKEN_DOWN,
+        reason: 'post_transition_conflict',
+        diff: { attemptedStatus: PostStatus.UNPUBLISHED, currentStatus: post.status },
+      });
+      throw new BadRequestException('post_transition_conflict');
+    }
+
+    const updated = await this.prisma.post.findUniqueOrThrow({ where: { id: postId } });
+
+    await this.cache.invalidatePostEverywhere(postId);
+
+    this.emitAudit({
+      userId: admin.id,
+      targetUserId: this.auditTarget(post, admin.id),
+      actorType: resolveActorType(admin.roles ?? []),
+      action: AuditEventEnum.POST_TAKEN_DOWN,
+      entity: 'Post',
+      entityId: postId,
+      entityLabel: this.postLabel(post),
+      reason: data.reason,
+      severity: AuditSeverity.WARNING,
+      diff: {
+        previousStatus: post.status,
+        newStatus: PostStatus.UNPUBLISHED,
+        takedown: true,
+        result: 'success',
+      },
+      metadata: { postType: post.type, involvesChild: post.involvesChild },
+    });
+
+    if (data.notifyAuthor !== false) {
+      this.eventEmitter.emit(NotificationEventEnum.POST_UNPUBLISHED, {
+        postId,
+        userId: post.userId,
+        reason: data.reason,
+        canAppeal: true,
+      });
+    }
+
+    return updated;
+  }
+
+  // GET /posts/appeals
+  async findAppeals(query: PostAppealsQueryDto) {
+    const { page, limit, skip, take } = this.pageArgs(query);
+    const where: Prisma.PostAppealWhereInput = { status: query.appealStatus ?? APPEAL_OPEN };
+
+    const [items, total] = await this.prisma.$transaction([
+      this.prisma.postAppeal.findMany({
+        where,
+        orderBy: { createdAt: 'asc' },
+        skip,
+        take,
+        include: {
+          post: {
+            select: {
+              id: true,
+              title: true,
+              type: true,
+              status: true,
+              userId: true,
+              reviewNote: true,
+              takedownReason: true,
+              takedownAt: true,
+            },
+          },
+        },
+      }),
+      this.prisma.postAppeal.count({ where }),
+    ]);
+
+    return { items, ...this.pageMeta(total, page, limit) };
+  }
+
+  // PATCH /posts/:id/appeals/:appealId/decide
+  async decideAppeal(
+    admin: CurrentUserDto,
+    postId: string,
+    appealId: string,
+    data: DecidePostAppealDto,
+  ) {
+    const post = await this.findOne(postId);
+
+    const appeal = await this.prisma.postAppeal.findFirst({ where: { id: appealId, postId } });
+    if (!appeal) {
+      throw new NotFoundException('appeal_not_found');
+    }
+    if (appeal.status !== APPEAL_OPEN) {
+      throw new BadRequestException('appeal_already_decided');
+    }
+
+    const restoredPublic = await this.prisma.$transaction(async (tx) => {
+      const decided = await tx.postAppeal.updateMany({
+        where: { id: appealId, status: APPEAL_OPEN },
+        data: {
+          status: data.decision,
+          decisionNote: data.note,
+          decidedById: admin.id,
+          decidedAt: new Date(),
+        },
+      });
+      if (decided.count === 0) {
+        throw new BadRequestException('appeal_already_decided');
+      }
+      if (data.decision !== 'OVERTURNED') return false;
+
+      // Overturned rejection goes back to the review queue (system action, skips the transition map).
+      if (appeal.target === PostAppealTarget.REJECTION) {
+        await tx.post.updateMany({
+          where: { id: postId, status: PostStatus.REJECTED },
+          data: { status: PostStatus.PENDING, reviewNote: null },
+        });
+        return false;
+      }
+
+      // Overturned takedown restores the post and clears the takedown fields.
+      if (appeal.target === PostAppealTarget.TAKEDOWN) {
+        const restored = await tx.post.updateMany({
+          where: { id: postId, status: PostStatus.UNPUBLISHED },
+          data: {
+            status: PostStatus.PUBLISHED,
+            takedownReason: null,
+            takedownAt: null,
+            takedownById: null,
+          },
+        });
+        return restored.count > 0;
+      }
+      return false;
+    });
+
+    if (restoredPublic) {
+      await this.cache.invalidatePostEverywhere(postId);
+    }
+
+    this.emitAudit({
+      userId: admin.id,
+      targetUserId: this.auditTarget(post, admin.id),
+      actorType: resolveActorType(admin.roles ?? []),
+      action: AuditEventEnum.POST_APPEAL_DECIDED,
+      entity: 'Post',
+      entityId: postId,
+      entityLabel: this.postLabel(post),
+      reason: data.note,
+      severity: AuditSeverity.WARNING,
+      diff: { appealId, appealDecision: data.decision, result: 'success' },
+      metadata: { postType: post.type, restoredPublic, appealTarget: appeal.target },
+    });
+
+    // No listener yet for this event; wire it to a notification when ready.
+    this.eventEmitter.emit(NotificationEventEnum.POST_APPEAL_DECIDED, {
+      postId,
+      userId: post.userId,
+      appealId,
+      decision: data.decision,
+      note: data.note,
+    });
+
+    return this.prisma.postAppeal.findUniqueOrThrow({ where: { id: appealId } });
+  }
+
+  // ── Statistics ────────────────────────────────
+
+  // Start of the day, ISO week (Monday) or month in UTC, as a stable bucket key.
+  private bucketKey(date: Date, bucket: 'day' | 'week' | 'month'): string {
+    const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+    if (bucket === 'month') d.setUTCDate(1);
+    if (bucket === 'week') d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7));
+    return d.toISOString().slice(0, 10);
+  }
+
+  // GET /posts/stats/timeline
+  async getStatsTimeline(query: PostTimelineQueryDto) {
+    const from = new Date(query.from);
+    const to = new Date(query.to);
+    if (from >= to) {
+      throw new BadRequestException('timeline_from_must_be_before_to');
+    }
+    const bucket = query.bucket ?? 'day';
+
+    const posts = await this.prisma.post.findMany({
+      where: {
+        createdAt: { gte: from, lt: to },
+        ...(query.status ? { status: query.status } : {}),
+        ...(query.type ? { type: query.type } : {}),
+        ...(query.authorId ? { userId: query.authorId } : {}),
+      },
+      select: { createdAt: true },
+    });
+
+    const counts = new Map<string, number>();
+    for (const post of posts) {
+      const key = this.bucketKey(post.createdAt, bucket);
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+
+    const points = [...counts.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([date, count]) => ({ date, count }));
+
+    return { from: query.from, to: query.to, bucket, total: posts.length, points };
+  }
+
+  // GET /posts/stats/moderation
+  async getModerationStats() {
+    const [openFlags, flaggedPosts, openAppeals, upheld, overturned, takedowns, decided] =
+      await this.prisma.$transaction([
+        this.prisma.postFlag.count({ where: { status: FLAG_OPEN } }),
+        this.prisma.postFlag.groupBy({
+          by: ['postId'],
+          where: { status: FLAG_OPEN },
+          orderBy: { postId: 'asc' },
+        }),
+        this.prisma.postAppeal.count({ where: { status: APPEAL_OPEN } }),
+        this.prisma.postAppeal.count({ where: { status: 'UPHELD' } }),
+        this.prisma.postAppeal.count({ where: { status: 'OVERTURNED' } }),
+        this.prisma.post.count({ where: { takedownAt: { not: null } } }),
+        this.prisma.postAppeal.findMany({
+          where: { decidedAt: { not: null } },
+          orderBy: { decidedAt: 'desc' },
+          take: 500,
+          select: { createdAt: true, decidedAt: true },
+        }),
+      ]);
+
+    const totalHours = decided.reduce(
+      (sum, a) => sum + ((a.decidedAt?.getTime() ?? a.createdAt.getTime()) - a.createdAt.getTime()),
+      0,
+    );
+    const avgAppealTurnaroundHours = decided.length
+      ? Math.round((totalHours / decided.length / 3_600_000) * 10) / 10
+      : null;
+
+    return {
+      openFlags,
+      flaggedPostsWithOpenFlags: flaggedPosts.length,
+      openAppeals,
+      appealsUpheld: upheld,
+      appealsOverturned: overturned,
+      takedowns,
+      avgAppealTurnaroundHours,
+    };
   }
 }

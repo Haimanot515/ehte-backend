@@ -20,6 +20,7 @@ import {
   NotificationType,
   Prisma,
 } from '@prisma/client';
+import { OnEvent } from '@nestjs/event-emitter';
 import { Observable, Subject, interval, merge } from 'rxjs';
 import { map } from 'rxjs/operators';
 
@@ -45,7 +46,36 @@ import {
   EventCategoriesQueryDto,
   UpdateNotificationPreferencesDto,
   UpdateNotificationTemplateDto,
+  // new endpoints
+  NOTIFICATION_LANGUAGES,
+  AdminReasonDto,
+  AllTimelineQueryDto,
+  BouncesQueryDto,
+  BroadcastRecipientsQueryDto,
+  ByRecipientQueryDto,
+  ClearBounceDto,
+  DeliveriesQueryDto,
+  DeliveryTimelineQueryDto,
+  NotificationExportJobDto,
+  NotificationPagingDto,
+  PreviewTemplateDto,
+  QueuePauseDto,
+  QueueResumeDto,
+  RejectBroadcastDto,
+  RetryAllFailedDeliveriesDto,
+  SearchNotificationsQueryDto,
+  SendTestNotificationDto,
+  SnoozeDto,
+  StatsRangeQueryDto,
+  UpdateBroadcastDto,
+  UpdateRetentionDto,
+  UpdateTypePreferenceDto,
+  UserDeliveriesQueryDto,
 } from '../dto/notification.dto';
+import { AUDIT_ALERT_TRIGGERED_EVENT, AuditAlertTriggeredEvent } from '../events/audit.events';
+import { CSV_BOM, EXPORT_SCOPE, ExportJobService, csvCell } from './export-job.service';
+import { NotificationEventEnum } from 'src/common/enums/shared/notification-events.enum';
+import type { ExportJobFinishedEvent } from '../events/notification.events';
 import { GetAuditLogsDto } from '../dto/audit-log.dto';
 import { AuditLogService } from './audit-log.service';
 import {
@@ -85,7 +115,31 @@ const BROADCAST_STATUS = {
   COMPLETED: 'COMPLETED',
   CANCELLED: 'CANCELLED',
   FAILED: 'FAILED',
+  AWAITING_APPROVAL: 'AWAITING_APPROVAL',
+  REJECTED: 'REJECTED',
+  STOPPED: 'STOPPED',
 } as const;
+
+/** Broadcasts to at least this many people need a second approver. 0 turns the rule off. */
+const BROADCAST_APPROVAL_THRESHOLD = Number(
+  process.env.NOTIFICATION_BROADCAST_APPROVAL_THRESHOLD ?? 1000,
+);
+const MAX_ENTITY_MUTES_PER_USER = 500;
+const MAX_RETRY_ALL = 10_000;
+const NOTIFICATION_EXPORT_HEADER = [
+  'id',
+  'createdAt',
+  'type',
+  'priority',
+  'entity',
+  'entityId',
+  'recipientId',
+  'actorId',
+  'actorName',
+  'actorRole',
+  'title',
+  'readAt',
+];
 
 const WORKER_INTERVAL_MS = 5_000;
 const MAINTENANCE_INTERVAL_MS = 60 * 60 * 1000;
@@ -178,6 +232,8 @@ type PlanRow = {
   userId: string;
   type: NotificationType;
   priority: NotificationPriority;
+  entity?: string | null;
+  entityId?: string | null;
 };
 
 type PagingInput = { cursor?: string; page?: number; limit?: number };
@@ -214,6 +270,8 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     @Optional()
     @Inject(NOTIFICATION_CHANNEL_PROVIDERS)
     providers?: NotificationChannelProvider[],
+    // NEW: background export jobs (NF-54 to NF-57)
+    private readonly exportJobs?: ExportJobService,
   ) {
     for (const p of providers ?? []) {
       this.providers.set(p.channel, p);
@@ -326,7 +384,14 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
       // Rows skipped as duplicates never got our ids, so only real inserts come back.
       const created = await this.prisma.notification.findMany({
         where: { id: { in: ids } },
-        select: { id: true, userId: true, type: true, priority: true },
+        select: {
+          id: true,
+          userId: true,
+          type: true,
+          priority: true,
+          entity: true,
+          entityId: true,
+        },
       });
       await this.planDeliveriesSafely(created);
       this.publish(batch);
@@ -744,6 +809,10 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
       };
     }
 
+    // NEW HOOK (NF-31): a large broadcast waits for a second person before it can start.
+    const needsApproval =
+      BROADCAST_APPROVAL_THRESHOLD > 0 && audienceSize >= BROADCAST_APPROVAL_THRESHOLD;
+
     return this.withIdempotency(actorId, idempotencyKey, async () => {
       const created = await this.prisma.notificationBroadcast.create({
         data: {
@@ -754,7 +823,8 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
           body: content.body,
           priority: content.priority,
           templateId: content.templateId,
-          status: BROADCAST_STATUS.SCHEDULED,
+          status: needsApproval ? BROADCAST_STATUS.AWAITING_APPROVAL : BROADCAST_STATUS.SCHEDULED,
+          requiresApproval: needsApproval,
           scheduledAt,
         },
       });
@@ -771,11 +841,16 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
           type: content.type,
           scheduledAt: scheduledAt.toISOString(),
           templateId: content.templateId,
+          requiresApproval: needsApproval,
         },
       });
 
       // Start straight away when it is due; the worker picks up anything this misses.
-      if (scheduledAt.getTime() <= Date.now() + 5_000) {
+      if (needsApproval) {
+        void this.notifyApprovers(created.id, content.title, audienceSize, actorId);
+      }
+
+      if (!needsApproval && scheduledAt.getTime() <= Date.now() + 5_000) {
         void this.runBroadcast(created.id).catch((err) =>
           this.logger.error(`Broadcast ${created.id} start failed: ${this.safeError(err)}`),
         );
@@ -787,6 +862,7 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
         audience: dto.audience,
         audienceSize,
         scheduledAt: scheduledAt.toISOString(),
+        requiresApproval: needsApproval,
       };
     });
   }
@@ -997,6 +1073,12 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
         });
         if (users.length === 0) break;
 
+        // NEW HOOK (NF-33): an admin asked to stop. Rows already created keep their inbox copy.
+        if (await this.stopRequested(id)) {
+          await this.markStopped(id);
+          return;
+        }
+
         const ids = users.map((u) => u.id);
         lastId = ids[ids.length - 1];
 
@@ -1020,7 +1102,14 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
         // Read back by broadcast, not by generated id: a re-run after a crash still plans its deliveries.
         const rows = await this.prisma.notification.findMany({
           where: { broadcastId: broadcast.id, userId: { in: ids } },
-          select: { id: true, userId: true, type: true, priority: true },
+          select: {
+            id: true,
+            userId: true,
+            type: true,
+            priority: true,
+            entity: true,
+            entityId: true,
+          },
         });
         await this.planDeliveriesSafely(rows);
         this.publish(ids);
@@ -1032,6 +1121,11 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
         });
 
         if (users.length < NotificationService.BATCH_SIZE) break;
+      }
+
+      if (await this.stopRequested(id)) {
+        await this.markStopped(id);
+        return;
       }
 
       const recipientCount = await this.prisma.notification.count({
@@ -1673,8 +1767,10 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     });
     if (!exists) throw new NotFoundException('User not found');
 
-    const [notifications, preferences, devices, keys, anonymizedActorRows] =
+    const [, , notifications, preferences, devices, keys, anonymizedActorRows] =
       await this.prisma.$transaction([
+        this.prisma.notificationSnooze.deleteMany({ where: { userId } }),
+        this.prisma.notificationEntityMute.deleteMany({ where: { userId } }),
         this.prisma.notification.deleteMany({ where: { userId } }),
         this.prisma.notificationPreference.deleteMany({ where: { userId } }),
         this.prisma.deviceToken.deleteMany({ where: { userId } }),
@@ -1736,10 +1832,17 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     const types = [...new Set(rows.map((r) => r.type))];
     const hourAgo = new Date(now.getTime() - 60 * 60 * 1000);
 
-    const [users, prefs, tokenUsers, recent] = await Promise.all([
+    const [users, prefs, tokenUsers, recent, snoozes, mutes, bounces] = await Promise.all([
       this.prisma.user.findMany({
         where: { id: { in: userIds }, isActive: true },
-        select: { id: true, isEmailVerified: true, isPhoneVerified: true, lockedUntil: true },
+        select: {
+          id: true,
+          email: true,
+          phone: true,
+          isEmailVerified: true,
+          isPhoneVerified: true,
+          lockedUntil: true,
+        },
       }),
       this.prisma.notificationPreference.findMany({
         where: { userId: { in: userIds }, type: { in: types } },
@@ -1750,7 +1853,24 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
         where: { userId: { in: userIds }, createdAt: { gte: hourAgo } },
         _count: { _all: true },
       }),
+      // NEW HOOKS: snooze (NF-08), per-record mute (NF-20), bounced addresses (NF-40)
+      this.prisma.notificationSnooze.findMany({
+        where: { userId: { in: userIds }, until: { gt: now } },
+        select: { userId: true },
+      }),
+      this.prisma.notificationEntityMute.findMany({
+        where: { userId: { in: userIds } },
+        select: { userId: true, entity: true, entityId: true },
+      }),
+      this.prisma.notificationBounce.findMany({
+        where: { status: 'ACTIVE' },
+        select: { channel: true, address: true },
+      }),
     ]);
+
+    const snoozed = new Set(snoozes.map((x) => x.userId));
+    const mutedRecords = new Set(mutes.map((m) => `${m.userId}:${m.entity}:${m.entityId}`));
+    const bouncedSet = new Set(bounces.map((b) => `${b.channel}:${b.address}`));
 
     const userById = new Map(users.map((u) => [u.id, u]));
     const prefByKey = new Map(prefs.map((p) => [`${p.userId}:${p.type}`, p]));
@@ -1770,10 +1890,35 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
 
       if (!bypass && (sentLastHour.get(row.userId) ?? 0) >= MAX_OUTSIDE_PER_HOUR) continue;
 
+      // Snooze and per-record mute silence the outside channels. The inbox copy always exists.
+      // Security types (locked) are never silenced.
+      if (!locked) {
+        if (snoozed.has(row.userId)) continue;
+        if (
+          row.entity &&
+          row.entityId &&
+          mutedRecords.has(`${row.userId}:${row.entity}:${row.entityId}`)
+        ) {
+          continue;
+        }
+      }
+
       const pref = prefByKey.get(`${row.userId}:${row.type}`);
 
       for (const channel of OUTBOUND_CHANNELS) {
         if (!this.providers.has(channel)) continue;
+        if (
+          channel === 'EMAIL' &&
+          user.email &&
+          bouncedSet.has(`EMAIL:${this.normalizeAddress('EMAIL', user.email)}`)
+        )
+          continue;
+        if (
+          channel === 'SMS' &&
+          user.phone &&
+          bouncedSet.has(`SMS:${this.normalizeAddress('SMS', user.phone)}`)
+        )
+          continue;
 
         const reachable =
           channel === 'EMAIL'
@@ -1894,12 +2039,15 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
    */
   private async claimDeliveries(limit: number): Promise<string[]> {
     const now = new Date();
+    // NEW HOOK (NF-62): paused channels are left waiting in the queue.
+    const paused = await this.pausedChannels();
     const rows = await this.prisma.$queryRaw<{ id: string }[]>`
       UPDATE notification_delivery
       SET status = 'SENDING', attempts = attempts + 1, "updatedAt" = ${now}
       WHERE id IN (
         SELECT id FROM notification_delivery
         WHERE status = 'PENDING' AND "nextAttemptAt" <= ${now}
+          AND NOT (channel = ANY(${paused}::text[]))
         ORDER BY "nextAttemptAt" ASC
         LIMIT ${limit}
         FOR UPDATE SKIP LOCKED
@@ -1961,10 +2109,16 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
         if (!user.email || !user.isEmailVerified) {
           return await this.finish(id, STATUS.SKIPPED, 'email_not_verified');
         }
+        if (await this.isBounced('EMAIL', user.email)) {
+          return await this.finish(id, STATUS.SKIPPED, 'address_bounced');
+        }
         to.email = user.email;
       } else if (channel === 'SMS') {
         if (!user.phone || !user.isPhoneVerified) {
           return await this.finish(id, STATUS.SKIPPED, 'phone_not_verified');
+        }
+        if (await this.isBounced('SMS', user.phone)) {
+          return await this.finish(id, STATUS.SKIPPED, 'address_bounced');
         }
         to.phone = user.phone;
       } else {
@@ -2032,7 +2186,7 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
 
   private async runMaintenance() {
     const now = Date.now();
-    const readDays = Number(process.env.NOTIFICATION_READ_RETENTION_DAYS ?? 180);
+    const readDays = await this.effectiveReadRetentionDays();
 
     try {
       const expired = await this.deleteExpired(new Date(now));
@@ -2058,6 +2212,1977 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     } catch (err) {
       this.logger.error(`Maintenance failed: ${this.safeError(err)}`);
     }
+  }
+
+  // ═════════════════════════════════════════════════════════════════════════
+  // NEW ENDPOINTS (NF-01 to NF-63)
+  // Everything below was added. The methods above are unchanged except for the
+  // small hooks marked "NEW HOOK" (planDeliveries, claimDeliveries, dispatchOne,
+  // broadcast, runBroadcast, runMaintenance, eraseForUser).
+  // ═════════════════════════════════════════════════════════════════════════
+
+  // ───────────────────────────────────────────
+  // 1. USER: OWN NOTIFICATIONS
+  // ───────────────────────────────────────────
+
+  /** NF-01: every type with its locked flag and default channel policy, for a preferences screen. */
+  getNotificationTypes() {
+    return (Object.values(NotificationType) as string[]).map((type) => {
+      const locked = LOCKED_TYPES.has(type);
+      return {
+        type,
+        locked,
+        inApp: true,
+        defaultChannels: locked
+          ? { push: 'ALWAYS', email: 'ALWAYS', sms: 'ALWAYS' }
+          : { push: 'ALWAYS', email: 'HIGH_AND_URGENT', sms: 'URGENT_ONLY' },
+      };
+    });
+  }
+
+  /** NF-02: same rules as the bulk update, for one type. */
+  async updateMyTypePreference(
+    user: CurrentUserDto,
+    type: NotificationType,
+    dto: UpdateTypePreferenceDto,
+  ) {
+    const all = await this.updateMyPreferences(user, { items: [{ type, ...dto }] });
+    return all.find((p) => p.type === String(type)) ?? null;
+  }
+
+  /** NF-03: back to the default policy for one type. Security types are locked and cannot be reset. */
+  async resetMyTypePreference(user: CurrentUserDto, type: NotificationType) {
+    const userId = this.requireUserId(user);
+    if (LOCKED_TYPES.has(String(type))) {
+      throw new BadRequestException('security_notifications_are_locked');
+    }
+    const result = await this.prisma.notificationPreference.deleteMany({ where: { userId, type } });
+    return { type, reset: true, hadCustomSettings: result.count > 0 };
+  }
+
+  /** NF-04: every preference and every quiet-hours window back to the defaults. */
+  async resetAllMyPreferences(user: CurrentUserDto) {
+    const userId = this.requireUserId(user);
+    const result = await this.prisma.notificationPreference.deleteMany({
+      where: { userId, type: { notIn: [...LOCKED_TYPES] as unknown as NotificationType[] } },
+    });
+    return { reset: true, removed: result.count };
+  }
+
+  /** NF-05: my push devices. Tokens are never returned, only the last 6 characters. */
+  async listMyDevices(user: CurrentUserDto) {
+    const devices = await this.prisma.deviceToken.findMany({
+      where: { userId: this.requireUserId(user) },
+      orderBy: { lastSeenAt: 'desc' },
+    });
+    return {
+      count: devices.length,
+      data: devices.map((d) => ({
+        id: d.id,
+        platform: d.platform,
+        tokenSuffix: d.token.slice(-6),
+        lastSeenAt: d.lastSeenAt,
+        createdAt: d.createdAt,
+      })),
+    };
+  }
+
+  /** NF-06 */
+  async unregisterAllMyDevices(user: CurrentUserDto) {
+    const result = await this.prisma.deviceToken.deleteMany({
+      where: { userId: this.requireUserId(user) },
+    });
+    return { removed: result.count };
+  }
+
+  /** NF-07 */
+  async getMySnooze(user: CurrentUserDto) {
+    const row = await this.prisma.notificationSnooze.findUnique({
+      where: { userId: this.requireUserId(user) },
+    });
+    return this.snoozeView(row?.until ?? null);
+  }
+
+  /** NF-08: non-security notifications still reach the inbox but are not pushed, emailed or texted. */
+  async setMySnooze(user: CurrentUserDto, dto: SnoozeDto) {
+    const userId = this.requireUserId(user);
+    const until = new Date(Date.now() + dto.hours * 60 * 60 * 1000);
+
+    await this.prisma.notificationSnooze.upsert({
+      where: { userId },
+      create: { userId, until },
+      update: { until },
+    });
+    return { ...this.snoozeView(until), stillDelivered: [...LOCKED_TYPES] };
+  }
+
+  /** NF-09 */
+  async cancelMySnooze(user: CurrentUserDto) {
+    const result = await this.prisma.notificationSnooze.deleteMany({
+      where: { userId: this.requireUserId(user) },
+    });
+    return { active: false, cancelled: result.count > 0 };
+  }
+
+  /** NF-10: my own notifications as CSV. Capped at 50,000 rows. */
+  async exportMyNotificationsCsv(user: CurrentUserDto) {
+    const rows = await this.prisma.notification.findMany({
+      where: this.activeWhere(this.requireUserId(user)),
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: MAX_EXPORT_ROWS + 1,
+      select: {
+        id: true,
+        createdAt: true,
+        type: true,
+        priority: true,
+        title: true,
+        body: true,
+        entity: true,
+        entityId: true,
+        readAt: true,
+      },
+    });
+
+    const truncated = rows.length > MAX_EXPORT_ROWS;
+    const data = truncated ? rows.slice(0, MAX_EXPORT_ROWS) : rows;
+
+    const header = [
+      'id',
+      'createdAt',
+      'type',
+      'priority',
+      'title',
+      'body',
+      'entity',
+      'entityId',
+      'readAt',
+    ];
+    const lines = data.map((n) =>
+      [n.id, n.createdAt, n.type, n.priority, n.title, n.body, n.entity, n.entityId, n.readAt]
+        .map(csvCell)
+        .join(','),
+    );
+
+    return {
+      csv: CSV_BOM + [header.map(csvCell).join(','), ...lines].join('\r\n'),
+      truncated,
+      rowCount: data.length,
+    };
+  }
+
+  /** NF-11: which channels reached me. Failure reasons and retry counts are internal and never shown. */
+  async getMyNotificationDeliveries(id: string, user: CurrentUserDto) {
+    const userId = this.requireUserId(user);
+    await this.requireOwned(id, userId);
+
+    const deliveries = await this.prisma.notificationDelivery.findMany({
+      where: { notificationId: id, userId },
+      orderBy: { createdAt: 'asc' },
+      select: { channel: true, status: true, sentAt: true },
+    });
+
+    return {
+      notificationId: id,
+      inApp: { delivered: true },
+      channels: deliveries.map((d) => ({
+        channel: d.channel,
+        status: this.friendlyDeliveryStatus(d.status),
+        sentAt: d.sentAt,
+      })),
+    };
+  }
+
+  /** NF-12: only my own rows are touched. Ids that are not mine are ignored. */
+  async markBulkAsUnread(ids: string[], user: CurrentUserDto) {
+    const result = await this.prisma.notification.updateMany({
+      where: { id: { in: ids }, userId: this.requireUserId(user), readAt: { not: null } },
+      data: this.unreadPatch(),
+    });
+    this.publish([user.id]);
+    return result;
+  }
+
+  /** NF-13 */
+  async markAllOfTypeAsRead(type: NotificationType, user: CurrentUserDto) {
+    const result = await this.prisma.notification.updateMany({
+      where: { userId: this.requireUserId(user), type, readAt: null },
+      data: this.readPatch(),
+    });
+    this.publish([user.id]);
+    return result;
+  }
+
+  /** NF-14 */
+  async deleteMyBulk(ids: string[], user: CurrentUserDto) {
+    const result = await this.prisma.notification.deleteMany({
+      where: { id: { in: ids }, userId: this.requireUserId(user) },
+    });
+    this.publish([user.id]);
+    return { deleted: true, count: result.count };
+  }
+
+  /** NF-15 */
+  async getMyUnreadCountByPriority(user: CurrentUserDto) {
+    const groups = await this.prisma.notification.groupBy({
+      by: ['priority'],
+      where: this.activeWhere(this.requireUserId(user), { readAt: null }),
+      _count: { _all: true },
+    });
+
+    const byPriority: Record<string, number> = {};
+    for (const p of Object.values(NotificationPriority)) byPriority[p] = 0;
+    let total = 0;
+    for (const g of groups) {
+      byPriority[g.priority] = g._count._all;
+      total += g._count._all;
+    }
+    return { total, byPriority };
+  }
+
+  /** NF-16 */
+  async getMyCounts(user: CurrentUserDto) {
+    const userId = this.requireUserId(user);
+    const [total, unread] = await Promise.all([
+      this.prisma.notification.count({ where: this.activeWhere(userId) }),
+      this.prisma.notification.count({ where: this.activeWhere(userId, { readAt: null }) }),
+    ]);
+    return { total, read: total - unread, unread };
+  }
+
+  /** NF-17 */
+  async searchMyNotifications(user: CurrentUserDto, query: SearchNotificationsQueryDto) {
+    const q = query.q.trim();
+    const where = this.activeWhere(this.requireUserId(user), {
+      OR: [
+        { title: { contains: q, mode: 'insensitive' } },
+        { body: { contains: q, mode: 'insensitive' } },
+      ],
+    });
+    return this.paginateNotifications(where, query);
+  }
+
+  /** NF-18 */
+  async getMyUnreadCountForEntity(user: CurrentUserDto, entity: string, entityId: string) {
+    const count = await this.prisma.notification.count({
+      where: this.activeWhere(this.requireUserId(user), { entity, entityId, readAt: null }),
+    });
+    return { entity, entityId, count };
+  }
+
+  /** NF-19: everything about one record, for example when its report is opened. */
+  async markEntityAsRead(user: CurrentUserDto, entity: string, entityId: string) {
+    const result = await this.prisma.notification.updateMany({
+      where: { userId: this.requireUserId(user), entity, entityId, readAt: null },
+      data: this.readPatch(),
+    });
+    this.publish([user.id]);
+    return result;
+  }
+
+  /** NF-20: updates about this record are no longer pushed, emailed or texted. Security types still are. */
+  async muteEntity(user: CurrentUserDto, entity: string, entityId: string) {
+    const userId = this.requireUserId(user);
+    this.assertRecordRef(entity, entityId);
+
+    const key = { userId_entity_entityId: { userId, entity, entityId } };
+    const existing = await this.prisma.notificationEntityMute.findUnique({ where: key });
+    if (!existing) {
+      const count = await this.prisma.notificationEntityMute.count({ where: { userId } });
+      if (count >= MAX_ENTITY_MUTES_PER_USER)
+        throw new BadRequestException('too_many_muted_records');
+    }
+
+    await this.prisma.notificationEntityMute.upsert({
+      where: key,
+      create: { userId, entity, entityId },
+      update: {},
+    });
+    return { entity, entityId, muted: true };
+  }
+
+  /** NF-21 */
+  async unmuteEntity(user: CurrentUserDto, entity: string, entityId: string) {
+    const result = await this.prisma.notificationEntityMute.deleteMany({
+      where: { userId: this.requireUserId(user), entity, entityId },
+    });
+    return { entity, entityId, muted: false, wasMuted: result.count > 0 };
+  }
+
+  /** NF-22 */
+  async listMyMutedRecords(user: CurrentUserDto, query: NotificationPagingDto) {
+    const where = { userId: this.requireUserId(user) };
+    const { page, limit } = this.pageParams(query);
+
+    const [data, total] = await Promise.all([
+      this.prisma.notificationEntityMute.findMany({
+        where,
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        skip: (page - 1) * limit,
+        take: limit,
+        select: { entity: true, entityId: true, createdAt: true },
+      }),
+      this.prisma.notificationEntityMute.count({ where }),
+    ]);
+    return { data, meta: this.offsetMeta(page, limit, total, data.length) };
+  }
+
+  // ───────────────────────────────────────────
+  // 2. TEMPLATES AND BROADCASTS (admin)
+  // ───────────────────────────────────────────
+
+  /** NF-23 */
+  async getTemplate(id: string) {
+    const template = await this.prisma.notificationTemplate.findUnique({ where: { id } });
+    if (!template) throw new NotFoundException('Template not found');
+    return template;
+  }
+
+  /** NF-24: soft retire. Broadcasts refuse retired templates; nothing is deleted. */
+  async retireTemplate(id: string, actor: CurrentUserDto) {
+    const before = await this.getTemplate(id);
+    if (!before.isActive) return before;
+
+    const after = await this.prisma.notificationTemplate.update({
+      where: { id },
+      data: { isActive: false, retiredAt: new Date(), retiredById: this.requireUserId(actor) },
+    });
+
+    await this.audit(actor, {
+      action: AuditEventEnum.NOTIFICATION_TEMPLATE_RETIRED,
+      entity: 'NotificationTemplate',
+      entityId: id,
+      entityLabel: `${after.type}/${after.language}`,
+      diff: { before: { isActive: true }, after: { isActive: false } },
+    });
+    return after;
+  }
+
+  /** NF-25 */
+  async activateTemplate(id: string, actor: CurrentUserDto) {
+    const before = await this.getTemplate(id);
+    if (before.isActive) return before;
+
+    const after = await this.prisma.notificationTemplate.update({
+      where: { id },
+      data: { isActive: true, retiredAt: null, retiredById: null },
+    });
+
+    await this.audit(actor, {
+      action: AuditEventEnum.NOTIFICATION_TEMPLATE_ACTIVATED,
+      entity: 'NotificationTemplate',
+      entityId: id,
+      entityLabel: `${after.type}/${after.language}`,
+      diff: { before: { isActive: false }, after: { isActive: true } },
+    });
+    return after;
+  }
+
+  /**
+   * NF-26: renders a saved template or loose text. Nothing is saved or sent.
+   * Placeholders without a value show as <name>, so gaps are easy to see.
+   */
+  async previewTemplate(dto: PreviewTemplateDto) {
+    const hasLoose = dto.title !== undefined || dto.body !== undefined;
+    if (dto.templateId && hasLoose)
+      throw new BadRequestException('use_either_templateId_or_title_body');
+    if (!dto.templateId && (dto.title === undefined || dto.body === undefined)) {
+      throw new BadRequestException('templateId_or_title_and_body_required');
+    }
+
+    let title = dto.title ?? '';
+    let body = dto.body ?? '';
+    let source: { templateId: string; type: string; language: string } | null = null;
+
+    if (dto.templateId) {
+      const template = await this.getTemplate(dto.templateId);
+      title = template.title;
+      body = template.body;
+      source = {
+        templateId: template.id,
+        type: String(template.type),
+        language: template.language,
+      };
+    }
+
+    const vars = this.cleanVariables(dto.variables);
+    const placeholders = this.extractPlaceholders(`${title}\n${body}`);
+    const sample: Record<string, string> = {};
+    for (const key of placeholders) sample[key] = vars[key] ?? `<${key}>`;
+
+    const renderedTitle = this.render(title, sample);
+    const renderedBody = this.render(body, sample);
+
+    return {
+      source,
+      title: renderedTitle,
+      body: renderedBody,
+      placeholders,
+      missingVariables: placeholders.filter((k) => vars[k] === undefined),
+      titleTooLong: renderedTitle.length > 200,
+      bodyTooLong: renderedBody.length > 2000,
+      // What push, email and SMS carry for people who turned discreet mode on.
+      discreetPreview: { title: DISCREET_TITLE, body: DISCREET_BODY },
+    };
+  }
+
+  /** NF-27: which types have a template in each language, and which are missing. */
+  async getTemplateCoverage() {
+    const templates = await this.prisma.notificationTemplate.findMany({
+      select: { id: true, type: true, language: true, isActive: true },
+    });
+    const byKey = new Map(templates.map((t) => [`${t.type}:${t.language}`, t]));
+
+    return (Object.values(NotificationType) as string[]).map((type) => {
+      const languages: Record<string, { templateId: string; active: boolean } | null> = {};
+      const missingLanguages: string[] = [];
+
+      for (const language of NOTIFICATION_LANGUAGES) {
+        const t = byKey.get(`${type}:${language}`);
+        languages[language] = t ? { templateId: t.id, active: t.isActive } : null;
+        if (!t || !t.isActive) missingLanguages.push(language);
+      }
+      return { type, languages, missingLanguages };
+    });
+  }
+
+  /**
+   * NF-28: requeue a broadcast that failed or partly failed.
+   *  - FAILED or STOPPED: the fan-out runs again. Rows already created are skipped by dedupeKey.
+   *  - Any finished broadcast: FAILED deliveries (and deliveries cancelled by a stop) go back in the queue.
+   */
+  async retryBroadcast(id: string, user: CurrentUserDto) {
+    const broadcast = await this.findOwnedBroadcast(id, user);
+    const retryable: string[] = [
+      BROADCAST_STATUS.FAILED,
+      BROADCAST_STATUS.STOPPED,
+      BROADCAST_STATUS.COMPLETED,
+    ];
+    if (!retryable.includes(broadcast.status)) {
+      throw new ConflictException('broadcast_not_in_a_retryable_state');
+    }
+
+    let fanOutRequeued = false;
+    if (
+      broadcast.status === BROADCAST_STATUS.FAILED ||
+      broadcast.status === BROADCAST_STATUS.STOPPED
+    ) {
+      const claimed = await this.prisma.notificationBroadcast.updateMany({
+        where: { id, status: { in: [BROADCAST_STATUS.FAILED, BROADCAST_STATUS.STOPPED] } },
+        data: {
+          status: BROADCAST_STATUS.SCHEDULED,
+          attempts: 0,
+          error: null,
+          finishedAt: null,
+          stopRequestedAt: null,
+          stopRequestedById: null,
+          stoppedAt: null,
+          scheduledAt: new Date(),
+        },
+      });
+      fanOutRequeued = claimed.count > 0;
+    }
+
+    const requeued = await this.prisma.notificationDelivery.updateMany({
+      where: {
+        notification: { broadcastId: id },
+        OR: [{ status: STATUS.FAILED }, { status: STATUS.SKIPPED, lastError: 'broadcast_stopped' }],
+      },
+      data: { status: STATUS.PENDING, attempts: 0, nextAttemptAt: new Date(), lastError: null },
+    });
+
+    if (!fanOutRequeued && requeued.count === 0) throw new ConflictException('nothing_to_retry');
+
+    await this.audit(user, {
+      action: AuditEventEnum.NOTIFICATION_BROADCAST_RETRIED,
+      entity: 'NotificationBroadcast',
+      entityId: id,
+      entityLabel: broadcast.title,
+      severity: AuditSeverity.WARNING,
+      metadata: {
+        fanOutRequeued,
+        deliveriesRequeued: requeued.count,
+        previousStatus: broadcast.status,
+      },
+    });
+
+    if (fanOutRequeued) {
+      void this.runBroadcast(id).catch((err) =>
+        this.logger.error(`Broadcast ${id} restart failed: ${this.safeError(err)}`),
+      );
+    }
+
+    return { id, fanOutRequeued, deliveriesRequeued: requeued.count };
+  }
+
+  /**
+   * NF-29: edit a broadcast before it starts. Changing the content of a broadcast
+   * that was already approved sends it back for approval, so nobody can swap the
+   * text after the second person has signed off.
+   */
+  async updateBroadcast(id: string, dto: UpdateBroadcastDto, user: CurrentUserDto) {
+    const before = await this.findOwnedBroadcast(id, user);
+    const editable: string[] = [BROADCAST_STATUS.SCHEDULED, BROADCAST_STATUS.AWAITING_APPROVAL];
+    if (!editable.includes(before.status)) {
+      throw new ConflictException('broadcast_already_started_or_finished');
+    }
+
+    const changes: Prisma.NotificationBroadcastUpdateManyMutationInput = {};
+    if (dto.type !== undefined) changes.type = dto.type;
+    if (dto.title !== undefined) changes.title = dto.title.trim();
+    if (dto.body !== undefined) changes.body = dto.body.trim();
+    if (dto.priority !== undefined) changes.priority = dto.priority;
+    if (dto.scheduledAt !== undefined) changes.scheduledAt = this.parseScheduledAt(dto.scheduledAt);
+    if (Object.keys(changes).length === 0) throw new BadRequestException('nothing_to_update');
+
+    const contentChanged =
+      dto.type !== undefined ||
+      dto.title !== undefined ||
+      dto.body !== undefined ||
+      dto.priority !== undefined;
+    const textChanged = dto.type !== undefined || dto.title !== undefined || dto.body !== undefined;
+
+    const data: Prisma.NotificationBroadcastUncheckedUpdateManyInput = {
+      ...changes,
+      // The text no longer comes from the template.
+      ...(textChanged && before.templateId && { templateId: null }),
+      ...(contentChanged &&
+        before.approvedAt && {
+          status: BROADCAST_STATUS.AWAITING_APPROVAL,
+          requiresApproval: true,
+          approvedById: null,
+          approvedAt: null,
+        }),
+    };
+
+    const result = await this.prisma.notificationBroadcast.updateMany({
+      where: { id, status: { in: editable } },
+      data,
+    });
+    if (result.count === 0) throw new ConflictException('broadcast_already_started_or_finished');
+
+    const after = await this.prisma.notificationBroadcast.findUniqueOrThrow({ where: { id } });
+    const keys = Object.keys(changes) as Array<keyof typeof before>;
+    await this.audit(user, {
+      action: AuditEventEnum.NOTIFICATION_BROADCAST_UPDATED,
+      entity: 'NotificationBroadcast',
+      entityId: id,
+      entityLabel: after.title,
+      diff: {
+        before: Object.fromEntries(keys.map((k) => [k, before[k]])),
+        after: Object.fromEntries(keys.map((k) => [k, after[k]])),
+      },
+      metadata: { sentBackForApproval: before.status !== after.status },
+    });
+
+    return after;
+  }
+
+  /** NF-30: who a broadcast reached, with delivery and read state. No provider errors are shown. */
+  async getBroadcastRecipients(
+    id: string,
+    user: CurrentUserDto,
+    query: BroadcastRecipientsQueryDto,
+  ) {
+    await this.findOwnedBroadcast(id, user);
+
+    const where: Prisma.NotificationWhereInput = {
+      broadcastId: id,
+      ...(query.isRead !== undefined && { readAt: query.isRead ? { not: null } : null }),
+    };
+    const result = await this.paginateNotifications(where, query, true);
+
+    const notificationIds = result.data.map((n) => n.id);
+    const [deliveries, names] = await Promise.all([
+      notificationIds.length
+        ? this.prisma.notificationDelivery.findMany({
+            where: { notificationId: { in: notificationIds } },
+            select: { notificationId: true, channel: true, status: true, sentAt: true },
+          })
+        : Promise.resolve([]),
+      this.namesFor(result.data.map((n) => n.userId)),
+    ]);
+
+    const byNotification = new Map<
+      string,
+      Array<{ channel: string; status: string; sentAt: Date | null }>
+    >();
+    for (const d of deliveries) {
+      const list = byNotification.get(d.notificationId) ?? [];
+      list.push({ channel: d.channel, status: d.status, sentAt: d.sentAt });
+      byNotification.set(d.notificationId, list);
+    }
+
+    return {
+      ...result,
+      data: result.data.map((n) => ({
+        notificationId: n.id,
+        userId: n.userId,
+        recipientName: names.get(n.userId) ?? null,
+        createdAt: n.createdAt,
+        isRead: n.readAt !== null,
+        readAt: n.readAt,
+        deliveries: byNotification.get(n.id) ?? [],
+      })),
+    };
+  }
+
+  /** NF-31: a second person approves a large broadcast. The person who wrote it cannot. */
+  async approveBroadcast(id: string, actor: CurrentUserDto) {
+    const actorId = this.requireUserId(actor);
+    const broadcast = await this.prisma.notificationBroadcast.findUnique({ where: { id } });
+    if (!broadcast) throw new NotFoundException('Broadcast not found');
+
+    if (broadcast.status !== BROADCAST_STATUS.AWAITING_APPROVAL) {
+      throw new ConflictException('broadcast_not_awaiting_approval');
+    }
+    if (broadcast.createdById === actorId) {
+      throw new ForbiddenException('creator_cannot_approve_own_broadcast');
+    }
+
+    const result = await this.prisma.notificationBroadcast.updateMany({
+      where: { id, status: BROADCAST_STATUS.AWAITING_APPROVAL },
+      data: { status: BROADCAST_STATUS.SCHEDULED, approvedById: actorId, approvedAt: new Date() },
+    });
+    if (result.count === 0) throw new ConflictException('broadcast_not_awaiting_approval');
+
+    await this.audit(actor, {
+      action: AuditEventEnum.NOTIFICATION_BROADCAST_APPROVED,
+      entity: 'NotificationBroadcast',
+      entityId: id,
+      entityLabel: broadcast.title,
+      severity: broadcast.audience === 'ALL_USERS' ? AuditSeverity.WARNING : AuditSeverity.INFO,
+      metadata: { audience: broadcast.audience, createdById: broadcast.createdById },
+    });
+
+    void this.notifyBroadcastDecision(broadcast.createdById, id, broadcast.title, 'APPROVED');
+
+    if (broadcast.scheduledAt.getTime() <= Date.now() + 5_000) {
+      void this.runBroadcast(id).catch((err) =>
+        this.logger.error(`Broadcast ${id} start failed: ${this.safeError(err)}`),
+      );
+    }
+
+    return {
+      id,
+      status: BROADCAST_STATUS.SCHEDULED,
+      approvedById: actorId,
+      scheduledAt: broadcast.scheduledAt,
+    };
+  }
+
+  /** NF-32 */
+  async rejectBroadcast(id: string, dto: RejectBroadcastDto, actor: CurrentUserDto) {
+    const actorId = this.requireUserId(actor);
+    const broadcast = await this.prisma.notificationBroadcast.findUnique({ where: { id } });
+    if (!broadcast) throw new NotFoundException('Broadcast not found');
+
+    const now = new Date();
+    const result = await this.prisma.notificationBroadcast.updateMany({
+      where: { id, status: BROADCAST_STATUS.AWAITING_APPROVAL },
+      data: {
+        status: BROADCAST_STATUS.REJECTED,
+        rejectedById: actorId,
+        rejectedAt: now,
+        rejectionReason: dto.reason.trim(),
+        finishedAt: now,
+      },
+    });
+    if (result.count === 0) throw new ConflictException('broadcast_not_awaiting_approval');
+
+    await this.audit(actor, {
+      action: AuditEventEnum.NOTIFICATION_BROADCAST_REJECTED,
+      entity: 'NotificationBroadcast',
+      entityId: id,
+      entityLabel: broadcast.title,
+      severity: AuditSeverity.WARNING,
+      metadata: { reason: dto.reason.trim(), createdById: broadcast.createdById },
+    });
+
+    void this.notifyBroadcastDecision(broadcast.createdById, id, broadcast.title, 'REJECTED');
+
+    return { id, status: BROADCAST_STATUS.REJECTED };
+  }
+
+  /**
+   * NF-33: halts a broadcast that is already sending. Cancel only works before it starts.
+   * Deliveries still waiting are put on hold; ones already handed to a provider cannot be recalled.
+   * People who already got their inbox copy keep it.
+   */
+  async stopBroadcast(id: string, user: CurrentUserDto) {
+    const broadcast = await this.findOwnedBroadcast(id, user);
+    if (broadcast.status !== BROADCAST_STATUS.PROCESSING) {
+      throw new ConflictException('broadcast_not_sending');
+    }
+
+    const now = new Date();
+    await this.prisma.notificationBroadcast.update({
+      where: { id },
+      data: { stopRequestedAt: now, stopRequestedById: this.requireUserId(user) },
+    });
+
+    const onHold = await this.prisma.notificationDelivery.updateMany({
+      where: { status: STATUS.PENDING, notification: { broadcastId: id } },
+      data: { status: STATUS.SKIPPED, lastError: 'broadcast_stopped' },
+    });
+
+    // The worker normally notices within one batch. If it died, close the broadcast right away.
+    const workerGone = broadcast.updatedAt.getTime() < now.getTime() - STALE_CLAIM_MS;
+    if (workerGone) {
+      await this.prisma.notificationBroadcast.update({
+        where: { id },
+        data: { status: BROADCAST_STATUS.STOPPED, stoppedAt: now, finishedAt: now },
+      });
+    }
+
+    await this.audit(user, {
+      action: AuditEventEnum.NOTIFICATION_BROADCAST_STOPPED,
+      entity: 'NotificationBroadcast',
+      entityId: id,
+      entityLabel: broadcast.title,
+      severity: AuditSeverity.WARNING,
+      metadata: { pendingDeliveriesOnHold: onHold.count, workerGone },
+    });
+
+    return {
+      id,
+      status: workerGone ? BROADCAST_STATUS.STOPPED : BROADCAST_STATUS.PROCESSING,
+      stopping: !workerGone,
+      pendingDeliveriesOnHold: onHold.count,
+    };
+  }
+
+  /**
+   * NF-34: sends the caller a test on one channel. Goes through the same send path
+   * as a real notification, so discreet mode applies: if it is on, push, email and
+   * SMS carry the generic text only.
+   */
+  async sendTestToSelf(dto: SendTestNotificationDto, actor: CurrentUserDto) {
+    const userId = this.requireUserId(actor);
+    const channel = dto.channel;
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        email: true,
+        phone: true,
+        isEmailVerified: true,
+        isPhoneVerified: true,
+        discreetModeEnabled: true,
+      },
+    });
+    if (!user) throw new NotFoundException('User not found');
+
+    if (channel !== 'IN_APP') {
+      if (!this.providers.has(channel)) throw new BadRequestException('channel_not_configured');
+      if ((await this.pausedChannels()).includes(channel)) {
+        throw new ConflictException('channel_is_paused');
+      }
+      if (channel === 'EMAIL') {
+        if (!user.email || !user.isEmailVerified)
+          throw new BadRequestException('email_not_verified');
+        if (await this.isBounced('EMAIL', user.email))
+          throw new BadRequestException('address_bounced');
+      } else if (channel === 'SMS') {
+        if (!user.phone || !user.isPhoneVerified)
+          throw new BadRequestException('phone_not_verified');
+        if (await this.isBounced('SMS', user.phone))
+          throw new BadRequestException('address_bounced');
+      } else {
+        const devices = await this.prisma.deviceToken.count({ where: { userId } });
+        if (devices === 0) throw new BadRequestException('no_device_registered');
+      }
+    }
+
+    const snapshot = await this.resolveActor(userId);
+    const notification = await this.prisma.notification.create({
+      data: this.toCreateData({
+        userId,
+        type: NotificationType.GENERAL,
+        title: 'Test notification',
+        body: 'This is a test. If you can read it, this channel works.',
+        priority: NotificationPriority.NORMAL,
+        actorId: userId,
+        ...snapshot,
+        data: { test: true },
+        expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      }),
+    });
+
+    let deliveryId: string | null = null;
+    if (channel !== 'IN_APP') {
+      const delivery = await this.prisma.notificationDelivery.create({
+        data: {
+          notificationId: notification.id,
+          userId,
+          channel,
+          status: STATUS.PENDING,
+          nextAttemptAt: new Date(),
+        },
+      });
+      deliveryId = delivery.id;
+    }
+    this.publish([userId]);
+
+    await this.audit(actor, {
+      action: AuditEventEnum.NOTIFICATION_TEST_SENT,
+      entity: 'Notification',
+      entityId: notification.id,
+      metadata: { channel },
+    });
+
+    return {
+      notificationId: notification.id,
+      channel,
+      deliveryId,
+      discreetModeOn: Boolean(user.discreetModeEnabled),
+    };
+  }
+
+  // ───────────────────────────────────────────
+  // 3. DELIVERY AND BOUNCES (admin)
+  // ───────────────────────────────────────────
+
+  /** NF-35: retry every FAILED delivery that matches the filter, up to a safety cap per call. */
+  async retryAllFailedDeliveries(dto: RetryAllFailedDeliveriesDto, actor: CurrentUserDto) {
+    const limit = Math.min(dto.limit ?? 5000, MAX_RETRY_ALL);
+    const notification: Prisma.NotificationWhereInput = {
+      ...(dto.type && { type: dto.type }),
+      ...(dto.broadcastId && { broadcastId: dto.broadcastId }),
+    };
+
+    const where: Prisma.NotificationDeliveryWhereInput = {
+      status: STATUS.FAILED,
+      ...(dto.channel && { channel: dto.channel }),
+      ...(dto.userId && { userId: dto.userId }),
+      ...((dto.from || dto.to) && {
+        updatedAt: {
+          ...(dto.from && { gte: new Date(dto.from) }),
+          ...(dto.to && { lte: new Date(dto.to) }),
+        },
+      }),
+      ...(Object.keys(notification).length > 0 && { notification }),
+    };
+
+    const matched = await this.prisma.notificationDelivery.count({ where });
+    const rows = await this.prisma.notificationDelivery.findMany({
+      where,
+      orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
+      take: limit,
+      select: { id: true },
+    });
+
+    const result = rows.length
+      ? await this.prisma.notificationDelivery.updateMany({
+          where: { id: { in: rows.map((r) => r.id) }, status: STATUS.FAILED },
+          data: { status: STATUS.PENDING, attempts: 0, nextAttemptAt: new Date(), lastError: null },
+        })
+      : { count: 0 };
+
+    await this.audit(actor, {
+      action: AuditEventEnum.NOTIFICATION_DELIVERIES_RETRIED,
+      entity: 'NotificationDelivery',
+      entityLabel: `${result.count} of ${matched} requeued`,
+      metadata: {
+        mode: 'filter',
+        filter: { ...dto, limit: undefined },
+        matched,
+        requeued: result.count,
+      },
+    });
+
+    return { matched, requeued: result.count, capped: matched > limit };
+  }
+
+  /** NF-36 */
+  async listDeliveries(query: DeliveriesQueryDto) {
+    const where = this.deliveriesWhere(query);
+    const { page, limit } = this.pageParams(query);
+
+    const [rows, total] = await Promise.all([
+      this.prisma.notificationDelivery.findMany({
+        where,
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        skip: (page - 1) * limit,
+        take: limit,
+        include: {
+          notification: {
+            select: {
+              id: true,
+              type: true,
+              priority: true,
+              entity: true,
+              entityId: true,
+              broadcastId: true,
+            },
+          },
+        },
+      }),
+      this.prisma.notificationDelivery.count({ where }),
+    ]);
+
+    const names = await this.namesFor(rows.map((r) => r.userId));
+    return {
+      data: rows.map((r) => ({ ...r, userName: names.get(r.userId) ?? null })),
+      meta: this.offsetMeta(page, limit, total, rows.length),
+    };
+  }
+
+  /** NF-37: one delivery. lastError is the provider's answer after contact details were stripped. */
+  async getDelivery(id: string) {
+    const delivery = await this.prisma.notificationDelivery.findUnique({
+      where: { id },
+      include: {
+        notification: {
+          select: {
+            id: true,
+            type: true,
+            priority: true,
+            entity: true,
+            entityId: true,
+            broadcastId: true,
+            createdAt: true,
+          },
+        },
+      },
+    });
+    if (!delivery) throw new NotFoundException('Delivery not found');
+
+    const names = await this.namesFor([delivery.userId]);
+    return {
+      ...delivery,
+      userName: names.get(delivery.userId) ?? null,
+      providerResponse: delivery.lastError,
+    };
+  }
+
+  /** NF-38: sent, failed and skipped over time. */
+  async getDeliveryTimeline(query: DeliveryTimelineQueryDto) {
+    const { from, to } = this.statsRange(query);
+    const bucket = query.bucket ?? 'day';
+    const unit = Prisma.raw(bucket === 'hour' ? `'hour'` : `'day'`);
+    const channelSql = query.channel ? Prisma.sql`AND channel = ${query.channel}` : Prisma.empty;
+
+    const rows = await this.prisma.$queryRaw<{ bucket: Date; status: string; count: bigint }[]>`
+      SELECT date_trunc(${unit}, "updatedAt") AS bucket, status, COUNT(*)::bigint AS count
+      FROM notification_delivery
+      WHERE "updatedAt" >= ${from} AND "updatedAt" <= ${to}
+        AND status IN ('SENT', 'FAILED', 'SKIPPED')
+        ${channelSql}
+      GROUP BY 1, 2
+      ORDER BY 1 ASC`;
+
+    const byBucket = new Map<
+      string,
+      { bucket: string; sent: number; failed: number; skipped: number }
+    >();
+    for (const r of rows) {
+      const key = r.bucket.toISOString();
+      const entry = byBucket.get(key) ?? { bucket: key, sent: 0, failed: 0, skipped: 0 };
+      const n = Number(r.count);
+      if (r.status === STATUS.SENT) entry.sent += n;
+      else if (r.status === STATUS.FAILED) entry.failed += n;
+      else entry.skipped += n;
+      byBucket.set(key, entry);
+    }
+
+    return {
+      from: from.toISOString(),
+      to: to.toISOString(),
+      bucket,
+      channel: query.channel ?? null,
+      data: [...byBucket.values()],
+    };
+  }
+
+  /** NF-39: per type: notifications sent, outside deliveries that worked and failed, and how many were read. */
+  async getStatsByType(query: StatsRangeQueryDto) {
+    const { from, to } = this.statsRange(query);
+    const range = { createdAt: { gte: from, lte: to } };
+
+    const [totals, reads, deliveries] = await Promise.all([
+      this.prisma.notification.groupBy({ by: ['type'], where: range, _count: { _all: true } }),
+      this.prisma.notification.groupBy({
+        by: ['type'],
+        where: { ...range, readAt: { not: null } },
+        _count: { _all: true },
+      }),
+      this.prisma.$queryRaw<{ type: string; status: string; count: bigint }[]>`
+        SELECT n."type"::text AS type, d.status AS status, COUNT(*)::bigint AS count
+        FROM notification_delivery d
+        JOIN notification n ON n.id = d."notificationId"
+        WHERE n."createdAt" >= ${from} AND n."createdAt" <= ${to}
+        GROUP BY 1, 2`,
+    ]);
+
+    const readByType = new Map(reads.map((g) => [String(g.type), g._count._all]));
+    const outside = new Map<
+      string,
+      { delivered: number; failed: number; pending: number; skipped: number }
+    >();
+    for (const d of deliveries) {
+      const e = outside.get(d.type) ?? { delivered: 0, failed: 0, pending: 0, skipped: 0 };
+      const n = Number(d.count);
+      if (d.status === STATUS.SENT) e.delivered += n;
+      else if (d.status === STATUS.FAILED) e.failed += n;
+      else if (d.status === STATUS.SKIPPED) e.skipped += n;
+      else e.pending += n;
+      outside.set(d.type, e);
+    }
+
+    return {
+      from: from.toISOString(),
+      to: to.toISOString(),
+      data: totals
+        .map((g) => {
+          const type = String(g.type);
+          const sent = g._count._all;
+          const read = readByType.get(type) ?? 0;
+          const o = outside.get(type) ?? { delivered: 0, failed: 0, pending: 0, skipped: 0 };
+          return {
+            type,
+            sent,
+            read,
+            unread: sent - read,
+            readRate: sent > 0 ? Number((read / sent).toFixed(4)) : null,
+            outside: o,
+          };
+        })
+        .sort((a, b) => b.sent - a.sent),
+    };
+  }
+
+  /** NF-40: bounced or blocked addresses. Addresses are always masked. */
+  async listBounces(query: BouncesQueryDto) {
+    const where: Prisma.NotificationBounceWhereInput = {
+      status: query.status ?? 'ACTIVE',
+      ...(query.channel && { channel: query.channel }),
+    };
+    const { page, limit } = this.pageParams(query);
+
+    const [rows, total] = await Promise.all([
+      this.prisma.notificationBounce.findMany({
+        where,
+        orderBy: [{ lastBouncedAt: 'desc' }, { id: 'desc' }],
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      this.prisma.notificationBounce.count({ where }),
+    ]);
+
+    const names = await this.namesFor(rows.map((r) => r.userId).filter((u): u is string => !!u));
+    return {
+      data: rows.map((r) => ({
+        id: r.id,
+        channel: r.channel,
+        address: this.maskAddress(r.channel, r.address),
+        userId: r.userId,
+        userName: r.userId ? (names.get(r.userId) ?? null) : null,
+        reason: r.reason,
+        providerCode: r.providerCode,
+        status: r.status,
+        bounceCount: r.bounceCount,
+        firstBouncedAt: r.firstBouncedAt,
+        lastBouncedAt: r.lastBouncedAt,
+        clearedAt: r.clearedAt,
+      })),
+      meta: this.offsetMeta(page, limit, total, rows.length),
+    };
+  }
+
+  /** NF-41: lets sending to this address resume, after the user fixed their contact details. */
+  async clearBounce(id: string, dto: ClearBounceDto, actor: CurrentUserDto) {
+    const bounce = await this.prisma.notificationBounce.findUnique({ where: { id } });
+    if (!bounce) throw new NotFoundException('Bounce not found');
+    if (bounce.status !== 'ACTIVE') throw new ConflictException('bounce_already_cleared');
+
+    const cleared = await this.prisma.notificationBounce.update({
+      where: { id },
+      data: {
+        status: 'CLEARED',
+        clearedAt: new Date(),
+        clearedById: this.requireUserId(actor),
+        clearNote: dto.note?.trim() || null,
+      },
+    });
+
+    await this.audit(actor, {
+      action: AuditEventEnum.NOTIFICATION_BOUNCE_CLEARED,
+      entity: 'NotificationBounce',
+      entityId: id,
+      entityLabel: `${bounce.channel} ${this.maskAddress(bounce.channel, bounce.address)}`,
+      metadata: { note: dto.note?.trim() ?? null, bounceCount: bounce.bounceCount },
+    });
+
+    return { id: cleared.id, status: cleared.status, clearedAt: cleared.clearedAt };
+  }
+
+  /**
+   * For the bounce webhooks (WH-03, WH-04) to call when a provider reports a hard
+   * bounce or a block. From then on, sends to that address are skipped until an
+   * admin clears it (NF-41).
+   */
+  async recordBounce(input: {
+    channel: 'EMAIL' | 'SMS';
+    address: string;
+    reason: string;
+    providerCode?: string | null;
+    userId?: string | null;
+  }) {
+    const address = this.normalizeAddress(input.channel, input.address);
+    if (!address) throw new BadRequestException('invalid_address');
+    const reason = this.safeError(input.reason);
+
+    let userId = input.userId ?? null;
+    if (!userId && input.channel === 'EMAIL') {
+      const match = await this.prisma.user.findFirst({
+        where: { email: { equals: address, mode: 'insensitive' } },
+        select: { id: true },
+      });
+      userId = match?.id ?? null;
+    }
+
+    const now = new Date();
+    const bounce = await this.prisma.notificationBounce.upsert({
+      where: { channel_address: { channel: input.channel, address } },
+      create: {
+        channel: input.channel,
+        address,
+        userId,
+        reason,
+        providerCode: input.providerCode ?? null,
+        firstBouncedAt: now,
+        lastBouncedAt: now,
+      },
+      update: {
+        bounceCount: { increment: 1 },
+        lastBouncedAt: now,
+        reason,
+        providerCode: input.providerCode ?? null,
+        status: 'ACTIVE',
+        clearedAt: null,
+        clearedById: null,
+        clearNote: null,
+        ...(userId && { userId }),
+      },
+    });
+    return { id: bounce.id };
+  }
+
+  // ───────────────────────────────────────────
+  // 4. PER-USER SUPPORT (admin)
+  // ───────────────────────────────────────────
+
+  /** NF-42: for a compromised account. Their push tokens stop working at once. */
+  async revokeUserDevices(userId: string, dto: AdminReasonDto, admin: CurrentUserDto) {
+    await this.requireUserExists(userId);
+
+    const result = await this.prisma.deviceToken.deleteMany({ where: { userId } });
+
+    await this.audit(
+      admin,
+      {
+        action: AuditEventEnum.NOTIFICATION_DEVICES_REVOKED,
+        entity: 'User',
+        entityId: userId,
+        severity: AuditSeverity.WARNING,
+        metadata: { revoked: result.count, reason: dto.reason.trim() },
+      },
+      true,
+    );
+
+    return { userId, revoked: result.count };
+  }
+
+  /** NF-43: on a support request. Security types are locked and have nothing to reset. */
+  async resetUserPreferences(userId: string, dto: AdminReasonDto, admin: CurrentUserDto) {
+    await this.requireUserExists(userId);
+
+    const result = await this.prisma.notificationPreference.deleteMany({
+      where: { userId, type: { notIn: [...LOCKED_TYPES] as unknown as NotificationType[] } },
+    });
+
+    await this.audit(admin, {
+      action: AuditEventEnum.NOTIFICATION_PREFERENCES_RESET_BY_ADMIN,
+      entity: 'User',
+      entityId: userId,
+      metadata: { removed: result.count, reason: dto.reason.trim() },
+    });
+
+    return { userId, reset: true, removed: result.count };
+  }
+
+  /** NF-44 */
+  async getUserDeliveries(userId: string, query: UserDeliveriesQueryDto) {
+    await this.requireUserExists(userId);
+    return this.listDeliveries({ ...query, userId });
+  }
+
+  // ───────────────────────────────────────────
+  // 5. COMPANY-WIDE ANALYTICS (admin)
+  // ───────────────────────────────────────────
+
+  /** NF-50: one row per recipient. */
+  async getAllByRecipient(query: ByRecipientQueryDto) {
+    const conds: Prisma.Sql[] = [Prisma.sql`TRUE`];
+    if (query.from) conds.push(Prisma.sql`n."createdAt" >= ${new Date(query.from)}`);
+    if (query.to) conds.push(Prisma.sql`n."createdAt" <= ${new Date(query.to)}`);
+    if (query.type) conds.push(Prisma.sql`n."type" = ${query.type}::"NotificationType"`);
+    if (query.priority)
+      conds.push(Prisma.sql`n."priority" = ${query.priority}::"NotificationPriority"`);
+    if (query.entity) conds.push(Prisma.sql`n."entity" = ${query.entity}`);
+    const whereSql = Prisma.join(conds, ' AND ');
+
+    const order =
+      query.sortBy === 'unread'
+        ? Prisma.sql`unread DESC`
+        : query.sortBy === 'last'
+          ? Prisma.sql`"lastAt" DESC`
+          : Prisma.sql`total DESC`;
+
+    const { page, limit } = this.pageParams(query);
+    const offset = (page - 1) * limit;
+
+    const [rows, totalRows] = await Promise.all([
+      this.prisma.$queryRaw<
+        { userId: string; total: bigint; readCount: bigint; unread: bigint; lastAt: Date }[]
+      >`
+        SELECT n."userId" AS "userId",
+               COUNT(*)::bigint AS total,
+               COUNT(n."readAt")::bigint AS "readCount",
+               (COUNT(*) - COUNT(n."readAt"))::bigint AS unread,
+               MAX(n."createdAt") AS "lastAt"
+        FROM notification n
+        WHERE ${whereSql}
+        GROUP BY n."userId"
+        ORDER BY ${order}, n."userId" ASC
+        LIMIT ${limit} OFFSET ${offset}`,
+      this.prisma.$queryRaw<{ total: bigint }[]>`
+        SELECT COUNT(DISTINCT n."userId")::bigint AS total FROM notification n WHERE ${whereSql}`,
+    ]);
+
+    const userIds = rows.map((r) => r.userId);
+    const [names, failed] = await Promise.all([
+      this.namesFor(userIds),
+      userIds.length
+        ? this.prisma.notificationDelivery.groupBy({
+            by: ['userId'],
+            where: {
+              userId: { in: userIds },
+              status: STATUS.FAILED,
+              ...((query.from || query.to) && {
+                createdAt: {
+                  ...(query.from && { gte: new Date(query.from) }),
+                  ...(query.to && { lte: new Date(query.to) }),
+                },
+              }),
+            },
+            _count: { _all: true },
+          })
+        : Promise.resolve([]),
+    ]);
+    const failedByUser = new Map<string, number>(
+      failed.map((f) => [f.userId, f._count._all] as [string, number]),
+    );
+
+    const total = Number(totalRows[0]?.total ?? 0);
+    return {
+      data: rows.map((r) => ({
+        userId: r.userId,
+        name: names.get(r.userId) ?? null,
+        total: Number(r.total),
+        read: Number(r.readCount),
+        unread: Number(r.unread),
+        failedDeliveries: failedByUser.get(r.userId) ?? 0,
+        lastNotificationAt: r.lastAt,
+      })),
+      meta: this.offsetMeta(page, limit, total, rows.length),
+    };
+  }
+
+  /** NF-51: notifications emitted per day, week or month. */
+  async getAllTimeline(query: AllTimelineQueryDto) {
+    const { from, to } = this.statsRange(query, 365);
+    const bucket = query.bucket ?? 'day';
+    const unit = Prisma.raw(
+      `'${bucket === 'month' ? 'month' : bucket === 'week' ? 'week' : 'day'}'`,
+    );
+
+    const conds: Prisma.Sql[] = [
+      Prisma.sql`"createdAt" >= ${from}`,
+      Prisma.sql`"createdAt" <= ${to}`,
+    ];
+    if (query.type) conds.push(Prisma.sql`"type" = ${query.type}::"NotificationType"`);
+    if (query.entity) conds.push(Prisma.sql`"entity" = ${query.entity}`);
+
+    const rows = await this.prisma.$queryRaw<{ bucket: Date; total: bigint; readCount: bigint }[]>`
+      SELECT date_trunc(${unit}, "createdAt") AS bucket,
+             COUNT(*)::bigint AS total,
+             COUNT("readAt")::bigint AS "readCount"
+      FROM notification
+      WHERE ${Prisma.join(conds, ' AND ')}
+      GROUP BY 1
+      ORDER BY 1 ASC`;
+
+    return {
+      from: from.toISOString(),
+      to: to.toISOString(),
+      bucket,
+      data: rows.map((r) => ({
+        bucket: r.bucket.toISOString(),
+        total: Number(r.total),
+        read: Number(r.readCount),
+      })),
+    };
+  }
+
+  /** NF-52: read rate and median time to read, by type. */
+  async getAllReadRate(query: StatsRangeQueryDto) {
+    const { from, to } = this.statsRange(query);
+
+    const rows = await this.prisma.$queryRaw<
+      { type: string; total: bigint; readCount: bigint; medianSeconds: number | null }[]
+    >`
+      SELECT n."type"::text AS type,
+             COUNT(*)::bigint AS total,
+             COUNT(n."readAt")::bigint AS "readCount",
+             percentile_cont(0.5) WITHIN GROUP (
+               ORDER BY EXTRACT(EPOCH FROM (n."readAt" - n."createdAt"))
+             ) FILTER (WHERE n."readAt" IS NOT NULL) AS "medianSeconds"
+      FROM notification n
+      WHERE n."createdAt" >= ${from} AND n."createdAt" <= ${to}
+      GROUP BY 1
+      ORDER BY total DESC`;
+
+    return {
+      from: from.toISOString(),
+      to: to.toISOString(),
+      data: rows.map((r) => {
+        const total = Number(r.total);
+        const read = Number(r.readCount);
+        return {
+          type: r.type,
+          total,
+          read,
+          readRate: total > 0 ? Number((read / total).toFixed(4)) : null,
+          medianSecondsToRead:
+            r.medianSeconds === null ? null : Math.round(Number(r.medianSeconds)),
+        };
+      }),
+    };
+  }
+
+  /** NF-53: free-text search across every notification. Same filters and shape as admin/all. */
+  async searchAllNotifications(query: AllNotificationsQueryDto) {
+    if (!query.q?.trim()) throw new BadRequestException('q_required');
+    return this.getAllNotifications(query);
+  }
+
+  /** NF-54: background export beyond the 50,000-row CSV cap. */
+  async startAllExportJob(dto: NotificationExportJobDto, admin: CurrentUserDto) {
+    const requestedById = this.requireUserId(admin);
+    const where = this.allWhere(dto as AllNotificationsQueryDto);
+    const filter = { ...dto } as Record<string, unknown>;
+
+    // Audited first and strictly: a data export must never start unlogged.
+    await this.audit(
+      admin,
+      {
+        action: AuditEventEnum.NOTIFICATION_EXPORT_JOB_CREATED,
+        entity: 'Notification',
+        severity: AuditSeverity.WARNING,
+        metadata: { scope: 'all', filters: filter },
+      },
+      true,
+    );
+
+    const job = await this.exportJobsOrThrow().start({
+      scope: EXPORT_SCOPE.NOTIFICATIONS,
+      requestedById,
+      filter,
+      producer: {
+        header: NOTIFICATION_EXPORT_HEADER,
+        batches: () => this.notificationExportBatches(where),
+      },
+    });
+
+    return { jobId: job.id, status: job.status };
+  }
+
+  /** NF-55 */
+  async listAllExportJobs(admin: CurrentUserDto, query: NotificationPagingDto) {
+    return this.exportJobsOrThrow().list(
+      EXPORT_SCOPE.NOTIFICATIONS,
+      this.requireUserId(admin),
+      query,
+    );
+  }
+
+  /** NF-56 */
+  async getAllExportJob(id: string, admin: CurrentUserDto) {
+    return this.exportJobsOrThrow().get(EXPORT_SCOPE.NOTIFICATIONS, id, this.requireUserId(admin));
+  }
+
+  /** NF-57: short-lived links, one per CSV part. Audited. */
+  async getAllExportJobDownload(id: string, admin: CurrentUserDto) {
+    const result = await this.exportJobsOrThrow().downloadLinks(
+      EXPORT_SCOPE.NOTIFICATIONS,
+      id,
+      this.requireUserId(admin),
+    );
+
+    await this.audit(
+      admin,
+      {
+        action: AuditEventEnum.NOTIFICATION_EXPORT_DOWNLOADED,
+        entity: 'MiscExportJob',
+        entityId: id,
+        severity: AuditSeverity.WARNING,
+        metadata: { rowCount: result.job.rowCount, parts: result.files.length },
+      },
+      true,
+    );
+
+    return result;
+  }
+
+  private async *notificationExportBatches(
+    where: Prisma.NotificationWhereInput,
+  ): AsyncGenerator<unknown[][]> {
+    const size = 5_000;
+    let cursor: string | undefined;
+
+    for (;;) {
+      const rows = await this.prisma.notification.findMany({
+        where,
+        orderBy: { id: 'asc' },
+        take: size,
+        ...(cursor && { cursor: { id: cursor }, skip: 1 }),
+        select: {
+          id: true,
+          createdAt: true,
+          type: true,
+          priority: true,
+          entity: true,
+          entityId: true,
+          userId: true,
+          actorId: true,
+          actorName: true,
+          actorRole: true,
+          title: true,
+          readAt: true,
+        },
+      });
+      if (rows.length === 0) return;
+
+      yield rows.map((n) => [
+        n.id,
+        n.createdAt,
+        n.type,
+        n.priority,
+        n.entity,
+        n.entityId,
+        n.userId,
+        n.actorId,
+        n.actorName,
+        n.actorRole,
+        n.title,
+        n.readAt,
+      ]);
+
+      if (rows.length < size) return;
+      cursor = rows[rows.length - 1].id;
+    }
+  }
+
+  // ───────────────────────────────────────────
+  // 6. GOVERNANCE AND QUEUE (super admin)
+  // ───────────────────────────────────────────
+
+  /** NF-58: runs the expired-notification cleanup now instead of waiting for the hourly pass. */
+  async purgeExpiredNow(dto: AdminReasonDto, admin: CurrentUserDto) {
+    const result = await this.deleteExpired();
+
+    await this.audit(
+      admin,
+      {
+        action: AuditEventEnum.NOTIFICATION_PURGE_EXPIRED_RUN,
+        entity: 'Notification',
+        severity: AuditSeverity.WARNING,
+        metadata: { deleted: result.count, reason: dto.reason.trim() },
+      },
+      true,
+    );
+
+    return { deleted: result.count };
+  }
+
+  /** NF-59 */
+  async getRetention() {
+    const environmentDefault = Number(process.env.NOTIFICATION_READ_RETENTION_DAYS ?? 180);
+    const row = await this.prisma.notificationSetting.findUnique({ where: { key: 'retention' } });
+    const stored = (row?.value as { readRetentionDays?: unknown } | null)?.readRetentionDays;
+    const fromDatabase = typeof stored === 'number' && stored >= 0;
+
+    return {
+      readRetentionDays: fromDatabase ? (stored as number) : environmentDefault,
+      source: fromDatabase ? 'database' : 'environment',
+      environmentDefault,
+      expiredNotifications: 'removed once their expiry date passes',
+      keepsReadForever: (fromDatabase ? (stored as number) : environmentDefault) === 0,
+      updatedAt: row?.updatedAt ?? null,
+      updatedById: row?.updatedById ?? null,
+    };
+  }
+
+  /** NF-60: changes how long read notifications are kept. Audited, and the audit must succeed. */
+  async updateRetention(dto: UpdateRetentionDto, admin: CurrentUserDto) {
+    const before = await this.getRetention();
+
+    await this.audit(
+      admin,
+      {
+        action: AuditEventEnum.NOTIFICATION_RETENTION_CHANGED,
+        entity: 'NotificationSetting',
+        entityId: 'retention',
+        severity: AuditSeverity.WARNING,
+        diff: {
+          before: { readRetentionDays: before.readRetentionDays },
+          after: { readRetentionDays: dto.readRetentionDays },
+        },
+        metadata: { reason: dto.reason.trim() },
+      },
+      true,
+    );
+
+    await this.prisma.notificationSetting.upsert({
+      where: { key: 'retention' },
+      create: {
+        key: 'retention',
+        value: { readRetentionDays: dto.readRetentionDays },
+        updatedById: this.requireUserId(admin),
+      },
+      update: {
+        value: { readRetentionDays: dto.readRetentionDays },
+        updatedById: this.requireUserId(admin),
+      },
+    });
+
+    return this.getRetention();
+  }
+
+  /** NF-61: depth, rate and paused state per outside channel. */
+  async getQueueState() {
+    const now = new Date();
+    const hourAgo = new Date(now.getTime() - 60 * 60 * 1000);
+    const dayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+
+    const [due, later, sending, sentLastHour, failedLastDay, states, oldest] = await Promise.all([
+      this.prisma.notificationDelivery.groupBy({
+        by: ['channel'],
+        where: { status: STATUS.PENDING, nextAttemptAt: { lte: now } },
+        _count: { _all: true },
+      }),
+      this.prisma.notificationDelivery.groupBy({
+        by: ['channel'],
+        where: { status: STATUS.PENDING, nextAttemptAt: { gt: now } },
+        _count: { _all: true },
+      }),
+      this.prisma.notificationDelivery.groupBy({
+        by: ['channel'],
+        where: { status: STATUS.SENDING },
+        _count: { _all: true },
+      }),
+      this.prisma.notificationDelivery.groupBy({
+        by: ['channel'],
+        where: { status: STATUS.SENT, sentAt: { gte: hourAgo } },
+        _count: { _all: true },
+      }),
+      this.prisma.notificationDelivery.groupBy({
+        by: ['channel'],
+        where: { status: STATUS.FAILED, updatedAt: { gte: dayAgo } },
+        _count: { _all: true },
+      }),
+      this.prisma.notificationQueueState.findMany(),
+      Promise.all(
+        OUTBOUND_CHANNELS.map((channel) =>
+          this.prisma.notificationDelivery.findFirst({
+            where: { channel, status: STATUS.PENDING, nextAttemptAt: { lte: now } },
+            orderBy: { nextAttemptAt: 'asc' },
+            select: { nextAttemptAt: true },
+          }),
+        ),
+      ),
+    ]);
+
+    const count = (groups: Array<{ channel: string; _count: { _all: number } }>, channel: string) =>
+      groups.find((g) => g.channel === channel)?._count._all ?? 0;
+    const stateByChannel = new Map(states.map((s) => [s.channel, s]));
+
+    return {
+      worker: { enabled: this.timer !== null, lastTickAt: this.lastTickAt },
+      channels: OUTBOUND_CHANNELS.map((channel, i) => {
+        const state = stateByChannel.get(channel);
+        const sent = count(sentLastHour, channel);
+        return {
+          channel,
+          configured: this.providers.has(channel),
+          paused: state?.paused ?? false,
+          pausedReason: state?.paused ? state.reason : null,
+          pausedAt: state?.paused ? state.pausedAt : null,
+          pausedById: state?.paused ? state.pausedById : null,
+          depth: {
+            waitingNow: count(due, channel),
+            scheduledLater: count(later, channel),
+            sending: count(sending, channel),
+          },
+          oldestWaitingAt: oldest[i]?.nextAttemptAt ?? null,
+          sentLastHour: sent,
+          ratePerMinute: Number((sent / 60).toFixed(2)),
+          failedLast24h: count(failedLastDay, channel),
+        };
+      }),
+    };
+  }
+
+  /**
+   * NF-62: stops sending on one channel during a provider outage. Waiting deliveries
+   * stay queued. This includes security notifications on that channel: they still
+   * reach the inbox.
+   */
+  async pauseQueueChannel(dto: QueuePauseDto, admin: CurrentUserDto) {
+    const adminId = this.requireUserId(admin);
+    const now = new Date();
+
+    await this.audit(
+      admin,
+      {
+        action: AuditEventEnum.NOTIFICATION_QUEUE_PAUSED,
+        entity: 'NotificationQueueState',
+        entityId: dto.channel,
+        severity: AuditSeverity.CRITICAL,
+        metadata: { channel: dto.channel, reason: dto.reason.trim() },
+      },
+      true,
+    );
+
+    const state = await this.prisma.notificationQueueState.upsert({
+      where: { channel: dto.channel },
+      create: {
+        channel: dto.channel,
+        paused: true,
+        reason: dto.reason.trim(),
+        pausedAt: now,
+        pausedById: adminId,
+      },
+      update: {
+        paused: true,
+        reason: dto.reason.trim(),
+        pausedAt: now,
+        pausedById: adminId,
+      },
+    });
+    return state;
+  }
+
+  /** NF-63 */
+  async resumeQueueChannel(dto: QueueResumeDto, admin: CurrentUserDto) {
+    const adminId = this.requireUserId(admin);
+
+    await this.audit(
+      admin,
+      {
+        action: AuditEventEnum.NOTIFICATION_QUEUE_RESUMED,
+        entity: 'NotificationQueueState',
+        entityId: dto.channel,
+        severity: AuditSeverity.WARNING,
+        metadata: { channel: dto.channel },
+      },
+      true,
+    );
+
+    return this.prisma.notificationQueueState.upsert({
+      where: { channel: dto.channel },
+      create: { channel: dto.channel, paused: false, resumedAt: new Date(), resumedById: adminId },
+      update: { paused: false, resumedAt: new Date(), resumedById: adminId },
+    });
+  }
+
+  // ───────────────────────────────────────────
+  // AUDIT ALERTS → SUPER ADMIN INBOX
+  // ───────────────────────────────────────────
+
+  /**
+   * AuditLogService cannot call this service directly (this one depends on it), so it
+   * emits an event. Every active SUPER_ADMIN gets an inbox notice. SECURITY_ALERT is a
+   * locked type, so it also goes out by push, email and SMS (generic text in discreet mode).
+   */
+  @OnEvent(AUDIT_ALERT_TRIGGERED_EVENT)
+  async handleAuditAlertTriggered(event: AuditAlertTriggeredEvent): Promise<void> {
+    try {
+      const superAdmins = await this.prisma.user.findMany({
+        where: {
+          isActive: true,
+          userRoles: { some: { role: { name: RolesEnum.SUPER_ADMIN } } },
+        },
+        select: { id: true },
+      });
+      if (superAdmins.length === 0) return;
+
+      await this.createForUsers({
+        userIds: superAdmins.map((u) => u.id),
+        type: NotificationType.SECURITY_ALERT,
+        title: event.title,
+        body: event.body,
+        priority: NotificationPriority.HIGH,
+        entity: event.entity,
+        entityId: event.entityId,
+        data: { kind: event.kind },
+        dedupeKeyFor: (userId) => `audit-alert:${event.entityId}:${event.occurrenceId}:${userId}`,
+      });
+    } catch (err) {
+      this.logger.error(
+        `Could not notify super admins about an audit alert: ${this.safeError(err)}`,
+      );
+    }
+  }
+
+  // ───────────────────────────────────────────
+  // NEW: inbox notices for the new workflows
+  // ───────────────────────────────────────────
+
+  /** A background export finished or failed. Tells only the person who asked for it. No data in the text. */
+  @OnEvent(NotificationEventEnum.EXPORT_JOB_FINISHED)
+  async handleExportJobFinished(event: ExportJobFinishedEvent): Promise<void> {
+    try {
+      const done = event.status === 'COMPLETED';
+      await this.createForUsers({
+        userIds: [event.userId],
+        type: NotificationType.GENERAL,
+        title: done ? 'Your export is ready' : 'Your export failed',
+        body: done
+          ? 'Open your export jobs to download it. Download links are short-lived, so ask for a fresh one if it expires.'
+          : 'The export did not finish. You can start it again from your export jobs.',
+        priority: NotificationPriority.NORMAL,
+        entity: 'MiscExportJob',
+        entityId: event.jobId,
+        data: { scope: event.scope, status: event.status },
+        dedupeKeyFor: (userId) => `export-job:${event.jobId}:${event.status}:${userId}`,
+      });
+    } catch (err) {
+      this.logger.error(`Could not notify about export ${event.jobId}: ${this.safeError(err)}`);
+    }
+  }
+
+  /**
+   * A large broadcast is waiting for a second person. Super Admins other than the creator are told.
+   * (The approve route itself checks the NOTIFICATION_BROADCAST_APPROVE permission.)
+   */
+  private async notifyApprovers(
+    broadcastId: string,
+    title: string,
+    audienceSize: number,
+    creatorId: string,
+  ) {
+    try {
+      const admins = await this.prisma.user.findMany({
+        where: {
+          isActive: true,
+          id: { not: creatorId },
+          userRoles: { some: { role: { name: RolesEnum.SUPER_ADMIN } } },
+        },
+        select: { id: true },
+      });
+      await this.createForUsers({
+        userIds: admins.map((a) => a.id),
+        type: NotificationType.GENERAL,
+        title: 'A broadcast needs approval',
+        body: `"${title.slice(0, 80)}" is waiting for a second approver (${audienceSize} recipients).`,
+        priority: NotificationPriority.HIGH,
+        entity: 'NotificationBroadcast',
+        entityId: broadcastId,
+        dedupeKeyFor: (userId) => `broadcast-approval:${broadcastId}:${userId}`,
+      });
+    } catch (err) {
+      this.logger.error(
+        `Could not notify approvers for broadcast ${broadcastId}: ${this.safeError(err)}`,
+      );
+    }
+  }
+
+  /** Tells the person who wrote a broadcast whether it was approved or rejected. */
+  private async notifyBroadcastDecision(
+    creatorId: string | null,
+    broadcastId: string,
+    title: string,
+    decision: 'APPROVED' | 'REJECTED',
+  ) {
+    if (!creatorId) return;
+    try {
+      await this.createForUsers({
+        userIds: [creatorId],
+        type: NotificationType.GENERAL,
+        title:
+          decision === 'APPROVED' ? 'Your broadcast was approved' : 'Your broadcast was rejected',
+        body:
+          decision === 'APPROVED'
+            ? `"${title.slice(0, 80)}" was approved and will be sent at its scheduled time.`
+            : `"${title.slice(0, 80)}" was rejected. Open the broadcast to see the reason.`,
+        priority: NotificationPriority.NORMAL,
+        entity: 'NotificationBroadcast',
+        entityId: broadcastId,
+        dedupeKeyFor: (userId) => `broadcast-decision:${broadcastId}:${decision}:${userId}`,
+      });
+    } catch (err) {
+      this.logger.error(
+        `Could not notify creator of broadcast ${broadcastId}: ${this.safeError(err)}`,
+      );
+    }
+  }
+
+  // ───────────────────────────────────────────
+  // NEW INTERNALS
+  // ───────────────────────────────────────────
+
+  private snoozeView(until: Date | null) {
+    const active = !!until && until.getTime() > Date.now();
+    return {
+      active,
+      until: active ? until : null,
+      remainingSeconds: active ? Math.ceil((until.getTime() - Date.now()) / 1000) : 0,
+    };
+  }
+
+  /** What a person sees: no retry counts, no provider errors. */
+  private friendlyDeliveryStatus(status: string): 'SENT' | 'PENDING' | 'NOT_SENT' {
+    if (status === STATUS.SENT) return 'SENT';
+    if (status === STATUS.PENDING || status === STATUS.SENDING) return 'PENDING';
+    return 'NOT_SENT';
+  }
+
+  private assertRecordRef(entity: string, entityId: string) {
+    if (!/^[A-Za-z][A-Za-z0-9_]{0,99}$/.test(entity))
+      throw new BadRequestException('invalid_entity');
+    if (!entityId || entityId.length > 100) throw new BadRequestException('invalid_entityId');
+  }
+
+  private extractPlaceholders(text: string): string[] {
+    const found = new Set<string>();
+    for (const m of text.matchAll(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g)) found.add(m[1]);
+    return [...found];
+  }
+
+  private async requireUserExists(userId: string) {
+    const exists = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true },
+    });
+    if (!exists) throw new NotFoundException('User not found');
+  }
+
+  private async namesFor(ids: string[]): Promise<Map<string, string | null>> {
+    const unique = [...new Set(ids)];
+    if (unique.length === 0) return new Map();
+    const users = await this.prisma.user.findMany({
+      where: { id: { in: unique } },
+      select: { id: true, name: true },
+    });
+    return new Map(users.map((u) => [u.id, u.name]));
+  }
+
+  /** Default window is 30 days. `maxDays` is 90 unless a route says otherwise. */
+  private statsRange(query: { from?: string; to?: string }, maxDays = 90) {
+    const to = query.to ? new Date(query.to) : new Date();
+    const from = query.from ? new Date(query.from) : new Date(to.getTime() - 30 * 86_400_000);
+    if (isNaN(from.getTime()) || isNaN(to.getTime())) throw new BadRequestException('invalid_date');
+    if (from >= to) throw new BadRequestException('from_must_be_before_to');
+    if (to.getTime() - from.getTime() > maxDays * 86_400_000) {
+      throw new BadRequestException(`range_too_large_max_${maxDays}_days`);
+    }
+    return { from, to };
+  }
+
+  private deliveriesWhere(query: DeliveriesQueryDto): Prisma.NotificationDeliveryWhereInput {
+    return {
+      ...(query.channel && { channel: query.channel }),
+      ...(query.status && { status: query.status }),
+      ...(query.userId && { userId: query.userId }),
+      ...(query.notificationId && { notificationId: query.notificationId }),
+      ...((query.from || query.to) && {
+        createdAt: {
+          ...(query.from && { gte: new Date(query.from) }),
+          ...(query.to && { lte: new Date(query.to) }),
+        },
+      }),
+    };
+  }
+
+  private normalizeAddress(channel: 'EMAIL' | 'SMS', value: string): string {
+    return channel === 'EMAIL' ? value.trim().toLowerCase() : value.replace(/\D/g, '');
+  }
+
+  private maskAddress(channel: string, address: string): string {
+    if (channel === 'EMAIL') {
+      const [local, domain] = address.split('@');
+      return domain ? `${local.slice(0, 1)}***@${domain}` : '[email]';
+    }
+    return `••••${address.replace(/\D/g, '').slice(-4)}`;
+  }
+
+  private async isBounced(channel: 'EMAIL' | 'SMS', address: string): Promise<boolean> {
+    const row = await this.prisma.notificationBounce.findUnique({
+      where: { channel_address: { channel, address: this.normalizeAddress(channel, address) } },
+      select: { status: true },
+    });
+    return row?.status === 'ACTIVE';
+  }
+
+  /** Channels an admin has paused. Never throws: a missing table must not stop the worker. */
+  private async pausedChannels(): Promise<string[]> {
+    try {
+      const rows = await this.prisma.notificationQueueState.findMany({
+        where: { paused: true },
+        select: { channel: true },
+      });
+      return rows.map((r) => r.channel);
+    } catch (err) {
+      this.logger.warn(`Could not read queue state: ${this.safeError(err)}`);
+      return [];
+    }
+  }
+
+  /** Retention an admin set (NF-60), else the environment value. */
+  private async effectiveReadRetentionDays(): Promise<number> {
+    const fromEnv = Number(process.env.NOTIFICATION_READ_RETENTION_DAYS ?? 180);
+    try {
+      const row = await this.prisma.notificationSetting.findUnique({ where: { key: 'retention' } });
+      const stored = (row?.value as { readRetentionDays?: unknown } | null)?.readRetentionDays;
+      if (typeof stored === 'number' && stored >= 0) return stored;
+    } catch (err) {
+      this.logger.warn(`Could not read retention setting: ${this.safeError(err)}`);
+    }
+    return fromEnv;
+  }
+
+  private exportJobsOrThrow(): ExportJobService {
+    if (!this.exportJobs) throw new BadRequestException('export_jobs_not_configured');
+    return this.exportJobs;
+  }
+
+  private async stopRequested(id: string): Promise<boolean> {
+    const row = await this.prisma.notificationBroadcast.findUnique({
+      where: { id },
+      select: { stopRequestedAt: true },
+    });
+    return Boolean(row?.stopRequestedAt);
+  }
+
+  private async markStopped(id: string) {
+    const now = new Date();
+    const recipientCount = await this.prisma.notification.count({ where: { broadcastId: id } });
+    await this.prisma.notificationBroadcast.update({
+      where: { id },
+      data: { status: BROADCAST_STATUS.STOPPED, stoppedAt: now, finishedAt: now, recipientCount },
+    });
   }
 
   // ───────────────────────────────────────────
