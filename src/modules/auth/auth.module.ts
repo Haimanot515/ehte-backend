@@ -19,6 +19,7 @@ import { PermissionController } from './controller/permission.controller';
 import { PermissionService } from './service/permission.service';
 
 import { ReauthService } from './service/reauth.service';
+import { AdminRegistrationCleanupService } from './service/admin-registration-cleanup.service';
 
 import { OtpUtil } from 'src/common/utils/otp.util';
 import { LockoutUtil } from 'src/common/utils/lockout.util';
@@ -56,6 +57,7 @@ import { SocialAuthUtil } from 'src/common/utils/social-auth.util';
     RoleService,
     PermissionService,
     ReauthService,
+    AdminRegistrationCleanupService,
     OtpUtil,
     LockoutUtil,
     TokenUtil,

@@ -32,6 +32,7 @@ import { RolesEnum } from 'src/common/enums/roles.enum';
 import { hasStaffRole } from 'src/common/utils/role-protection.util';
 
 import { OtpUtil } from 'src/common/utils/otp.util';
+import { assertStrongPassword } from 'src/common/utils/password-policy.util';
 import { LockoutUtil } from 'src/common/utils/lockout.util';
 import { TokenUtil } from 'src/common/utils/token.util';
 import { SocialAuthUtil, SocialProfile } from 'src/common/utils/social-auth.util';
@@ -300,6 +301,11 @@ export class AuthService {
       });
       throw new BadRequestException('user_role_not_configured');
     }
+
+    assertStrongPassword(data.password, {
+      minLength: this.userPasswordMinLength(),
+      personal: [phone],
+    });
 
     const hashedPassword = await bcrypt.hash(data.password, this.bcryptSaltRounds);
 
@@ -1012,6 +1018,7 @@ export class AuthService {
           select: {
             id: true,
             name: true,
+            phone: true,
             userRoles: { include: { role: true } },
           },
         },
@@ -1113,6 +1120,11 @@ export class AuthService {
 
       throw new BadRequestException('invalid_or_expired_otp');
     }
+
+    assertStrongPassword(data.newPassword, {
+      minLength: this.userPasswordMinLength(),
+      personal: [otpRecord.user.phone],
+    });
 
     const hashedPassword = await bcrypt.hash(data.newPassword, this.bcryptSaltRounds);
 
@@ -1451,6 +1463,7 @@ export class AuthService {
           select: {
             id: true,
             name: true,
+            phone: true,
             userRoles: { include: { role: true } },
           },
         },
@@ -1555,6 +1568,11 @@ export class AuthService {
 
       throw new BadRequestException('invalid_or_expired_otp');
     }
+
+    assertStrongPassword(data.newPassword, {
+      minLength: this.userPasswordMinLength(),
+      personal: [otpRecord.user.phone],
+    });
 
     const hashedPassword = await bcrypt.hash(data.newPassword, this.bcryptSaltRounds);
 
@@ -2205,6 +2223,11 @@ export class AuthService {
       throw new BadRequestException('verified_phone_required_to_set_password');
     }
 
+    assertStrongPassword(data.newPassword, {
+      minLength: this.userPasswordMinLength(),
+      personal: [current.phone],
+    });
+
     const hashed = await bcrypt.hash(data.newPassword, this.bcryptSaltRounds);
 
     await this.prisma.user.update({ where: { id: user.id }, data: { passwordHash: hashed } });
@@ -2250,9 +2273,20 @@ export class AuthService {
   // AR-10
   passwordPolicy() {
     return {
-      minLength: this.configService.get<number>('security.passwordMinLength', 8),
+      minLength: this.userPasswordMinLength(),
+      adminMinLength: this.configService.get<number>('security.adminPasswordMinLength', 12),
       maxLength: 128,
+      // Length-first policy: no forced uppercase / number / symbol.
+      requiresUppercase: false,
+      requiresNumber: false,
+      requiresSymbol: false,
+      blocksCommonPasswords: true,
+      blocksPersonalInfo: true,
     };
+  }
+
+  private userPasswordMinLength(): number {
+    return this.configService.get<number>('security.passwordMinLength', 8);
   }
 
   // AR-11

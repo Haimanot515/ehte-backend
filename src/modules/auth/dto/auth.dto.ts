@@ -8,8 +8,9 @@ import {
   IsString,
   Length,
   MaxLength,
-  MinLength,
 } from 'class-validator';
+
+import { IsStrongPassword } from 'src/common/decorators/strong-password.decorator';
 
 export class SignupDto {
   @ApiPropertyOptional({
@@ -36,7 +37,7 @@ export class SignupDto {
   })
   @IsString()
   @IsNotEmpty()
-  @MinLength(8)
+  @IsStrongPassword()
   @MaxLength(128)
   password: string;
 }
@@ -167,7 +168,7 @@ export class ResetPasswordDto {
   })
   @IsString()
   @IsNotEmpty()
-  @MinLength(8)
+  @IsStrongPassword()
   @MaxLength(128)
   newPassword: string;
 }
@@ -197,7 +198,7 @@ export class ChangePasswordDto {
   })
   @IsString()
   @IsNotEmpty()
-  @MinLength(8)
+  @IsStrongPassword()
   @MaxLength(128)
   newPassword: string;
 }
@@ -275,7 +276,7 @@ export class SetPasswordDto {
   })
   @IsString()
   @IsNotEmpty()
-  @MinLength(8)
+  @IsStrongPassword()
   @MaxLength(128)
   newPassword: string;
 }

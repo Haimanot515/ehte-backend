@@ -172,7 +172,15 @@ export class UserAdminActionsService {
 
     const targetUser = await this.prisma.user.findUnique({
       where: { id: targetUserId },
-      select: { id: true, name: true, phone: true, email: true, isActive: true },
+      select: {
+        id: true,
+        name: true,
+        phone: true,
+        email: true,
+        isActive: true,
+        passwordHash: true,
+        inviteTokenHash: true,
+      },
     });
     if (!targetUser) {
       this.userCommonService.emitAudit({
@@ -189,6 +197,25 @@ export class UserAdminActionsService {
       throw new NotFoundException('user_not_found');
     }
     const targetLabel = this.userCommonService.buildUserLabel(targetUser);
+
+    // An invited admin who never set a password is not "deactivated", they are unregistered.
+    // Flipping isActive here would skip registration: no password, email never verified, and
+    // the invite token stays behind so the account keeps showing as a pending invitation.
+    if (!targetUser.passwordHash && targetUser.inviteTokenHash) {
+      this.userCommonService.emitAudit({
+        userId: actor.id,
+        targetUserId,
+        actorType,
+        action: AuditEventEnum.USER_REACTIVATED,
+        outcome: AuditOutcome.FAILURE,
+        severity: AuditSeverity.WARNING,
+        entity: 'User',
+        entityId: targetUserId,
+        entityLabel: targetLabel,
+        diff: { result: 'failure', reason: 'registration_not_completed' },
+      });
+      throw new BadRequestException('registration_not_completed');
+    }
 
     const result = await this.prisma.user.updateMany({
       where: { id: targetUserId, isActive: false },

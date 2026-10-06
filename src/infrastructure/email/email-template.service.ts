@@ -31,6 +31,17 @@ import {
   renderProfileEmailText,
 } from './templates/profile-email.template';
 
+import {
+  AdminPasswordOtpPurpose,
+  AdminPasswordSuccessKind,
+  renderAdminPasswordOtpEmailSubject,
+  renderAdminPasswordOtpEmailHtml,
+  renderAdminPasswordOtpEmailText,
+  renderAdminPasswordSuccessEmailSubject,
+  renderAdminPasswordSuccessEmailHtml,
+  renderAdminPasswordSuccessEmailText,
+} from './templates/admin-password-email.template';
+
 const DEFAULT_EMAIL_LOGO_URL =
   'https://res.cloudinary.com/dq3jkpys8/image/upload/v1790761570/ehte-logo-email-white_gavenx.png';
 
@@ -109,6 +120,50 @@ export class EmailTemplateService {
 
   adminRegistrationText(params: AdminRegistrationParams): string {
     return renderAdminRegistrationEmailText(params);
+  }
+
+  // ── Admin-only password emails (forgot / change password + success confirmation) ──
+
+  adminPasswordOtpSubject(purpose: AdminPasswordOtpPurpose): string {
+    return renderAdminPasswordOtpEmailSubject(purpose);
+  }
+
+  adminPasswordOtpHtml(params: {
+    purpose: AdminPasswordOtpPurpose;
+    otp: string;
+    expiresInMinutes: number;
+    recipientName?: string;
+  }): string {
+    return renderAdminPasswordOtpEmailHtml({ ...params, logoUrl: this.logoUrl });
+  }
+
+  adminPasswordOtpText(params: {
+    purpose: AdminPasswordOtpPurpose;
+    otp: string;
+    expiresInMinutes: number;
+    recipientName?: string;
+  }): string {
+    return renderAdminPasswordOtpEmailText(params);
+  }
+
+  adminPasswordSuccessSubject(kind: AdminPasswordSuccessKind): string {
+    return renderAdminPasswordSuccessEmailSubject(kind);
+  }
+
+  adminPasswordSuccessHtml(params: {
+    kind: AdminPasswordSuccessKind;
+    occurredAt?: Date;
+    recipientName?: string;
+  }): string {
+    return renderAdminPasswordSuccessEmailHtml({ ...params, logoUrl: this.logoUrl });
+  }
+
+  adminPasswordSuccessText(params: {
+    kind: AdminPasswordSuccessKind;
+    occurredAt?: Date;
+    recipientName?: string;
+  }): string {
+    return renderAdminPasswordSuccessEmailText(params);
   }
 
   promotionSubject(): string {

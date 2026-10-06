@@ -11,6 +11,7 @@ import { sendSms } from 'src/infrastructure/sms/sendet.service';
 import { renderOtpSms } from 'src/infrastructure/sms/templates/sms-otp.template';
 
 import { EmailService } from 'src/infrastructure/email/email.service';
+import { EmailTemplateService } from 'src/infrastructure/email/email-template.service';
 import {
   renderOtpEmailSubject,
   renderOtpEmailHtml,
@@ -26,6 +27,7 @@ export class OtpUtil {
     private readonly prisma: PrismaService,
     private readonly configService: ConfigService,
     private readonly emailService: EmailService,
+    private readonly emailTemplates: EmailTemplateService,
     private readonly cache: CacheService, // REDIS
   ) {}
 
@@ -34,6 +36,8 @@ export class OtpUtil {
     contact: string,
     purpose: UserOtpPurposeEnum,
     channel: OtpChannelEnum = OtpChannelEnum.sms,
+    // adminEmail: use the admin-only password email (reset/change) instead of the generic OTP email.
+    options: { adminEmail?: boolean; recipientName?: string } = {},
   ): Promise<{ verificationId: string }> {
     const cooldownSeconds = this.configService.get<number>('otp.resendCooldownSeconds', 60);
     const otpExpiresInMinutes = this.configService.get<number>('otp.expiresInMinutes', 10);
@@ -103,11 +107,33 @@ export class OtpUtil {
 
     if (channel === OtpChannelEnum.email) {
       try {
-        await this.emailService.send(
-          contact,
-          renderOtpEmailSubject(),
-          renderOtpEmailHtml({ otp, expiresInMinutes: otpExpiresInMinutes }),
-        );
+        const adminPurpose =
+          options.adminEmail &&
+          (purpose === UserOtpPurposeEnum.password_reset ||
+            purpose === UserOtpPurposeEnum.password_change)
+            ? purpose
+            : null;
+
+        if (adminPurpose) {
+          const params = {
+            purpose: adminPurpose,
+            otp,
+            expiresInMinutes: otpExpiresInMinutes,
+            recipientName: options.recipientName,
+          };
+          await this.emailService.send(
+            contact,
+            this.emailTemplates.adminPasswordOtpSubject(adminPurpose),
+            this.emailTemplates.adminPasswordOtpHtml(params),
+            this.emailTemplates.adminPasswordOtpText(params),
+          );
+        } else {
+          await this.emailService.send(
+            contact,
+            renderOtpEmailSubject(),
+            renderOtpEmailHtml({ otp, expiresInMinutes: otpExpiresInMinutes }),
+          );
+        }
       } catch (error) {
         this.logger.error(
           `Failed to send OTP (${purpose}) to ${maskedContact}`,

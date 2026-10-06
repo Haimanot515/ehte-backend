@@ -1,4 +1,5 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { PENDING_REGISTRATION_WHERE } from 'src/common/utils/registration-state.util';
 import { LoginResultEnum, Prisma } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
@@ -40,8 +41,10 @@ export class UserSearchService {
     if (query.discreetModeEnabled !== undefined)
       where.discreetModeEnabled = query.discreetModeEnabled;
     if (query.roleId) where.userRoles = { some: { roleId: query.roleId } };
-    if (query.registrationStatus === 'pending') where.passwordHash = null;
-    else if (query.registrationStatus === 'completed') where.passwordHash = { not: null };
+    if (query.registrationStatus === 'pending') {
+      // Same definition as listPendingRegistrations: an open invite on an inactive account.
+      Object.assign(where, PENDING_REGISTRATION_WHERE);
+    } else if (query.registrationStatus === 'completed') where.passwordHash = { not: null };
 
     const [users, total] = await this.prisma.$transaction([
       this.prisma.user.findMany({

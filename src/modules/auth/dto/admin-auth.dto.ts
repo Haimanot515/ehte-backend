@@ -19,6 +19,7 @@ import {
 } from 'class-validator';
 
 import { RolesEnum } from 'src/common/enums/roles.enum';
+import { IsStrongPassword } from 'src/common/decorators/strong-password.decorator';
 
 export { ResetPasswordDto } from './auth.dto';
 
@@ -99,7 +100,7 @@ export class AdminCompleteRegistrationDto {
   })
   @IsString()
   @IsNotEmpty()
-  @MinLength(8)
+  @IsStrongPassword()
   @MaxLength(128)
   password: string;
 }
@@ -159,6 +160,18 @@ export class PromoteVerifyDto {
   @IsString()
   @IsNotEmpty()
   token: string;
+
+  @ApiProperty({
+    description:
+      'New password the promoted user sets for admin sign-in (admin length rules apply, 12+ by default)',
+    example: 'EhteSuper1234!',
+    maxLength: 128,
+  })
+  @IsString()
+  @IsNotEmpty()
+  @IsStrongPassword()
+  @MaxLength(128)
+  password: string;
 }
 
 export class AdminCancelRegistrationDto {

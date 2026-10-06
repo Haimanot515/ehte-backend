@@ -214,7 +214,9 @@ export default () => ({
     // AuthService uses getOrThrow, so 2FA enrolment fails without it.
     twoFactorEncryptionKey: process.env.TWO_FACTOR_ENCRYPTION_KEY,
 
+    // Password length rules (no composition rules). Users 8+, admins 12+.
     passwordMinLength: parseInt(process.env.PASSWORD_MIN_LENGTH ?? '8', 10),
+    adminPasswordMinLength: parseInt(process.env.ADMIN_PASSWORD_MIN_LENGTH ?? '12', 10),
 
     // Max failed re-authentication attempts (ReauthService).
     maxReauthAttempts: parseInt(process.env.MAX_REAUTH_ATTEMPTS ?? '5', 10),

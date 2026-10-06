@@ -31,6 +31,10 @@ model User {
   // Holds a not-yet-verified new phone during the change-phone flow
   pendingPhone String?
 
+  // Holds the new email during an admin promotion until the person proves they own it,
+  // so `email` only ever holds an address the account really has
+  pendingEmail String?
+
   auditLogs            AuditLog[]                 @relation("AuditLogActor")
   auditLogsAsTarget    AuditLog[]                 @relation("AuditLogTarget")
   informationReports   InformationSubmission[]    @relation("InformationSubmissionOwner")
