@@ -2,7 +2,7 @@ node_modules
 dist
 build
 coverage
-prisma/schema/migrations
+prisma/migrations
 **/*.sql
 logs
 *.log
