@@ -12,13 +12,13 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { AuditOutcome, AuditSeverity, Permission, Prisma } from '@prisma/client';
 
 import { PrismaService } from 'src/prisma/prisma.service';
-import { CacheService } from 'src/services/redis/cache.service';
+import { CacheService } from 'src/infrastructure/redis/cache.service';
 import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
 
 import { resolveActorType } from 'src/common/utils/actor-type.util';
 
 import { AuditEventEnum } from 'src/common/enums/shared/audit-events.enum';
-import { AuditEventPayload } from 'src/modules/misc/events/audit.events';
+import { AuditEventPayload } from 'src/modules/misc/audit-log/events/audit.events';
 import { PermissionsEnum } from 'src/common/enums/permissions.enum';
 
 import {
@@ -29,7 +29,7 @@ import {
   PermissionDiffQueryDto,
 } from '../dto/permission.dto';
 
-import { isPermissionLockedRole } from '../util/role-protection.util';
+import { isPermissionLockedRole } from 'src/common/utils/role-protection.util';
 import { findDutyConflicts, isSensitivePermission } from 'src/common/utils/permission-risk.util';
 
 // Permission table is seeded 1:1 from PermissionsEnum; rolePermission is the

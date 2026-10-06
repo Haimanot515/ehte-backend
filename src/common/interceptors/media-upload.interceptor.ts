@@ -10,7 +10,7 @@ import type { Express, Request } from 'express';
 import { Observable } from 'rxjs';
 
 import { MediaFolder } from 'src/common/enums/media-folder.enum';
-import { MinioService } from 'src/services/minio/minio.service';
+import { MinioService } from 'src/infrastructure/minio/minio.service';
 
 export const MEDIA_UPLOAD_FIELDS_KEY = 'media_upload_fields';
 export const MAX_FILES_PER_FIELD = 10;
@@ -91,7 +91,8 @@ export class MediaUploadInterceptor implements NestInterceptor {
 
         if (spec.multiple) {
           // Keep any keys typed in as text (e.g. from the presigned flow).
-          const existing = body[spec.name] === undefined ? [] : ([] as unknown[]).concat(body[spec.name]);
+          const existing =
+            body[spec.name] === undefined ? [] : ([] as unknown[]).concat(body[spec.name]);
           if (existing.length || newKeys.length) {
             body[spec.name] = [...existing, ...newKeys];
           }

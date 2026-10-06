@@ -4,7 +4,7 @@ import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 
 import { PrismaService } from 'src/prisma/prisma.service';
-import { CacheService } from 'src/services/redis/cache.service';
+import { CacheService } from 'src/infrastructure/redis/cache.service';
 
 type AccessTokenPayload = {
   sub: string;

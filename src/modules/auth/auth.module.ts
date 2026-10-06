@@ -4,7 +4,7 @@ import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
 
 import { PrismaModule } from 'src/prisma/prisma.module';
-import { SmsModule } from 'src/services/sms/sms.module';
+import { SmsModule } from 'src/infrastructure/sms/sms.module';
 
 import { AuthController } from './controller/auth.controller';
 import { AuthService } from './service/auth.service';
@@ -17,6 +17,8 @@ import { RoleService } from './service/role.service';
 
 import { PermissionController } from './controller/permission.controller';
 import { PermissionService } from './service/permission.service';
+
+import { ReauthService } from './service/reauth.service';
 
 import { OtpUtil } from 'src/common/utils/otp.util';
 import { LockoutUtil } from 'src/common/utils/lockout.util';
@@ -53,12 +55,21 @@ import { SocialAuthUtil } from 'src/common/utils/social-auth.util';
     AdminAuthService,
     RoleService,
     PermissionService,
+    ReauthService,
     OtpUtil,
     LockoutUtil,
     TokenUtil,
     SocialAuthUtil,
   ],
 
-  exports: [AuthService, AdminAuthService, RoleService, PermissionService, OtpUtil, LockoutUtil],
+  exports: [
+    AuthService,
+    AdminAuthService,
+    RoleService,
+    PermissionService,
+    ReauthService,
+    OtpUtil,
+    LockoutUtil,
+  ],
 })
 export class AuthModule {}

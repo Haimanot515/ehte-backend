@@ -1,7 +1,7 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import type { Express } from 'express';
 
-import { MinioService } from 'src/services/minio/minio.service';
+import { MinioService } from 'src/infrastructure/minio/minio.service';
 
 import { PresignedUploadDto } from '../dto/presigned-upload.dto';
 import { MediaFolder } from '../../../common/enums/media-folder.enum';

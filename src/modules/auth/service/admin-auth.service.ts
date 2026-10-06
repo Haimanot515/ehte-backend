@@ -25,36 +25,36 @@ import { normalizePhoneNumber } from 'src/common/utils/phone.util';
 import { normalizeEmail } from 'src/common/utils/email.util';
 import { resolveActorType } from 'src/common/utils/actor-type.util';
 import { RolesEnum } from 'src/common/enums/roles.enum';
-import { hasStaffRole, NON_INVITABLE_ROLE_NAMES } from '../util/role-protection.util';
+import { hasStaffRole, NON_INVITABLE_ROLE_NAMES } from 'src/common/utils/role-protection.util';
 
 import { OtpUtil } from 'src/common/utils/otp.util';
 import { LockoutUtil } from 'src/common/utils/lockout.util';
 import { TokenUtil } from 'src/common/utils/token.util';
 
-import { EmailService } from 'src/services/email/email.service';
+import { EmailService } from 'src/infrastructure/email/email.service';
 import {
   renderEmailChangeVerificationSubject,
   renderEmailChangeVerificationHtml,
-} from 'src/services/email/templates/email-change-verification.template';
+} from 'src/infrastructure/email/templates/email-change-verification.template';
 
 import {
   renderAdminRegistrationEmailSubject,
   renderAdminRegistrationEmailHtml,
-} from 'src/services/email/templates/admin-registration-email.template';
+} from 'src/infrastructure/email/templates/admin-registration-email.template';
 
 import {
   renderPromotionEmailSubject,
   renderPromotionEmailHtml,
-} from 'src/services/email/templates/promotion-email.template';
+} from 'src/infrastructure/email/templates/promotion-email.template';
 
 import { AuditEventEnum } from 'src/common/enums/shared/audit-events.enum';
-import { AuditEventPayload } from 'src/modules/misc/events/audit.events';
+import { AuditEventPayload } from 'src/modules/misc/audit-log/events/audit.events';
 
 import { NotificationEventEnum } from 'src/common/enums/shared/notification-events.enum';
 import {
   PasswordChangedEvent,
   PasswordResetEvent,
-} from 'src/modules/misc/events/notification.events';
+} from 'src/modules/misc/notification/events/notification.events';
 
 import {
   ResetPasswordDto,
@@ -79,7 +79,7 @@ import {
 
 import { RefreshTokenDto } from '../dto/auth.dto';
 import { AuthService } from './auth.service';
-import { CacheService } from 'src/services/redis/cache.service';
+import { CacheService } from 'src/infrastructure/redis/cache.service';
 
 type TokenPair = {
   accessToken: string;
@@ -90,7 +90,7 @@ const REGISTRATION_TOKEN_EXPIRES_MINUTES = 60 * 24;
 const PROMOTION_TOKEN_EXPIRES_MINUTES = 60 * 24;
 const EMAIL_CHANGE_TOKEN_EXPIRES_MINUTES = 60;
 
-// Cast until AuditEventPayload's actorType union gains a SYSTEM variant, same as ReportService/PostService
+// Cast until AuditEventPayload's actorType union gains a SYSTEM variant, same as the report services and the post services
 const SYSTEM_ACTOR_TYPE = 'SYSTEM' as unknown as ReturnType<typeof resolveActorType>;
 
 type UserRoleWithPermissions = {

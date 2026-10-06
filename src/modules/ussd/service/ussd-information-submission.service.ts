@@ -4,7 +4,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 
 import { PrismaService } from 'src/prisma/prisma.service';
 import { AuditEventEnum } from 'src/common/enums/shared/audit-events.enum';
-import { AuditEventPayload } from 'src/modules/misc/events/audit.events';
+import { AuditEventPayload } from 'src/modules/misc/audit-log/events/audit.events';
 import { NotificationEventEnum } from 'src/common/enums/shared/notification-events.enum';
 
 export interface CreateAnonymousInformationSubmissionInput {

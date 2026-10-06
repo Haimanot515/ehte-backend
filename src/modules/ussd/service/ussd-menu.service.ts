@@ -5,7 +5,7 @@ import { UssdSessionState, UssdInboundDto, UssdOutboundResult } from '../dto/uss
 import { UssdReportService } from './ussd-report.service';
 import { UssdMissingPersonService } from './ussd-missing-person.service';
 import { UssdInformationSubmissionService } from './ussd-information-submission.service';
-import { RedisService } from '../../../services/redis/redis.service';
+import { RedisService } from '../../../infrastructure/redis/redis.service';
 
 const REPORT_CATEGORIES: Array<{ label: string; value: ReportCategory }> = [
   { label: 'Harassment', value: ReportCategory.HARASSMENT },

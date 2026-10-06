@@ -35,15 +35,15 @@ import {
 import { resolveActorType } from 'src/common/utils/actor-type.util';
 
 import { AuditEventEnum } from 'src/common/enums/shared/audit-events.enum';
-import { AuditEventPayload } from 'src/modules/misc/events/audit.events';
+import { AuditEventPayload } from 'src/modules/misc/audit-log/events/audit.events';
 import {
   hasStaffRole,
   isPermissionLockedRole,
   isProtectedRole,
-} from '../util/role-protection.util';
+} from 'src/common/utils/role-protection.util';
 import { PermissionsEnum } from 'src/common/enums/permissions.enum';
 import { requiresTwoPersonApproval } from 'src/common/utils/permission-risk.util';
-import { CacheService } from 'src/services/redis/cache.service';
+import { CacheService } from 'src/infrastructure/redis/cache.service';
 
 // ── constants for the new role features ──
 const ASSIGNMENT_REQUEST_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -1428,7 +1428,7 @@ export class RoleService {
         this.emitAudit({
           userId: null,
           targetUserId: item.userId,
-          actorType: 'SYSTEM' as unknown as ReturnType<typeof resolveActorType>,
+          actorType: 'SYSTEM',
           action: AuditEventEnum.ROLE_TEMPORARY_EXPIRED,
           entity: 'Role',
           entityId: item.roleId,

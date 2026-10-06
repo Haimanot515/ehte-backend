@@ -13,27 +13,43 @@ import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 
 import { ScheduleModule } from '@nestjs/schedule';
 
-import configuration from './config/configuration';
-import minioConfig from './config/minio.config';
-import emailConfig from './config/email.config';
+import configuration from './configuration/configuration';
 
 import { PrismaModule } from './prisma/prisma.module';
-import { MinioModule } from './services/minio/minio.module';
-import { RedisModule } from './services/redis/redis.module';
-import { RedisThrottlerStorage } from './services/redis/redis-throttler.storage';
+import { MinioModule } from './infrastructure/minio/minio.module';
+import { RedisModule } from './infrastructure/redis/redis.module';
+import { RedisThrottlerStorage } from './infrastructure/redis/redis-throttler.storage';
 import { AppLoggerModule } from './common/logger/logger.module';
 import { RequestContextModule } from './common/request-context/request-context.module';
-import { EmailModule } from './services/email/email.module';
+import { EmailModule } from './infrastructure/email/email.module';
 
-import { CoreModule } from './modules/core/core.module';
+import { UserModule } from './modules/core/user/user.module';
+import { ReportModule } from './modules/core/report/report.module';
+import { PostModule } from './modules/core/post/post.module';
+import { MissingPersonModule } from './modules/core/missing-person/missing-person.module';
+import { InformationSubmissionModule } from './modules/core/information-submission/information-submission.module';
+import { VictimProfileModule } from './modules/core/victim-profile/victim-profile.module';
+import { SupportModule } from './modules/core/support/support.module';
 
 import { MediaModule } from './modules/media/media.module';
 
-import { MiscModule } from './modules/misc/misc.module';
+import { AuditLogModule } from './modules/misc/audit-log/audit-log.module';
+import { NotificationModule } from './modules/misc/notification/notification.module';
+import { ExplorerModule } from './modules/misc/explorer/explorer.module';
 
 import { AppAccessModule } from './modules/app-access/app-access.module';
 
-import { BillingModule } from './modules/billing/billing.module';
+import { PayerBillingModule } from './modules/billing/payer-billing/payer-billing.module';
+import { PaymentAdminModule } from './modules/billing/payment-admin/payment-admin.module';
+import { InstitutionAdminModule } from './modules/billing/institution-admin/institution-admin.module';
+import { DisbursementAdminModule } from './modules/billing/disbursement-admin/disbursement-admin.module';
+import { RewardAdminModule } from './modules/billing/reward-admin/reward-admin.module';
+import { PaymentModule } from './modules/billing/payment/payment.module';
+import { ChapaWebhookModule } from './modules/billing/chapa-webhook/chapa-webhook.module';
+import { AgreementModule } from './modules/billing/agreement/agreement.module';
+import { DisbursementModule } from './modules/billing/disbursement/disbursement.module';
+import { RewardModule } from './modules/billing/reward/reward.module';
+import { BillingReportModule } from './modules/billing/billing-report/billing-report.module';
 
 // FIX: was never wired into AppModule despite existing in the tree.
 import { UssdModule } from './modules/ussd/ussd.module';
@@ -47,7 +63,6 @@ import { RolesGuard } from './common/guards/roles.guard';
 import { PermissionsGuard } from './common/guards/permissions.guard';
 
 import { ReauthGuard } from './common/guards/reauth.guard';
-import { ReauthService } from './services/reauthentication/reauth.service';
 
 import { ActorContextInterceptor } from './common/interceptors/actor-context.interceptor';
 
@@ -107,7 +122,7 @@ const REDIS_URL_SCHEMES = { scheme: ['redis', 'rediss'] };
 
       envFilePath: [`.env.${process.env.NODE_ENV}`, '.env'],
 
-      load: [configuration, minioConfig, emailConfig],
+      load: [configuration],
 
       validationSchema: Joi.object({
         NODE_ENV: Joi.string().valid('development', 'test', 'production').default('development'),
@@ -134,10 +149,11 @@ const REDIS_URL_SCHEMES = { scheme: ['redis', 'rediss'] };
         JWT_REFRESH_SECRET: Joi.string().min(32).optional(),
         JWT_REFRESH_EXPIRES_IN: Joi.string().default('7d'),
 
-        GOOGLE_CLIENT_ID: Joi.string().optional(),
-        FACEBOOK_APP_ID: Joi.string().optional(),
-        FACEBOOK_APP_SECRET: Joi.string().optional(),
-        APPLE_CLIENT_ID: Joi.string().optional(),
+        // Blank values are allowed: the .env ships these empty until a provider is enabled.
+        GOOGLE_CLIENT_ID: Joi.string().optional().allow(''),
+        FACEBOOK_APP_ID: Joi.string().optional().allow(''),
+        FACEBOOK_APP_SECRET: Joi.string().optional().allow(''),
+        APPLE_CLIENT_ID: Joi.string().optional().allow(''),
 
         OTP_EXPIRES_IN_MINUTES: Joi.number().default(10),
         OTP_RESEND_COOLDOWN_SECONDS: Joi.number().default(60),
@@ -336,6 +352,78 @@ const REDIS_URL_SCHEMES = { scheme: ['redis', 'rediss'] };
         PROFILE_AUTO_FLAG_REJECTION_COUNT: Joi.number().optional(),
         PROFILE_AUTO_FLAG_WINDOW_DAYS: Joi.number().optional(),
 
+        // ── URLs / deep links / proxy ─────────────────────────────────────
+        APP_URL: Joi.string().uri().optional(),
+        ADMIN_APP_URL: Joi.string().uri().optional(),
+        FRONTEND_URL: Joi.string().uri().optional(),
+        WEB_BASE_URL: Joi.string().uri().optional(),
+        APP_DEEP_LINK_SCHEME: Joi.string().default('ehte'),
+        APP_DEEP_LINK_BASE: Joi.string().default('ehte://missing-persons'),
+        ANDROID_STORE_URL: Joi.string().uri().optional(),
+        IOS_STORE_URL: Joi.string().uri().optional(),
+        TRUST_PROXY_HOPS: Joi.number().integer().min(0).default(0),
+
+        // ── Token / 2FA secrets and auth tuning ───────────────────────────
+        JWT_REGISTRATION_SECRET: Joi.string().min(32).optional(),
+        TWO_FACTOR_ENCRYPTION_KEY: Joi.string()
+          .pattern(/^[0-9a-fA-F]{64}$/)
+          .optional()
+          .messages({
+            'string.pattern.base':
+              'TWO_FACTOR_ENCRYPTION_KEY must be 64 hex chars (openssl rand -hex 32)',
+          }),
+        TWO_FACTOR_ISSUER: Joi.string().default('Ehte'),
+        TWO_FACTOR_SMS_ENABLED: Joi.boolean().default(false),
+        PASSWORD_MIN_LENGTH: Joi.number().integer().min(6).default(8),
+        MAX_REAUTH_ATTEMPTS: Joi.number().integer().min(1).default(5),
+        SELF_REACTIVATION_ENABLED: Joi.boolean().default(false),
+
+        // ── Seeders (blank allowed; seeders fall back to their own defaults when unset) ──
+        ADMIN_EMAIL: Joi.string().email().optional().allow(''),
+        ADMIN_NAME: Joi.string().optional().allow(''),
+        ADMIN_PASSWORD: Joi.string().optional().allow(''),
+        USER_NAME: Joi.string().optional().allow(''),
+        USER_PHONE: Joi.string().optional().allow(''),
+        USER_PASSWORD: Joi.string().optional().allow(''),
+
+        // ── Audit / notification / report ─────────────────────────────────
+        AUDIT_PURGE_TOKEN_SECRET: Joi.string().min(32).optional(),
+        AUDIT_PURGE_MIN_NOTICE_HOURS: Joi.number().min(0).default(72),
+        AUDIT_WORKER_ENABLED: Joi.boolean().default(true),
+        NOTIFICATION_WORKER_ENABLED: Joi.boolean().default(true),
+        NOTIFICATION_DEFAULT_TIMEZONE: Joi.string().default('Africa/Addis_Ababa'),
+        NOTIFICATION_READ_RETENTION_DAYS: Joi.number().integer().min(1).default(180),
+        NOTIFICATION_BROADCAST_APPROVAL_THRESHOLD: Joi.number().integer().min(1).default(1000),
+        REPORT_ANON_MASK_SECRET: Joi.string().min(32).optional(),
+        REPORT_STATS_TZ: Joi.string().default('Africa/Addis_Ababa'),
+        SMS_MAX_LENGTH: Joi.number().integer().min(1).default(300),
+
+        // ── Feature flags ────────────────────────────────────────────────
+        SUPPORT_CURRENCY: Joi.string().default('ETB'),
+        SUPPORT_ENABLED: Joi.boolean().default(true),
+        MISSING_PERSONS_ENABLED: Joi.boolean().default(true),
+        VICTIM_SUPPORT_ENABLED: Joi.boolean().default(true),
+
+        // ── Per-module limits with no CONTENT_* fallback ──────────────────
+        INFORMATION_SUBMISSION_MAX_OPEN_QUESTIONS: Joi.number().integer().min(1).default(3),
+        INFORMATION_SUBMISSION_APPEAL_WINDOW_DAYS: Joi.number().integer().min(1).default(14),
+        INFORMATION_SUBMISSION_EXPORT_MAX_ROWS: Joi.number().integer().min(1).default(5000),
+        INFORMATION_SUBMISSION_EXPORT_TTL_HOURS: Joi.number().integer().min(1).default(24),
+        REPORT_EXPORT_MAX_ROWS: Joi.number().integer().min(1).default(5000),
+        REPORT_EXPORT_JOB_MAX_ROWS: Joi.number().integer().min(1).default(100000),
+        REPORT_EXPORT_TTL_DAYS: Joi.number().integer().min(1).default(7),
+        REPORT_MAP_MAX_POINTS: Joi.number().integer().min(1).default(5000),
+        REPORT_MAX_DRAFTS_PER_USER: Joi.number().integer().min(1).default(20),
+        PROFILE_EXPORT_MAX_ROWS: Joi.number().integer().min(1).default(5000),
+        PROFILE_EXPORT_JOB_MAX_ROWS: Joi.number().integer().min(1).default(100000),
+        PROFILE_EXPORT_TTL_HOURS: Joi.number().integer().min(1).default(24),
+        PROFILE_MAX_APPEALS: Joi.number().integer().min(1).default(2),
+        PROFILE_MAX_UPDATES_PER_DAY: Joi.number().integer().min(1).default(10),
+        PROFILE_STALE_CHILD_HOURS: Joi.number().integer().min(1).default(12),
+        MISSING_PERSON_EXPORT_MAX_ROWS: Joi.number().integer().min(1).default(5000),
+        MISSING_PERSON_EXPORT_TTL_HOURS: Joi.number().integer().min(1).default(24),
+        MISSING_PERSON_RENEW_DEFAULT_DAYS: Joi.number().integer().min(1).default(30),
+
         SMTP_HOST: Joi.string().required(),
         SMTP_PORT: Joi.number().default(587),
         SMTP_SECURE: Joi.boolean().default(false),
@@ -409,13 +497,31 @@ const REDIS_URL_SCHEMES = { scheme: ['redis', 'rediss'] };
 
     AuthModule,
 
-    CoreModule,
+    UserModule,
+    ReportModule,
+    PostModule,
+    MissingPersonModule,
+    InformationSubmissionModule,
+    VictimProfileModule,
+    SupportModule,
 
-    BillingModule,
+    PayerBillingModule,
+    PaymentAdminModule,
+    InstitutionAdminModule,
+    DisbursementAdminModule,
+    RewardAdminModule,
+    PaymentModule,
+    ChapaWebhookModule,
+    AgreementModule,
+    DisbursementModule,
+    RewardModule,
+    BillingReportModule,
 
     MediaModule,
 
-    MiscModule,
+    AuditLogModule,
+    NotificationModule,
+    ExplorerModule,
 
     AppAccessModule,
 
@@ -426,8 +532,6 @@ const REDIS_URL_SCHEMES = { scheme: ['redis', 'rediss'] };
 
   providers: [
     JwtStrategy,
-
-    ReauthService,
 
     { provide: APP_GUARD, useClass: ThrottlerGuard },
     { provide: APP_GUARD, useClass: JwtAuthGuard },

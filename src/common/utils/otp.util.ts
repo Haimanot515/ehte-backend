@@ -5,16 +5,16 @@ import * as bcrypt from 'bcrypt';
 import { randomInt } from 'crypto';
 
 import { PrismaService } from 'src/prisma/prisma.service';
-import { CacheService } from 'src/services/redis/cache.service'; // REDIS
+import { CacheService } from 'src/infrastructure/redis/cache.service'; // REDIS
 
-import { sendSms } from 'src/services/sms/sendet.service';
-import { renderOtpSms } from 'src/services/sms/templates/sms-otp.template';
+import { sendSms } from 'src/infrastructure/sms/sendet.service';
+import { renderOtpSms } from 'src/infrastructure/sms/templates/sms-otp.template';
 
-import { EmailService } from 'src/services/email/email.service';
+import { EmailService } from 'src/infrastructure/email/email.service';
 import {
   renderOtpEmailSubject,
   renderOtpEmailHtml,
-} from 'src/services/email/templates/otp-email.template';
+} from 'src/infrastructure/email/templates/otp-email.template';
 
 type OtpDb = Pick<Prisma.TransactionClient, 'userOtp'>;
 

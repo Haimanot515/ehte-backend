@@ -14,11 +14,10 @@ import { UssdInformationSubmissionService } from './service/ussd-information-sub
 import { AfricasTalkingStyleAdapter } from './service/adapters/africastalking-style.adapter';
 import { EthioTelecomAdapter } from './service/adapters/ethio-telecom.adapter';
 
-import { CoreModule } from '../core/core.module';
-import { RedisModule } from '../../services/redis/redis.module';
+import { RedisModule } from '../../infrastructure/redis/redis.module';
 
 @Module({
-  imports: [CoreModule, RedisModule],
+  imports: [RedisModule],
 
   controllers: [UssdController],
 

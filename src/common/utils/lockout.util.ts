@@ -2,7 +2,7 @@ import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
 import { PrismaService } from 'src/prisma/prisma.service';
-import { CacheService } from 'src/services/redis/cache.service'; // REDIS
+import { CacheService } from 'src/infrastructure/redis/cache.service'; // REDIS
 
 @Injectable()
 export class LockoutUtil {

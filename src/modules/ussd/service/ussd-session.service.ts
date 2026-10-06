@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { UssdSessionState, UssdStep } from '../dto/ussd-session.dto';
-import { RedisService } from '../../../services/redis/redis.service';
+import { RedisService } from '../../../infrastructure/redis/redis.service';
 
 // Must be >= the USSD gateway's own per-request session timeout.
 const SESSION_TTL_SECONDS = 180;

@@ -29,25 +29,25 @@ import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
 import { normalizePhoneNumber } from 'src/common/utils/phone.util';
 import { resolveActorType } from 'src/common/utils/actor-type.util';
 import { RolesEnum } from 'src/common/enums/roles.enum';
-import { hasStaffRole } from '../util/role-protection.util';
+import { hasStaffRole } from 'src/common/utils/role-protection.util';
 
 import { OtpUtil } from 'src/common/utils/otp.util';
 import { LockoutUtil } from 'src/common/utils/lockout.util';
 import { TokenUtil } from 'src/common/utils/token.util';
 import { SocialAuthUtil, SocialProfile } from 'src/common/utils/social-auth.util';
-import { CacheService } from 'src/services/redis/cache.service'; // REDIS
+import { CacheService } from 'src/infrastructure/redis/cache.service'; // REDIS
 
-import { sendSms } from 'src/services/sms/sendet.service';
-import { renderOtpSms } from 'src/services/sms/templates/sms-otp.template';
+import { sendSms } from 'src/infrastructure/sms/sendet.service';
+import { renderOtpSms } from 'src/infrastructure/sms/templates/sms-otp.template';
 
 import { AuditEventEnum } from 'src/common/enums/shared/audit-events.enum';
-import { AuditEventPayload } from 'src/modules/misc/events/audit.events';
+import { AuditEventPayload } from 'src/modules/misc/audit-log/events/audit.events';
 
 import { NotificationEventEnum } from 'src/common/enums/shared/notification-events.enum';
 import {
   PasswordChangedEvent,
   PasswordResetEvent,
-} from 'src/modules/misc/events/notification.events';
+} from 'src/modules/misc/notification/events/notification.events';
 
 import {
   ChangePasswordInitiateDto,

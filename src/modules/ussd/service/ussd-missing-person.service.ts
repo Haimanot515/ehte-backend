@@ -4,7 +4,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 
 import { PrismaService } from 'src/prisma/prisma.service';
 import { AuditEventEnum } from 'src/common/enums/shared/audit-events.enum';
-import { AuditEventPayload } from 'src/modules/misc/events/audit.events';
+import { AuditEventPayload } from 'src/modules/misc/audit-log/events/audit.events';
 import { NotificationEventEnum } from 'src/common/enums/shared/notification-events.enum';
 
 export interface CreateAnonymousMissingPersonInput {
@@ -16,7 +16,7 @@ export interface CreateAnonymousMissingPersonInput {
   contactPhone?: string;
 }
 
-// Same projection MissingPersonService.publicSelect uses, kept
+// Same projection PUBLIC_SELECT in missing-person.constants uses, kept
 // independent on purpose (see class-level note below).
 const PUBLIC_SELECT = {
   id: true,
@@ -41,7 +41,7 @@ export class UssdMissingPersonService {
   }
 
   // Redacts CHILD case names in audit logs, same rule as
-  // MissingPersonService.caseLabel.
+  // MissingPersonCommonService.caseLabel.
   private caseLabel(missingPerson: {
     id: string;
     name: string | null;
@@ -95,7 +95,7 @@ export class UssdMissingPersonService {
 
   /**
    * Replaces the UssdMenuService's previous call into
-   * MissingPersonService.findOne(). Same APPROVED-only visibility
+   * MissingPersonPublicService.findOne(). Same APPROVED-only visibility
    * rule, same public field projection — reimplemented here rather
    * than shared, per the module-independence decision. If that rule
    * ever changes, it needs to be updated in both places; that

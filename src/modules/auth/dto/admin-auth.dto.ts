@@ -20,7 +20,7 @@ import {
 
 import { RolesEnum } from 'src/common/enums/roles.enum';
 
-export { ResetPasswordDto } from '../../auth/dto/auth.dto';
+export { ResetPasswordDto } from './auth.dto';
 
 export class AdminLoginEmailDto {
   @ApiProperty({
