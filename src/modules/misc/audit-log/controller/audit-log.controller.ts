@@ -124,6 +124,7 @@ export class AuditLogController {
   @ApiQuery({ name: 'path', required: false })
   @ApiQuery({ name: 'country', required: false })
   @ApiQuery({ name: 'city', required: false })
+  @ApiQuery({ name: 'region', required: false })
   @ApiQuery({ name: 'sessionId', required: false })
   @ApiQuery({ name: 'requestId', required: false })
   @ApiQuery({ name: 'ipAddress', required: false })

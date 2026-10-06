@@ -362,6 +362,9 @@ const REDIS_URL_SCHEMES = { scheme: ['redis', 'rediss'] };
         ANDROID_STORE_URL: Joi.string().uri().optional(),
         IOS_STORE_URL: Joi.string().uri().optional(),
         TRUST_PROXY_HOPS: Joi.number().integer().min(0).default(0),
+        GEOIP_CITY_DB_PATH: Joi.string().optional().allow(''),
+        GEOIP_ASN_DB_PATH: Joi.string().optional().allow(''),
+        GEO_TRUST_HEADERS: Joi.boolean().default(false),
 
         // ── Token / 2FA secrets and auth tuning ───────────────────────────
         JWT_REGISTRATION_SECRET: Joi.string().min(32).optional(),

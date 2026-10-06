@@ -155,6 +155,12 @@ export class AuditLogFiltersDto {
   @MaxLength(100)
   city?: string;
 
+  @ApiPropertyOptional({ example: 'Addis Ababa Region' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  region?: string;
+
   @ApiPropertyOptional({ example: 'session id' })
   @IsOptional()
   @IsString()

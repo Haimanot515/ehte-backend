@@ -135,6 +135,10 @@ const ADMIN_SELECT = {
   diff: true,
   country: true,
   city: true,
+  region: true,
+  timezone: true,
+  deviceLabel: true,
+  clientVersion: true,
   source: true,
   method: true,
   path: true,
@@ -148,6 +152,8 @@ const FULL_SELECT = {
   ...ADMIN_SELECT,
   ipAddress: true,
   userAgent: true,
+  asn: true,
+  isp: true,
   metadata: true,
   legalHold: true,
   seq: true,
@@ -157,7 +163,7 @@ const FULL_SELECT = {
 
 type FullAuditRow = Prisma.AuditLogGetPayload<{ select: typeof FULL_SELECT }>;
 type RedactedKey =
-  'ipAddress' | 'userAgent' | 'metadata' | 'legalHold' | 'seq' | 'hash' | 'prevHash';
+  'ipAddress' | 'userAgent' | 'asn' | 'isp' | 'metadata' | 'legalHold' | 'seq' | 'hash' | 'prevHash';
 
 /** ADMIN rows simply do not carry the redacted keys, so they are optional in the type. */
 export type AuditLogView = Omit<FullAuditRow, RedactedKey> &
@@ -412,8 +418,14 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
 
       ipAddress: payload.ipAddress ?? net?.ipAddress ?? null,
       userAgent: payload.userAgent ?? net?.userAgent ?? null,
-      country: payload.country ?? null,
-      city: payload.city ?? null,
+      country: payload.country ?? net?.country ?? null,
+      city: payload.city ?? net?.city ?? null,
+      region: net?.region ?? null,
+      timezone: net?.timezone ?? null,
+      asn: net?.asn ?? null,
+      isp: net?.isp ?? null,
+      deviceLabel: net?.deviceLabel ?? null,
+      clientVersion: net?.clientVersion ?? null,
       source: payload.source ?? (isSystem ? AuditSource.SYSTEM : (ctx?.source ?? null)),
       method: payload.method ?? net?.method ?? null,
       path: payload.path ?? net?.path ?? null,
@@ -851,6 +863,14 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
       { header: 'reason', value: (r) => r.reason },
       { header: 'ipAddress', superOnly: true, value: (r) => r.ipAddress },
       { header: 'userAgent', superOnly: true, value: (r) => r.userAgent },
+      { header: 'country', value: (r) => r.country },
+      { header: 'region', value: (r) => r.region },
+      { header: 'city', value: (r) => r.city },
+      { header: 'timezone', value: (r) => r.timezone },
+      { header: 'asn', superOnly: true, value: (r) => r.asn },
+      { header: 'isp', superOnly: true, value: (r) => r.isp },
+      { header: 'deviceLabel', value: (r) => r.deviceLabel },
+      { header: 'clientVersion', value: (r) => r.clientVersion },
       { header: 'requestId', value: (r) => r.requestId },
       { header: 'source', value: (r) => r.source },
       { header: 'diff', value: (r) => r.diff },
@@ -1517,6 +1537,12 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
           userAgent: null,
           country: null,
           city: null,
+          region: null,
+          timezone: null,
+          asn: null,
+          isp: null,
+          deviceLabel: null,
+          clientVersion: null,
           metadata: Prisma.DbNull,
           anonymizedAt: now,
         },
@@ -2992,6 +3018,14 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
       { header: 'reason', value: (r) => r.reason },
       { header: 'ipAddress', superOnly: true, value: (r) => r.ipAddress },
       { header: 'userAgent', superOnly: true, value: (r) => r.userAgent },
+      { header: 'country', value: (r) => r.country },
+      { header: 'region', value: (r) => r.region },
+      { header: 'city', value: (r) => r.city },
+      { header: 'timezone', value: (r) => r.timezone },
+      { header: 'asn', superOnly: true, value: (r) => r.asn },
+      { header: 'isp', superOnly: true, value: (r) => r.isp },
+      { header: 'deviceLabel', value: (r) => r.deviceLabel },
+      { header: 'clientVersion', value: (r) => r.clientVersion },
       { header: 'requestId', value: (r) => r.requestId },
       { header: 'source', value: (r) => r.source },
       { header: 'diff', value: (r) => r.diff },
@@ -3155,6 +3189,8 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
     source: true,
     country: true,
     city: true,
+    region: true,
+    deviceLabel: true,
   } as const;
 
   private async selfPage(where: Prisma.AuditLogWhereInput, dto: AuditPagingDto) {
@@ -3833,6 +3869,7 @@ export class AuditLogService implements OnModuleInit, OnModuleDestroy {
       ...(f.path && { path: ci(f.path) }),
       ...(f.country && { country: { equals: f.country, mode: Prisma.QueryMode.insensitive } }),
       ...(f.city && { city: { equals: f.city, mode: Prisma.QueryMode.insensitive } }),
+      ...(f.region && { region: { equals: f.region, mode: Prisma.QueryMode.insensitive } }),
       ...(f.sessionId && { sessionId: f.sessionId }),
       ...(f.requestId && { requestId: f.requestId }),
       ...(f.ipAddress && { ipAddress: f.ipAddress }),

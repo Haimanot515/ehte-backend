@@ -57,6 +57,14 @@ model AuditLog {
   userAgent String?
   country   String?
   city      String?
+  region    String?
+  timezone  String?
+  asn       Int?
+  isp       String?
+  // Browser and OS parsed from the user agent, e.g. "Chrome on Windows"
+  deviceLabel   String?
+  // Value of the x-app-version request header, when the client sends one
+  clientVersion String?
   source    AuditSource?
   method    String?
   path      String?
@@ -85,6 +93,7 @@ model AuditLog {
   @@index([actorType])
   @@index([severity, createdAt])
   @@index([sessionId])
+  @@index([country, createdAt])
   @@map("audit_log")
 }
 

@@ -269,7 +269,9 @@ export class UserCommonService {
       outcome: row.outcome,
       at: row.createdAt,
       device: row.userAgent ?? null,
-      location: this.coarseIp(row.ipAddress),
+      location:
+        [row.city, row.country].filter(Boolean).join(', ') || this.coarseIp(row.ipAddress),
+      deviceLabel: row.deviceLabel ?? null,
     };
   }
 

@@ -34,6 +34,14 @@ export default () => ({
     debug: process.env.APP_DEBUG === 'true',
   },
 
+  geo: {
+    // Paths to MaxMind GeoLite2-City.mmdb and GeoLite2-ASN.mmdb. Leave empty to disable the lookup.
+    cityDbPath: process.env.GEOIP_CITY_DB_PATH || undefined,
+    asnDbPath: process.env.GEOIP_ASN_DB_PATH || undefined,
+    // Read x-geo-country, x-geo-city and x-geo-region set by nginx. Only enable if nginx overwrites them.
+    trustHeaders: process.env.GEO_TRUST_HEADERS === 'true',
+  },
+
   sms: {
     // Reserved: sms-notification.provider.ts still uses a hardcoded 300.
     maxLength: parseInt(process.env.SMS_MAX_LENGTH ?? '300', 10),
