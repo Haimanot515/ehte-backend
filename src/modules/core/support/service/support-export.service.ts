@@ -6,7 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { AuditSeverity, Prisma, SupportExportJobStatus } from '@prisma/client';
+import { AuditSeverity, Prisma, SupportExportJobStatus, ActorType } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
 import { resolveActorType } from 'src/common/utils/actor-type.util';
@@ -260,10 +260,18 @@ export class SupportExportService {
         },
       });
 
-      await this.prisma.supportExportJob.updateMany({
+      const expired = await this.prisma.supportExportJob.updateMany({
         where: { status: SupportExportJobStatus.COMPLETED, expiresAt: { lt: new Date(now) } },
         data: { status: SupportExportJobStatus.EXPIRED, csv: null },
       });
+      if (expired.count > 0) {
+        this.supportCommonService.emitAudit({
+          actorType: ActorType.SYSTEM,
+          action: AuditEventEnum.SUPPORT_EXPORT_EXPIRED,
+          entity: 'SupportExportJob',
+          metadata: { expiredJobs: expired.count },
+        });
+      }
     } catch (error) {
       this.logger.error(
         'Support export sweep failed',

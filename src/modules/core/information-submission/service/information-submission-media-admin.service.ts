@@ -9,6 +9,7 @@ import {
   AuditOutcome,
   AuditSeverity,
   InformationRedactionMode as PrismaInformationRedactionMode,
+  ActorType,
 } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
@@ -94,9 +95,18 @@ export class InformationSubmissionMediaAdminService {
   private async syncAttachmentRows(submission: MediaBearing & { id: string }): Promise<void> {
     const keys = this.informationSubmissionCommonService.collectMediaFields(submission);
 
-    await this.prisma.informationAttachment.deleteMany({
+    const removed = await this.prisma.informationAttachment.deleteMany({
       where: { submissionId: submission.id, key: { notIn: keys } },
     });
+    if (removed.count > 0) {
+      this.informationSubmissionCommonService.emitAudit({
+        actorType: ActorType.SYSTEM,
+        action: AuditEventEnum.INFORMATION_SUBMISSION_ATTACHMENTS_SYNCED,
+        entity: 'InformationSubmission',
+        entityId: submission.id,
+        metadata: { removed: removed.count },
+      });
+    }
     if (!keys.length) return;
 
     const known = await this.prisma.informationAttachment.findMany({
@@ -109,7 +119,7 @@ export class InformationSubmissionMediaAdminService {
 
     const stats = await Promise.allSettled(missing.map((key) => this.minioService.statObject(key)));
 
-    await this.prisma.informationAttachment.createMany({
+    const created = await this.prisma.informationAttachment.createMany({
       data: missing.map((key, i) => {
         const result = stats[i];
         const stat = result.status === 'fulfilled' ? result.value : null;
@@ -127,6 +137,15 @@ export class InformationSubmissionMediaAdminService {
       }),
       skipDuplicates: true,
     });
+    if (created.count > 0) {
+      this.informationSubmissionCommonService.emitAudit({
+        actorType: ActorType.SYSTEM,
+        action: AuditEventEnum.INFORMATION_SUBMISSION_ATTACHMENTS_SYNCED,
+        entity: 'InformationSubmission',
+        entityId: submission.id,
+        metadata: { added: created.count },
+      });
+    }
   }
 
   async listAttachments(id: string) {

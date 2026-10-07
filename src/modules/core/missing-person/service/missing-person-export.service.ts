@@ -1,5 +1,5 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { AuditSeverity, MissingPersonExportStatus, Prisma } from '@prisma/client';
+import { AuditSeverity, MissingPersonExportStatus, Prisma, ActorType } from '@prisma/client';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
@@ -203,6 +203,12 @@ export class MissingPersonExportService {
     if (job.expiresAt < new Date()) {
       if (job.content) {
         await this.prisma.missingPersonExportJob.update({ where: { id }, data: { content: null } });
+        this.missingPersonCommonService.emitAudit({
+          actorType: ActorType.SYSTEM,
+          action: AuditEventEnum.MISSING_PERSON_EXPORT_EXPIRED,
+          entity: 'MissingPersonExportJob',
+          entityId: id,
+        });
       }
       throw new NotFoundException('export_job_expired');
     }

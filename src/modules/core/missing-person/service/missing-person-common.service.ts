@@ -56,6 +56,14 @@ const MISSING_PERSON_OPERATION_ACTIONS: Record<string, AuditEventEnum> = {
   export_csv: AuditEventEnum.MISSING_PERSON_EXPORTED,
   export_job_started: AuditEventEnum.MISSING_PERSON_EXPORT_STARTED,
   export_job_download: AuditEventEnum.MISSING_PERSON_EXPORT_DOWNLOADED,
+  legal_hold_placed: AuditEventEnum.MISSING_PERSON_LEGAL_HOLD_CHANGED,
+  legal_hold_released: AuditEventEnum.MISSING_PERSON_LEGAL_HOLD_CHANGED,
+  child_flag_corrected: AuditEventEnum.MISSING_PERSON_CHILD_FLAG_CORRECTED,
+  admin_renew: AuditEventEnum.MISSING_PERSON_RENEWED,
+  owner_renew: AuditEventEnum.MISSING_PERSON_RENEWED,
+  admin_remove_media: AuditEventEnum.MISSING_PERSON_MEDIA_REMOVED,
+  owner_remove_media: AuditEventEnum.MISSING_PERSON_MEDIA_REMOVED,
+  found_report_confirmed: AuditEventEnum.MISSING_PERSON_FOUND_REPORT_VERIFIED,
 };
 
 @Injectable()

@@ -411,6 +411,29 @@ export class VictimProfileReviewService {
       metadata: { consentNewlyRecorded },
     });
 
+    // Each approval gate that was just switched on also gets its own audit action.
+    const gatesSwitchedOn: Array<[boolean, AuditEventEnum]> = [
+      [!profile.isVerified && isVerified, AuditEventEnum.VICTIM_PROFILE_VERIFIED],
+      [
+        !profile.isPrivacyReviewed && isPrivacyReviewed,
+        AuditEventEnum.VICTIM_PROFILE_PRIVACY_REVIEWED,
+      ],
+      [!profile.isAdminApproved && isAdminApproved, AuditEventEnum.VICTIM_PROFILE_APPROVED],
+    ];
+    for (const [switchedOn, gateAction] of gatesSwitchedOn) {
+      if (!switchedOn) continue;
+      this.victimProfileCommonService.emitAudit({
+        userId: admin.id,
+        ...this.victimProfileCommonService.targetUserFor(admin, profile),
+        actorType: resolveActorType(this.victimProfileCommonService.getRoles(admin)),
+        action: gateAction,
+        entity: 'VictimProfile',
+        entityId: id,
+        entityLabel: this.victimProfileCommonService.profileLabel(profile),
+        diff: { result: 'success', previousStatus: profile.status, newStatus: status },
+      });
+    }
+
     this.eventEmitter.emit(NotificationEventEnum.VICTIM_PROFILE_GATES_UPDATED, {
       userId: profile.createdByUserId,
       victimProfileId: id,
