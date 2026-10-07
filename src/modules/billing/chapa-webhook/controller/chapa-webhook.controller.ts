@@ -15,6 +15,8 @@ import { AllowAnonymous } from '../../../../common/decorators/public.decorator';
 import { ChapaService } from '../../../../infrastructure/chapa/chapa.service';
 import { PaymentService } from 'src/modules/billing/payment/service/payment.service';
 import { PaymentAdminService } from 'src/modules/billing/payment-admin/service/payment-admin.service';
+import { AuditEvent } from 'src/common/decorators/audit-event.decorator';
+import { AuditEventEnum } from 'src/common/enums/shared/audit-events.enum';
 
 @ApiExcludeController()
 @Controller('billing')
@@ -29,6 +31,7 @@ export class ChapaWebhookController {
   @SkipThrottle()
   @Post('webhook/chapa')
   @HttpCode(200)
+  @AuditEvent({ action: AuditEventEnum.PAYMENT_WEBHOOK_REJECTED, entity: 'PaymentWebhook', onSuccess: false, onError: (e) => e instanceof UnauthorizedException ? AuditEventEnum.PAYMENT_WEBHOOK_REJECTED : e instanceof BadRequestException ? AuditEventEnum.PAYMENT_WEBHOOK_PAYLOAD_INVALID : null })
   async handle(
     @Req() req: RawBodyRequest<Request>,
     @Headers('x-chapa-signature') sigA?: string,

@@ -60,6 +60,8 @@ import { RequirePermissions } from 'src/common/decorators/require-permissions.de
 import { PermissionsEnum } from 'src/common/enums/permissions.enum';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
+import { AuditEvent } from 'src/common/decorators/audit-event.decorator';
+import { AuditEventEnum } from 'src/common/enums/shared/audit-events.enum';
 
 /**
  * ─────────────────────────────────────────────
@@ -256,6 +258,7 @@ export class AuditLogController {
   @Post('saved-filters')
   @RequirePermissions(PermissionsEnum.AUDIT_LOG_READ)
   @ApiOperation({ summary: 'Save an audit-log search' })
+  @AuditEvent({ action: AuditEventEnum.AUDIT_SAVED_FILTER_CREATED, entity: 'AuditSavedFilter', entityId: { response: ['id'] } })
   async createSavedFilter(
     @Body() dto: CreateSavedFilterDto,
     @CurrentUser() viewer: CurrentUserDto,
@@ -267,6 +270,7 @@ export class AuditLogController {
   @RequirePermissions(PermissionsEnum.AUDIT_LOG_READ)
   @ApiOperation({ summary: 'Delete one of my saved searches' })
   @ApiParam({ name: 'id', description: 'Saved filter ID' })
+  @AuditEvent({ action: AuditEventEnum.AUDIT_SAVED_FILTER_DELETED, entity: 'AuditSavedFilter', entityId: { param: 'id' } })
   async deleteSavedFilter(@Param('id') id: string, @CurrentUser() viewer: CurrentUserDto) {
     return this.auditLogService.deleteSavedFilter(id, viewer);
   }
@@ -390,6 +394,7 @@ export class AuditLogController {
   @HttpCode(200)
   @RequirePermissions(PermissionsEnum.AUDIT_LOG_LEGAL_HOLD)
   @ApiOperation({ summary: 'How many rows a hold filter would cover, before applying it' })
+  @AuditEvent({ action: AuditEventEnum.AUDIT_LEGAL_HOLD_PREVIEWED, entity: 'AuditLegalHold' })
   async previewLegalHold(@Body() dto: PreviewLegalHoldDto) {
     return this.auditLogService.previewLegalHold(dto);
   }
@@ -695,6 +700,7 @@ export class AuditLogController {
   @RequirePermissions(PermissionsEnum.AUDIT_LOG_READ)
   @ApiOperation({ summary: 'Rename or edit one of my saved filters' })
   @ApiParam({ name: 'id', description: 'Saved filter ID' })
+  @AuditEvent({ action: AuditEventEnum.AUDIT_SAVED_FILTER_UPDATED, entity: 'AuditSavedFilter', entityId: { param: 'id' } })
   async updateSavedFilter(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateSavedFilterDto,
@@ -739,6 +745,7 @@ export class AuditLogController {
       'Paging goes in the query string (cursor, page, limit). Redaction follows your own role.',
   })
   @ApiParam({ name: 'id', description: 'Saved filter ID' })
+  @AuditEvent({ action: AuditEventEnum.AUDIT_SAVED_FILTER_RUN, entity: 'AuditSavedFilter', entityId: { param: 'id' }, capture: ['query'] })
   async runSavedFilter(
     @Param('id', ParseUUIDPipe) id: string,
     @Query() dto: AuditPagingDto,
@@ -825,6 +832,7 @@ export class AuditLogController {
   @Get('privileged-actions')
   @RequirePermissions(PermissionsEnum.AUDIT_LOG_READ)
   @ApiOperation({ summary: 'Role, permission and security-setting changes' })
+  @AuditEvent({ action: AuditEventEnum.AUDIT_PRIVILEGED_ACTIONS_VIEWED, entity: 'AuditLog', capture: ['query'] })
   async getPrivilegedActions(@Query() dto: GetAuditLogsDto, @CurrentUser() viewer: CurrentUserDto) {
     return this.auditLogService.findPrivilegedActions(dto, viewer);
   }
@@ -832,6 +840,7 @@ export class AuditLogController {
   @Get('money-actions')
   @RequirePermissions(PermissionsEnum.AUDIT_LOG_READ)
   @ApiOperation({ summary: 'Refunds, payout verification, disbursements and manual payments' })
+  @AuditEvent({ action: AuditEventEnum.AUDIT_MONEY_ACTIONS_VIEWED, entity: 'AuditLog', capture: ['query'] })
   async getMoneyActions(@Query() dto: GetAuditLogsDto, @CurrentUser() viewer: CurrentUserDto) {
     return this.auditLogService.findMoneyActions(dto, viewer);
   }
@@ -839,6 +848,7 @@ export class AuditLogController {
   @Get('denied')
   @RequirePermissions(PermissionsEnum.AUDIT_LOG_READ)
   @ApiOperation({ summary: 'Denied and failed events, to spot probing' })
+  @AuditEvent({ action: AuditEventEnum.AUDIT_DENIED_VIEWED, entity: 'AuditLog', capture: ['query'] })
   async getDenied(@Query() dto: GetAuditLogsDto, @CurrentUser() viewer: CurrentUserDto) {
     return this.auditLogService.findDenied(dto, viewer);
   }
@@ -976,6 +986,7 @@ export class AuditLogController {
   @ApiQuery({ name: 'cursor', required: false })
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
+  @AuditEvent({ action: AuditEventEnum.AUDIT_USER_TRAIL_VIEWED, entity: 'User', entityId: { param: 'userId' }, targetUserParam: 'userId', capture: ['query'] })
   async getAuditLogsForUser(
     @Param('userId') userId: string,
     @Query() dto: AuditUserScopeQueryDto,
@@ -988,6 +999,7 @@ export class AuditLogController {
   @RequirePermissions(PermissionsEnum.AUDIT_LOG_READ)
   @ApiOperation({ summary: 'Everything done TO one user (shortcut for user/:id?as=target)' })
   @ApiParam({ name: 'targetUserId', description: 'User ID' })
+  @AuditEvent({ action: AuditEventEnum.AUDIT_TARGET_TRAIL_VIEWED, entity: 'User', entityId: { param: 'targetUserId' }, targetUserParam: 'targetUserId', capture: ['query'] })
   async getAuditLogsForTarget(
     @Param('targetUserId') targetUserId: string,
     @Query() dto: AuditPagingDto,
@@ -1000,6 +1012,7 @@ export class AuditLogController {
   @RequirePermissions(PermissionsEnum.AUDIT_LOG_READ)
   @ApiOperation({ summary: 'Everything that happened in one login session' })
   @ApiParam({ name: 'sessionId', description: 'Session ID' })
+  @AuditEvent({ action: AuditEventEnum.AUDIT_SESSION_TRAIL_VIEWED, entity: 'Session', entityId: { param: 'sessionId' }, capture: ['query'] })
   async getAuditLogsForSession(
     @Param('sessionId') sessionId: string,
     @Query() dto: AuditPagingDto,
@@ -1012,6 +1025,7 @@ export class AuditLogController {
   @RequirePermissions(PermissionsEnum.AUDIT_LOG_READ)
   @ApiOperation({ summary: 'Everything recorded for one request id (trace a single call)' })
   @ApiParam({ name: 'requestId', description: 'Request ID' })
+  @AuditEvent({ action: AuditEventEnum.AUDIT_REQUEST_TRAIL_VIEWED, entity: 'Request', entityId: { param: 'requestId' }, capture: ['query'] })
   async getAuditLogsForRequest(
     @Param('requestId') requestId: string,
     @Query() dto: AuditPagingDto,

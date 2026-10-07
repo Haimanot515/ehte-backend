@@ -65,6 +65,7 @@ import { PermissionsGuard } from './common/guards/permissions.guard';
 import { ReauthGuard } from './common/guards/reauth.guard';
 
 import { ActorContextInterceptor } from './common/interceptors/actor-context.interceptor';
+import { AuditEventInterceptor } from './common/interceptors/audit-event.interceptor';
 
 import { AdminSeeder } from './common/seed/admin.seeder';
 import { UserSeeder } from './common/seed/user.seeder';
@@ -543,6 +544,7 @@ const REDIS_URL_SCHEMES = { scheme: ['redis', 'rediss'] };
     { provide: APP_GUARD, useClass: PermissionsGuard },
 
     { provide: APP_INTERCEPTOR, useClass: ActorContextInterceptor },
+    { provide: APP_INTERCEPTOR, useClass: AuditEventInterceptor },
 
     RolesSeeder,
     PermissionsSeeder,

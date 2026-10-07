@@ -11,6 +11,8 @@ import { RolesEnum } from '../../../../common/enums/roles.enum';
 import { PermissionsEnum as P } from '../../../../common/enums/permissions.enum';
 import { AgreementService } from '../service/agreement.service';
 import { AssignAgreementDto, CreateAgreementDto, CreateInstitutionDto, RetireAgreementDto } from '../dto/agreement.dto';
+import { AuditEvent } from 'src/common/decorators/audit-event.decorator';
+import { AuditEventEnum } from 'src/common/enums/shared/audit-events.enum';
 
 @ApiTags('Agreements')
 @ApiBearerAuth('access-token')
@@ -24,6 +26,7 @@ export class AgreementController {
   @RequirePermissions(P.INSTITUTIONS_MANAGE)
   @Post('institutions')
   @ApiOperation({ summary: 'Admin: register a new partner institution' })
+  @AuditEvent({ action: AuditEventEnum.INSTITUTION_CREATED, entity: 'Institution', entityId: { response: ['id'] } })
   createInstitution(@Body() dto: CreateInstitutionDto) {
     return this.agreements.createInstitution(dto.name);
   }

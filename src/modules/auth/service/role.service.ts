@@ -8,7 +8,7 @@ import {
 
 import { EventEmitter2 } from '@nestjs/event-emitter';
 
-import { AuditOutcome, AuditSeverity, Prisma, Role } from '@prisma/client';
+import { AuditOutcome, AuditSeverity, Prisma, Role, ActorType } from '@prisma/client';
 
 import { FetchQuery, PaginatedResult } from 'src/common/fetch-query/crud.types';
 
@@ -1336,10 +1336,26 @@ export class RoleService {
   }
 
   private async expireStaleRequests(): Promise<void> {
-    await this.prisma.roleAssignmentRequest.updateMany({
+    const stale = await this.prisma.roleAssignmentRequest.findMany({
       where: { status: 'PENDING', expiresAt: { lte: new Date() } },
+      select: { id: true, roleId: true, targetUserId: true },
+    });
+    if (stale.length === 0) return;
+    const { count } = await this.prisma.roleAssignmentRequest.updateMany({
+      where: { id: { in: stale.map((r) => r.id) }, status: 'PENDING' },
       data: { status: 'EXPIRED' },
     });
+    if (count === 0) return;
+    for (const r of stale) {
+      this.emitAudit({
+        actorType: ActorType.SYSTEM,
+        action: AuditEventEnum.ROLE_ASSIGNMENT_REQUEST_EXPIRED,
+        entity: 'RoleAssignmentRequest',
+        entityId: r.id,
+        targetUserId: r.targetUserId,
+        diff: { result: 'success', roleId: r.roleId },
+      });
+    }
   }
 
   // ─── temporary access ──────────────────────────────────────────────────

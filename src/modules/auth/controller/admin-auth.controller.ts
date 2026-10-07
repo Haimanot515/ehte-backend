@@ -35,6 +35,8 @@ import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { RolesEnum } from 'src/common/enums/roles.enum';
 import { RequireReauthentication } from 'src/common/decorators/reauth.decorator';
+import { AuditEvent } from 'src/common/decorators/audit-event.decorator';
+import { AuditEventEnum } from 'src/common/enums/shared/audit-events.enum';
 
 @ApiTags('Authentication')
 @Controller('admin/auth')
@@ -271,6 +273,7 @@ export class AdminAuthController {
   @Throttle({ default: { limit: 2, ttl: 60000 } })
   @Post('forgot-password/resend-otp/:verificationId')
   @ApiOperation({ summary: 'Resend the admin password reset code' })
+  @AuditEvent({ action: AuditEventEnum.OTP_RESENT, entity: 'Otp', metadata: { purpose: 'admin_forgot_password' } })
   async resendForgotPasswordOtp(@Param('verificationId') verificationId: string) {
     return this.adminAuthService.adminResendForgotPasswordOtp(verificationId);
   }

@@ -55,6 +55,8 @@ import { UserAdminOpsService } from '../service/user-admin-ops.service';
 import { UserSearchService } from '../service/user-search.service';
 import { UserExportService } from '../service/user-export.service';
 import { UserStatsService } from '../service/user-stats.service';
+import { AuditEvent } from 'src/common/decorators/audit-event.decorator';
+import { AuditEventEnum } from 'src/common/enums/shared/audit-events.enum';
 
 @ApiTags('Users')
 @ApiBearerAuth('access-token')
@@ -618,6 +620,7 @@ export class UserController {
   @RequirePermissions(PermissionsEnum.USER_READ)
   @ApiOperation({ summary: 'Get a single user by id (admin)' })
   @ApiParam({ name: 'id', description: 'Id of the user to fetch' })
+  @AuditEvent({ action: AuditEventEnum.USER_PROFILE_VIEWED, entity: 'User', entityId: { param: 'id' }, targetUserParam: 'id' })
   async getUserById(@Param('id') id: string) {
     return this.userCommonService.getUserById(id);
   }
@@ -651,6 +654,7 @@ export class UserController {
   @RequirePermissions(PermissionsEnum.USER_READ)
   @ApiOperation({ summary: "List a user's active sessions/devices (admin)" })
   @ApiParam({ name: 'id', description: 'Id of the user whose sessions are being listed' })
+  @AuditEvent({ action: AuditEventEnum.USER_SESSIONS_VIEWED, entity: 'User', entityId: { param: 'id' }, targetUserParam: 'id' })
   async getUserSessions(@Param('id') id: string) {
     return this.userCommonService.listSessions(id);
   }

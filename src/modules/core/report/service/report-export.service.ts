@@ -1,5 +1,5 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { Prisma, ActorType } from '@prisma/client';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -14,6 +14,7 @@ import {
 } from '../dto/report.dto';
 import { act, NEW_EVENTS } from './report.constants';
 import { ReportCommonService } from './report-common.service';
+import { AuditEventEnum } from 'src/common/enums/shared/audit-events.enum';
 
 @Injectable()
 export class ReportExportService {
@@ -241,6 +242,12 @@ export class ReportExportService {
       await this.prisma.reportExportJob.update({
         where: { id: j.id },
         data: { status: 'EXPIRED', storageKey: null },
+      });
+      this.reportCommonService.emitAudit({
+        actorType: ActorType.SYSTEM,
+        action: AuditEventEnum.REPORT_EXPORT_EXPIRED,
+        entity: 'ReportExportJob',
+        entityId: j.id,
       });
     }
     return expired.length;

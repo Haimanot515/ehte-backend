@@ -14,6 +14,8 @@ import { PermissionsEnum as P } from '../../../../common/enums/permissions.enum'
 import { BillingReportAdminService } from '../service/billing-report-admin.service';
 import { BillingExportQueryDto, BillingStatsQueryDto, DailyCloseQueryDto, LedgerQueryDto, LiabilitiesQueryDto } from '../dto/billing-report-admin.dto';
 import { DateRangeDto } from 'src/modules/billing/shared/dto/billing-common.dto';
+import { AuditEvent } from 'src/common/decorators/audit-event.decorator';
+import { AuditEventEnum } from 'src/common/enums/shared/audit-events.enum';
 
 @ApiTags('Billing admin: reports and statistics')
 @ApiBearerAuth('access-token')
@@ -37,6 +39,7 @@ export class BillingReportAdminController {
   @Roles(RolesEnum.SUPER_ADMIN)
   @RequirePermissions(P.SUPPORT_PAYMENT_READ)
   @ApiOperation({ summary: 'Super admin: every money movement, filtered by date, kind and type' })
+  @AuditEvent({ action: AuditEventEnum.BILLING_LEDGER_VIEWED, entity: 'Ledger', capture: ['query'] })
   ledger(@Query() q: LedgerQueryDto) {
     return this.svc.ledger(q);
   }

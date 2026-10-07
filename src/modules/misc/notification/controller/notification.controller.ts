@@ -20,7 +20,7 @@ import { Observable } from 'rxjs';
 
 import { ApiBearerAuth, ApiOperation, ApiParam, ApiQuery, ApiTags } from '@nestjs/swagger';
 
-import { ActorType, NotificationType } from '@prisma/client';
+import { ActorType, NotificationType, AuditSeverity } from '@prisma/client';
 
 import { NotificationService } from '../service/notification.service';
 
@@ -76,6 +76,8 @@ import { Roles } from 'src/common/decorators/roles.decorator';
 import { RolesEnum } from 'src/common/enums/roles.enum';
 import { RequirePermissions } from 'src/common/decorators/require-permissions.decorator';
 import { PermissionsEnum } from 'src/common/enums/permissions.enum';
+import { AuditEvent } from 'src/common/decorators/audit-event.decorator';
+import { AuditEventEnum } from 'src/common/enums/shared/audit-events.enum';
 
 // Notifications: literal routes (user, then admin) must stay above parameterised ':id' routes.
 // Broadcast send/export/erase have own permissions; cancel stays on NOTIFICATION_MANAGE.
@@ -389,6 +391,7 @@ export class NotificationController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.NOTIFICATION_MANAGE)
   @ApiOperation({ summary: 'Admin: send a notification to one user or to admins' })
+  @AuditEvent({ action: AuditEventEnum.NOTIFICATION_ADMIN_CREATED, entity: 'Notification', entityId: { response: ['id'] } })
   async createNotification(
     @Body() dto: CreateNotificationDto,
     @CurrentUser() user: CurrentUserDto,
@@ -1149,6 +1152,7 @@ export class NotificationController {
   @Delete('admin/bulk')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @ApiOperation({ summary: 'Admin: delete multiple of my notifications' })
+  @AuditEvent({ action: AuditEventEnum.NOTIFICATION_ADMIN_BULK_DELETED, entity: 'Notification', severity: AuditSeverity.WARNING })
   async deleteAdminBulk(@Body() dto: BulkNotificationIdsDto, @CurrentUser() user: CurrentUserDto) {
     return this.notificationService.deleteMyBulk(dto.ids, user);
   }
@@ -1156,6 +1160,7 @@ export class NotificationController {
   @Delete('admin/read')
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @ApiOperation({ summary: 'Admin: delete all my read notifications' })
+  @AuditEvent({ action: AuditEventEnum.NOTIFICATION_ADMIN_BULK_DELETED, entity: 'Notification', metadata: { scope: 'all_read' }, severity: AuditSeverity.WARNING })
   async deleteAdminAllRead(@CurrentUser() user: CurrentUserDto) {
     return this.notificationService.deleteAllMyRead(user);
   }
@@ -1248,6 +1253,7 @@ export class NotificationController {
   @RequirePermissions(PermissionsEnum.NOTIFICATION_MANAGE)
   @ApiOperation({ summary: 'Admin: delete one of my notifications' })
   @ApiParam({ name: 'id', description: 'Notification ID' })
+  @AuditEvent({ action: AuditEventEnum.NOTIFICATION_ADMIN_DELETED, entity: 'Notification', entityId: { param: 'id' }, severity: AuditSeverity.WARNING })
   async deleteAdminNotification(@Param('id') id: string, @CurrentUser() user: CurrentUserDto) {
     return this.notificationService.deleteMyNotification(id, user);
   }

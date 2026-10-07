@@ -121,6 +121,8 @@ import { RequireReauthentication } from 'src/common/decorators/reauth.decorator'
 import { RequirePermissions } from 'src/common/decorators/require-permissions.decorator';
 import { PermissionsEnum } from 'src/common/enums/permissions.enum';
 import { MediaKeyQueryDto } from 'src/modules/media/dto/media-key-query.dto';
+import { AuditEvent } from 'src/common/decorators/audit-event.decorator';
+import { AuditEventEnum } from 'src/common/enums/shared/audit-events.enum';
 
 @ApiTags('Reports')
 @ApiBearerAuth('access-token')
@@ -1192,6 +1194,7 @@ export class ReportController {
   @Get(':id/messages')
   @Header('Cache-Control', 'no-store')
   @ApiOperation({ summary: 'Get the follow-up thread of a report (reporter or admin)' })
+  @AuditEvent({ action: AuditEventEnum.REPORT_MESSAGES_READ, entity: 'Report', entityId: { param: 'id' } })
   async findMessages(
     @CurrentUser() user: CurrentUserDto,
     @Param('id') reportId: string,
@@ -1278,6 +1281,7 @@ export class ReportController {
   // RPT-103
   @Patch(':id/mute')
   @ApiOperation({ summary: 'Mute or unmute updates for my report' })
+  @AuditEvent({ action: AuditEventEnum.REPORT_UPDATES_MUTED, entity: 'Report', entityId: { param: 'id' } })
   async muteUpdates(
     @CurrentUser() user: CurrentUserDto,
     @Param('id') reportId: string,
@@ -1301,6 +1305,7 @@ export class ReportController {
   // RPT-162
   @Patch(':id/contact-preference')
   @ApiOperation({ summary: 'Choose how staff may contact me' })
+  @AuditEvent({ action: AuditEventEnum.REPORT_CONTACT_PREFERENCE_CHANGED, entity: 'Report', entityId: { param: 'id' } })
   async setContactPreference(
     @CurrentUser() user: CurrentUserDto,
     @Param('id') reportId: string,
@@ -1625,6 +1630,7 @@ export class ReportController {
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.REPORT_READ)
   @ApiOperation({ summary: 'Admin: set a reminder for myself on a report' })
+  @AuditEvent({ action: AuditEventEnum.REPORT_FOLLOW_UP_CREATED, entity: 'Report', entityId: { param: 'id' } })
   async createFollowUp(
     @CurrentUser() admin: CurrentUserDto,
     @Param('id') reportId: string,
@@ -1706,6 +1712,7 @@ export class ReportController {
   @RequirePermissions(PermissionsEnum.REPORT_READ, PermissionsEnum.REPORT_AUDIT_READ)
   @Header('Cache-Control', 'no-store')
   @ApiOperation({ summary: 'Admin: get who viewed an evidence file' })
+  @AuditEvent({ action: AuditEventEnum.REPORT_EVIDENCE_CUSTODY_VIEWED, entity: 'Report', entityId: { param: 'id' }, capture: ['params'] })
   async findEvidenceCustody(
     @CurrentUser() admin: CurrentUserDto,
     @Param('id') reportId: string,

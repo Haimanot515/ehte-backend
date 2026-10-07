@@ -39,6 +39,8 @@ import { AllowAnonymous } from 'src/common/decorators/public.decorator';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
 import { RequireReauthentication } from 'src/common/decorators/reauth.decorator';
+import { AuditEvent } from 'src/common/decorators/audit-event.decorator';
+import { AuditEventEnum } from 'src/common/enums/shared/audit-events.enum';
 
 @ApiTags('Authentication')
 @Controller('auth')
@@ -77,6 +79,7 @@ export class AuthController {
   @ApiOperation({
     summary: 'Resend signup OTP',
   })
+  @AuditEvent({ action: AuditEventEnum.OTP_RESENT, entity: 'Otp', metadata: { purpose: 'signup' } })
   async resendSignupOtp(
     @Param('verificationId')
     verificationId: string,
@@ -237,6 +240,7 @@ export class AuthController {
   @Throttle({ default: { limit: 2, ttl: 60000 } })
   @Post('forgot-password/resend-otp/:verificationId')
   @ApiOperation({ summary: 'Resend the password reset OTP' })
+  @AuditEvent({ action: AuditEventEnum.OTP_RESENT, entity: 'Otp', metadata: { purpose: 'forgot_password' } })
   async resendForgotPasswordOtp(@Param('verificationId') verificationId: string) {
     return this.authService.resendForgotPasswordOtp(verificationId);
   }
@@ -425,6 +429,7 @@ export class AuthController {
   @Throttle({ default: { limit: 2, ttl: 60000 } })
   @Post('2fa/login/resend')
   @ApiOperation({ summary: 'Send the 2FA code by SMS (only if SMS is offered)' })
+  @AuditEvent({ action: AuditEventEnum.TWO_FACTOR_CHALLENGE_RESENT, entity: 'TwoFactorChallenge' })
   async twoFactorLoginResend(@Body() data: TwoFactorLoginResendDto) {
     return this.authService.twoFactorLoginResend(data);
   }

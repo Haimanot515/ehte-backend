@@ -1,10 +1,12 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { ConfigService } from '@nestjs/config';
-import { PostStatus } from '@prisma/client';
+import { PostStatus, ActorType } from '@prisma/client';
 
 import { PrismaService } from 'src/prisma/prisma.service';
 import { MinioService } from 'src/infrastructure/minio/minio.service';
+import { EventEmitter2 } from '@nestjs/event-emitter';
+import { AuditEventEnum } from 'src/common/enums/shared/audit-events.enum';
 
 // Handles #2 (stale DRAFT purge) and #12 (old REJECTED purge); thresholds fall back from POST_*-specific to shared CONTENT_* env vars.
 
@@ -18,6 +20,7 @@ export class PostRetentionService {
     private readonly prisma: PrismaService,
     private readonly minioService: MinioService,
     private readonly configService: ConfigService,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   @Cron(CronExpression.EVERY_DAY_AT_3AM)
@@ -67,6 +70,14 @@ export class PostRetentionService {
         const filepaths = MEDIA_FIELD_NAMES.flatMap((field) => (post[field] as string[]) ?? []);
         await Promise.allSettled(filepaths.map((fp) => this.minioService.deleteFile(fp)));
 
+        this.eventEmitter.emit(AuditEventEnum.POST_RETENTION_PURGED, {
+          actorType: ActorType.SYSTEM,
+          action: AuditEventEnum.POST_RETENTION_PURGED,
+          entity: 'Post',
+          entityId: post.id,
+          reason,
+          metadata: { mediaFiles: filepaths.length },
+        });
         this.logger.log(`purged post ${post.id} (${reason})`);
       } catch (err) {
         this.logger.error(`failed to purge post ${post.id}: ${(err as Error).message}`);

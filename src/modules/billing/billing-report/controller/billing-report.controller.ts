@@ -13,6 +13,8 @@ import { FundingQueryService } from 'src/modules/billing/funding/service/funding
 import { PaymentService } from 'src/modules/billing/payment/service/payment.service';
 import { GetAllocationsDto, GetDisbursementsDto, GetPaymentsDto } from '../dto/billing-report.dto';
 import { ResolveReviewDto } from 'src/modules/billing/payment/dto/payment.dto';
+import { AuditEvent } from 'src/common/decorators/audit-event.decorator';
+import { AuditEventEnum } from 'src/common/enums/shared/audit-events.enum';
 
 @ApiTags('Billing Reports')
 @ApiBearerAuth('access-token')
@@ -52,6 +54,7 @@ export class BillingReportController {
   @ApiOperation({
     summary: 'Admin: full detail for one payment, with allocations and disbursements',
   })
+  @AuditEvent({ action: AuditEventEnum.BILLING_PAYMENT_VIEWED, entity: 'Payment', entityId: { param: 'id' } })
   getPayment(@Param('id') id: string) {
     return this.funding.getPaymentById(id);
   }

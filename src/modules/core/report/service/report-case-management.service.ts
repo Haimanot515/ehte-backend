@@ -12,6 +12,7 @@ import {
   Report,
   ReportEvidenceKind,
   ReportStatus,
+  ActorType,
 } from '@prisma/client';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -448,7 +449,7 @@ export class ReportCaseManagementService {
       /* object metadata is best-effort */
     }
 
-    return this.prisma.reportEvidence.create({
+    const created = await this.prisma.reportEvidence.create({
       data: {
         reportId: report.id,
         kind: field.toUpperCase() as ReportEvidenceKind,
@@ -461,6 +462,14 @@ export class ReportCaseManagementService {
         },
       },
     });
+    this.eventEmitter.emit(AuditEventEnum.REPORT_EVIDENCE_REGISTERED, {
+      actorType: ActorType.SYSTEM,
+      action: AuditEventEnum.REPORT_EVIDENCE_REGISTERED,
+      entity: 'Report',
+      entityId: report.id,
+      metadata: { evidenceId: created.id, storageKey: key },
+    });
+    return created;
   }
 
   // RPT-82 GET /reports/:id/evidence   (Admin, or the reporter for their own report)

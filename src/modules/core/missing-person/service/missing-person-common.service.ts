@@ -29,6 +29,35 @@ import {
   PUBLIC_SELECT,
 } from './missing-person.constants';
 
+const MISSING_PERSON_OPERATION_ACTIONS: Record<string, AuditEventEnum> = {
+  admin_restore: AuditEventEnum.MISSING_PERSON_RESTORED,
+  admin_edit: AuditEventEnum.MISSING_PERSON_EDITED_BY_ADMIN,
+  merge: AuditEventEnum.MISSING_PERSON_MERGED,
+  merged_into: AuditEventEnum.MISSING_PERSON_MERGED,
+  lift_takedown: AuditEventEnum.MISSING_PERSON_TAKEDOWN_LIFTED,
+  owner_account_suspended: AuditEventEnum.MISSING_PERSON_TAKEN_DOWN,
+  reader_flag: AuditEventEnum.MISSING_PERSON_FLAGGED,
+  flag_resolved: AuditEventEnum.MISSING_PERSON_FLAG_RESOLVED,
+  appeal_submitted: AuditEventEnum.MISSING_PERSON_APPEAL_SUBMITTED,
+  appeal_decided: AuditEventEnum.MISSING_PERSON_APPEAL_DECIDED,
+  owner_found_report: AuditEventEnum.MISSING_PERSON_FOUND_REPORTED,
+  found_report_declined: AuditEventEnum.MISSING_PERSON_FOUND_REPORT_DECLINED,
+  reopen: AuditEventEnum.MISSING_PERSON_REOPENED,
+  assign: AuditEventEnum.MISSING_PERSON_ASSIGNED,
+  unassign: AuditEventEnum.MISSING_PERSON_UNASSIGNED,
+  claim: AuditEventEnum.MISSING_PERSON_CLAIMED,
+  unclaim: AuditEventEnum.MISSING_PERSON_UNCLAIMED,
+  reward_review: AuditEventEnum.MISSING_PERSON_REWARD_REVIEWED,
+  redact_media_requested: AuditEventEnum.MISSING_PERSON_MEDIA_REDACTION_REQUESTED,
+  case_update_posted: AuditEventEnum.MISSING_PERSON_CASE_UPDATE_POSTED,
+  child_flag_first_confirmation: AuditEventEnum.MISSING_PERSON_CHILD_FLAG_FIRST_CONFIRMED,
+  child_safety_first_confirmation: AuditEventEnum.MISSING_PERSON_CHILD_FLAG_FIRST_CONFIRMED,
+  message_owner: AuditEventEnum.MISSING_PERSON_OWNER_MESSAGED,
+  export_csv: AuditEventEnum.MISSING_PERSON_EXPORTED,
+  export_job_started: AuditEventEnum.MISSING_PERSON_EXPORT_STARTED,
+  export_job_download: AuditEventEnum.MISSING_PERSON_EXPORT_DOWNLOADED,
+};
+
 @Injectable()
 export class MissingPersonCommonService {
   constructor(
@@ -39,7 +68,14 @@ export class MissingPersonCommonService {
   ) {}
 
   emitAudit(payload: AuditEventPayload): void {
-    this.eventEmitter.emit(payload.action, payload);
+    // Operations that were all logged as MISSING_PERSON_UPDATED get their own action.
+    const op = (payload.metadata as { operation?: string } | null | undefined)?.operation;
+    const specific = op ? MISSING_PERSON_OPERATION_ACTIONS[op] : undefined;
+    const remap =
+      !!specific &&
+      (payload.action === AuditEventEnum.MISSING_PERSON_UPDATED || op === 'export_job_download');
+    const out = remap ? { ...payload, action: specific } : payload;
+    this.eventEmitter.emit(out.action, out);
   }
 
   // CHILD cases get a redacted label in audit rows.

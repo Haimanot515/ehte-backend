@@ -52,6 +52,8 @@ import {
   UpdateSupportDto,
   UploadSupportProofDto,
 } from '../dto/support.dto';
+import { AuditEvent } from 'src/common/decorators/audit-event.decorator';
+import { AuditEventEnum } from 'src/common/enums/shared/audit-events.enum';
 
 @ApiTags('Support')
 @ApiBearerAuth('access-token')
@@ -202,6 +204,7 @@ export class SupportController {
   @ApiOperation({
     summary: 'One incoming offer (supporter identity honours their anonymity choice)',
   })
+  @AuditEvent({ action: AuditEventEnum.SUPPORT_INCOMING_VIEWED, entity: 'Support', entityId: { param: 'id' } })
   async findOneIncoming(@CurrentUser() user: CurrentUserDto, @Param('id') id: string) {
     return this.supportIncomingService.findOneIncoming(id, user);
   }

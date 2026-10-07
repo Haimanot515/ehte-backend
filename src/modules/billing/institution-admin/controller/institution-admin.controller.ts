@@ -12,6 +12,8 @@ import { PermissionsEnum as P } from '../../../../common/enums/permissions.enum'
 import { InstitutionAdminService } from '../service/institution-admin.service';
 import { CreatePayoutDestinationDto, ExpiringAgreementsQueryDto, InstitutionsQueryDto, PayoutDestinationsQueryDto, StatementQueryDto, UpdateDraftAgreementDto, UpdateInstitutionDto, UpdatePayoutDestinationDto } from '../dto/institution-admin.dto';
 import { PagingDto, ReasonBodyDto } from 'src/modules/billing/shared/dto/billing-common.dto';
+import { AuditEvent } from 'src/common/decorators/audit-event.decorator';
+import { AuditEventEnum } from 'src/common/enums/shared/audit-events.enum';
 
 @ApiTags('Billing admin: institutions and agreements')
 @ApiBearerAuth('access-token')
@@ -84,6 +86,7 @@ export class InstitutionAdminController {
   @Get('institutions/:id/statement')
   @RequirePermissions(P.INSTITUTIONS_MANAGE)
   @ApiOperation({ summary: 'Admin: allocations and payouts for an institution over a period' })
+  @AuditEvent({ action: AuditEventEnum.INSTITUTION_STATEMENT_VIEWED, entity: 'Institution', entityId: { param: 'id' }, capture: ['query'] })
   statement(@Param('id') id: string, @Query() q: StatementQueryDto) {
     return this.svc.statement(id, q);
   }
@@ -169,6 +172,7 @@ export class InstitutionAdminController {
   @Get('payout-destinations')
   @RequirePermissions(P.DISBURSEMENTS_CREATE)
   @ApiOperation({ summary: 'Admin: list payout destinations, masked, with the verified flag' })
+  @AuditEvent({ action: AuditEventEnum.PAYOUT_DESTINATIONS_VIEWED, entity: 'PayoutDestination', capture: ['query'] })
   listDestinations(@Query() q: PayoutDestinationsQueryDto) {
     return this.svc.listDestinations(q);
   }

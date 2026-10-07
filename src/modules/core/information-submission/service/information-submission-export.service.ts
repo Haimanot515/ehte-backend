@@ -5,7 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { AuditSeverity, Prisma } from '@prisma/client';
+import { AuditSeverity, Prisma, ActorType } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
 import { resolveActorType } from 'src/common/utils/actor-type.util';
@@ -270,6 +270,14 @@ export class InformationSubmissionExportService {
       });
       if (expired && job.storageKey) {
         await this.informationSubmissionCommonService.deleteMediaFiles([job.storageKey]);
+      }
+      if (expired) {
+        this.informationSubmissionCommonService.emitAudit({
+          actorType: ActorType.SYSTEM,
+          action: AuditEventEnum.INFORMATION_SUBMISSION_EXPORT_EXPIRED,
+          entity: 'InformationExportJob',
+          entityId: id,
+        });
       }
     }
 

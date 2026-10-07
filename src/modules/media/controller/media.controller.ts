@@ -21,6 +21,9 @@ import { MediaService } from '../service/media.service';
 import { PresignedUploadDto } from '../dto/presigned-upload.dto';
 import { MediaKeyQueryDto } from '../dto/media-key-query.dto';
 import { UploadMediaDto } from '../dto/upload-media.dto';
+import { AuditEvent } from 'src/common/decorators/audit-event.decorator';
+import { AuditEventEnum } from 'src/common/enums/shared/audit-events.enum';
+import { AuditSeverity } from '@prisma/client';
 
 const MAX_UPLOAD_BYTES = 52_428_800;
 
@@ -34,6 +37,7 @@ export class MediaController {
   @ApiOperation({
     summary: 'Get a presigned upload URL for a direct-to-storage upload',
   })
+  @AuditEvent({ action: AuditEventEnum.MEDIA_PRESIGNED_UPLOAD_CREATED, entity: 'Media' })
   async createPresignedUpload(@Body() data: PresignedUploadDto) {
     return this.mediaService.createPresignedUpload(data);
   }
@@ -55,6 +59,7 @@ export class MediaController {
     },
   })
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_UPLOAD_BYTES } }))
+  @AuditEvent({ action: AuditEventEnum.MEDIA_UPLOADED, entity: 'Media', entityId: { response: ['key', 'id', 'filepath', 'path'] } })
   async uploadFile(
     @UploadedFile() file: Express.Multer.File | undefined,
     @Body() body: UploadMediaDto,
@@ -70,6 +75,7 @@ export class MediaController {
   @ApiOperation({
     summary: 'Admin: delete an object from the media bucket',
   })
+  @AuditEvent({ action: AuditEventEnum.MEDIA_DELETED, entity: 'Media', entityId: { query: 'key' }, severity: AuditSeverity.WARNING })
   async deleteObject(@Query() query: MediaKeyQueryDto) {
     return this.mediaService.deleteObject(query.key);
   }

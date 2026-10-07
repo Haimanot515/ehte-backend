@@ -247,7 +247,12 @@ export class ReportWorkflowService {
     this.reportCommonService.emitAudit({
       userId: admin.id,
       actorType: resolveActorType(this.reportCommonService.getRoles(admin)),
-      action: AuditEventEnum.REPORT_STATUS_CHANGED,
+      action:
+        report.status === ReportStatus.CLOSED
+          ? AuditEventEnum.REPORT_CLOSED
+          : report.status === ReportStatus.REJECTED
+            ? AuditEventEnum.REPORT_REJECTED
+            : AuditEventEnum.REPORT_STATUS_CHANGED,
       entity: 'Report',
       entityId: reportId,
       entityLabel: report.caseReference,
