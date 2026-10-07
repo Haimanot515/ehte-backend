@@ -31,6 +31,7 @@ import { InformationSubmissionModule } from './modules/core/information-submissi
 import { VictimProfileModule } from './modules/core/victim-profile/victim-profile.module';
 import { SupportModule } from './modules/core/support/support.module';
 
+import { SharedModule } from './modules/shared/shared.module';
 import { MediaModule } from './modules/media/media.module';
 
 import { AuditLogModule } from './modules/misc/audit-log/audit-log.module';
@@ -530,6 +531,8 @@ const REDIS_URL_SCHEMES = { scheme: ['redis', 'rediss'] };
     AppAccessModule,
 
     UssdModule,
+
+    SharedModule,
   ],
 
   controllers: [],
