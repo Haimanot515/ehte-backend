@@ -31,6 +31,11 @@ model NotificationDelivery {
   nextAttemptAt  DateTime  @default(now())
   lastError      String?
   sentAt         DateTime?
+  // Filled by the SMS and email provider callbacks (SH-85, SH-86)
+  providerMessageId String?
+  providerStatus    String?
+  deliveredAt       DateTime?
+  failedAt          DateTime?
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @default(now()) @updatedAt
 
@@ -40,6 +45,7 @@ model NotificationDelivery {
   @@index([status, nextAttemptAt])
   @@index([userId, createdAt])
   @@index([channel, status])
+  @@index([providerMessageId])
   @@map("notification_delivery")
 }
 

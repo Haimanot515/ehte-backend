@@ -325,26 +325,27 @@ export class VictimProfileReviewService {
         !isPrivacyReviewed ||
         !hasBankDetails)
     ) {
+      const missingGates = this.victimProfileCommonService.getMissingApprovalGates({
+        involvesChild: profile.involvesChild,
+        isVerified,
+        isSafetyReviewed,
+        isChildSafetyReviewed,
+        hasConsent,
+        isPrivacyReviewed,
+        hasBankDetails,
+      });
+
       this.victimProfileCommonService.emitProfileFailure(
         admin,
         AuditEventEnum.VICTIM_PROFILE_GATES_UPDATED,
         profile,
         'all_approval_gates_required',
-        {
-          metadata: {
-            missingGates: this.victimProfileCommonService.getMissingApprovalGates({
-              involvesChild: profile.involvesChild,
-              isVerified,
-              isSafetyReviewed,
-              isChildSafetyReviewed,
-              hasConsent,
-              isPrivacyReviewed,
-              hasBankDetails,
-            }),
-          },
-        },
+        { metadata: { missingGates } },
       );
-      throw new BadRequestException('all_approval_gates_required');
+      throw new BadRequestException({
+        message: 'all_approval_gates_required',
+        missingGates,
+      });
     }
 
     const status = this.victimProfileCommonService.deriveStatus({
@@ -489,7 +490,10 @@ export class VictimProfileReviewService {
         'all_approval_gates_required',
         { diff: { currentStatus: profile.status }, metadata: { missingGates } },
       );
-      throw new BadRequestException('all_approval_gates_required');
+      throw new BadRequestException({
+        message: 'all_approval_gates_required',
+        missingGates,
+      });
     }
 
     const updatedProfile = await this.victimProfileCommonService.conditionalUpdate(

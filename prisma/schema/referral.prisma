@@ -1,0 +1,83 @@
+// Referral of a record to police, a hospital or an NGO, with outcome tracking (SH-09 to SH-18).
+enum ReferralStatus {
+  SENT
+  ACKNOWLEDGED
+  IN_PROGRESS
+  CLOSED
+}
+
+model Referral {
+  id               String           @id @default(uuid())
+  institutionId    String
+  entity           SharedRecordType
+  entityId         String
+  status           ReferralStatus   @default(SENT)
+  reason           String           @db.Text
+  // Set when the referral may carry survivor or informant details (see ReferralDetailsReveal)
+  includesSensitive Boolean         @default(false)
+  createdById      String
+  sentAt           DateTime         @default(now())
+  // Overdue = SENT and ackDueAt in the past (SH-16)
+  ackDueAt         DateTime?
+  acknowledgedAt   DateTime?
+  closedAt         DateTime?
+  closeOutcome     String?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  institution Institution            @relation(fields: [institutionId], references: [id], onDelete: Restrict)
+  events      ReferralStatusEvent[]
+  documents   ReferralDocument[]
+  reveals     ReferralDetailsReveal[]
+
+  @@index([institutionId, status])
+  @@index([entity, entityId])
+  @@index([status, ackDueAt])
+  @@index([createdAt])
+  @@map("referral")
+}
+
+model ReferralStatusEvent {
+  id          String          @id @default(uuid())
+  referralId  String
+  fromStatus  ReferralStatus?
+  toStatus    ReferralStatus
+  note        String?         @db.Text
+  changedById String
+  createdAt   DateTime        @default(now())
+
+  referral Referral @relation(fields: [referralId], references: [id], onDelete: Cascade)
+
+  @@index([referralId, createdAt])
+  @@map("referral_status_event")
+}
+
+model ReferralDocument {
+  id        String   @id @default(uuid())
+  referralId String
+  mediaKey  String
+  fileName  String?
+  mimeType  String?
+  addedById String
+  createdAt DateTime @default(now())
+
+  referral Referral @relation(fields: [referralId], references: [id], onDelete: Cascade)
+
+  @@index([referralId])
+  @@map("referral_document")
+}
+
+// One row per SH-15 reveal: who, why, when (re-auth is enforced in the controller).
+model ReferralDetailsReveal {
+  id          String   @id @default(uuid())
+  referralId  String
+  revealedById String
+  reason      String   @db.Text
+  createdAt   DateTime @default(now())
+
+  referral Referral @relation(fields: [referralId], references: [id], onDelete: Cascade)
+
+  @@index([referralId, createdAt])
+  @@index([revealedById])
+  @@map("referral_details_reveal")
+}

@@ -1,0 +1,21 @@
+// Follow a missing-person case or victim profile (SH-19 to SH-24).
+// Notifications for a follow must honour discreet mode and never contain names.
+// VictimProfileFollow stays for the existing 'public/:id/follow' route; the migration
+// copies its rows into this table so SH-21 lists everything in one place.
+model Follow {
+  id          String         @id @default(uuid())
+  userId      String
+  entity      FollowableType
+  entityId    String
+  // Empty arrays mean "use the defaults" (all update kinds, user's preferred channels)
+  updateKinds String[]       @default([])
+  channels    String[]       @default([])
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  user User @relation("UserFollows", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, entity, entityId])
+  @@index([entity, entityId])
+  @@map("follow")
+}

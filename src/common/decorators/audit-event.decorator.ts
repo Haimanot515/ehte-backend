@@ -12,7 +12,7 @@ export interface AuditEventOptions {
   /** Route param holding the user the action is about (sets targetUserId). */
   targetUserParam?: string;
   /** Copy these request parts (primitive values only, secrets skipped) into metadata. */
-  capture?: Array<'params' | 'query'>;
+  capture?: Array<'params' | 'query' | 'body'>;
   metadata?: Record<string, unknown>;
   severity?: AuditSeverity;
   /** Set false to record only failures (for example rejected webhooks). Default true. */

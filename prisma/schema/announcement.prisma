@@ -1,0 +1,65 @@
+// In-app notices to users and staff (SH-60 to SH-67), separate from awareness posts.
+enum AnnouncementSeverity {
+  INFO
+  WARNING
+  CRITICAL
+}
+
+enum AnnouncementEventKind {
+  SHOWN
+  CLICKED
+}
+
+model Announcement {
+  id           String               @id @default(uuid())
+  // { "en": { "title": "...", "body": "..." }, "am": { ... } }
+  translations Json
+  severity     AnnouncementSeverity @default(INFO)
+  audienceRoles String[]            @default([])
+  regions      String[]             @default([])
+  languages    String[]             @default([])
+  linkUrl      String?
+  startsAt     DateTime
+  endsAt       DateTime?
+  endedAt      DateTime?
+  endedById    String?
+  createdById  String
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
+
+  dismissals AnnouncementDismissal[]
+  events     AnnouncementEvent[]
+
+  @@index([startsAt, endsAt])
+  @@index([endedAt])
+  @@map("announcement")
+}
+
+model AnnouncementDismissal {
+  announcementId String
+  userId         String
+  dismissedAt    DateTime @default(now())
+
+  announcement Announcement @relation(fields: [announcementId], references: [id], onDelete: Cascade)
+  user         User         @relation("UserAnnouncementDismissals", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([announcementId, userId])
+  @@index([userId])
+  @@map("announcement_dismissal")
+}
+
+// One SHOWN and one CLICKED row per user per announcement (reach counts, SH-66)
+model AnnouncementEvent {
+  id             String                @id @default(uuid())
+  announcementId String
+  userId         String
+  kind           AnnouncementEventKind
+  createdAt      DateTime              @default(now())
+
+  announcement Announcement @relation(fields: [announcementId], references: [id], onDelete: Cascade)
+  user         User         @relation("UserAnnouncementEvents", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([announcementId, userId, kind])
+  @@index([announcementId, kind])
+  @@map("announcement_event")
+}

@@ -1,0 +1,32 @@
+// FAQ entries and safety guides (SH-68 to SH-75). Delete is soft.
+enum ContentKind {
+  FAQ
+  SAFETY_GUIDE
+}
+
+enum ContentStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+model ContentEntry {
+  id          String        @id @default(uuid())
+  kind        ContentKind
+  slug        String
+  language    String        @default("en")
+  title       String
+  body        String        @db.Text
+  category    String?
+  sortOrder   Int           @default(0)
+  status      ContentStatus @default(DRAFT)
+  createdById String
+  updatedById String?
+  deletedAt   DateTime?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  @@unique([kind, slug, language])
+  @@index([kind, language, status, deletedAt])
+  @@map("content_entry")
+}

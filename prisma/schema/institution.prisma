@@ -16,6 +16,7 @@ model Institution {
   allocationRules    AllocationRule[]
   allocations        PaymentAllocation[]
   payoutDestinations PayoutDestination[]
+  referrals          Referral[]
 
   // Only AGREEMENT_SIGNED institutions may be shown as partners or as RESPONSIBLE_ORGANIZATION.
   @@map("institutions")

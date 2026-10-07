@@ -146,6 +146,15 @@ model User {
   twoFactorResetsReviewed TwoFactorResetRequest[] @relation("TwoFactorResetReviewer")
   twoFactorPolicyUpdates  TwoFactorPolicy[]       @relation("TwoFactorPolicyUpdatedBy")
 
+  // Shared and cross-module API (SH-*)
+  follows                 Follow[]                @relation("UserFollows")
+  legalAcceptances        LegalAcceptance[]       @relation("UserLegalAcceptances")
+  helpTickets             HelpTicket[]            @relation("UserHelpTickets")
+  announcementDismissals  AnnouncementDismissal[] @relation("UserAnnouncementDismissals")
+  announcementEvents      AnnouncementEvent[]     @relation("UserAnnouncementEvents")
+  blocksMade              UserBlock[]             @relation("UserBlocksMade")
+  blocksReceived          UserBlock[]             @relation("UserBlocksReceived")
+
   @@map("user")
 }
 
@@ -225,6 +234,12 @@ model UserExportJob {
   @@map("user_export_job")
 }
 
+enum AbuseReportOutcome {
+  DISMISS
+  WARN
+  SUSPEND
+}
+
 model AbuseReport {
   id           String   @id @default(uuid())
   targetUserId String?
@@ -234,6 +249,17 @@ model AbuseReport {
   status       String   @default("OPEN")
   createdAt    DateTime @default(now())
 
+  // SH-79 to SH-84: evidence on report, outcome on resolve
+  details          String?             @db.Text
+  evidenceKeys     String[]            @default([])
+  outcome          AbuseReportOutcome?
+  resolutionReason String?             @db.Text
+  resolvedById     String?
+  resolvedAt       DateTime?
+  updatedAt        DateTime            @default(now()) @updatedAt
+
   @@index([targetUserId, status])
+  @@index([status, createdAt])
+  @@index([reporterId])
   @@map("abuse_report")
 }

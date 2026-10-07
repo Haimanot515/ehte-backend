@@ -1,0 +1,13 @@
+// "Records I opened recently, across modules" (SH-31). One row per admin per record; openedAt is bumped.
+model AdminRecentRecord {
+  id       String           @id @default(uuid())
+  adminId  String
+  entity   SharedRecordType
+  entityId String
+  label    String?
+  openedAt DateTime         @default(now())
+
+  @@unique([adminId, entity, entityId])
+  @@index([adminId, openedAt])
+  @@map("admin_recent_record")
+}

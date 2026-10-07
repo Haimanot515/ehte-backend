@@ -154,6 +154,15 @@ export class PermissionsSeeder {
       PermissionsEnum.AUDIT_LOG_READ,
       // AUDIT_LOG_EXPORT/PURGE/ANONYMIZE/VERIFY_INTEGRITY, AUDIT_ALERT_MANAGE: SUPER_ADMIN-only.
 
+      PermissionsEnum.ANNOUNCEMENT_MANAGE,
+
+      PermissionsEnum.NOTE_READ,
+      PermissionsEnum.NOTE_WRITE,
+      PermissionsEnum.REFERRAL_MANAGE,
+      PermissionsEnum.HELP_MANAGE,
+      PermissionsEnum.LEGAL_MANAGE,
+      // REFERRAL_SENSITIVE: SUPER_ADMIN-only.
+
       PermissionsEnum.DASHBOARD_READ,
 
       PermissionsEnum.MEDIA_UPLOAD,

@@ -1,0 +1,50 @@
+// Versioned legal documents and who accepted which version (SH-37 to SH-45).
+// The older UserConsent table stays for history; new acceptances go to LegalAcceptance.
+enum LegalDocumentStatus {
+  DRAFT
+  PUBLISHED
+  RETIRED
+}
+
+model LegalDocument {
+  id                   String              @id @default(uuid())
+  type                 String // TERMS, PRIVACY, ...
+  language             String
+  version              String
+  title                String
+  body                 String              @db.Text
+  status               LegalDocumentStatus @default(DRAFT)
+  effectiveAt          DateTime
+  requiresReacceptance Boolean             @default(false)
+  createdById          String
+  publishedById        String?
+  publishedAt          DateTime?
+  createdAt            DateTime            @default(now())
+  updatedAt            DateTime            @updatedAt
+
+  acceptances LegalAcceptance[]
+
+  @@unique([type, language, version])
+  @@index([type, language, status, effectiveAt])
+  @@map("legal_document")
+}
+
+model LegalAcceptance {
+  id           String   @id @default(uuid())
+  userId       String
+  documentId   String
+  // Copied from the document so the record stays readable if the document is retired
+  documentType String
+  version      String
+  channel      String // APP, WEB, USSD
+  ipAddress    String?
+  acceptedAt   DateTime @default(now())
+
+  user     User          @relation("UserLegalAcceptances", fields: [userId], references: [id], onDelete: Cascade)
+  document LegalDocument @relation(fields: [documentId], references: [id], onDelete: Restrict)
+
+  @@unique([userId, documentId])
+  @@index([documentId])
+  @@index([userId, documentType, acceptedAt])
+  @@map("legal_acceptance")
+}

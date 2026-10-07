@@ -1,0 +1,37 @@
+// Private staff notes. The subject of the record must never see them (SH-01 to SH-08).
+// Reads need an audit event. Delete is soft; every edit keeps the previous text.
+model StaffNote {
+  id          String           @id @default(uuid())
+  entity      SharedRecordType
+  entityId    String
+  authorId    String
+  body        String           @db.Text
+  pinned      Boolean          @default(false)
+  pinnedAt    DateTime?
+  pinnedById  String?
+  editedAt    DateTime?
+  deletedAt   DateTime?
+  deletedById String?
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  revisions StaffNoteRevision[]
+
+  @@index([entity, entityId, deletedAt])
+  @@index([authorId, createdAt])
+  @@index([createdAt])
+  @@map("staff_note")
+}
+
+model StaffNoteRevision {
+  id         String    @id @default(uuid())
+  noteId     String
+  body       String    @db.Text
+  editedById String
+  createdAt  DateTime  @default(now())
+
+  note StaffNote @relation(fields: [noteId], references: [id], onDelete: Cascade)
+
+  @@index([noteId, createdAt])
+  @@map("staff_note_revision")
+}

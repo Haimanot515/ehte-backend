@@ -1,0 +1,84 @@
+// Help desk tickets (SH-46 to SH-59). Internal staff comments live in StaffNote, not here.
+enum HelpTicketStatus {
+  OPEN
+  IN_PROGRESS
+  WAITING_ON_USER
+  RESOLVED
+  CLOSED
+}
+
+enum HelpTicketPriority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+
+enum HelpMessageAuthor {
+  USER
+  STAFF
+}
+
+model HelpTicket {
+  id             String             @id @default(uuid())
+  reference      String             @unique
+  userId         String
+  category       String
+  subject        String
+  status         HelpTicketStatus   @default(OPEN)
+  priority       HelpTicketPriority @default(NORMAL)
+  // Optional link to a record the ticket is about
+  linkedEntity   SharedRecordType?
+  linkedEntityId String?
+  assignedToId   String?
+  firstResponseAt DateTime?
+  resolvedAt     DateTime?
+  closedAt       DateTime?
+  closedBy       HelpMessageAuthor?
+  reopenCount    Int                @default(0)
+  ratingScore    Int?
+  ratingComment  String?
+  ratedAt        DateTime?
+  lastMessageAt  DateTime           @default(now())
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  user     User                @relation("UserHelpTickets", fields: [userId], references: [id], onDelete: Cascade)
+  messages HelpTicketMessage[]
+
+  @@index([userId, status])
+  @@index([status, category, createdAt])
+  @@index([assignedToId, status])
+  @@index([linkedEntity, linkedEntityId])
+  @@map("help_ticket")
+}
+
+model HelpTicketMessage {
+  id             String            @id @default(uuid())
+  ticketId       String
+  authorType     HelpMessageAuthor
+  authorId       String?
+  body           String            @db.Text
+  attachmentKeys String[]          @default([])
+  createdAt      DateTime          @default(now())
+
+  ticket HelpTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@index([ticketId, createdAt])
+  @@map("help_ticket_message")
+}
+
+model HelpCannedReply {
+  id          String   @id @default(uuid())
+  title       String
+  body        String   @db.Text
+  language    String   @default("en")
+  category    String?
+  active      Boolean  @default(true)
+  createdById String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([language, active])
+  @@map("help_canned_reply")
+}
