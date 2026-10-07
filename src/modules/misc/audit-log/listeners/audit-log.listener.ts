@@ -1,5 +1,5 @@
-import { Injectable, Logger } from '@nestjs/common';
-import { OnEvent } from '@nestjs/event-emitter';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 
 import { AuditEventEnum } from 'src/common/enums/shared/audit-events.enum';
 
@@ -8,23 +8,31 @@ import { AuditEventPayload } from '../events/audit.events';
 import { AuditLogService } from '../service/audit-log.service';
 
 @Injectable()
-export class AuditLogListener {
+export class AuditLogListener implements OnModuleInit {
   private readonly logger = new Logger(AuditLogListener.name);
 
-  constructor(private readonly auditLogService: AuditLogService) {}
+  constructor(
+    private readonly auditLogService: AuditLogService,
+    private readonly eventEmitter: EventEmitter2,
+  ) {}
 
-  @OnEvent(Object.values(AuditEventEnum))
+  // OnEvent with an array registers one joined key, so each action is subscribed on its own here
+  onModuleInit(): void {
+    for (const action of Object.values(AuditEventEnum)) {
+      this.eventEmitter.on(action, (payload: AuditEventPayload) => this.handleAuditEvent(payload));
+    }
+  }
+
   async handleAuditEvent(payload: AuditEventPayload): Promise<void> {
-    // Guards against a non-audit payload arriving on a shared event name
+    // Some event names are shared with the notification module, which sends a different payload
     if (!payload?.actorType || !payload?.entity || !payload?.action) {
-      this.logger.warn('Ignored event with a non-audit payload shape');
+      this.logger.debug('Ignored event with a non-audit payload shape');
       return;
     }
 
     try {
       await this.auditLogService.record(payload);
     } catch (error) {
-      // Never log the payload itself: log only identifiers
       this.logger.error(
         `Audit write failed: action=${payload.action} entity=${payload.entity} entityId=${payload.entityId ?? '-'}`,
         error instanceof Error ? error.stack : String(error),
