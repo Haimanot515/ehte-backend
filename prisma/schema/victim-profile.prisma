@@ -38,11 +38,6 @@ model VictimProfile {
 
   totalRaised Decimal @default(0) @db.Decimal(12, 2)
 
-  // Legacy pre-Chapa direct-transfer destination; confirm with disbursement owner before dropping.
-  bankAccountName   String?
-  bankAccountNumber String?
-  bankName          String?
-
   // Section 5 / 27: the posting fee is separate from supporter money and must be
   // confirmed before publish() moves this profile to PUBLISHED (section 4 step 4-6).
   postingFeeAmount   Decimal?         @db.Decimal(14, 2)

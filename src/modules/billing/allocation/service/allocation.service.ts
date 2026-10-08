@@ -127,17 +127,33 @@ export class AllocationService {
       where: { id: victimProfileId, status: PROFILE_PUBLIC_STATUS, isPublished: true },
       select: {
         agreementId: true,
-        bankAccountName: true,
-        bankAccountNumber: true,
-        bankName: true,
+        payoutDestination: {
+          select: {
+            rail: true,
+            bankName: true,
+            bankCode: true,
+            accountNumber: true,
+            accountHolder: true,
+            isVerified: true,
+          },
+        },
       },
     });
     if (!profile?.agreementId) {
       throw new BadRequestException('Support is not available for this profile');
     }
-    // A published profile always has bank details today (publish() requires all gates), but this
+    // A published profile always has a verified payout destination (publish() requires it), but this
     // stays a defensive check: money must never be collected for a profile that cannot be paid out.
-    if (!profile.bankAccountName || !profile.bankAccountNumber || !profile.bankName) {
+    const dest = profile.payoutDestination;
+    if (
+      !dest ||
+      !dest.isVerified ||
+      dest.rail !== 'BANK' ||
+      !dest.accountNumber ||
+      !dest.accountHolder ||
+      !dest.bankName ||
+      !dest.bankCode
+    ) {
       throw new BadRequestException('Support is not available for this profile');
     }
 

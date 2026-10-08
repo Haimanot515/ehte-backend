@@ -12,7 +12,7 @@ import {
   PagedQueryDto,
   ReadAllDto,
 } from '../dto/victim-profile.dto';
-import { chunk, stripBank } from './victim-profile.constants';
+import { chunk } from './victim-profile.constants';
 import { VictimProfileCommonService } from './victim-profile-common.service';
 
 @Injectable()
@@ -114,7 +114,7 @@ export class VictimProfileInboxService {
     ]);
 
     return {
-      data: rows.map((row) => ({ ...stripBank(row), isRead: false })),
+      data: rows.map((row) => ({ ...row, isRead: false })),
       meta: this.victimProfileCommonService.metaOf(page, limit, total),
     };
   }
@@ -235,7 +235,7 @@ export class VictimProfileInboxService {
 
     return {
       data: rows.map(({ readStates, ...row }) => ({
-        ...stripBank(row),
+        ...row,
         isRead: readStates.length > 0,
       })),
       meta: this.victimProfileCommonService.metaOf(page, limit, total),

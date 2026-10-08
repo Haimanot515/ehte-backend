@@ -24,7 +24,6 @@ import {
   MediaBearing,
   UPDATABLE_FIELD_NAMES,
   money,
-  BANK_DETAIL_FIELDS,
 } from './victim-profile.constants';
 import { VictimProfileCommonService } from './victim-profile-common.service';
 
@@ -124,10 +123,6 @@ export class VictimProfileSubmissionService {
 
           supportType: data.supportType,
           supportGoal: data.supportGoal,
-
-          bankAccountName: data.bankAccountName,
-          bankAccountNumber: data.bankAccountNumber,
-          bankName: data.bankName,
 
           photo: merged.photo,
           video: merged.video,
@@ -229,10 +224,6 @@ export class VictimProfileSubmissionService {
       throw new NotFoundException('victim_profile_not_found');
     }
 
-    for (const field of BANK_DETAIL_FIELDS) {
-      delete (profile as Record<string, unknown>)[field];
-    }
-
     return profile;
   }
 
@@ -292,11 +283,6 @@ export class VictimProfileSubmissionService {
     }
 
     const fieldsUpdated = UPDATABLE_FIELD_NAMES.filter((field) => data[field] !== undefined);
-    const bankDetailsChanged =
-      (data.bankAccountName !== undefined && data.bankAccountName !== profile.bankAccountName) ||
-      (data.bankAccountNumber !== undefined &&
-        data.bankAccountNumber !== profile.bankAccountNumber) ||
-      (data.bankName !== undefined && data.bankName !== profile.bankName);
 
     const updatedProfile = await this.victimProfileCommonService.conditionalUpdate(
       id,
@@ -308,10 +294,6 @@ export class VictimProfileSubmissionService {
 
         supportType: data.supportType,
         supportGoal: data.supportGoal,
-
-        bankAccountName: data.bankAccountName,
-        bankAccountNumber: data.bankAccountNumber,
-        bankName: data.bankName,
 
         photo: data.photo,
         video: data.video,
@@ -363,7 +345,6 @@ export class VictimProfileSubmissionService {
       },
       metadata: {
         fieldsUpdated,
-        bankDetailsChanged,
         mediaAdded: added.length,
         mediaRemoved: removed.length,
         mediaTotalBytes: newTotalBytes,

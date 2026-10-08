@@ -594,9 +594,6 @@ export class VictimProfileAdminOpsService {
           name: null,
           description: null,
           story: null,
-          bankAccountName: null,
-          bankAccountNumber: null,
-          bankName: null,
           photo: [],
           video: [],
           audio: [],
@@ -620,6 +617,8 @@ export class VictimProfileAdminOpsService {
         where: { victimProfileId: id },
         data: {
           accountNumber: null,
+          bankName: null,
+          bankCode: null,
           telebirrPhone: null,
           accountHolder: 'ANONYMIZED',
           isVerified: false,

@@ -330,10 +330,32 @@ export class VictimProfileCommonService {
     return VictimProfileStatus.APPROVED;
   }
 
-  hasBankDetails(
-    profile: Pick<VictimProfile, 'bankAccountName' | 'bankAccountNumber' | 'bankName'>,
-  ) {
-    return !!profile.bankAccountName && !!profile.bankAccountNumber && !!profile.bankName;
+  /**
+   * Approval/publish gate: true only when the profile has a VERIFIED, complete BANK
+   * PayoutDestination (account holder, number, bank name and Chapa bank code).
+   * Unverified or incomplete destinations do not satisfy the gate.
+   */
+  async hasBankDetails(profileId: string): Promise<boolean> {
+    const d = await this.prisma.payoutDestination.findUnique({
+      where: { victimProfileId: profileId },
+      select: {
+        rail: true,
+        isVerified: true,
+        accountHolder: true,
+        accountNumber: true,
+        bankName: true,
+        bankCode: true,
+      },
+    });
+    return (
+      !!d &&
+      d.isVerified &&
+      d.rail === 'BANK' &&
+      !!d.accountHolder &&
+      !!d.accountNumber &&
+      !!d.bankName &&
+      !!d.bankCode
+    );
   }
 
   async unpublish(admin: CurrentUserDto, id: string) {

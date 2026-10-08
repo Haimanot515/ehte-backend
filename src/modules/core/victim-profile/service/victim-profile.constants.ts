@@ -16,9 +16,6 @@ export const UPDATABLE_FIELD_NAMES = [
   'story',
   'supportType',
   'supportGoal',
-  'bankAccountName',
-  'bankAccountNumber',
-  'bankName',
   'photo',
   'video',
   'audio',
@@ -60,8 +57,6 @@ export async function mapWithConcurrency<T, R>(
   await Promise.all(Array.from({ length: Math.min(size, items.length) }, worker));
   return results;
 }
-
-export const BANK_DETAIL_FIELDS = ['bankAccountName', 'bankAccountNumber', 'bankName'] as const;
 
 export const CONFIRMED_SUPPORT_STATUSES = ['CONFIRMED', 'COMPLETED'] as const;
 
@@ -268,12 +263,6 @@ export const summarize = (hours: number[]) => {
   };
 };
 
-// Bank fields are stripped from every NEW admin listing (same rule G11 applies to findOne).
-export const stripBank = <T extends object>(p: T): Omit<T, (typeof BANK_DETAIL_FIELDS)[number]> => {
-  const copy = { ...p } as Record<string, unknown>;
-  for (const f of BANK_DETAIL_FIELDS) delete copy[f];
-  return copy as Omit<T, (typeof BANK_DETAIL_FIELDS)[number]>;
-};
 export const EXPORT_COLUMNS = [
     'id',
     'label',

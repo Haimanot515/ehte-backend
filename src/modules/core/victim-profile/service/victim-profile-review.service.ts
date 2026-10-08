@@ -256,9 +256,6 @@ export class VictimProfileReviewService {
         isAdminApproved: true,
         involvesChild: true,
         status: true,
-        bankAccountName: true,
-        bankAccountNumber: true,
-        bankName: true,
         claimedByUserId: true,
         claimedAt: true,
       },
@@ -282,7 +279,7 @@ export class VictimProfileReviewService {
 
       involvesChild: profile.involvesChild,
       childSafetySatisfied: !profile.involvesChild || profile.isChildSafetyReviewed,
-      hasBankDetails: this.victimProfileCommonService.hasBankDetails(profile),
+      hasBankDetails: await this.victimProfileCommonService.hasBankDetails(id),
 
       claimedByUserId: profile.claimedByUserId,
       claimedAt: profile.claimedAt,
@@ -314,7 +311,7 @@ export class VictimProfileReviewService {
     const isAdminApproved = data.isAdminApproved ?? profile.isAdminApproved;
 
     const childSafetySatisfied = !profile.involvesChild || isChildSafetyReviewed;
-    const hasBankDetails = this.victimProfileCommonService.hasBankDetails(profile);
+    const hasBankDetails = await this.victimProfileCommonService.hasBankDetails(id);
 
     if (
       isAdminApproved &&
@@ -459,7 +456,7 @@ export class VictimProfileReviewService {
       AuditEventEnum.VICTIM_PROFILE_PUBLISHED,
     );
 
-    const hasBankDetails = this.victimProfileCommonService.hasBankDetails(profile);
+    const hasBankDetails = await this.victimProfileCommonService.hasBankDetails(id);
     const childSafetySatisfied = !profile.involvesChild || profile.isChildSafetyReviewed;
 
     const allGatesSatisfied =
@@ -542,7 +539,7 @@ export class VictimProfileReviewService {
       isChildSafetyReviewed: profile.isChildSafetyReviewed,
       hasConsent: profile.hasConsent,
       isPrivacyReviewed: profile.isPrivacyReviewed,
-      hasBankDetails: this.victimProfileCommonService.hasBankDetails(profile),
+      hasBankDetails: await this.victimProfileCommonService.hasBankDetails(id),
     });
     if (!profile.isAdminApproved) missingGates.push('isAdminApproved');
 

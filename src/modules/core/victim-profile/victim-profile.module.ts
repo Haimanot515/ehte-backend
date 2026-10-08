@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 
 import { AuthModule } from 'src/modules/auth/auth.module';
+import { ChapaModule } from 'src/infrastructure/chapa/chapa.module';
 
 import { VictimProfileController } from './controller/victim-profile.controller';
 
@@ -20,7 +21,7 @@ import { VictimProfileStatsService } from './service/victim-profile-stats.servic
 import { VictimProfileWorkflowService } from './service/victim-profile-workflow.service';
 
 @Module({
-  imports: [AuthModule],
+  imports: [AuthModule, ChapaModule],
 
   controllers: [VictimProfileController],
 

@@ -129,9 +129,14 @@ export class VictimProfileWorkflowService {
     const { page, limit, skip } = this.victimProfileCommonService.pageOf(query);
 
     const [byAccount, byName] = await Promise.all([
-      this.prisma.victimProfile.groupBy({
-        by: ['bankAccountNumber'],
-        where: { bankAccountNumber: { not: null }, deletedAt: null },
+      // Same payout account number across different profiles (PayoutDestination is 1:1 with a profile).
+      this.prisma.payoutDestination.groupBy({
+        by: ['accountNumber'],
+        where: {
+          accountNumber: { not: null },
+          victimProfileId: { not: null },
+          victimProfile: { is: { deletedAt: null } },
+        },
         _count: { id: true },
         having: { id: { _count: { gt: 1 } } },
         orderBy: { _count: { id: 'desc' } },
@@ -154,9 +159,9 @@ export class VictimProfileWorkflowService {
     const clusters: Cluster[] = [
       ...byAccount.map((g): Cluster => ({
         matchedOn: 'bankAccountNumber',
-        key: maskAccount(g.bankAccountNumber) ?? '',
+        key: maskAccount(g.accountNumber) ?? '',
         count: g._count.id,
-        where: { bankAccountNumber: g.bankAccountNumber, deletedAt: null },
+        where: { payoutDestination: { is: { accountNumber: g.accountNumber } }, deletedAt: null },
       })),
       ...byName.map((g): Cluster => ({
         matchedOn: 'name+creator',
@@ -466,6 +471,7 @@ export class VictimProfileWorkflowService {
     }
 
     // Back to PUBLISHED only if every gate still holds; otherwise fall back to the derived pipeline status.
+    const hasBankDetails = await this.victimProfileCommonService.hasBankDetails(id);
     const gatesHold =
       this.victimProfileCommonService.getMissingApprovalGates({
         involvesChild: profile.involvesChild,
@@ -474,7 +480,7 @@ export class VictimProfileWorkflowService {
         isChildSafetyReviewed: profile.isChildSafetyReviewed,
         hasConsent: profile.hasConsent,
         isPrivacyReviewed: profile.isPrivacyReviewed,
-        hasBankDetails: this.victimProfileCommonService.hasBankDetails(profile),
+        hasBankDetails,
       }).length === 0 && profile.isAdminApproved;
 
     const status = gatesHold

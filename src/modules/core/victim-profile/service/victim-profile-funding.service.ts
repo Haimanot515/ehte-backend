@@ -13,6 +13,7 @@ import { resolveActorType } from 'src/common/utils/actor-type.util';
 import { AuditEventEnum } from 'src/common/enums/shared/audit-events.enum';
 import { NotificationEventEnum } from 'src/common/enums/shared/notification-events.enum';
 import { CacheService } from 'src/infrastructure/redis/cache.service';
+import { ChapaService } from 'src/infrastructure/chapa/chapa.service';
 import {
   DateRangeQueryDto,
   UpdateBankDetailsDto,
@@ -28,6 +29,7 @@ export class VictimProfileFundingService {
     private readonly prisma: PrismaService,
     private readonly eventEmitter: EventEmitter2,
     private readonly cache: CacheService,
+    private readonly chapa: ChapaService,
     private readonly victimProfileCommonService: VictimProfileCommonService,
   ) {}
 
@@ -36,9 +38,17 @@ export class VictimProfileFundingService {
       where: { id },
       select: {
         id: true,
-        bankAccountName: true,
-        bankAccountNumber: true,
-        bankName: true,
+        payoutDestination: {
+          select: {
+            rail: true,
+            bankName: true,
+            bankCode: true,
+            accountNumber: true,
+            accountHolder: true,
+            isVerified: true,
+            verifiedAt: true,
+          },
+        },
       },
     });
 
@@ -104,6 +114,26 @@ export class VictimProfileFundingService {
       throw new BadRequestException('account_holder_cannot_be_the_child');
     }
 
+    // The bank name is taken from Chapa's list for the given bank code, never from free text,
+    // so the name and the code that actually receives the money cannot disagree.
+    const banks = await this.chapa.getBanks();
+    const bank = banks.find((b) => String(b.id) === data.bankCode);
+    if (!bank || bank.is_mobilemoney === 1 || bank.is_mobilemoney === true) {
+      this.victimProfileCommonService.emitProfileFailure(
+        admin,
+        AuditEventEnum.VICTIM_PROFILE_BANK_DETAILS_UPDATED,
+        profile,
+        'invalid_bank_code',
+      );
+      throw new BadRequestException('invalid_bank_code');
+    }
+    const bankName = String(bank.name);
+
+    const previousDestination = await this.prisma.payoutDestination.findUnique({
+      where: { victimProfileId: id },
+      select: { accountHolder: true, accountNumber: true, bankCode: true },
+    });
+
     const wasApproved = profile.isAdminApproved;
     const isAdminApproved = wasApproved ? false : profile.isAdminApproved;
 
@@ -121,9 +151,6 @@ export class VictimProfileFundingService {
       id,
       profile.updatedAt,
       {
-        bankAccountName: data.bankAccountName,
-        bankAccountNumber: data.bankAccountNumber,
-        bankName: data.bankName,
         isAdminApproved,
         isPublished: wasApproved ? false : profile.isPublished,
         status,
@@ -131,20 +158,29 @@ export class VictimProfileFundingService {
       { admin, action: AuditEventEnum.VICTIM_PROFILE_BANK_DETAILS_UPDATED, profile },
     );
 
+    // Editing always resets verification: a different admin must re-verify before any payout.
     await this.prisma.payoutDestination.upsert({
       where: { victimProfileId: id },
       create: {
         rail: 'BANK',
-        bankName: data.bankName,
+        bankName,
+        bankCode: data.bankCode,
         accountNumber: data.bankAccountNumber,
         accountHolder: data.accountHolderName,
+        lastEditedById: admin.id,
         victimProfileId: id,
       },
       update: {
-        bankName: data.bankName,
+        rail: 'BANK',
+        bankName,
+        bankCode: data.bankCode,
         accountNumber: data.bankAccountNumber,
         accountHolder: data.accountHolderName,
+        lastEditedById: admin.id,
         isVerified: false,
+        verifiedById: null,
+        verifiedAt: null,
+        verifiedNote: null,
       },
     });
 
@@ -168,14 +204,11 @@ export class VictimProfileFundingService {
         reapprovalRequired: wasApproved,
       },
       metadata: {
-        accountNameChanged:
-          data.bankAccountName !== undefined && data.bankAccountName !== profile.bankAccountName,
-        accountNumberChanged:
-          data.bankAccountNumber !== undefined &&
-          data.bankAccountNumber !== profile.bankAccountNumber,
-        bankNameChanged: data.bankName !== undefined && data.bankName !== profile.bankName,
+        accountNameChanged: data.accountHolderName !== previousDestination?.accountHolder,
+        accountNumberChanged: data.bankAccountNumber !== previousDestination?.accountNumber,
+        bankNameChanged: data.bankCode !== previousDestination?.bankCode,
         accountHolderRelationship: data.accountHolderRelationship,
-        bankCodeProvided: data.bankCode,
+        bankCode: data.bankCode,
       },
     });
 
@@ -360,6 +393,7 @@ export class VictimProfileFundingService {
         select: {
           rail: true,
           bankName: true,
+          bankCode: true,
           accountNumber: true,
           accountHolder: true,
           isVerified: true,
@@ -373,17 +407,13 @@ export class VictimProfileFundingService {
         ? {
             rail: destination.rail,
             bankName: destination.bankName,
+            bankCode: destination.bankCode,
             accountNumberMasked: maskAccount(destination.accountNumber),
             accountHolder: destination.accountHolder,
             isVerified: destination.isVerified,
             updatedAt: destination.updatedAt,
           }
-        : {
-            bankName: profile.bankName,
-            accountNumberMasked: maskAccount(profile.bankAccountNumber),
-            accountHolder: profile.bankAccountName,
-            isVerified: false,
-          },
+        : null,
       history: events.map((e) => {
         const meta = (e.metadata ?? {}) as Record<string, unknown>;
         return {
@@ -440,7 +470,12 @@ export class VictimProfileFundingService {
     // Compare-and-set so a concurrent bank-details edit (which resets isVerified) can't be verified over.
     const result = await this.prisma.payoutDestination.updateMany({
       where: { id: destination.id, isVerified: false, updatedAt: destination.updatedAt },
-      data: { isVerified: true },
+      data: {
+        isVerified: true,
+        verifiedById: admin.id,
+        verifiedAt: new Date(),
+        verifiedNote: data.notes ?? null,
+      },
     });
     if (result.count === 0) throw new ConflictException('victim_profile_transition_conflict');
 

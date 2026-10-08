@@ -124,7 +124,11 @@ export class VictimProfileMineService {
     return unseen;
   }
 
-  private serializeMine(p: VictimProfile, unseen: boolean) {
+  private serializeMine(
+    p: VictimProfile,
+    unseen: boolean,
+    dest?: { accountHolder: string; bankName: string | null; accountNumber: string | null; isVerified: boolean } | null,
+  ) {
     return {
       id: p.id,
       name: p.name,
@@ -145,9 +149,10 @@ export class VictimProfileMineService {
       donationsPaused: p.donationsPaused,
       // Creators never get the full account number back, only a masked tail.
       bank: {
-        accountName: p.bankAccountName,
-        bankName: p.bankName,
-        accountNumberMasked: maskAccount(p.bankAccountNumber),
+        accountName: dest?.accountHolder ?? null,
+        bankName: dest?.bankName ?? null,
+        accountNumberMasked: maskAccount(dest?.accountNumber),
+        isVerified: dest?.isVerified ?? false,
       },
       reviewNote: p.reviewNote,
       reviewNoteAt: p.reviewNoteAt,
@@ -181,9 +186,20 @@ export class VictimProfileMineService {
     ]);
 
     const unseen = await this.findUnseenProfileIds(user.id, rows);
+    const dests = await this.prisma.payoutDestination.findMany({
+      where: { victimProfileId: { in: rows.map((r) => r.id) } },
+      select: {
+        victimProfileId: true,
+        accountHolder: true,
+        bankName: true,
+        accountNumber: true,
+        isVerified: true,
+      },
+    });
+    const destByProfile = new Map(dests.map((d) => [d.victimProfileId, d]));
 
     return {
-      data: rows.map((row) => this.serializeMine(row, unseen.has(row.id))),
+      data: rows.map((row) => this.serializeMine(row, unseen.has(row.id), destByProfile.get(row.id))),
       meta: this.victimProfileCommonService.metaOf(page, limit, total),
     };
   }
@@ -192,8 +208,12 @@ export class VictimProfileMineService {
   async findOneMine(user: CurrentUserDto, id: string) {
     const profile = await this.victimProfileCommonService.getMineOr404(user, id);
 
-    const [unseen, latestAppeal] = await Promise.all([
+    const [unseen, dest, latestAppeal] = await Promise.all([
       this.findUnseenProfileIds(user.id, [profile]),
+      this.prisma.payoutDestination.findUnique({
+        where: { victimProfileId: id },
+        select: { accountHolder: true, bankName: true, accountNumber: true, isVerified: true },
+      }),
       this.prisma.victimProfileAppeal.findFirst({
         where: { profileId: id },
         orderBy: { createdAt: 'desc' },
@@ -209,7 +229,7 @@ export class VictimProfileMineService {
     ]);
 
     return {
-      ...this.serializeMine(profile, unseen.has(id)),
+      ...this.serializeMine(profile, unseen.has(id), dest),
       // The text of the open change request, surfaced separately so a client can render it as a to-do.
       requestedChanges:
         profile.status === VictimProfileStatus.CHANGES_REQUESTED ? profile.reviewNote : null,
@@ -307,9 +327,6 @@ export class VictimProfileMineService {
         story: data.story,
         supportType: data.supportType,
         supportGoal: data.supportGoal,
-        bankAccountName: data.bankAccountName,
-        bankAccountNumber: data.bankAccountNumber,
-        bankName: data.bankName,
         photo: data.photo,
         video: data.video,
         audio: data.audio,

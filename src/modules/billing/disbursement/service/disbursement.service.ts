@@ -192,17 +192,35 @@ export class DisbursementService {
     // BL-58: a held disbursement cannot be executed until it is released.
     if (d.heldAt) throw new BadRequestException('Disbursement is on hold');
 
-    let account: { accountName: string; accountNumber: string } | null = null;
+    let account: { accountName: string; accountNumber: string; bankCode: string } | null = null;
+    let destinationId: string | null = null;
+    let destinationSnapshot: Prisma.InputJsonValue | undefined;
     if (d.allocation.partyType === 'RECIPIENT') {
-      const p = await this.loadPayableRecipient(d.allocation.payment.victimProfileId);
+      // Recipients are paid only to their verified PayoutDestination; nothing is typed at execution.
+      const dest = await this.loadPayableRecipient(d.allocation.payment.victimProfileId);
       account = {
-        accountName: p.bankAccountName as string,
-        accountNumber: p.bankAccountNumber as string,
+        accountName: dest.accountHolder,
+        accountNumber: dest.accountNumber as string,
+        bankCode: dest.bankCode as string,
       };
-    } else if (input.accountName && input.accountNumber) {
-      account = { accountName: input.accountName, accountNumber: input.accountNumber };
+      destinationId = dest.id;
+      destinationSnapshot = {
+        rail: dest.rail,
+        bankName: dest.bankName,
+        bankCode: dest.bankCode,
+        accountNumberMasked: `****${(dest.accountNumber as string).slice(-4)}`,
+        accountHolder: dest.accountHolder,
+        verifiedById: dest.verifiedById,
+        verifiedAt: dest.verifiedAt?.toISOString() ?? null,
+      };
+    } else if (input.accountName && input.accountNumber && input.bankCode) {
+      account = {
+        accountName: input.accountName,
+        accountNumber: input.accountNumber,
+        bankCode: input.bankCode,
+      };
     }
-    if (d.method === 'CHAPA_TRANSFER' && (!account || !input.bankCode)) {
+    if (d.method === 'CHAPA_TRANSFER' && !account) {
       throw new BadRequestException('Account details and bankCode are required');
     }
     if (d.method === 'MANUAL_BANK' && !input.externalReference) {
@@ -211,7 +229,12 @@ export class DisbursementService {
 
     const { count } = await this.prisma.disbursement.updateMany({
       where: { id, status: 'APPROVED' },
-      data: { status: 'PROCESSING', executedById: adminId, executedAt: new Date() },
+      data: {
+        status: 'PROCESSING',
+        executedById: adminId,
+        executedAt: new Date(),
+        ...(destinationId ? { payoutDestinationId: destinationId, destinationSnapshot } : {}),
+      },
     });
     if (count === 0) throw new BadRequestException('Not approved or already executed');
 
@@ -220,7 +243,7 @@ export class DisbursementService {
         await this.chapa.transfer({
           accountName: (account as { accountName: string }).accountName,
           accountNumber: (account as { accountNumber: string }).accountNumber,
-          bankCode: input.bankCode as string,
+          bankCode: (account as { bankCode: string }).bankCode,
           amount: d.amount,
           reference: d.reference,
         });
@@ -280,7 +303,7 @@ export class DisbursementService {
         method: d.method,
         partyType: d.allocation.partyType,
         destination:
-          d.allocation.partyType === 'RECIPIENT' ? 'profile_bank_details' : 'admin_supplied',
+          d.allocation.partyType === 'RECIPIENT' ? 'payout_destination' : 'admin_supplied',
       },
     });
   }
@@ -352,9 +375,19 @@ export class DisbursementService {
         hasConsent: true,
         isPrivacyReviewed: true,
         isAdminApproved: true,
-        bankAccountName: true,
-        bankAccountNumber: true,
-        bankName: true,
+        payoutDestination: {
+          select: {
+            id: true,
+            rail: true,
+            bankName: true,
+            bankCode: true,
+            accountNumber: true,
+            accountHolder: true,
+            isVerified: true,
+            verifiedById: true,
+            verifiedAt: true,
+          },
+        },
       },
     });
     if (!p) throw new NotFoundException('recipient_profile_not_found');
@@ -367,11 +400,16 @@ export class DisbursementService {
     if (!p.hasConsent) missing.push('hasConsent');
     if (!p.isPrivacyReviewed) missing.push('isPrivacyReviewed');
     if (!p.isAdminApproved) missing.push('isAdminApproved');
-    if (!p.bankAccountName || !p.bankAccountNumber || !p.bankName) missing.push('bankDetails');
+    const dest = p.payoutDestination;
+    if (!dest || dest.rail !== 'BANK' || !dest.accountNumber || !dest.accountHolder || !dest.bankName || !dest.bankCode) {
+      missing.push('payoutDestination');
+    } else if (!dest.isVerified) {
+      missing.push('payoutDestinationVerified');
+    }
     if (missing.length) {
       throw new BadRequestException({ code: 'recipient_profile_not_payable', missing });
     }
-    return p;
+    return p.payoutDestination as NonNullable<typeof p.payoutDestination>;
   }
 
   @Cron(CronExpression.EVERY_10_MINUTES)

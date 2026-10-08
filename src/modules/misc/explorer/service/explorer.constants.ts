@@ -54,7 +54,7 @@ export const ALWAYS_HIDDEN_FIELDS = new Set([
 
 export const MEDIA_FIELDS = new Set(['photo', 'video', 'audio', 'pdf', 'document', 'other', 'responseFiles']);
 
-export const MASKED_FIELDS = new Set(['accountNumber', 'bankAccountNumber', 'telebirrPhone']);
+export const MASKED_FIELDS = new Set(['accountNumber', 'telebirrPhone']);
 
 export const CHILD_REDACTED_FIELDS = new Set(['name', 'story', 'description']);
 

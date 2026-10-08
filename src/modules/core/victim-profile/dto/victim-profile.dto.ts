@@ -13,7 +13,6 @@ import {
   Min,
   MaxLength,
   MinLength,
-  ValidateIf,
 } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
 
@@ -48,36 +47,6 @@ export class CreateVictimProfileDto {
   @IsNumber()
   @Min(0)
   supportGoal?: number;
-
-  // Off-platform transfer destination. Optional here; enforced at the gate stage.
-  @IsOptional()
-  @IsString()
-  @MaxLength(200)
-  bankAccountName?: string;
-
-  @IsOptional()
-  @IsString()
-  @MaxLength(64)
-  bankAccountNumber?: string;
-
-  @IsOptional()
-  @IsString()
-  @MaxLength(200)
-  bankName?: string;
-
-  @IsOptional()
-  @IsString()
-  @MaxLength(20)
-  bankCode?: string;
-
-  @ValidateIf((o) => !!o.bankAccountNumber)
-  @IsString()
-  @MaxLength(200)
-  accountHolderName?: string;
-
-  @IsOptional()
-  @IsEnum(AccountHolderRelationship)
-  accountHolderRelationship?: AccountHolderRelationship;
 
   @IsOptional()
   @IsArray()
@@ -138,35 +107,6 @@ export class UpdateVictimProfileDto {
   @IsNumber()
   @Min(0)
   supportGoal?: number;
-
-  @IsOptional()
-  @IsString()
-  @MaxLength(200)
-  bankAccountName?: string;
-
-  @IsOptional()
-  @IsString()
-  @MaxLength(64)
-  bankAccountNumber?: string;
-
-  @IsOptional()
-  @IsString()
-  @MaxLength(200)
-  bankName?: string;
-
-  @IsOptional()
-  @IsString()
-  @MaxLength(20)
-  bankCode?: string;
-
-  @ValidateIf((o) => !!o.bankAccountNumber)
-  @IsString()
-  @MaxLength(200)
-  accountHolderName?: string;
-
-  @IsOptional()
-  @IsEnum(AccountHolderRelationship)
-  accountHolderRelationship?: AccountHolderRelationship;
 
   @IsOptional()
   @IsArray()
