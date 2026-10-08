@@ -30,6 +30,7 @@ import {
 import { RefreshTokenDto } from '../dto/auth.dto';
 
 import { AllowAnonymous } from 'src/common/decorators/public.decorator';
+import { RequireCaptcha } from 'src/common/decorators/require-captcha.decorator';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
 import { Roles } from 'src/common/decorators/roles.decorator';
@@ -199,6 +200,7 @@ export class AdminAuthController {
 
   @AllowAnonymous()
   @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @RequireCaptcha()
   @Post('login')
   @ApiOperation({
     summary: 'Admin login with email and password',
@@ -212,6 +214,7 @@ export class AdminAuthController {
 
   @AllowAnonymous()
   @Throttle({ default: { limit: 3, ttl: 60000 } })
+  @RequireCaptcha()
   @Post('forgot-password')
   @ApiOperation({
     summary: 'Request password reset OTP via admin email (for an admin who forgot their password)',
@@ -225,6 +228,7 @@ export class AdminAuthController {
 
   @AllowAnonymous()
   @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @RequireCaptcha()
   @Post('reset-password')
   @ApiOperation({
     summary: 'Reset admin password using the emailed OTP (admin-scoped, forgot-password flow)',
@@ -271,6 +275,7 @@ export class AdminAuthController {
 
   @AllowAnonymous()
   @Throttle({ default: { limit: 2, ttl: 60000 } })
+  @RequireCaptcha()
   @Post('forgot-password/resend-otp/:verificationId')
   @ApiOperation({ summary: 'Resend the admin password reset code' })
   @AuditEvent({ action: AuditEventEnum.OTP_RESENT, entity: 'Otp', metadata: { purpose: 'admin_forgot_password' } })

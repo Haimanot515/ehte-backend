@@ -34,6 +34,12 @@ export default () => ({
     debug: process.env.APP_DEBUG === 'true',
   },
 
+  turnstile: {
+    // Cloudflare Turnstile captcha (TurnstileGuard). Off unless TURNSTILE_ENABLED=true.
+    enabled: process.env.TURNSTILE_ENABLED === 'true',
+    secretKey: process.env.TURNSTILE_SECRET_KEY || undefined,
+  },
+
   geo: {
     // Paths to MaxMind GeoLite2-City.mmdb and GeoLite2-ASN.mmdb. Leave empty to disable the lookup.
     cityDbPath: process.env.GEOIP_CITY_DB_PATH || undefined,

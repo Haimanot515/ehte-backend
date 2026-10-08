@@ -1,0 +1,14 @@
+services:
+  clamav:
+    image: clamav/clamav:stable
+    restart: unless-stopped
+    ports:
+      - "3310:3310"
+    environment:
+      CLAMD_CONF_StreamMaxLength: 100M
+      CLAMD_CONF_MaxFileSize: 100M
+    volumes:
+      - clamav_db:/var/lib/clamav
+
+volumes:
+  clamav_db:

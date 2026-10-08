@@ -1,21 +1,32 @@
-import { Injectable, OnModuleInit, Logger, ServiceUnavailableException } from '@nestjs/common';
+import {
+  Injectable,
+  OnModuleInit,
+  Logger,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'crypto';
 import * as Minio from 'minio';
 import { extname } from 'path';
 import type { Express } from 'express';
 
+import { ClamavService } from '../clamav/clamav.service';
+import { MediaScanService } from '../clamav/media-scan.service';
+
 @Injectable()
 export class MinioService implements OnModuleInit {
   private readonly logger = new Logger(MinioService.name);
-  // Internal client: all server-side traffic (put/stat/remove/bucket checks)
-  // goes over the docker network, e.g. http://shared-minio:9000.
+  // Internal client for all server-side traffic; the presign client signs browser-facing URLs.
   private client: Minio.Client;
   private presignClient: Minio.Client;
   private bucket: string;
   private presignDurationSeconds: number;
 
-  constructor(private readonly configService: ConfigService) {}
+  constructor(
+    private readonly configService: ConfigService,
+    private readonly clamav: ClamavService,
+    private readonly mediaScans: MediaScanService,
+  ) {}
 
   async onModuleInit() {
     const endpoint = this.configService.get<string>('minio.endpoint');
@@ -121,8 +132,14 @@ export class MinioService implements OnModuleInit {
   }
 
   async uploadMulterFile(file: Express.Multer.File, folder: string): Promise<string> {
+    if (this.clamav.enabled) {
+      await this.clamav.assertClean(file.buffer);
+    }
+
     const key = this.buildObjectKey(file.originalname, folder);
-    return this.uploadFile(key, file.buffer, file.mimetype);
+    await this.uploadFile(key, file.buffer, file.mimetype);
+    await this.mediaScans.registerClean(key);
+    return key;
   }
 
   async getUrl(key: string, expirySeconds: number = 24 * 60 * 60): Promise<string> {
@@ -139,13 +156,15 @@ export class MinioService implements OnModuleInit {
     this.assertClient();
     try {
       await this.client.statObject(this.bucket, key);
-      return true;
     } catch (err: any) {
       if (err.code === 'NotFound') {
         return false;
       }
       throw err;
     }
+
+    await this.mediaScans.assertUsable(key);
+    return true;
   }
 
   async statObject(key: string): Promise<{ size: number; contentType: string }> {
@@ -155,6 +174,16 @@ export class MinioService implements OnModuleInit {
       size: stat.size,
       contentType: stat.metaData?.['content-type'] ?? 'application/octet-stream',
     };
+  }
+
+  async getObjectBuffer(key: string): Promise<Buffer> {
+    this.assertClient();
+    const stream = await this.client.getObject(this.bucket, key);
+    const chunks: Buffer[] = [];
+    for await (const chunk of stream) {
+      chunks.push(chunk as Buffer);
+    }
+    return Buffer.concat(chunks);
   }
 
   async generatePresignedUploadUrl(fileInfo: {

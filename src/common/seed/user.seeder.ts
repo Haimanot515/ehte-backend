@@ -15,13 +15,20 @@ export class UserSeeder {
   ) {}
 
   async run(): Promise<void> {
-    const rawPhone = this.config.get<string>('USER_PHONE', '+251900000000');
+    // The test user is a development convenience only: never create it elsewhere.
+    const env = this.config.get<string>('app.env') ?? process.env.NODE_ENV ?? '';
+    if (env !== 'development' && env !== 'test') {
+      this.logger.log('Skipping test USER seed (development only).');
+      return;
+    }
+
+    const rawPhone = this.config.get<string>('USER_PHONE') || '+251900000000';
 
     const phone = rawPhone.trim();
 
-    const name = this.config.get<string>('USER_NAME', 'Ehte Test User');
+    const name = this.config.get<string>('USER_NAME') || 'Ehte Test User';
 
-    const password = this.config.get<string>('USER_PASSWORD', 'P@ssw0rd');
+    const password = this.config.get<string>('USER_PASSWORD') || 'P@ssw0rd';
 
     const existingUser = await this.prisma.user.findUnique({
       where: {
@@ -67,6 +74,6 @@ export class UserSeeder {
       },
     });
 
-    this.logger.log(`Seeded initial USER account: ${phone} / ${password}`);
+    this.logger.log(`Seeded development test USER account: ${phone}`);
   }
 }

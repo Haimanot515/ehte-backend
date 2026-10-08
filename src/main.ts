@@ -35,7 +35,7 @@ async function bootstrap() {
     }
   }
 
-  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, { rawBody: true });
 
   const configService = app.get(ConfigService);
 
@@ -103,7 +103,16 @@ async function bootstrap() {
 
   app.use(compression());
 
-  app.use(json({ limit: '10mb' }));
+  // Keep the exact bytes for webhook signature checks (Chapa, delivery webhooks).
+  // This parser runs before Nest's own, so it has to save the raw body itself.
+  app.use(
+    json({
+      limit: '10mb',
+      verify: (req: any, _res, buf: Buffer) => {
+        req.rawBody = buf;
+      },
+    }),
+  );
   app.use(urlencoded({ extended: true, limit: '10mb' }));
 
   app.enableCors({

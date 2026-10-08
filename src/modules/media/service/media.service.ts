@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import type { Express } from 'express';
 
+import { MediaScanService } from 'src/infrastructure/clamav/media-scan.service';
 import { MinioService } from 'src/infrastructure/minio/minio.service';
 
 import { PresignedUploadDto } from '../dto/presigned-upload.dto';
@@ -10,7 +11,10 @@ import { MediaFolder } from '../../../common/enums/media-folder.enum';
 
 @Injectable()
 export class MediaService {
-  constructor(private readonly minioService: MinioService) {}
+  constructor(
+    private readonly minioService: MinioService,
+    private readonly mediaScans: MediaScanService,
+  ) {}
 
   async createPresignedUpload(
     dto: PresignedUploadDto,
@@ -21,7 +25,10 @@ export class MediaService {
       folder: dto.folder,
     });
 
-    return { presignedUrl, key: file.filepath as string };
+    const key = file.filepath as string;
+    await this.mediaScans.registerPending(key);
+
+    return { presignedUrl, key };
   }
 
   async uploadFile(

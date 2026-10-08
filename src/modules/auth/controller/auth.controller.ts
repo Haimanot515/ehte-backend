@@ -36,6 +36,7 @@ import {
 } from '../dto/auth.dto';
 
 import { AllowAnonymous } from 'src/common/decorators/public.decorator';
+import { RequireCaptcha } from 'src/common/decorators/require-captcha.decorator';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
 import { RequireReauthentication } from 'src/common/decorators/reauth.decorator';
@@ -51,6 +52,7 @@ export class AuthController {
 
   @AllowAnonymous()
   @Throttle({ default: { limit: 3, ttl: 60000 } })
+  @RequireCaptcha()
   @Post('signup')
   @ApiOperation({
     summary: 'Create signup request and send OTP to phone',
@@ -63,6 +65,7 @@ export class AuthController {
 
   @AllowAnonymous()
   @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @RequireCaptcha()
   @Post('signup/verify')
   @ApiOperation({
     summary: 'Verify signup OTP and activate the user account',
@@ -75,6 +78,7 @@ export class AuthController {
 
   @AllowAnonymous()
   @Throttle({ default: { limit: 2, ttl: 60000 } })
+  @RequireCaptcha()
   @Post('signup/resend-otp/:verificationId')
   @ApiOperation({
     summary: 'Resend signup OTP',
@@ -91,6 +95,7 @@ export class AuthController {
 
   @AllowAnonymous()
   @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @RequireCaptcha()
   @Post('login')
   @ApiOperation({
     summary: 'Login with phone number and password (USER accounts only)',
@@ -101,6 +106,7 @@ export class AuthController {
 
   @AllowAnonymous()
   @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @RequireCaptcha()
   @Post('social/google')
   @ApiOperation({
     summary: 'Sign up or log in with a Google ID token (USER accounts only)',
@@ -113,6 +119,7 @@ export class AuthController {
 
   @AllowAnonymous()
   @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @RequireCaptcha()
   @Post('social/facebook')
   @ApiOperation({
     summary: 'Sign up or log in with a Facebook access token (USER accounts only)',
@@ -126,6 +133,7 @@ export class AuthController {
 
   @AllowAnonymous()
   @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @RequireCaptcha()
   @Post('social/apple')
   @ApiOperation({
     summary: 'Sign up or log in with Sign in with Apple (USER accounts only)',
@@ -149,6 +157,7 @@ export class AuthController {
 
   @AllowAnonymous()
   @Throttle({ default: { limit: 3, ttl: 60000 } })
+  @RequireCaptcha()
   @Post('forgot-password')
   @ApiOperation({
     summary: 'Request password reset OTP (USER accounts only)',
@@ -162,6 +171,7 @@ export class AuthController {
 
   @AllowAnonymous()
   @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @RequireCaptcha()
   @Post('reset-password')
   @ApiOperation({
     summary: 'Reset password using OTP (USER accounts only, forgot-password flow)',
@@ -238,6 +248,7 @@ export class AuthController {
 
   @AllowAnonymous()
   @Throttle({ default: { limit: 2, ttl: 60000 } })
+  @RequireCaptcha()
   @Post('forgot-password/resend-otp/:verificationId')
   @ApiOperation({ summary: 'Resend the password reset OTP' })
   @AuditEvent({ action: AuditEventEnum.OTP_RESENT, entity: 'Otp', metadata: { purpose: 'forgot_password' } })
@@ -249,6 +260,7 @@ export class AuthController {
 
   @AllowAnonymous()
   @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @RequireCaptcha()
   @Post('verify-reset-otp')
   @ApiOperation({ summary: 'Check the password reset OTP without resetting the password yet' })
   async verifyResetOtp(@Body() data: VerifyResetOtpDto) {
@@ -268,6 +280,7 @@ export class AuthController {
 
   @AllowAnonymous()
   @Throttle({ default: { limit: 3, ttl: 60000 } })
+  @RequireCaptcha()
   @Post('reactivate/initiate')
   @ApiOperation({ summary: 'Start self-reactivation of a deactivated account (sends a code)' })
   async reactivateInitiate(@Body() data: ReactivateInitiateDto) {
@@ -276,6 +289,7 @@ export class AuthController {
 
   @AllowAnonymous()
   @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @RequireCaptcha()
   @Post('reactivate/verify')
   @ApiOperation({ summary: 'Complete self-reactivation with the code' })
   async reactivateVerify(@Body() data: ReactivateVerifyDto) {
@@ -340,6 +354,7 @@ export class AuthController {
 
   @AllowAnonymous()
   @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @RequireCaptcha()
   @Post('signup/status')
   @ApiOperation({ summary: 'Check whether a pending signup is still valid' })
   async signupStatus(@Body() data: SignupStatusDto) {

@@ -245,6 +245,11 @@ const REDIS_URL_SCHEMES = { scheme: ['redis', 'rediss'] };
           .optional(),
 
         MEDIA_MAX_FILE_SIZE: Joi.number().default(52_428_800),
+        CLAMAV_ENABLED: Joi.string().valid('true', 'false').default('false'),
+        CLAMAV_HOST: Joi.string().optional().allow(''),
+        CLAMAV_PORT: Joi.number().default(3310),
+        MEDIA_SCAN_PENDING_TTL_HOURS: Joi.number().default(2),
+        MEDIA_SCAN_MAX_ATTEMPTS: Joi.number().default(100),
         MEDIA_ALLOWED_MIME_TYPES: Joi.string().default(
           'image/jpeg,image/png,image/webp,video/mp4,video/quicktime,audio/mpeg,audio/wav,audio/mp4,application/pdf',
         ),
@@ -390,6 +395,14 @@ const REDIS_URL_SCHEMES = { scheme: ['redis', 'rediss'] };
         USER_NAME: Joi.string().optional().allow(''),
         USER_PHONE: Joi.string().optional().allow(''),
         USER_PASSWORD: Joi.string().optional().allow(''),
+
+        // ── Cloudflare Turnstile (captcha) ────────────────────────────────
+        TURNSTILE_ENABLED: Joi.string().valid('true', 'false').default('false'),
+        TURNSTILE_SECRET_KEY: Joi.string().optional().allow(''),
+
+        // ── USSD gateway caller check ─────────────────────────────────────
+        USSD_GATEWAY_SECRET: Joi.string().min(16).optional().allow(''),
+        USSD_ALLOWED_IPS: Joi.string().optional().allow(''),
 
         // ── Audit / notification / report ─────────────────────────────────
         AUDIT_PURGE_TOKEN_SECRET: Joi.string().min(32).optional(),

@@ -76,3 +76,6 @@ docker-compose.override.yml
 
 # Generated documentation/site output
 docs/.vitepress/dist/
+
+# local archives
+*.zip
