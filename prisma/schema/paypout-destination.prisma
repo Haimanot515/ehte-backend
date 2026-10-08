@@ -7,7 +7,6 @@ model PayoutDestination {
   id            String     @id @default(uuid())
   rail          PayoutRail
   bankName      String?
-  // Chapa bank id used as bank_code in transfers; set from chapa.getBanks(), never typed per payout.
   bankCode      String?
   accountNumber String?
   telebirrPhone String?
@@ -58,7 +57,6 @@ model Disbursement {
   holdReason String?
   heldById   String?
 
-  // Snapshot of PayoutDestination at execution time; the standing record can change later
   destinationSnapshot Json?
 
   allocation        PaymentAllocation  @relation(fields: [allocationId], references: [id], onDelete: Restrict)

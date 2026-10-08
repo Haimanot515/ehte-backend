@@ -1,4 +1,3 @@
-// In-app notices to users and staff (SH-60 to SH-67), separate from awareness posts.
 enum AnnouncementSeverity {
   INFO
   WARNING
@@ -12,7 +11,6 @@ enum AnnouncementEventKind {
 
 model Announcement {
   id           String               @id @default(uuid())
-  // { "en": { "title": "...", "body": "..." }, "am": { ... } }
   translations Json
   severity     AnnouncementSeverity @default(INFO)
   audienceRoles String[]            @default([])
@@ -48,7 +46,6 @@ model AnnouncementDismissal {
   @@map("announcement_dismissal")
 }
 
-// One SHOWN and one CLICKED row per user per announcement (reach counts, SH-66)
 model AnnouncementEvent {
   id             String                @id @default(uuid())
   announcementId String

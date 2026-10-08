@@ -1,5 +1,3 @@
-// Notification model needs the matching relation fields (broadcastId, broadcast, deliveries)
-
 model NotificationPreference {
   id              String           @id @default(uuid())
   userId          String
@@ -20,7 +18,6 @@ model NotificationPreference {
   @@map("notification_preference")
 }
 
-// Statuses are plain strings so the queue claim can use simple raw SQL
 model NotificationDelivery {
   id             String    @id @default(uuid())
   notificationId String
@@ -31,7 +28,6 @@ model NotificationDelivery {
   nextAttemptAt  DateTime  @default(now())
   lastError      String?
   sentAt         DateTime?
-  // Filled by the SMS and email provider callbacks (SH-85, SH-86)
   providerMessageId String?
   providerStatus    String?
   deliveredAt       DateTime?
@@ -49,8 +45,6 @@ model NotificationDelivery {
   @@map("notification_delivery")
 }
 
-// FIX: was missing a @relation to User — userId was a bare scalar with no FK,
-// so DeviceToken rows were never cascade-deleted and could outlive their user.
 model DeviceToken {
   id         String   @id @default(uuid())
   userId     String
@@ -84,8 +78,6 @@ model NotificationBroadcast {
   createdAt      DateTime             @default(now())
   updatedAt      DateTime             @default(now()) @updatedAt
 
-  // Two-person approval for large broadcasts (NF-31, NF-32).
-  // Extra statuses used with these fields: AWAITING_APPROVAL, REJECTED.
   requiresApproval Boolean   @default(false)
   approvedById     String?
   approvedAt       DateTime?
@@ -93,7 +85,6 @@ model NotificationBroadcast {
   rejectedAt       DateTime?
   rejectionReason  String?
 
-  // Halting a broadcast that is already sending (NF-33). Extra status: STOPPED.
   stopRequestedAt   DateTime?
   stopRequestedById String?
   stoppedAt         DateTime?
@@ -118,7 +109,6 @@ model NotificationTemplate {
   createdAt   DateTime         @default(now())
   updatedAt   DateTime         @default(now()) @updatedAt
 
-  // Soft retire (NF-24) and bring back (NF-25)
   retiredAt   DateTime?
   retiredById String?
 
@@ -140,9 +130,6 @@ model NotificationIdempotencyKey {
   @@map("notification_idempotency_key")
 }
 
-
-/// One row per user while snoozed. Non-security notifications still land in the inbox
-/// but are not sent by push, email or SMS until `until` passes.
 model NotificationSnooze {
   id        String   @id @default(uuid())
   userId    String   @unique
@@ -156,7 +143,6 @@ model NotificationSnooze {
   @@map("notification_snooze")
 }
 
-/// One mute system for every record type (replaces per-report and per-post mutes).
 model NotificationEntityMute {
   id        String   @id @default(uuid())
   userId    String
@@ -171,10 +157,6 @@ model NotificationEntityMute {
   @@map("notification_entity_mute")
 }
 
-
-/// Addresses and numbers a provider reported as bounced or blocked.
-/// channel: EMAIL | SMS. status: ACTIVE | CLEARED.
-/// address is stored normalised (lower-case email, digits-only phone) and is masked in every API response.
 model NotificationBounce {
   id             String    @id @default(uuid())
   channel        String
@@ -198,7 +180,6 @@ model NotificationBounce {
   @@map("notification_bounce")
 }
 
-/// Small key/value store for admin-changed settings. Key used today: 'retention'.
 model NotificationSetting {
   key         String   @id
   value       Json
@@ -208,7 +189,6 @@ model NotificationSetting {
   @@map("notification_setting")
 }
 
-/// One row per outside channel that has ever been paused. channel: EMAIL | SMS | PUSH.
 model NotificationQueueState {
   channel     String    @id
   paused      Boolean   @default(false)

@@ -1,4 +1,3 @@
-// assignedBy records who granted the role
 model UserRole {
   id             String   @id @default(uuid())
   userId         String

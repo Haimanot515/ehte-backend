@@ -1,4 +1,3 @@
-// "Records I opened recently, across modules" (SH-31). One row per admin per record; openedAt is bumped.
 model AdminRecentRecord {
   id       String           @id @default(uuid())
   adminId  String

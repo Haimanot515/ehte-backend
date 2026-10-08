@@ -1,5 +1,3 @@
-// Two-person approval for sensitive roles (AR-34, AR-35, AR-36).
-// The requester can never approve their own request; the service enforces that.
 model RoleAssignmentRequest {
   id            String                      @id @default(uuid())
   roleId        String

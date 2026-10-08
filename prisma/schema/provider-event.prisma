@@ -1,15 +1,13 @@
-// Every SMS and email provider callback and what happened to it (SH-85 to SH-87).
-// Replays are rejected by the unique (provider, eventId) key plus a timestamp window in the service.
 model ProviderEvent {
   id                String    @id @default(uuid())
   provider          String
-  kind              String // SMS_DELIVERY, EMAIL_EVENT
+  kind              String
   eventId           String?
   providerMessageId String?
-  eventType         String? // delivered, failed, bounced, complaint
+  eventType         String?
   payload           Json
   signatureValid    Boolean   @default(true)
-  result            String // RECEIVED, APPLIED, IGNORED, DUPLICATE, REJECTED, ERROR
+  result            String
   error             String?
   receivedAt        DateTime  @default(now())
   processedAt       DateTime?

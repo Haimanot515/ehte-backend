@@ -31,9 +31,9 @@ model MissingPerson {
 
   fundingMethod  RewardFundingMethod?
   fundingStatus  RewardFundingStatus  @default(UNFUNDED)
-  fundedAmount   Decimal              @default(0) @db.Decimal(14, 2) // sum of PAID MISSING_PERSON_REWARD payments
-  reservedAmount Decimal              @default(0) @db.Decimal(14, 2) // PREPAID funds reserved for this case only
-  sponsorUserId  String? // set when the sponsor is an individual/family distinct from the case owner
+  fundedAmount   Decimal              @default(0) @db.Decimal(14, 2)
+  reservedAmount Decimal              @default(0) @db.Decimal(14, 2)
+  sponsorUserId  String?
 
   postingFeeAmount   Decimal?         @db.Decimal(14, 2)
   postingFeeCurrency String           @default("ETB")
@@ -46,7 +46,6 @@ model MissingPerson {
   agreementId      String?
   agreementVersion Int?
 
-  // Per-user duplicate-submission protection, NULL keys never conflict
   idempotencyKey String?
 
   mediaTotalBytes  Int       @default(0)
@@ -58,25 +57,20 @@ model MissingPerson {
   childSafetyFirstConfirmedByUserId String?
   childSafetyFirstConfirmedAt       DateTime?
 
-  // FOUND/EXPIRED/CANCELLED closure bookkeeping (section 21).
   closureReason String?
   closedAt      DateTime?
 
-  // Optional demographics for the stats dashboards. Intake does not collect these yet.
   gender   String?
   ageGroup String?
 
-  // Admin assignment (separate from claim: a claim is self-service, an assignment is by a super admin).
   assignedToUserId String?
   assignedById     String?
   assignedAt       DateTime?
 
-  // Listing lifetime and renewal.
   expiresAt     DateTime?
   renewalCount  Int       @default(0)
   lastRenewedAt DateTime?
 
-  // Owner-reported found claim, waiting for admin verification.
   foundReportedAt       DateTime?
   foundReportDetails    String?
   foundReportDate       DateTime?
@@ -84,40 +78,32 @@ model MissingPerson {
   foundReportResolvedAt DateTime?
   foundReportConfirmed  Boolean?
 
-  // Emergency takedown. The status moves to CANCELLED, which the status workflow treats as terminal,
-  // so a takedown also blocks re-approval. These fields tell it apart from an owner cancel.
   takedownReason         String?
   takedownAt             DateTime?
   takedownById           String?
   takedownPreviousStatus MissingPersonStatus?
 
-  // Soft delete by a super admin. Same status trick as takedown, restore puts the status back.
   deletedAt             DateTime?
   deletedById           String?
   deleteReason          String?
   deletedPreviousStatus MissingPersonStatus?
 
-  // Legal hold blocks deletion, purge and media removal.
   legalHold       Boolean   @default(false)
   legalHoldReason String?
   legalHoldAt     DateTime?
   legalHoldById   String?
 
-  // Child flag correction needs two distinct admins, this holds the first proposal.
   childFlagProposedValue  Boolean?
   childFlagProposedById   String?
   childFlagProposedAt     DateTime?
   childFlagProposedReason String?
 
-  // Duplicate merge.
   mergedIntoId String?
   mergedAt     DateTime?
   mergedById   String?
 
-  // Set when the case was created by duplicating another of the owner's cases.
   copiedFromId String?
 
-  // When the owner last opened the case, used for the unread-updates badge.
   ownerLastSeenAt DateTime?
 
   informationSubmissions          InformationSubmission[]
@@ -141,7 +127,6 @@ model MissingPerson {
   redactions MissingPersonRedaction[]
   views      MissingPersonView[]
 
-  // Reward-funding and posting-fee payments that reference this case.
   payments Payment[]
 
   @@unique([userId, idempotencyKey])
@@ -177,7 +162,6 @@ enum MissingPersonStatus {
   CANCELLED
 }
 
-// Section 7 / 17-19
 enum RewardFundingMethod {
   PROMISE_TO_PAY
   PREPAID
@@ -187,14 +171,13 @@ enum RewardFundingStatus {
   UNFUNDED
   PARTIALLY_FUNDED
   FULLY_FUNDED
-  PAYMENT_DUE // PROMISE_TO_PAY case became payable; sponsor owes the money now
+  PAYMENT_DUE
   PAYMENT_OVERDUE
   PAYMENT_DEFAULTED
   REFUND_DUE
   REFUNDED
 }
 
-// Shared by VictimProfile and MissingPerson posting fees (section 5 / 8 / 27).
 enum PostingFeeStatus {
   NOT_REQUIRED
   PENDING
@@ -204,7 +187,6 @@ enum PostingFeeStatus {
   REFUNDED
 }
 
-// A row exists = this admin has read the case, marking unread deletes the row.
 model MissingPersonReadState {
   missingPersonId String
   adminId         String
@@ -223,7 +205,6 @@ enum MissingPersonFlagState {
   RESOLVED
 }
 
-// A reader's report on a public listing. One flag per user per case.
 model MissingPersonFlag {
   id              String                 @id @default(uuid())
   missingPersonId String
@@ -277,7 +258,6 @@ enum MissingPersonUpdateAuthorType {
   STAFF
 }
 
-// Public progress updates on an approved case.
 model MissingPersonUpdate {
   id              String                        @id @default(uuid())
   missingPersonId String
@@ -300,7 +280,6 @@ enum MissingPersonMessageKind {
   WARNING
 }
 
-// Admin to owner messages, shown in the owner's timeline.
 model MissingPersonMessage {
   id              String                   @id @default(uuid())
   missingPersonId String
@@ -316,7 +295,6 @@ model MissingPersonMessage {
   @@map("missing_person_message")
 }
 
-// Field-level change history for admin edits.
 model MissingPersonRevision {
   id              String   @id @default(uuid())
   missingPersonId String
@@ -340,7 +318,6 @@ enum MissingPersonRedactionStatus {
   FAILED
 }
 
-// A request to blur or hide part of a file. A worker with image tooling processes PENDING rows.
 model MissingPersonRedaction {
   id              String                       @id @default(uuid())
   missingPersonId String
@@ -360,7 +337,6 @@ model MissingPersonRedaction {
   @@map("missing_person_redaction")
 }
 
-// One row per user per case per day, for view analytics.
 model MissingPersonView {
   id              String   @id @default(uuid())
   missingPersonId String
@@ -383,7 +359,6 @@ enum MissingPersonExportStatus {
   FAILED
 }
 
-// Background CSV export. The CSV is kept in the row until expiresAt, then deleted.
 model MissingPersonExportJob {
   id            String                    @id @default(uuid())
   requestedById String

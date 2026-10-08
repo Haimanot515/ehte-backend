@@ -29,7 +29,6 @@ model AuditLog {
   id        String   @id @default(uuid())
   createdAt DateTime @default(now())
 
-  // Actor
   userId       String?
   actorType    ActorType
   actorName    String?
@@ -37,22 +36,18 @@ model AuditLog {
   sessionId    String?
   targetUserId String?
 
-  // What happened
   action   String
   outcome  AuditOutcome  @default(SUCCESS)
   severity AuditSeverity @default(INFO)
   reason   String?
 
-  // Affected object
   entity      String
   entityId    String?
   entityLabel String?
 
-  // Changes and extra data
   diff     Json?
   metadata Json?
 
-  // Request context
   ipAddress String?
   userAgent String?
   country   String?
@@ -61,21 +56,17 @@ model AuditLog {
   timezone  String?
   asn       Int?
   isp       String?
-  // Browser and OS parsed from the user agent, e.g. "Chrome on Windows"
   deviceLabel   String?
-  // Value of the x-app-version request header, when the client sends one
   clientVersion String?
   source    AuditSource?
   method    String?
   path      String?
   requestId String?
 
-  // Integrity (hash chain). Null on rows written before the chain existed.
   seq      Int?    @unique
   hash     String?
   prevHash String?
 
-  // Retention and privacy
   legalHold    Boolean   @default(false)
   anonymizedAt DateTime?
 
@@ -118,7 +109,6 @@ model AuditSavedFilter {
   filter    Json
   createdAt DateTime @default(now())
 
-  // Editing and sharing (AL-31 to AL-33)
   updatedAt        DateTime @default(now()) @updatedAt
   sharedWithAdmins Boolean  @default(false)
 
@@ -152,9 +142,6 @@ model AuditAlert {
   @@map("audit_alert")
 }
 
-/// One row per purge attempt. tokenId makes the confirm token single-use.
-/// minSeq/maxSeq let the integrity check tell a purge gap from a deleted row.
-/// status: STARTED | ARCHIVED | COMPLETED | FAILED
 model AuditPurgeRun {
   id            String    @id @default(uuid())
   tokenId       String    @unique
@@ -177,10 +164,6 @@ model AuditPurgeRun {
   @@map("audit_purge_run")
 }
 
-
-/// A hold covers the rows that matched `filter` at `appliedAt`; rows written later are not covered.
-/// kind: FILTER | ROW. status: ACTIVE | RELEASED.
-/// AuditLog.legalHold stays the single flag that purge and anonymize respect.
 model AuditLegalHold {
   id                   String    @id @default(uuid())
   kind                 String    @default("FILTER")
@@ -203,9 +186,6 @@ model AuditLegalHold {
   @@map("audit_legal_hold")
 }
 
-/// Two-person rule. A request is created by one Super Admin and approved by a different one.
-/// kind: HOLD_RELEASE | RETENTION_CHANGE | ARCHIVE_RETRIEVAL.
-/// status: PENDING | APPROVED | CONSUMED | EXPIRED.
 model AuditApprovalRequest {
   id            String    @id @default(uuid())
   kind          String
@@ -225,8 +205,6 @@ model AuditApprovalRequest {
   @@map("audit_approval_request")
 }
 
-
-/// status: SCHEDULED | RUNNING | EXECUTED | FAILED | CANCELLED
 model AuditPurgeSchedule {
   id            String    @id @default(uuid())
   olderThan     DateTime
@@ -246,8 +224,6 @@ model AuditPurgeSchedule {
   @@map("audit_purge_schedule")
 }
 
-/// scope: DEFAULT | ENTITY | SEVERITY. key is 'DEFAULT', an entity name or a severity.
-/// This is the declared policy. Rows are only removed by a purge.
 model AuditRetentionPolicy {
   id            String   @id @default(uuid())
   scope         String
@@ -261,8 +237,6 @@ model AuditRetentionPolicy {
   @@map("audit_retention_policy")
 }
 
-
-/// trigger: MANUAL | SCHEDULED
 model AuditIntegrityRun {
   id            String    @id @default(uuid())
   trigger       String
@@ -282,7 +256,6 @@ model AuditIntegrityRun {
   @@map("audit_integrity_run")
 }
 
-/// A single row (id 'default').
 model AuditIntegritySchedule {
   id            String    @id @default("default")
   enabled       Boolean   @default(false)
@@ -309,7 +282,6 @@ model AuditHealthSnapshot {
   @@map("audit_health_snapshot")
 }
 
-
 model AuditAlertTrigger {
   id               String    @id @default(uuid())
   alertId          String
@@ -328,7 +300,6 @@ model AuditAlertTrigger {
   @@index([acknowledgedAt, firedAt])
   @@map("audit_alert_trigger")
 }
-
 
 model AuditSavedFilterShare {
   id        String   @id @default(uuid())

@@ -1,5 +1,3 @@
-// Private staff notes. The subject of the record must never see them (SH-01 to SH-08).
-// Reads need an audit event. Delete is soft; every edit keeps the previous text.
 model StaffNote {
   id          String           @id @default(uuid())
   entity      SharedRecordType

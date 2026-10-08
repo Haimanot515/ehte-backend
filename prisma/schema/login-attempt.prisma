@@ -1,7 +1,6 @@
 model LoginAttempt {
   id            String             @id @default(uuid())
   userId        String?
-  // What was typed (email or phone), so failed attempts for unknown accounts still show up.
   identifier    String
   result        LoginResultEnum
   failureReason String?

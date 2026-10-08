@@ -38,30 +38,22 @@ model VictimProfile {
 
   totalRaised Decimal @default(0) @db.Decimal(12, 2)
 
-  // Section 5 / 27: the posting fee is separate from supporter money and must be
-  // confirmed before publish() moves this profile to PUBLISHED (section 4 step 4-6).
   postingFeeAmount   Decimal?         @db.Decimal(14, 2)
   postingFeeCurrency String           @default("ETB")
   postingFeeStatus   PostingFeeStatus @default(NOT_REQUIRED)
 
   agreementId String?
 
-
-  // Creator-facing review message (change request text or rejection reason).
   reviewNote    String?
   reviewNoteAt  DateTime?
-  // Last time the creator opened the profile; unseen = a staff action newer than this.
   creatorSeenAt DateTime?
 
-  // Case management
   assignedReviewerId String?
   assignedAt         DateTime?
 
-  // Completion (need fulfilled, funding closed)
   completedAt    DateTime?
   completionNote String?
 
-  // Public presentation / funding controls
   isFeatured            Boolean   @default(false)
   featuredAt            DateTime?
   fundingEndsAt         DateTime?
@@ -69,12 +61,10 @@ model VictimProfile {
   donationsPausedReason String?
   donationsPausedAt     DateTime?
 
-  // Emergency takedown (status moves to UNPUBLISHED; these tell it apart from a plain unpublish)
   takedownReason String?
   takedownAt     DateTime?
   takedownById   String?
 
-  // Soft delete + retention
   deletedAt       DateTime?
   deletedById     String?
   deleteReason    String?
@@ -84,12 +74,10 @@ model VictimProfile {
   legalHoldById   String?
   anonymizedAt    DateTime?
 
-  // Recorded consent (signed form is stored as media keys)
   consentedBy      String?
   consentNotes     String?
   consentDocuments String[]
 
-  // Dual-admin confirmation for correcting involvesChild (VP-64)
   childFlagProposedValue  Boolean?
   childFlagProposedById   String?
   childFlagProposedAt     DateTime?
@@ -102,7 +90,7 @@ model VictimProfile {
   assignedReviewer                User?              @relation("VictimProfileAssignedReviewer", fields: [assignedReviewerId], references: [id], onDelete: SetNull)
   supports                        Support[]
   payments                        Payment[]
-  payoutDestination               PayoutDestination? // was: payoutDestinations PayoutDestination[]
+  payoutDestination               PayoutDestination?
 
   readStates VictimProfileReadState[]
   updates    VictimProfileUpdate[]
@@ -133,13 +121,11 @@ enum VictimProfileStatus {
   PUBLISHED
   REJECTED
   UNPUBLISHED
-  // NEW
   CHANGES_REQUESTED
   WITHDRAWN
   COMPLETED
 }
 
-// A row exists = this admin has read the profile; markUnread deletes the row.
 model VictimProfileReadState {
   profileId String
   adminId   String
@@ -153,7 +139,6 @@ model VictimProfileReadState {
   @@map("victim_profile_read_state")
 }
 
-// Progress updates for supporters, posted by the creator or by staff.
 model VictimProfileUpdate {
   id        String   @id @default(uuid())
   profileId String
@@ -177,7 +162,6 @@ model VictimProfileFlag {
   reason       String
   details      String?
   status       VictimProfileFlagStatus @default(OPEN)
-  // DISMISS | UNPUBLISH | PAUSE_DONATIONS
   resolution   String?
   resolvedById String?
   resolvedAt   DateTime?
@@ -187,7 +171,6 @@ model VictimProfileFlag {
   profile  VictimProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
   reporter User          @relation("VictimProfileFlagReporter", fields: [reporterId], references: [id], onDelete: Cascade)
 
-  // One flag per user per profile
   @@unique([profileId, reporterId])
   @@index([status, createdAt])
   @@index([profileId, status])
@@ -241,13 +224,11 @@ model VictimProfileView {
   @@map("victim_profile_view")
 }
 
-// Field-level history for adminEdit (VP-63 / VP-70).
 model VictimProfileRevision {
   id         String   @id @default(uuid())
   profileId  String
   editedById String?
   reason     String
-  // { field: { from, to } }
   changes    Json
   createdAt  DateTime @default(now())
 

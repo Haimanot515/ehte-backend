@@ -1,4 +1,3 @@
-// Help desk tickets (SH-46 to SH-59). Internal staff comments live in StaffNote, not here.
 enum HelpTicketStatus {
   OPEN
   IN_PROGRESS
@@ -27,7 +26,6 @@ model HelpTicket {
   subject        String
   status         HelpTicketStatus   @default(OPEN)
   priority       HelpTicketPriority @default(NORMAL)
-  // Optional link to a record the ticket is about
   linkedEntity   SharedRecordType?
   linkedEntityId String?
   assignedToId   String?

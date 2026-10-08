@@ -1,25 +1,9 @@
-/**
- * One-off backfill: copy legacy VictimProfile bank fields into PayoutDestination.
- *
- * Run AFTER the `bankCode` migration and BEFORE (or together with) deploying the new code:
- *   npx ts-node scripts/backfill-payout-destinations.ts            # dry run (default)
- *   npx ts-node scripts/backfill-payout-destinations.ts --apply    # write
- *
- * Rules
- *  - Only profiles that have no PayoutDestination yet are touched.
- *  - Every created row is isVerified=false. Old-design verification is NOT carried over;
- *    an admin must re-enter/confirm and a DIFFERENT admin must verify.
- *  - bankCode is matched to Chapa's bank list by exact (case-insensitive) name.
- *    Unmatched profiles still get a row (bankCode null) and are listed for manual re-entry
- *    through PATCH admin/:id/bank-details.
- *  - Existing PayoutDestination rows are never modified.
- *
- * Needs env: DATABASE_URL, CHAPA_SECRET_KEY (optional CHAPA_BASE_URL).
- */
 import { PrismaClient } from '@prisma/client';
 
 const APPLY = process.argv.includes('--apply');
 const norm = (s: string) => s.toLowerCase().replace(/\s+/g, ' ').trim();
+
+type Legacy = { id: string; name: string | null; number: string | null; bank: string | null };
 
 async function loadBanks(): Promise<Map<string, string>> {
   const key = process.env.CHAPA_SECRET_KEY;
@@ -30,7 +14,7 @@ async function loadBanks(): Promise<Map<string, string>> {
   const body = (await res.json()) as { data: Array<Record<string, unknown>> };
   const map = new Map<string, string>();
   for (const b of body.data) {
-    if (b.is_mobilemoney === 1 || b.is_mobilemoney === true) continue; // wallets are not bank rails
+    if (b.is_mobilemoney === 1 || b.is_mobilemoney === true) continue;
     map.set(norm(String(b.name)), String(b.id));
   }
   return map;
@@ -40,34 +24,37 @@ async function main() {
   const prisma = new PrismaClient();
   const banks = await loadBanks();
 
-  const profiles = await prisma.victimProfile.findMany({
-    where: {
-      bankAccountNumber: { not: null },
-      payoutDestination: { is: null },
-    },
-    select: { id: true, bankAccountName: true, bankAccountNumber: true, bankName: true },
-  });
+  let profiles: Legacy[];
+  try {
+    profiles = await prisma.$queryRaw<Legacy[]>`
+      SELECT vp.id, vp."bankAccountName" AS name, vp."bankAccountNumber" AS number, vp."bankName" AS bank
+      FROM victim_profile vp
+      LEFT JOIN payout_destinations pd ON pd."victimProfileId" = vp.id
+      WHERE vp."bankAccountNumber" IS NOT NULL AND pd.id IS NULL`;
+  } catch (e) {
+    console.error('Legacy bank columns are not in the database any more. Nothing to backfill from.');
+    throw e;
+  }
 
   let created = 0;
   const unmatched: string[] = [];
   const incomplete: string[] = [];
 
   for (const p of profiles) {
-    if (!p.bankAccountName || !p.bankAccountNumber) {
+    if (!p.name || !p.number) {
       incomplete.push(p.id);
       continue;
     }
-    const bankCode = p.bankName ? (banks.get(norm(p.bankName)) ?? null) : null;
+    const bankCode = p.bank ? (banks.get(norm(p.bank)) ?? null) : null;
     if (!bankCode) unmatched.push(p.id);
-
     if (APPLY) {
       await prisma.payoutDestination.create({
         data: {
           rail: 'BANK',
-          bankName: p.bankName,
+          bankName: p.bank,
           bankCode,
-          accountNumber: p.bankAccountNumber,
-          accountHolder: p.bankAccountName,
+          accountNumber: p.number,
+          accountHolder: p.name,
           isVerified: false,
           victimProfileId: p.id,
         },
@@ -81,15 +68,6 @@ async function main() {
   unmatched.forEach((id) => console.log(`  ${id}`));
   console.log(`Skipped, missing account name/number: ${incomplete.length}`);
   incomplete.forEach((id) => console.log(`  ${id}`));
-
-  // Divergence report for rows that already existed (legacy copy differs from destination)
-  const diverged = await prisma.$queryRaw<Array<{ id: string }>>`
-    SELECT vp.id FROM victim_profile vp
-    JOIN payout_destinations pd ON pd."victimProfileId" = vp.id
-    WHERE vp."bankAccountNumber" IS DISTINCT FROM pd."accountNumber"`;
-  console.log(`Existing destinations that differ from the legacy copy: ${diverged.length}`);
-  diverged.forEach((r) => console.log(`  ${r.id}`));
-
   await prisma.$disconnect();
 }
 

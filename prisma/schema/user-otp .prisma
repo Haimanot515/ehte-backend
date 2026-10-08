@@ -1,4 +1,3 @@
-// phone_change on UserOtpPurposeEnum supports UserService's change-phone flow
 model UserOtp {
   id        String             @id @default(uuid())
   userId    String

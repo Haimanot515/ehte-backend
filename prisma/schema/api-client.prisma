@@ -1,5 +1,3 @@
-// Partner API access for institutions (SH-88 to SH-95). Only needed if partners call the API.
-// The secret is shown once and stored only as a hash.
 enum ApiClientStatus {
   ACTIVE
   REVOKED
@@ -10,7 +8,6 @@ model ApiClient {
   name                    String
   clientId                String          @unique
   secretHash              String
-  // After a rotation the old secret keeps working until this time
   previousSecretHash      String?
   previousSecretExpiresAt DateTime?
   secretRotatedAt         DateTime?

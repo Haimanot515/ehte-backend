@@ -21,18 +21,14 @@ model User {
   deletedAt    DateTime?
   anonymizedAt DateTime?
 
-  // Set by POST /users/:id/2fa/require: must enrol at next sign-in (AR-74)
   twoFactorRequiredAt DateTime?
 
   googleId   String? @unique
   facebookId String? @unique
   appleId    String? @unique
 
-  // Holds a not-yet-verified new phone during the change-phone flow
   pendingPhone String?
 
-  // Holds the new email during an admin promotion until the person proves they own it,
-  // so `email` only ever holds an address the account really has
   pendingEmail String?
 
   auditLogs            AuditLog[]                 @relation("AuditLogActor")
@@ -146,7 +142,6 @@ model User {
   twoFactorResetsReviewed TwoFactorResetRequest[] @relation("TwoFactorResetReviewer")
   twoFactorPolicyUpdates  TwoFactorPolicy[]       @relation("TwoFactorPolicyUpdatedBy")
 
-  // Shared and cross-module API (SH-*)
   follows                 Follow[]                @relation("UserFollows")
   legalAcceptances        LegalAcceptance[]       @relation("UserLegalAcceptances")
   helpTickets             HelpTicket[]            @relation("UserHelpTickets")
@@ -249,7 +244,6 @@ model AbuseReport {
   status       String   @default("OPEN")
   createdAt    DateTime @default(now())
 
-  // SH-79 to SH-84: evidence on report, outcome on resolve
   details          String?             @db.Text
   evidenceKeys     String[]            @default([])
   outcome          AbuseReportOutcome?

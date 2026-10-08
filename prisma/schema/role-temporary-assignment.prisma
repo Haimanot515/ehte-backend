@@ -1,5 +1,3 @@
-// A role granted until a set date, then removed automatically (AR-56, AR-57).
-// The matching UserRole row is created at grant time and deleted by the expiry job.
 model RoleTemporaryAssignment {
   id          String                    @id @default(uuid())
   userId      String
@@ -16,7 +14,6 @@ model RoleTemporaryAssignment {
   role      Role  @relation(fields: [roleId], references: [id], onDelete: Cascade)
   grantedBy User? @relation("TemporaryRoleGrantedBy", fields: [grantedById], references: [id], onDelete: SetNull)
 
-  // The expiry job scans on this pair.
   @@index([status, expiresAt])
   @@index([userId])
   @@index([roleId])

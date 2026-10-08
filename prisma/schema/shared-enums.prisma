@@ -1,4 +1,3 @@
-// Record types shared by notes, referrals and help-desk links (SH-01 to SH-18, SH-46)
 enum SharedRecordType {
   REPORT
   POST
@@ -8,7 +7,6 @@ enum SharedRecordType {
   SUPPORT
 }
 
-// Only these two can be followed (SH-19 to SH-24)
 enum FollowableType {
   MISSING_PERSON
   VICTIM_PROFILE

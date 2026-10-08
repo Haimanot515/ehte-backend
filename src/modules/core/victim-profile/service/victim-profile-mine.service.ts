@@ -54,13 +54,6 @@ export class VictimProfileMineService {
     private readonly victimProfileCommonService: VictimProfileCommonService,
   ) {}
 
-  // G12 — shared by the new creator write path (the admin bank-details path already has its own check).
-  private assertAccountHolder(involvesChild: boolean, relationship: string | undefined): void {
-    if (involvesChild && relationship === 'SELF') {
-      throw new BadRequestException('account_holder_cannot_be_the_child');
-    }
-  }
-
   // Same media bookkeeping update() does, extracted so the creator path can reuse it.
   private async computeMediaChange(profile: VictimProfile, data: MediaBearingDto) {
     const { added, removed } = this.victimProfileCommonService.diffMediaFields(profile, data);
@@ -292,11 +285,6 @@ export class VictimProfileMineService {
       );
       throw new ForbiddenException('child_flag_change_requires_admin');
     }
-
-    this.assertAccountHolder(
-      profile.involvesChild || data.involvesChild === true,
-      data.accountHolderRelationship,
-    );
 
     let media: Awaited<ReturnType<typeof this.computeMediaChange>>;
     try {

@@ -19,7 +19,6 @@ model Notification {
   actorId   String?
   actionUrl String?
 
-  // actorName and actorRole are stored on the row and are null for system notifications
   actorName String?
   actorRole String?
 
@@ -27,7 +26,6 @@ model Notification {
 
   data Json?
 
-  // isRead is kept temporarily for compatibility; remove it once all code uses readAt
   isRead Boolean   @default(false)
   readAt DateTime?
 

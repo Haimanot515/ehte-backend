@@ -1,5 +1,3 @@
-// Versioned legal documents and who accepted which version (SH-37 to SH-45).
-// The older UserConsent table stays for history; new acceptances go to LegalAcceptance.
 enum LegalDocumentStatus {
   DRAFT
   PUBLISHED
@@ -8,7 +6,7 @@ enum LegalDocumentStatus {
 
 model LegalDocument {
   id                   String              @id @default(uuid())
-  type                 String // TERMS, PRIVACY, ...
+  type                 String
   language             String
   version              String
   title                String
@@ -33,10 +31,9 @@ model LegalAcceptance {
   id           String   @id @default(uuid())
   userId       String
   documentId   String
-  // Copied from the document so the record stays readable if the document is retired
   documentType String
   version      String
-  channel      String // APP, WEB, USSD
+  channel      String
   ipAddress    String?
   acceptedAt   DateTime @default(now())
 

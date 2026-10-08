@@ -1,4 +1,3 @@
-// FAQ entries and safety guides (SH-68 to SH-75). Delete is soft.
 enum ContentKind {
   FAQ
   SAFETY_GUIDE

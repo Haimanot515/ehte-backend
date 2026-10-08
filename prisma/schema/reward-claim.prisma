@@ -21,7 +21,6 @@ model RewardClaim {
 
   status RewardClaimStatus @default(SUBMITTED)
 
-  // Weights are copied from the case at scoring time so later changes never reweight a scored claim
   timeScore         Int?
   evidenceScore     Int?
   credibilityScore  Int?
@@ -61,7 +60,6 @@ model RewardClaim {
   reviewedBy            User?                  @relation("RewardClaimReviewedBy", fields: [reviewedById], references: [id], onDelete: Restrict)
   approvedBy            User?                  @relation("RewardClaimApprovedBy", fields: [approvedById], references: [id], onDelete: Restrict)
 
-  // One claim per confidential submission, so the same tip cannot be claimed twice
   @@unique([missingPersonId, informationSubmissionId])
   @@index([missingPersonId, status])
   @@index([informantUserId])

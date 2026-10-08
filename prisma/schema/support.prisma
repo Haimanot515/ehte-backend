@@ -12,7 +12,6 @@ enum SupportStatus {
   FAILED
 }
 
-// What a non-financial supporter is offering. OTHER requires a note.
 enum SupportCategory {
   FOOD
   WATER
@@ -44,17 +43,12 @@ model Support {
   updatedAt         DateTime             @updatedAt
   transferReference String?
 
-  // Non-financial offers only: the ticked checklist items (empty for financial supports).
   categories SupportCategory[]
 
-  // Stored once so the victim notification and the public list use the same rule.
-  // Default is anonymous; the supporter ticks a box to show their name.
   anonymous Boolean @default(true)
 
-  // Non-financial only: the supporter agrees the team may pass their contact details on.
   contactMayBeShared Boolean @default(false)
 
-  // Non-financial only: set when the (claimed) victim confirms they received the help.
   victimConfirmedReceiptAt DateTime?
 
   agreementId        String?
@@ -66,23 +60,17 @@ model Support {
   organizationAmount Decimal? @db.Decimal(14, 2)
   platformAmount     Decimal? @db.Decimal(14, 2)
 
-  // ── Case management (SP-01 .. SP-68) ── NEW
   assignedReviewerId String?
   assignedAt         DateTime?
 
-  // Stamped by the status listeners in SupportService (never by hand), used for timeline,
-  // fulfilment-time and aging stats. Cleared again when an offer is reopened.
   confirmedAt DateTime?
   completedAt DateTime?
   cancelledAt DateTime?
   failedAt    DateTime?
 
-  // Supporter-side "something changed" marker. lastUpdateAt moves when someone other than the
-  // supporter changes the offer or replies; supporterSeenAt moves when the supporter opens it.
   lastUpdateAt    DateTime?
   supporterSeenAt DateTime?
 
-  // Recipient side (the user who claimed the profile).
   recipientOpenedAt DateTime?
   declinedAt        DateTime?
   declineReason     String?
@@ -93,7 +81,6 @@ model Support {
   user             User?         @relation(fields: [userId], references: [id])
   victimProfile    VictimProfile @relation(fields: [victimProfileId], references: [id], onDelete: Cascade)
   assignedReviewer User?         @relation("SupportAssignedReviewer", fields: [assignedReviewerId], references: [id], onDelete: SetNull)
-  // One Support can have several Payment attempts (retries after FAILED); only one ends up PAID.
   payments         Payment[]
 
   statusEvents SupportStatusEvent[]
@@ -107,7 +94,6 @@ model Support {
   @@index([victimProfileId])
   @@index([userId])
   @@index([status])
-  // Backs VictimProfileService reconciliation queries on victimProfileId + status.
   @@index([victimProfileId, status])
   @@index([type, status])
   @@index([status, createdAt])
@@ -115,7 +101,6 @@ model Support {
   @@index([assignedReviewerId])
   @@index([userId, lastUpdateAt])
 }
-
 
 enum SupportDisputeReason {
   NOT_DELIVERED
@@ -135,7 +120,6 @@ enum SupportDisputeOutcome {
   CANCELLED
 }
 
-// Who opened the dispute.
 enum SupportDisputeSide {
   SUPPORTER
   RECIPIENT
@@ -190,12 +174,11 @@ model SupportStatusEvent {
   @@map("support_status_event")
 }
 
-// Proof of delivery (photo, receipt, PDF). Soft-removed so the custody trail survives.
 model SupportAttachment {
   id               String                      @id @default(uuid())
   supportId        String
   key              String
-  kind             String // photo | pdf | document
+  kind             String
   mimeType         String?
   sizeBytes        Int?
   sha256           String?
@@ -215,7 +198,6 @@ model SupportAttachment {
   @@map("support_attachment")
 }
 
-// Who viewed or downloaded a proof file (SP-54). Written by SupportService.recordProofAccess().
 model SupportAttachmentAccess {
   id           String                        @id @default(uuid())
   attachmentId String
@@ -246,7 +228,6 @@ model SupportMessage {
 model SupportDispute {
   id               String                 @id @default(uuid())
   supportId        String
-  // Copied from Support.userId so repeat-dispute queries need no join.
   supporterUserId  String?
   raisedByUserId   String?
   side             SupportDisputeSide
@@ -282,7 +263,6 @@ model SupportFlag {
   @@map("support_flag")
 }
 
-// Active when liftedAt is null and (endsAt is null or in the future).
 model SupporterRestriction {
   id                 String    @id @default(uuid())
   userId             String
@@ -300,7 +280,6 @@ model SupporterRestriction {
   @@map("supporter_restriction")
 }
 
-// A row exists = this admin has read the offer (same pattern as ReportAdminRead).
 model SupportAdminRead {
   supportId String
   adminId   String
@@ -314,7 +293,6 @@ model SupportAdminRead {
   @@map("support_admin_read")
 }
 
-// Field-level change history (SP-50). Status changes live in SupportStatusEvent instead.
 model SupportRevision {
   id          String   @id @default(uuid())
   supportId   String
@@ -330,8 +308,6 @@ model SupportRevision {
   @@map("support_revision")
 }
 
-// Background CSV export (SP-58..60). The CSV text is kept on the row until expiresAt, then cleared.
-// Swap `csv` for a storage key if you move exports to object storage.
 model SupportExportJob {
   id            String                 @id @default(uuid())
   requestedById String

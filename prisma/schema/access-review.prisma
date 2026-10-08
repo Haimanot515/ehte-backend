@@ -1,5 +1,3 @@
-// Periodic review of who holds which role (AR-58, AR-59, AR-60).
-// Starting a review snapshots every current assignment into AccessReviewItem rows.
 model AccessReview {
   id          String             @id @default(uuid())
   title       String

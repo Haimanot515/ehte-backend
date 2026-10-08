@@ -1,7 +1,3 @@
-/// Background CSV exports beyond the 50,000-row inline cap (NF-54 to NF-57, AL-36 to AL-39).
-/// scope: NOTIFICATIONS | AUDIT_LOGS.
-/// status: QUEUED | RUNNING | COMPLETED | FAILED | EXPIRED.
-/// fileKeys is a JSON array of object keys, one per part.
 model MiscExportJob {
   id            String    @id @default(uuid())
   scope         String

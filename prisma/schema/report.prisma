@@ -18,23 +18,17 @@ model Report {
   assignedToId  String?
   category      ReportCategory
 
-  // Per-user duplicate-submission protection, NULL keys never conflict.
-  // Offline sync also uses this: SyncReportItemDto.clientId is stored here.
   idempotencyKey String?
 
   mediaTotalBytes Int @default(0)
 
-  // Set when the owner is suspended, status is deliberately left unchanged
   ownerSuspendedAt DateTime?
 
-  // ── Triage ───────────────────────────────────────────────
   priority       ReportPriority    @default(MEDIUM)
   sensitivity    ReportSensitivity @default(STANDARD)
-  // No Team table exists yet, so this is a plain id for now
   assignedTeamId String?
   region         String?
 
-  // ── Reporter-side settings ───────────────────────────────
   isAnonymous       Boolean             @default(false)
   contactMethod     ReportContactMethod @default(IN_APP)
   contactWindow     String?
@@ -42,13 +36,10 @@ model Report {
   updatesMutedUntil DateTime?
   urgentFlaggedAt   DateTime?
   urgentDetails     String?
-  // Device time for reports synced from offline mode
   clientCreatedAt   DateTime?
-  // Reporter-visible change time vs. last time the reporter looked
   reporterUpdatedAt DateTime            @default(now())
   reporterSeenAt    DateTime?
 
-  // ── GPS location (the text `location` above stays as typed by the reporter) ──
   latitude               Float?
   longitude              Float?
   locationAccuracyMeters Float?
@@ -59,25 +50,20 @@ model Report {
   locationVerifiedById   String?
   locationNote           String?
 
-  // ── SLA, activity, closing ───────────────────────────────
   dueAt            DateTime?
   firstRespondedAt DateTime?
   lastActivityAt   DateTime  @default(now())
   closedAt         DateTime?
 
-  // ── Resolution ───────────────────────────────────────────
   resolutionOutcome ReportResolutionOutcome?
   resolutionSummary String?
   resolvedById      String?
 
-  // ── Spam / false report flag (null = not flagged) ────────
   integrityFlag   ReportIntegrityFlag?
   integrityReason String?
   integrityFlagAt DateTime?
   integrityById   String?
 
-  // ── Archive, soft delete, legal hold ─────────────────────
-  // Every normal list query must filter deletedAt IS NULL
   archivedAt      DateTime?
   archivedById    String?
   archiveReason   String?
@@ -89,7 +75,6 @@ model Report {
   legalHoldAt     DateTime?
   legalHoldById   String?
 
-  // ── Merge / split ────────────────────────────────────────
   mergedIntoId String?
   mergedAt     DateTime?
   splitFromId  String?
@@ -144,7 +129,6 @@ model Report {
   @@map("report")
 }
 
-
 model ReportInformationRequest {
   id              String                   @id @default(uuid())
   reportId        String
@@ -157,7 +141,6 @@ model ReportInformationRequest {
   createdAt       DateTime                 @default(now())
   updatedAt       DateTime                 @updatedAt
 
-  // Deadline, reminders, cancel and review
   dueAt         DateTime?
   remindedAt    DateTime?
   remindCount   Int       @default(0)
@@ -178,12 +161,10 @@ model ReportInformationRequest {
   @@map("report_information_request")
 }
 
-
 model ReportEvidence {
   id         String             @id @default(uuid())
   reportId   String
   kind       ReportEvidenceKind
-  // Bare MinIO storage key, same convention as the media arrays on Report
   storageKey String
   mimeType   String?
   sizeBytes  Int?
@@ -198,7 +179,6 @@ model ReportEvidence {
   redactedStorageKey String?
   redactedRegions    Json?
 
-  // Soft removal keeps the row so custody history survives
   removedAt     DateTime?
   removedById   String?
   removalReason String?
@@ -214,7 +194,6 @@ model ReportEvidence {
 model ReportEvidenceCustody {
   id         String   @id @default(uuid())
   evidenceId String
-  // ADDED, VIEWED, DOWNLOADED, REDACTED, REMOVED, ...
   action     String
   actorId    String?
   note       String?
@@ -226,7 +205,6 @@ model ReportEvidenceCustody {
   @@index([evidenceId, createdAt])
   @@map("report_evidence_custody")
 }
-
 
 model ReportMessage {
   id         String    @id @default(uuid())
@@ -262,7 +240,6 @@ model ReportStatusHistory {
 model ReportAssignmentHistory {
   id           String   @id @default(uuid())
   reportId     String
-  // null means the report was unassigned
   assignedToId String?
   assignedById String?
   note         String?
@@ -279,7 +256,6 @@ model ReportRevision {
   id         String   @id @default(uuid())
   reportId   String
   editedById String?
-  // { field: { from, to } }
   changes    Json
   createdAt  DateTime @default(now())
 
@@ -305,7 +281,6 @@ model ReportEscalation {
   @@index([createdAt])
   @@map("report_escalation")
 }
-
 
 model ReportReopenRequest {
   id            String    @id @default(uuid())
@@ -358,7 +333,6 @@ model ReportFeedback {
 model ReportDraft {
   id        String    @id @default(uuid())
   userId    String
-  // Same shape as CreateReportDto, every field optional
   data      Json
   expiresAt DateTime?
   createdAt DateTime  @default(now())
@@ -371,8 +345,6 @@ model ReportDraft {
   @@map("report_draft")
 }
 
-
-// A row exists = this admin has read the report
 model ReportAdminRead {
   reportId String
   adminId  String
@@ -420,7 +392,6 @@ model ReportFollowUp {
 
 model ReportTag {
   id        String   @id @default(uuid())
-  // Store lowercased and trimmed
   name      String   @unique
   createdAt DateTime @default(now())
 
@@ -476,11 +447,9 @@ model ReportLink {
 model ReportMerge {
   id             String    @id @default(uuid())
   sourceReportId String
-  // Plain id: the target may later be archived or deleted independently
   targetReportId String
   mergedById     String?
   reason         String?
-  // What is needed to undo the merge (moved evidence ids, previous status, ...)
   snapshot       Json?
   createdAt      DateTime  @default(now())
   unmergedAt     DateTime?
@@ -493,7 +462,6 @@ model ReportMerge {
   @@index([targetReportId])
   @@map("report_merge")
 }
-
 
 model ReportAccessGrant {
   id          String    @id @default(uuid())
@@ -515,12 +483,10 @@ model ReportAccessGrant {
   @@map("report_access_grant")
 }
 
-// Lightweight "who opened this report" log, kept out of the hash-chained AuditLog
 model ReportAccessLog {
   id        String   @id @default(uuid())
   reportId  String
   userId    String?
-  // VIEW, EVIDENCE_DOWNLOAD, LOCATION_VIEW, CASE_FILE, ...
   action    String
   ipAddress String?
   createdAt DateTime @default(now())
@@ -546,7 +512,6 @@ model ReportReporterReveal {
   @@index([revealedById, createdAt])
   @@map("report_reporter_reveal")
 }
-
 
 model ReportEmail {
   id          String               @id @default(uuid())
@@ -587,7 +552,6 @@ model ReportExportJob {
   @@index([expiresAt])
   @@map("report_export_job")
 }
-
 
 enum ReportCategory {
   HARASSMENT

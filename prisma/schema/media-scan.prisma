@@ -1,4 +1,3 @@
-/// One row per uploaded object. status: PENDING | CLEAN | INFECTED | REJECTED | FAILED.
 model MediaScan {
   id        String    @id @default(uuid())
   objectKey String    @unique

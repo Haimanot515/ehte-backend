@@ -6,7 +6,6 @@ model Session {
   createdAt    DateTime  @default(now())
   revokedAt    DateTime?
 
-  // Device details for session lists and "revoke all other sessions" (AR-23 … AR-27)
   ipAddress    String?
   userAgent    String?
   deviceLabel  String?

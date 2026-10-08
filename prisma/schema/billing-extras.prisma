@@ -1,5 +1,3 @@
-// Payer disputes, stored payment webhook events and informant reward appeals. User ids are plain strings, so user.prisma needs no change
-
 enum PaymentDisputeStatus {
   OPEN
   RESOLVED
@@ -42,7 +40,7 @@ model PaymentWebhookEvent {
   provider         String    @default("chapa")
   txRef            String?
   payload          Json
-  result           String // RECEIVED, RECONCILED, IGNORED, ERROR
+  result           String
   error            String?
   replayCount      Int       @default(0)
   lastReplayedAt   DateTime?

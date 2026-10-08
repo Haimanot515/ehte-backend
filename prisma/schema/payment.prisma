@@ -58,7 +58,6 @@ model Payment {
   allocationSnapshot Json
   previewShownAt     DateTime
 
-  // refundStatus values in use: REQUESTED, REJECTED, REFUNDED, FAILED. Request and execution need two different admins
   refundStatus        String?
   refundAmount        Decimal?  @db.Decimal(14, 2)
   refundReason        String?
@@ -68,7 +67,6 @@ model Payment {
   refundDecidedById   String?
   refundedAt          DateTime?
 
-  // A held payment cannot be allocated to a disbursement
   heldAt     DateTime?
   holdReason String?
   heldById   String?

@@ -1,4 +1,3 @@
-// "Block another user from contacting me" (SH-76 to SH-78).
 model UserBlock {
   id        String   @id @default(uuid())
   blockerId String

@@ -16,21 +16,17 @@ model Post {
   involvesChild Boolean    @default(false)
   reviewNote    String?
 
-  // Per-user duplicate-submission protection, NULL keys never conflict
   idempotencyKey String?
 
   claimedByUserId String?
   claimedAt       DateTime?
 
-  // Child-safety dual control, a second distinct admin must confirm
   childSafetyFirstConfirmedByUserId String?
   childSafetyFirstConfirmedAt       DateTime?
   mediaTotalBytes                   Int       @default(0)
 
   ownerSuspendedAt DateTime?
 
-  // Emergency takedown of a PUBLISHED post. The status moves to UNPUBLISHED;
-  // these fields tell a takedown apart from a normal unpublish.
   takedownReason String?
   takedownAt     DateTime?
   takedownById   String?
@@ -70,7 +66,6 @@ enum PostStatus {
   CHANGES_REQUESTED
 }
 
-// A row exists = this admin has read the post, markUnread deletes the row
 model PostReadState {
   postId  String
   adminId String
@@ -99,7 +94,6 @@ model PostFlag {
   post     Post @relation(fields: [postId], references: [id], onDelete: Cascade)
   reporter User @relation("PostFlagReporter", fields: [reporterId], references: [id], onDelete: Cascade)
 
-  // One flag per user per post
   @@unique([postId, reporterId])
   @@index([status, createdAt])
   @@index([postId, status])
@@ -110,7 +104,6 @@ model PostAppeal {
   id           String           @id @default(uuid())
   postId       String
   authorId     String
-  // What is being appealed, so an overturn knows what to undo
   target       PostAppealTarget
   message      String
   status       PostAppealStatus @default(OPEN)

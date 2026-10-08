@@ -1,4 +1,3 @@
-
 enum InformationStatus {
   PENDING
   UNDER_REVIEW
@@ -20,14 +19,11 @@ enum InformationCredibility {
   HIGH
 }
 
-// Set only together with status = REJECTED.
 enum InformationResolution {
-  DUPLICATE // same information as another tip on this case
-  ALREADY_KNOWN // the case already had this information
+  DUPLICATE
+  ALREADY_KNOWN
 }
 
-// What the informant sees on their tip timeline. Status changes are NOT stored
-// here; they are read from the audit trail so changes made by any code path show up.
 enum InformationTimelineEventType {
   QUESTION_ASKED
   QUESTION_ANSWERED
@@ -38,7 +34,7 @@ enum InformationTimelineEventType {
 
 enum InformationAppealStatus {
   PENDING
-  UPHELD // rejection stands
+  UPHELD
   OVERTURNED
 }
 
@@ -63,8 +59,8 @@ enum InformationRedactionStatus {
 }
 
 enum InformationIdentityAccessKind {
-  REVEAL // one tip, identity shown with a reason
-  INFORMANT_LOOKUP // all tips of one informant listed
+  REVEAL
+  INFORMANT_LOOKUP
 }
 
 enum InformationExportJobStatus {
@@ -91,7 +87,6 @@ model InformationSubmission {
   document String[]
   other    String[]
 
-  // Running total of attached media bytes, computed from statObject() results.
   mediaTotalBytes Int @default(0)
 
   status     InformationStatus @default(PENDING)
@@ -101,7 +96,6 @@ model InformationSubmission {
 
   idempotencyKey String?
 
-  // ── Triage ──────────────────────────────────
   priority           InformationPriority    @default(NORMAL)
   credibility        InformationCredibility @default(UNVERIFIED)
   credibilityReason  String?
@@ -111,7 +105,6 @@ model InformationSubmission {
   resolution    InformationResolution?
   duplicateOfId String?
 
-  // ── Reviewer assignment (claim / assign) ────
   assignedToId String?
   assignedAt   DateTime?
   assignedById String?
@@ -119,13 +112,11 @@ model InformationSubmission {
   informantSeenStatus InformationStatus @default(PENDING)
   informantSeenAt     DateTime?
 
-  // ── Retention ───────────────────────────────
   legalHold       Boolean   @default(false)
   legalHoldReason String?
   legalHoldAt     DateTime?
   legalHoldById   String?
 
-  // Soft delete. Every normal list query must filter deletedAt IS NULL.
   deletedAt    DateTime?
   deletedById  String?
   deleteReason String?
@@ -164,8 +155,6 @@ model InformationSubmission {
   @@map("information_submission")
 }
 
-// A row exists = this admin has read the tip (same pattern as ReportAdminRead).
-// Informant activity (answer, new evidence, appeal) deletes the rows so the tip is unread again.
 model InformationAdminRead {
   submissionId String
   adminId      String
@@ -179,7 +168,6 @@ model InformationAdminRead {
   @@map("information_admin_read")
 }
 
-// A question from the review team. answeredAt IS NULL = still open.
 model InformationQuestion {
   id           String    @id @default(uuid())
   submissionId String
@@ -196,7 +184,6 @@ model InformationQuestion {
   @@map("information_question")
 }
 
-// Informant-facing history: questions, answers, messages, new evidence, appeal.
 model InformationTimelineEvent {
   id           String                       @id @default(uuid())
   submissionId String
@@ -212,7 +199,6 @@ model InformationTimelineEvent {
   @@map("information_timeline_event")
 }
 
-// One appeal per tip. No endpoint decides appeals yet; the decision columns are ready for one.
 model InformationAppeal {
   id           String                  @id @default(uuid())
   submissionId String                  @unique
@@ -249,7 +235,7 @@ model InformationAttachment {
   id           String                @id @default(uuid())
   submissionId String
   key          String
-  field        String // photo | video | audio | pdf | document | other
+  field        String
   size         Int                   @default(0)
   contentType  String?
   etag         String?
@@ -262,7 +248,7 @@ model InformationAttachment {
   redactionReason String?
   redactionById   String?
   redactionAt     DateTime?
-  redactedKey     String? // set by the worker when the redacted copy exists
+  redactedKey     String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -275,7 +261,6 @@ model InformationAttachment {
   @@map("information_attachment")
 }
 
-// Field-level change history written by the review and informant actions.
 model InformationRevision {
   id           String   @id @default(uuid())
   submissionId String
@@ -292,12 +277,11 @@ model InformationRevision {
   @@map("information_revision")
 }
 
-// Who opened a tip in the admin area (the audit trail covers writes).
 model InformationAccessLog {
   id           String   @id @default(uuid())
   submissionId String
   adminId      String
-  action       String // READ | other view kinds
+  action       String
   createdAt    DateTime @default(now())
 
   submission InformationSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
@@ -307,7 +291,6 @@ model InformationAccessLog {
   @@map("information_access_log")
 }
 
-// Every time an admin saw who an informant is. submissionId is null for an informant lookup.
 model InformationIdentityAccess {
   id           String                        @id @default(uuid())
   submissionId String?
