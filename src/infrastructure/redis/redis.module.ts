@@ -4,6 +4,7 @@ import { Global, Injectable, Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { RedisService } from './redis.service';
 import { CacheService } from './cache.service';
+import { CronLockService } from './cron-lock.service';
 import { RedisThrottlerStorage } from './redis-throttler.storage';
 
 /**
@@ -50,6 +51,7 @@ export class SecurityRedisService extends RedisService {
     RedisService,
     SecurityRedisService,
     CacheService,
+    CronLockService,
     {
       // Throttle counters live on the security connection.
       provide: RedisThrottlerStorage,
@@ -57,6 +59,6 @@ export class SecurityRedisService extends RedisService {
       useFactory: (security: SecurityRedisService) => new RedisThrottlerStorage(security),
     },
   ],
-  exports: [RedisService, SecurityRedisService, CacheService, RedisThrottlerStorage],
+  exports: [RedisService, SecurityRedisService, CacheService, CronLockService, RedisThrottlerStorage],
 })
 export class RedisModule {}

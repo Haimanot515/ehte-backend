@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  HttpException,
   Injectable,
   Logger,
   ServiceUnavailableException,
@@ -81,6 +82,7 @@ export class ChapaService {
     method: 'GET' | 'POST',
     path: string,
     body?: unknown,
+    asForm = false,
   ): Promise<T> {
     if (!this.secretKey) {
       throw new ServiceUnavailableException('Payments are not configured');
@@ -90,9 +92,13 @@ export class ChapaService {
       method,
       headers: {
         Authorization: `Bearer ${this.secretKey}`,
-        'Content-Type': 'application/json',
+        'Content-Type': asForm ? 'application/x-www-form-urlencoded' : 'application/json',
       },
-      body: body ? JSON.stringify(body) : undefined,
+      body: body
+        ? asForm
+          ? new URLSearchParams(body as Record<string, string>).toString()
+          : JSON.stringify(body)
+        : undefined,
       signal: AbortSignal.timeout(this.requestTimeoutMs),
     });
 
@@ -102,15 +108,33 @@ export class ChapaService {
       data = JSON.parse(raw) as T;
     } catch {
       this.logger.error(`[Chapa] ${method} ${path} non-JSON (HTTP ${res.status})`);
+      // A 5xx / timeout / rate-limit answer does NOT prove the request was refused, so it must not look like a 4xx.
+      if (this.isUncertainStatus(res.status)) {
+        throw new ServiceUnavailableException(`Chapa request failed: HTTP ${res.status}`);
+      }
       throw new BadRequestException(`Chapa request failed: HTTP ${res.status}`);
     }
 
     if (!res.ok || data.status !== 'success') {
       const msg = messageToString(data.message) || `HTTP ${res.status}`;
       this.logger.error(`[Chapa] ${method} ${path} failed (HTTP ${res.status}): ${msg}`);
+      if (this.isUncertainStatus(res.status)) {
+        throw new ServiceUnavailableException(`Chapa request failed: ${msg}`);
+      }
       throw new BadRequestException(`Chapa request failed: ${msg}`);
     }
     return data;
+  }
+
+  private isUncertainStatus(status: number): boolean {
+    return status >= 500 || status === 408 || status === 429;
+  }
+
+  /** True only when Chapa clearly refused the request (a real 4xx). Timeouts, 5xx and network errors are "unknown". */
+  isDefiniteRejection(err: unknown): boolean {
+    if (!(err instanceof HttpException)) return false;
+    const status = err.getStatus();
+    return status >= 400 && status < 500 && status !== 408 && status !== 429;
   }
 
   // Chapa rejects title/description with characters outside [a-zA-Z0-9-_ .]
@@ -173,13 +197,50 @@ export class ChapaService {
   }
 
   // ── Webhook signature ─────────────────────────────────────────────────────
-  // Confirm the exact scheme and header names in Chapa's webhook docs.
+  // Per Chapa's webhook docs: x-chapa-signature is HMAC-SHA256(secret, payload) and
+  // chapa-signature is HMAC-SHA256(secret, secret). Either one is enough. The payload signature
+  // binds the body, so it is checked whenever it is present and must then be valid.
 
-  verifyWebhookSignature(rawBody: Buffer, signature?: string): boolean {
-    if (!this.webhookSecret || !signature) return false;
-    const expected = crypto.createHmac('sha256', this.webhookSecret).update(rawBody).digest();
-    const received = Buffer.from(signature, 'hex');
+  verifyWebhookSignature(
+    rawBody: Buffer,
+    payloadSignature?: string,
+    secretSignature?: string,
+  ): boolean {
+    if (!this.webhookSecret) return false;
+    if (payloadSignature) return this.hmacMatches(payloadSignature, rawBody);
+    if (secretSignature) return this.hmacMatches(secretSignature, this.webhookSecret);
+    return false;
+  }
+
+  private hmacMatches(signature: string, data: Buffer | string): boolean {
+    const expected = crypto.createHmac('sha256', this.webhookSecret).update(data).digest();
+    const received = Buffer.from(signature.trim(), 'hex');
     return received.length === expected.length && crypto.timingSafeEqual(received, expected);
+  }
+
+  /**
+   * Refund a collected payment. Chapa wants ITS OWN reference for the payment (stored as
+   * Payment.chapaReference), not our tx_ref. Chapa's charges are not refunded; the refund is taken
+   * from the merchant balance. Confirm the endpoint in Chapa's refund docs against the test environment.
+   * `reference` is our unique id for this refund so a repeat call can be recognised.
+   */
+  async refund(input: {
+    chapaReference: string;
+    amount: Prisma.Decimal;
+    reason?: string | null;
+    reference: string;
+  }): Promise<void> {
+    await this.request(
+      'POST',
+      `/refund/${encodeURIComponent(input.chapaReference)}`,
+      {
+        amount: input.amount.toFixed(2),
+        reference: input.reference,
+        ...(input.reason ? { reason: input.reason.slice(0, 200) } : {}),
+      },
+      true,
+    );
+    this.logger.log(`[Chapa] refund accepted reference=${input.reference}`);
   }
 
   async transfer(input: ChapaTransferInput): Promise<void> {

@@ -11,10 +11,17 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { DisbursementMethod, Prisma, AuditOutcome, AuditSeverity } from '@prisma/client';
 import { PrismaService } from '../../../../prisma/prisma.service';
 import { ChapaService } from '../../../../infrastructure/chapa/chapa.service';
+import { CronLockService } from '../../../../infrastructure/redis/cron-lock.service';
 import { BillingEventsService } from 'src/modules/billing/billing-events/service/billing-events.service';
 import { AuditEventEnum } from '../../../../common/enums/shared/audit-events.enum';
 import { NotificationEventEnum } from '../../../../common/enums/shared/notification-events.enum';
 import { DisbursementPaidOutEvent } from '../../../misc/notification/events/notification.events';
+
+const SYNC_INTERVAL_MS = 10 * 60_000;
+const SYNC_BATCH_SIZE = 50;
+const SYNC_MAX_BATCHES = 10;
+const STALE_ALERT_REPEAT_MS = 6 * 3_600_000;
+const STALE_CRITICAL_AFTER_MS = 24 * 3_600_000;
 
 export type ExecuteInput = {
   accountName?: string;
@@ -32,6 +39,7 @@ export class DisbursementService {
     private readonly chapa: ChapaService,
     private readonly events: BillingEventsService,
     private readonly configService: ConfigService,
+    private readonly cronLock: CronLockService,
   ) {}
 
   private get processingTimeoutMinutes(): number {
@@ -49,17 +57,17 @@ export class DisbursementService {
       include: { payment: true, disbursements: true },
     });
     if (!allocation) throw new NotFoundException('Allocation not found');
-    if (allocation.payment.status !== 'PAID')
-      throw new BadRequestException('Payment is not settled');
-    // BL-24: a held payment cannot be paid out until it is released.
-    if (allocation.payment.heldAt) throw new BadRequestException('Payment is on hold');
+    this.assertPaymentPayable(allocation.payment);
     if (!['PENDING', 'PARTIALLY_PAID_OUT'].includes(allocation.settlementStatus)) {
       throw new BadRequestException('Allocation is not payable');
     }
+    if (
+      allocation.partyType !== 'REWARD_BENEFICIARY' &&
+      allocation.disbursements.some((d) => !['FAILED', 'CANCELLED'].includes(d.status))
+    ) {
+      throw new BadRequestException('A disbursement already exists for this allocation');
+    }
     if (allocation.partyType === 'RECIPIENT') {
-      if (allocation.disbursements.some((d) => !['FAILED', 'CANCELLED'].includes(d.status))) {
-        throw new BadRequestException('A disbursement already exists for this allocation');
-      }
       await this.loadPayableRecipient(allocation.payment.victimProfileId);
     }
 
@@ -86,6 +94,7 @@ export class DisbursementService {
       ) {
         throw new BadRequestException('This claim has already been disbursed');
       }
+      await this.assertRewardPayable(allocation.partyType, allocation.payment.missingPersonId);
       const alreadyCommitted = allocation.disbursements
         .filter((d) => !['FAILED', 'CANCELLED'].includes(d.status))
         .reduce((sum, d) => sum.add(d.amount), new Prisma.Decimal(0));
@@ -115,10 +124,14 @@ export class DisbursementService {
   }
 
   async approve(adminId: string, id: string) {
-    const d = await this.prisma.disbursement.findUnique({ where: { id } });
+    const d = await this.prisma.disbursement.findUnique({
+      where: { id },
+      include: { allocation: { include: { payment: true } } },
+    });
     if (!d) throw new NotFoundException('Disbursement not found');
-    // BL-58: a held disbursement cannot be approved until it is released.
     if (d.heldAt) throw new BadRequestException('Disbursement is on hold');
+    this.assertPaymentPayable(d.allocation.payment);
+    await this.assertRewardPayable(d.allocation.partyType, d.allocation.payment.missingPersonId);
     if (d.createdById === adminId) {
       await this.events.log({
         actorId: adminId,
@@ -189,14 +202,14 @@ export class DisbursementService {
       include: { allocation: { include: { payment: true } } },
     });
     if (!d) throw new NotFoundException('Disbursement not found');
-    // BL-58: a held disbursement cannot be executed until it is released.
     if (d.heldAt) throw new BadRequestException('Disbursement is on hold');
+    this.assertPaymentPayable(d.allocation.payment);
+    await this.assertRewardPayable(d.allocation.partyType, d.allocation.payment.missingPersonId);
 
     let account: { accountName: string; accountNumber: string; bankCode: string } | null = null;
     let destinationId: string | null = null;
     let destinationSnapshot: Prisma.InputJsonValue | undefined;
     if (d.allocation.partyType === 'RECIPIENT') {
-      // Recipients are paid only to their verified PayoutDestination; nothing is typed at execution.
       const dest = await this.loadPayableRecipient(d.allocation.payment.victimProfileId);
       account = {
         accountName: dest.accountHolder,
@@ -213,11 +226,43 @@ export class DisbursementService {
         verifiedById: dest.verifiedById,
         verifiedAt: dest.verifiedAt?.toISOString() ?? null,
       };
+    } else if (d.allocation.partyType === 'RESPONSIBLE_ORGANIZATION' && d.allocation.institutionId) {
+      const dest = await this.loadInstitutionDestination(d.allocation.institutionId);
+      if (dest) {
+        account = {
+          accountName: dest.accountHolder,
+          accountNumber: dest.accountNumber as string,
+          bankCode: dest.bankCode as string,
+        };
+        destinationId = dest.id;
+        destinationSnapshot = {
+          rail: dest.rail,
+          bankName: dest.bankName,
+          bankCode: dest.bankCode,
+          accountNumberMasked: `****${(dest.accountNumber as string).slice(-4)}`,
+          accountHolder: dest.accountHolder,
+          verifiedById: dest.verifiedById,
+          verifiedAt: dest.verifiedAt?.toISOString() ?? null,
+        };
+      } else if (d.method === 'CHAPA_TRANSFER') {
+        throw new BadRequestException('institution_payout_destination_not_verified');
+      }
     } else if (input.accountName && input.accountNumber && input.bankCode) {
+      // Typed account details are not verified, so the approver may not also execute and the account is recorded.
+      if (d.approvedById === adminId) {
+        throw new ForbiddenException('A different admin must execute a payout to a typed account');
+      }
       account = {
         accountName: input.accountName,
         accountNumber: input.accountNumber,
         bankCode: input.bankCode,
+      };
+      destinationSnapshot = {
+        source: 'admin_supplied',
+        bankCode: input.bankCode,
+        accountNumberMasked: `****${input.accountNumber.slice(-4)}`,
+        accountHolder: input.accountName,
+        suppliedById: adminId,
       };
     }
     if (d.method === 'CHAPA_TRANSFER' && !account) {
@@ -228,15 +273,30 @@ export class DisbursementService {
     }
 
     const { count } = await this.prisma.disbursement.updateMany({
-      where: { id, status: 'APPROVED' },
+      where: {
+        id,
+        status: 'APPROVED',
+        allocation: {
+          payment: {
+            status: 'PAID',
+            heldAt: null,
+            OR: [{ refundStatus: null }, { refundStatus: { notIn: ['REQUESTED', 'PROCESSING'] } }],
+          },
+        },
+      },
       data: {
         status: 'PROCESSING',
         executedById: adminId,
         executedAt: new Date(),
-        ...(destinationId ? { payoutDestinationId: destinationId, destinationSnapshot } : {}),
+        ...(destinationId ? { payoutDestinationId: destinationId } : {}),
+        ...(destinationSnapshot ? { destinationSnapshot } : {}),
       },
     });
-    if (count === 0) throw new BadRequestException('Not approved or already executed');
+    if (count === 0) {
+      throw new BadRequestException(
+        'Not approved, already executed, or the payment is held or being refunded',
+      );
+    }
 
     try {
       if (d.method === 'CHAPA_TRANSFER') {
@@ -266,7 +326,6 @@ export class DisbursementService {
       }
     } catch (err) {
       if (d.method === 'CHAPA_TRANSFER' && !this.isDefiniteRejection(err)) {
-        // Unknown outcome: stay PROCESSING so syncProcessing verifies by reference and no second payout is created
         await this.events.log({
           actorId: adminId,
           action: AuditEventEnum.SECURITY_ALERT,
@@ -308,12 +367,6 @@ export class DisbursementService {
     });
   }
 
-  // Only an explicit 4xx from Chapa proves the transfer was not accepted; timeouts, 5xx and network errors may have gone through
-  /**
-   * BL-60. Records that a payout stuck in PROCESSING was in fact paid, proven by
-   * an external reference (bank slip or Chapa dashboard). Uses the same
-   * settlement bookkeeping as a normal paid-out transition.
-   */
   async markPaidManually(adminId: string, id: string, externalReference: string, reason: string) {
     const d = await this.prisma.disbursement.findUnique({ where: { id } });
     if (!d) throw new NotFoundException('Disbursement not found');
@@ -360,6 +413,46 @@ export class DisbursementService {
       status !== 408 &&
       status !== 429
     );
+  }
+
+  private assertPaymentPayable(payment: {
+    status: string;
+    heldAt: Date | null;
+    refundStatus: string | null;
+  }): void {
+    if (payment.status !== 'PAID') throw new BadRequestException('Payment is not settled');
+    if (payment.heldAt) throw new BadRequestException('Payment is on hold');
+    if (['REQUESTED', 'PROCESSING'].includes(payment.refundStatus ?? '')) {
+      throw new BadRequestException('A refund is pending for this payment');
+    }
+  }
+
+  private async assertRewardPayable(
+    partyType: string,
+    missingPersonId: string | null,
+  ): Promise<void> {
+    if (partyType !== 'REWARD_BENEFICIARY') return;
+    if (!missingPersonId) throw new BadRequestException('Reward payment has no case');
+    const mp = await this.prisma.missingPerson.findUnique({
+      where: { id: missingPersonId },
+      select: { fundingStatus: true },
+    });
+    if (!mp || mp.fundingStatus === 'REFUND_DUE' || mp.fundingStatus === 'REFUNDED') {
+      throw new BadRequestException('The reward for this case is closed');
+    }
+  }
+
+  private loadInstitutionDestination(institutionId: string) {
+    return this.prisma.payoutDestination.findFirst({
+      where: {
+        institutionId,
+        isVerified: true,
+        rail: 'BANK',
+        accountNumber: { not: null },
+        bankCode: { not: null },
+      },
+      orderBy: { verifiedAt: 'desc' },
+    });
   }
 
   private async loadPayableRecipient(profileId: string | null) {
@@ -414,12 +507,32 @@ export class DisbursementService {
 
   @Cron(CronExpression.EVERY_10_MINUTES)
   async syncProcessing(): Promise<void> {
-    const pending = await this.prisma.disbursement.findMany({
-      where: { status: 'PROCESSING', method: 'CHAPA_TRANSFER' },
-      select: { id: true, reference: true, executedAt: true, createdById: true },
-      take: 50,
-    });
+    await this.cronLock.runExclusive('disbursement:sync-processing', 9 * 60_000, () =>
+      this.syncProcessingBatches(),
+    );
+  }
 
+  // Oldest first, in pages, so a pile of stuck transfers cannot starve newer ones.
+  private async syncProcessingBatches(): Promise<void> {
+    let cursor: string | undefined;
+    for (let batch = 0; batch < SYNC_MAX_BATCHES; batch++) {
+      const pending = await this.prisma.disbursement.findMany({
+        where: { status: 'PROCESSING', method: 'CHAPA_TRANSFER' },
+        select: { id: true, reference: true, executedAt: true, createdById: true },
+        orderBy: [{ executedAt: 'asc' }, { id: 'asc' }],
+        take: SYNC_BATCH_SIZE,
+        ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+      });
+      if (pending.length === 0) return;
+      await this.syncProcessingPage(pending);
+      if (pending.length < SYNC_BATCH_SIZE) return;
+      cursor = pending[pending.length - 1].id;
+    }
+  }
+
+  private async syncProcessingPage(
+    pending: { id: string; reference: string; executedAt: Date | null; createdById: string }[],
+  ): Promise<void> {
     const timeoutMs = this.processingTimeoutMinutes * 60 * 1000;
     const now = Date.now();
 
@@ -456,7 +569,13 @@ export class DisbursementService {
         this.flagIfStale(d, timeoutMs, now, remote.status);
       } catch (err) {
         this.logger.warn(`Transfer sync failed for ${d.id}: ${String(err)}`);
-        this.flagIfStale(d, timeoutMs, now, 'sync_error');
+        // A 4xx from Chapa (for example no such transfer) will not fix itself, so it is reported as such.
+        this.flagIfStale(
+          d,
+          timeoutMs,
+          now,
+          this.isDefiniteRejection(err) ? 'transfer_not_found_or_rejected' : 'sync_error',
+        );
       }
     }
   }
@@ -471,6 +590,12 @@ export class DisbursementService {
     const ageMs = now - d.executedAt.getTime();
     if (ageMs < timeoutMs) return;
 
+    // Alert on the first run after the timeout, then about every 6 hours, instead of every run.
+    const sinceTimeout = ageMs - timeoutMs;
+    if (sinceTimeout >= SYNC_INTERVAL_MS && sinceTimeout % STALE_ALERT_REPEAT_MS >= SYNC_INTERVAL_MS) {
+      return;
+    }
+
     this.logger.warn(
       `Disbursement ${d.id} has been PROCESSING for over ${this.processingTimeoutMinutes}m ` +
         `(remote status: ${remoteStatus})`,
@@ -478,7 +603,7 @@ export class DisbursementService {
     void this.events.log({
       actorId: d.createdById,
       action: AuditEventEnum.SECURITY_ALERT,
-      severity: AuditSeverity.WARNING,
+      severity: ageMs >= STALE_CRITICAL_AFTER_MS ? AuditSeverity.CRITICAL : AuditSeverity.WARNING,
       entityType: 'Disbursement',
       entityId: d.id,
       metadata: {

@@ -7,7 +7,7 @@ import { PROFILE_PUBLIC_STATUS } from '../allocation.constants';
 export type AllocationLine = {
   partyType: PartyType;
   institutionId: string | null;
-  amount: string; // "800.00"
+  amount: string;
   ruleId: string | null;
 };
 
@@ -28,21 +28,6 @@ type MinorLine = Omit<AllocationLine, 'amount'> & { minor: number };
 export class AllocationService {
   constructor(private readonly prisma: PrismaService) {}
 
-  /**
-   * Reward funding. The amount comes from MissingPerson.rewardAmount (Int, whole ETB) —
-   * there is no separate reward escrow model, so this does not take an `amount` argument.
-   * ASSUMPTION TO VERIFY: rewardAmount is stored as whole ETB with no cents; if fractional
-   * rewards are ever needed this needs a schema change, not a silent *100 here going wrong.
-   *
-   * Institution/platform shares now come from the case's resolved agreement's
-   * MISSING_PERSON_REWARD rules (section 13/14), same as SUPPORT does for support
-   * payments. REWARD_BENEFICIARY is the remainder and represents the whole
-   * informant pool for the case, not one person — RewardService splits that pool
-   * across approved RewardClaim rows once informants are decided (section 12).
-   * A case with no MISSING_PERSON_REWARD rules on its agreement (or no agreement
-   * at all) falls back to 100% REWARD_BENEFICIARY, preserving old behavior rather
-   * than silently blocking reward funding for cases created before this rule type existed.
-   */
   async previewReward(missingPersonId: string): Promise<AllocationPreview> {
     const mp = await this.prisma.missingPerson.findUnique({
       where: { id: missingPersonId },
@@ -80,7 +65,8 @@ export class AllocationService {
       mp.agreementId,
       PaymentType.MISSING_PERSON_REWARD,
     );
-    if (!agreement || agreement.rules.length === 0) {
+    if (!agreement) throw new BadRequestException('No active agreement covers this case');
+    if (agreement.rules.length === 0) {
       return this.build(
         PaymentType.MISSING_PERSON_REWARD,
         totalMinor,
@@ -113,7 +99,6 @@ export class AllocationService {
     );
   }
 
-  /** SUPPORT only. For reward funding use previewReward(missingPersonId). */
   async preview(
     type: Extract<PaymentType, 'SUPPORT'>,
     amount: Prisma.Decimal,
@@ -142,8 +127,6 @@ export class AllocationService {
     if (!profile?.agreementId) {
       throw new BadRequestException('Support is not available for this profile');
     }
-    // A published profile always has a verified payout destination (publish() requires it), but this
-    // stays a defensive check: money must never be collected for a profile that cannot be paid out.
     const dest = profile.payoutDestination;
     if (
       !dest ||
@@ -166,15 +149,6 @@ export class AllocationService {
     return this.build(type, totalMinor, lines, agreement.id, agreement.version, agreement.type);
   }
 
-  /**
-   * Posting/promotion fee (section 5 / 8 / 27). The fee AMOUNT is resolved once,
-   * at case-creation time, onto VictimProfile.postingFeeAmount /
-   * MissingPerson.postingFeeAmount (step 3 of section 4's flow) — this method
-   * only computes how that fixed amount is split. There is no natural
-   * "recipient" for a fee the way SUPPORT has the beneficiary, so any amount
-   * the agreement's rules don't claim falls to PLATFORM by default rather than
-   * being left unaccounted for.
-   */
   async previewPostingFee(
     type: Extract<PaymentType, 'VICTIM_PROFILE_POSTING_FEE' | 'MISSING_PERSON_POSTING_FEE'>,
     feeAmount: Prisma.Decimal,
@@ -195,7 +169,8 @@ export class AllocationService {
     }
 
     const agreement = await this.resolveActiveAgreement(agreementId, type);
-    if (!agreement || agreement.rules.length === 0) {
+    if (!agreement) throw new BadRequestException('No active agreement covers this object');
+    if (agreement.rules.length === 0) {
       return this.build(
         type,
         totalMinor,
@@ -209,8 +184,6 @@ export class AllocationService {
     const lines = this.applyRulesWithRemainder(agreement.rules, totalMinor, PartyType.PLATFORM);
     return this.build(type, totalMinor, lines, agreement.id, agreement.version, agreement.type);
   }
-
-  // ── helpers ───────────────────────────────────────────────────────────────
 
   private async resolveActiveAgreement(agreementId: string, paymentType: PaymentType) {
     const now = new Date();
@@ -262,8 +235,6 @@ export class AllocationService {
       throw new BadRequestException('Allocation rules exceed the payment amount');
     }
 
-    // The remainder party is always first and always the true remainder, so
-    // lines sum exactly to the total regardless of rounding on the other lines.
     lines.unshift({
       partyType: remainderParty,
       institutionId: null,

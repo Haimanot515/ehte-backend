@@ -42,6 +42,7 @@ model Payment {
   txRef          String   @unique
   chapaReference String?
   chapaFee       Decimal? @db.Decimal(14, 2)
+  checkoutUrl    String?
 
   idempotencyKey String?
 
@@ -66,6 +67,12 @@ model Payment {
   refundRequestedAt   DateTime?
   refundDecidedById   String?
   refundedAt          DateTime?
+  refundAllocations   Json?
+
+  excessAmount          Decimal?  @db.Decimal(14, 2)
+  excessResolvedById    String?
+  excessRefundReference String?
+  excessRefundedAt      DateTime?
 
   heldAt     DateTime?
   holdReason String?
@@ -92,6 +99,7 @@ model Payment {
   @@index([missingPersonId])
   @@index([type, missingPersonId, status])
   @@index([type, victimProfileId, status])
+  @@unique([payerUserId, idempotencyKey])
   @@map("payments")
 }
 

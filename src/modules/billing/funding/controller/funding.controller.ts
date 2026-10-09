@@ -35,13 +35,6 @@ export class FundingController {
 
   // ── DONOR ────────────────────────────────────────────────────────────
 
-  @Get('payments/mine')
-  @ApiBearerAuth('access-token')
-  @ApiOperation({ summary: 'My payment history' })
-  getMyPayments(@CurrentUser() user: CurrentUserDto, @Query() query: FundingPagingDto) {
-    return this.funding.getMyPayments(user.id, query.page, query.limit);
-  }
-
   @Get('payments/mine/:id')
   @ApiBearerAuth('access-token')
   @ApiOperation({ summary: 'My receipt for one payment, with its allocation snapshot' })

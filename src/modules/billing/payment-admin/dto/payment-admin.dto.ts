@@ -12,6 +12,7 @@ import {
   MaxLength,
   MinLength,
   ValidateNested,
+  IsBoolean,
 } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { PaymentDisputeStatus, PaymentType } from '@prisma/client';
@@ -88,11 +89,11 @@ export class RequestRefundDto {
 
 export class RefundListQueryDto extends PagingDto {
   @ApiPropertyOptional({
-    enum: ['REQUESTED', 'REJECTED', 'REFUNDED', 'FAILED'],
+    enum: ['REQUESTED', 'PROCESSING', 'REJECTED', 'REFUNDED', 'FAILED'],
     default: 'REQUESTED',
   })
   @IsOptional()
-  @IsIn(['REQUESTED', 'REJECTED', 'REFUNDED', 'FAILED'])
+  @IsIn(['REQUESTED', 'PROCESSING', 'REJECTED', 'REFUNDED', 'FAILED'])
   status?: string;
 
   @ApiPropertyOptional({ enum: PaymentType })
@@ -102,15 +103,24 @@ export class RefundListQueryDto extends PagingDto {
 }
 
 export class ExecuteRefundDto {
-  @ApiProperty({
+  @ApiPropertyOptional({
+    description: 'true = send the refund through Chapa. Omit or false = record a manual refund.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  viaChapa?: boolean;
+
+  @ApiPropertyOptional({
     minLength: 3,
     maxLength: 200,
-    description: 'Bank slip or transfer reference of the manual refund.',
+    description:
+      'Bank slip or transfer reference of the manual refund. Required unless viaChapa is true.',
   })
+  @IsOptional()
   @IsString()
   @MinLength(3)
   @MaxLength(200)
-  reference!: string;
+  reference?: string;
 }
 
 export class BulkRefundItemDto {
@@ -118,11 +128,17 @@ export class BulkRefundItemDto {
   @IsUUID()
   paymentId!: string;
 
-  @ApiProperty({ minLength: 3, maxLength: 200 })
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsBoolean()
+  viaChapa?: boolean;
+
+  @ApiPropertyOptional({ minLength: 3, maxLength: 200 })
+  @IsOptional()
   @IsString()
   @MinLength(3)
   @MaxLength(200)
-  reference!: string;
+  reference?: string;
 }
 
 export class BulkExecuteRefundsDto {

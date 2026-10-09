@@ -20,9 +20,6 @@ import { PagingDto, ReasonBodyDto } from 'src/modules/billing/shared/dto/billing
 export class PaymentAdminController {
   constructor(private readonly svc: PaymentAdminService) {}
 
-  // ── Webhook events ───────────────────────────────────────────────────
-
-  // BL-17
   @Get('webhook-events')
   @RequirePermissions(P.SUPPORT_PAYMENT_READ)
   @ApiOperation({ summary: 'Admin: log of received gateway webhooks with result' })
@@ -30,7 +27,6 @@ export class PaymentAdminController {
     return this.svc.listWebhookEvents(q);
   }
 
-  // BL-18
   @Get('webhook-events/:id')
   @RequirePermissions(P.SUPPORT_PAYMENT_READ)
   @ApiOperation({ summary: 'Admin: one webhook event with its payload and result' })
@@ -38,7 +34,6 @@ export class PaymentAdminController {
     return this.svc.getWebhookEvent(id);
   }
 
-  // BL-19
   @Post('webhook-events/:id/replay')
   @Roles(RolesEnum.SUPER_ADMIN)
   @RequirePermissions(P.SUPPORT_PAYMENT_MANAGE)
@@ -52,9 +47,6 @@ export class PaymentAdminController {
     return this.svc.replayWebhookEvent(admin.id, id);
   }
 
-  // ── Payment lists (declared before payments/:id) ─────────────────────
-
-  // BL-20
   @Get('payments/by-payer')
   @RequirePermissions(P.SUPPORT_PAYMENT_READ)
   @ApiOperation({ summary: 'Admin: one row per payer with count, total, failed and refunded' })
@@ -62,7 +54,6 @@ export class PaymentAdminController {
     return this.svc.byPayer(admin, q);
   }
 
-  // BL-21
   @Get('payments/by-payer/:userId')
   @RequirePermissions(P.SUPPORT_PAYMENT_READ)
   @ApiOperation({ summary: "Admin: one payer's payments" })
@@ -70,7 +61,6 @@ export class PaymentAdminController {
     return this.svc.payerPayments(userId, q);
   }
 
-  // BL-22
   @Get('payments/by-profile/:profileId')
   @RequirePermissions(P.SUPPORT_PAYMENT_READ)
   @ApiOperation({ summary: 'Admin: payments to one victim profile, with fees and allocations' })
@@ -78,7 +68,6 @@ export class PaymentAdminController {
     return this.svc.profilePayments(profileId, q);
   }
 
-  // BL-23
   @Get('payments/review-queue')
   @RequirePermissions(P.SUPPORT_PAYMENT_READ)
   @ApiOperation({ summary: 'Admin: payments waiting for manual review, oldest first' })
@@ -86,7 +75,13 @@ export class PaymentAdminController {
     return this.svc.reviewQueue(q);
   }
 
-  // BL-29
+  @Get('payments/excess-queue')
+  @RequirePermissions(P.SUPPORT_PAYMENT_READ)
+  @ApiOperation({ summary: 'Admin: approved payments where the payer paid more than was due' })
+  excessQueue(@Query() q: PagingDto) {
+    return this.svc.listExcess(q);
+  }
+
   @Get('payments/search')
   @RequirePermissions(P.SUPPORT_PAYMENT_READ)
   @ApiOperation({ summary: 'Admin: search payments by reference, tx ref, payer or profile' })
@@ -94,7 +89,6 @@ export class PaymentAdminController {
     return this.svc.search(q);
   }
 
-  // BL-27
   @Get('payments/disputes')
   @RequirePermissions(P.SUPPORT_PAYMENT_READ)
   @ApiOperation({ summary: 'Admin: queue of payer disputes' })
@@ -102,7 +96,6 @@ export class PaymentAdminController {
     return this.svc.listDisputes(q);
   }
 
-  // BL-28
   @Patch('payments/disputes/:disputeId')
   @RequirePermissions(P.SUPPORT_PAYMENT_MANAGE)
   @ApiOperation({ summary: 'Admin: resolve a payer dispute with a reason' })
@@ -114,9 +107,6 @@ export class PaymentAdminController {
     return this.svc.resolveDispute(admin.id, disputeId, body);
   }
 
-  // ── One payment ──────────────────────────────────────────────────────
-
-  // BL-16
   @Post('payments/:txRef/reconcile')
   @RequirePermissions(P.SUPPORT_PAYMENT_MANAGE)
   @ApiOperation({ summary: 'Admin: check a payment against the gateway now' })
@@ -124,7 +114,6 @@ export class PaymentAdminController {
     return this.svc.reconcileNow(admin.id, txRef);
   }
 
-  // BL-26
   @Get('payments/:id/timeline')
   @RequirePermissions(P.SUPPORT_PAYMENT_READ)
   @ApiOperation({ summary: 'Admin: every status change, webhook and admin action on one payment' })
@@ -132,7 +121,6 @@ export class PaymentAdminController {
     return this.svc.timeline(id);
   }
 
-  // BL-24
   @Post('payments/:id/hold')
   @RequirePermissions(P.SUPPORT_PAYMENT_MANAGE)
   @RequireReauthentication()
@@ -141,7 +129,6 @@ export class PaymentAdminController {
     return this.svc.hold(admin.id, id, body.reason);
   }
 
-  // BL-25
   @Post('payments/:id/release')
   @RequirePermissions(P.SUPPORT_PAYMENT_MANAGE)
   @RequireReauthentication()
@@ -154,9 +141,6 @@ export class PaymentAdminController {
     return this.svc.release(admin.id, id, body.reason);
   }
 
-  // ── Refunds ──────────────────────────────────────────────────────────
-
-  // BL-31
   @Get('refunds')
   @RequirePermissions(P.SUPPORT_PAYMENT_READ)
   @ApiOperation({ summary: 'Admin: queue of refunds, requested by default' })
@@ -164,7 +148,7 @@ export class PaymentAdminController {
     return this.svc.listRefunds(q);
   }
 
-  // BL-36 (declared before refunds/:id routes)
+  // Declared before the refunds/:id routes.
   @Patch('refunds/bulk/execute')
   @RequirePermissions(P.PAYMENT_REFUND)
   @RequireReauthentication()
@@ -173,7 +157,6 @@ export class PaymentAdminController {
     return this.svc.bulkExecuteRefunds(admin, body.items);
   }
 
-  // BL-30
   @Post('payments/:id/refund')
   @RequirePermissions(P.PAYMENT_REFUND)
   @RequireReauthentication()
@@ -190,7 +173,6 @@ export class PaymentAdminController {
     return this.svc.requestRefund(admin.id, id, body);
   }
 
-  // BL-32
   @Get('refunds/:id')
   @RequirePermissions(P.SUPPORT_PAYMENT_READ)
   @ApiOperation({
@@ -200,7 +182,6 @@ export class PaymentAdminController {
     return this.svc.getRefund(id);
   }
 
-  // BL-33
   @Post('refunds/:id/execute')
   @RequirePermissions(P.PAYMENT_REFUND)
   @RequireReauthentication()
@@ -217,7 +198,6 @@ export class PaymentAdminController {
     return this.svc.executeRefund(admin, id, body);
   }
 
-  // BL-34
   @Post('refunds/:id/reject')
   @RequirePermissions(P.PAYMENT_REFUND)
   @RequireReauthentication()
@@ -230,12 +210,26 @@ export class PaymentAdminController {
     return this.svc.rejectRefund(admin.id, id, body.reason);
   }
 
-  // BL-35
   @Post('refunds/:id/retry')
   @RequirePermissions(P.PAYMENT_REFUND)
   @RequireReauthentication()
   @ApiOperation({ summary: 'Admin: put a failed or rejected refund back in the queue' })
   retryRefund(@CurrentUser() admin: CurrentUserDto, @Param('id') id: string) {
     return this.svc.retryRefund(admin.id, id);
+  }
+
+  @Post('payments/:id/refund-excess')
+  @RequirePermissions(P.PAYMENT_REFUND)
+  @RequireReauthentication()
+  @ApiOperation({
+    summary: 'Admin: return the overpaid part of a payment, through Chapa or by recording a manual reference',
+    description: 'The admin who approved the overpaid payment cannot be the one who refunds it.',
+  })
+  refundExcess(
+    @CurrentUser() admin: CurrentUserDto,
+    @Param('id') id: string,
+    @Body() body: ExecuteRefundDto,
+  ) {
+    return this.svc.executeExcessRefund(admin, id, body);
   }
 }

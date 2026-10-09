@@ -4,10 +4,12 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { AuditOutcome, AuditSeverity, PaymentStatus, PaymentType, Prisma } from '@prisma/client';
 
 import { PrismaService } from '../../../../prisma/prisma.service';
+import { ChapaService } from '../../../../infrastructure/chapa/chapa.service';
 import { AuditEventEnum } from '../../../../common/enums/shared/audit-events.enum';
 import { RolesEnum } from '../../../../common/enums/roles.enum';
 import { CurrentUserDto } from '../../../../common/dtos/current-user.dto';
@@ -18,7 +20,6 @@ import { dec, maskName, money, pageArgs, pageResult, parseMoney } from 'src/modu
 import { ExecuteRefundDto, PaymentDisputesQueryDto, PaymentSearchQueryDto, RefundListQueryDto, RequestRefundDto, ResolvePaymentDisputeDto, ReviewQueueQueryDto, WebhookEventsQueryDto } from '../dto/payment-admin.dto';
 import { PagingDto } from 'src/modules/billing/shared/dto/billing-common.dto';
 
-// A refund is only possible once the money was actually collected.
 const REFUNDABLE_TYPES: PaymentType[] = [
   PaymentType.SUPPORT,
   PaymentType.VICTIM_PROFILE_POSTING_FEE,
@@ -30,6 +31,7 @@ export class PaymentAdminService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly payments: PaymentService,
+    private readonly chapa: ChapaService,
     private readonly events: BillingEventsService,
   ) {}
 
@@ -43,7 +45,6 @@ export class PaymentAdminService {
     return p;
   }
 
-  // BL-16
   async reconcileNow(adminId: string, txRef: string) {
     const p = await this.prisma.payment.findUnique({
       where: { txRef },
@@ -64,8 +65,6 @@ export class PaymentAdminService {
     return { txRef, before: p.status, after: status, changed: status !== p.status };
   }
 
-  // Used by ChapaWebhookController. Both calls swallow their own errors so a
-  // logging problem can never make the gateway think the webhook failed.
   async recordWebhookEvent(
     body: { tx_ref?: string } & Record<string, unknown>,
   ): Promise<string | null> {
@@ -92,11 +91,9 @@ export class PaymentAdminService {
         data: { result, error: error ? error.slice(0, 300) : null, processedAt: new Date() },
       });
     } catch {
-      // ignored on purpose
     }
   }
 
-  // BL-17
   async listWebhookEvents(q: WebhookEventsQueryDto) {
     const { page, limit, skip } = pageArgs(q);
     const where: Prisma.PaymentWebhookEventWhereInput = {
@@ -110,7 +107,6 @@ export class PaymentAdminService {
         orderBy: { receivedAt: 'desc' },
         skip,
         take: limit,
-        // The payload is only in the single-event view.
         select: {
           id: true,
           provider: true,
@@ -128,15 +124,12 @@ export class PaymentAdminService {
     return pageResult(items, total, page, limit);
   }
 
-  // BL-18
   async getWebhookEvent(id: string) {
     const e = await this.prisma.paymentWebhookEvent.findUnique({ where: { id } });
     if (!e) throw new NotFoundException('webhook_event_not_found');
     return e;
   }
 
-  // BL-19. Replaying asks the gateway for the current truth about the payment
-  // (reconcile), it never trusts the stored payload as a new instruction.
   async replayWebhookEvent(adminId: string, id: string) {
     const e = await this.getWebhookEvent(id);
     if (!e.txRef) throw new BadRequestException('event_has_no_tx_ref');
@@ -177,7 +170,6 @@ export class PaymentAdminService {
     return { id, txRef: e.txRef, result, error, paymentStatus: status };
   }
 
-  // BL-20
   async byPayer(admin: CurrentUserDto, q: PagingDto) {
     const { page, limit, skip } = pageArgs(q);
 
@@ -242,7 +234,6 @@ export class PaymentAdminService {
     );
   }
 
-  // BL-21
   async payerPayments(payerUserId: string, q: PagingDto) {
     const { page, limit, skip } = pageArgs(q);
     const where: Prisma.PaymentWhereInput = { payerUserId };
@@ -273,7 +264,6 @@ export class PaymentAdminService {
     return pageResult(items, total, page, limit);
   }
 
-  // BL-22
   async profilePayments(profileId: string, q: PagingDto) {
     const { page, limit, skip } = pageArgs(q);
     const where: Prisma.PaymentWhereInput = { victimProfileId: profileId };
@@ -324,7 +314,6 @@ export class PaymentAdminService {
     };
   }
 
-  // BL-23
   async reviewQueue(q: ReviewQueueQueryDto) {
     const { page, limit, skip } = pageArgs(q);
     const where: Prisma.PaymentWhereInput = {
@@ -364,7 +353,6 @@ export class PaymentAdminService {
     );
   }
 
-  // BL-29
   async search(q: PaymentSearchQueryDto) {
     const { page, limit, skip } = pageArgs(q);
     const term = q.q.trim();
@@ -404,7 +392,6 @@ export class PaymentAdminService {
     return pageResult(items, total, page, limit);
   }
 
-  // BL-24
   async hold(adminId: string, id: string, reason: string) {
     const p = await this.loadPayment(id);
     if (p.status !== PaymentStatus.PAID) {
@@ -429,7 +416,6 @@ export class PaymentAdminService {
     return { id, held: true };
   }
 
-  // BL-25
   async release(adminId: string, id: string, reason: string) {
     const p = await this.loadPayment(id);
     if (!p.heldAt) throw new BadRequestException('payment_is_not_held');
@@ -451,7 +437,6 @@ export class PaymentAdminService {
     return { id, held: false };
   }
 
-  // BL-26
   async timeline(id: string) {
     const p = await this.loadPayment(id);
 
@@ -524,7 +509,6 @@ export class PaymentAdminService {
     };
   }
 
-  // BL-27
   async listDisputes(q: PaymentDisputesQueryDto) {
     const { page, limit, skip } = pageArgs(q);
     const where: Prisma.PaymentDisputeWhereInput = { status: q.status ?? 'OPEN' };
@@ -547,8 +531,6 @@ export class PaymentAdminService {
     return pageResult(items, total, page, limit);
   }
 
-  // BL-28. Upholding a dispute does not refund by itself, a refund is a
-  // separate, two-admin step (BL-30, BL-33).
   async resolveDispute(adminId: string, disputeId: string, dto: ResolvePaymentDisputeDto) {
     const d = await this.prisma.paymentDispute.findUnique({ where: { id: disputeId } });
     if (!d) throw new NotFoundException('dispute_not_found');
@@ -583,21 +565,35 @@ export class PaymentAdminService {
     };
   }
 
-  // BL-30. Records a refund REQUEST. No money moves until BL-33.
   async requestRefund(adminId: string, paymentId: string, dto: RequestRefundDto) {
     const p = await this.loadPayment(paymentId);
 
     if (p.status !== PaymentStatus.PAID) {
       throw new BadRequestException('only_paid_payments_can_be_refunded');
     }
-    if (!REFUNDABLE_TYPES.includes(p.type)) {
-      throw new BadRequestException('use_the_reward_close_flow_for_reward_payments');
+    const isReward = p.type === PaymentType.MISSING_PERSON_REWARD;
+    if (isReward) {
+      const mp = p.missingPersonId
+        ? await this.prisma.missingPerson.findUnique({
+            where: { id: p.missingPersonId },
+            select: { fundingStatus: true },
+          })
+        : null;
+      if (mp?.fundingStatus !== 'REFUND_DUE') {
+        throw new BadRequestException('close_the_reward_first_to_make_it_refundable');
+      }
+    } else if (!REFUNDABLE_TYPES.includes(p.type)) {
+      throw new BadRequestException('payment_type_cannot_be_refunded');
     }
-    if (p.refundStatus === 'REQUESTED' || p.refundStatus === 'REFUNDED') {
+    if (
+      p.refundStatus === 'REQUESTED' ||
+      p.refundStatus === 'PROCESSING' ||
+      p.refundStatus === 'REFUNDED'
+    ) {
       throw new ConflictException('refund_already_requested_or_done');
     }
 
-    const amount = dto.amount ? parseMoney(dto.amount) : p.amount;
+    const amount = isReward || !dto.amount ? p.amount : parseMoney(dto.amount);
     if (amount.gt(p.amount)) throw new BadRequestException('refund_exceeds_payment_amount');
 
     const processing = await this.prisma.disbursement.count({
@@ -630,7 +626,6 @@ export class PaymentAdminService {
     return { paymentId, refundStatus: 'REQUESTED', refundAmount: money(amount) };
   }
 
-  // BL-31
   async listRefunds(q: RefundListQueryDto) {
     const { page, limit, skip } = pageArgs(q);
     const where: Prisma.PaymentWhereInput = {
@@ -663,7 +658,6 @@ export class PaymentAdminService {
     return pageResult(items, total, page, limit);
   }
 
-  // BL-32
   async getRefund(paymentId: string) {
     const p = await this.prisma.payment.findUnique({
       where: { id: paymentId },
@@ -678,50 +672,138 @@ export class PaymentAdminService {
     return p;
   }
 
-  // BL-33. Core of the money movement. One transaction.
+  private async assertPayoutsAllowRefund(
+    client: Prisma.TransactionClient | PrismaService,
+    paymentId: string,
+    full: boolean,
+  ) {
+    const allocations = await client.paymentAllocation.findMany({
+      where: { paymentId },
+      include: { disbursements: true },
+    });
+    const disbursements = allocations.flatMap((a) => a.disbursements);
+
+    if (disbursements.some((d) => d.status === 'PROCESSING')) {
+      throw new ConflictException('a_payout_is_in_progress');
+    }
+    if (full) {
+      if (disbursements.some((d) => d.status === 'PAID_OUT')) {
+        throw new ConflictException('money_was_already_paid_out_use_a_partial_refund');
+      }
+    } else {
+      const unsettled = allocations.some(
+        (a) => a.settlementStatus !== 'PAID_OUT' && a.settlementStatus !== 'CANCELLED',
+      );
+      if (unsettled) throw new BadRequestException('partial_refund_requires_settled_allocations');
+    }
+  }
+
   async executeRefund(admin: CurrentUserDto, paymentId: string, dto: ExecuteRefundDto) {
     const p = await this.loadPayment(paymentId);
+    const viaChapa = dto.viaChapa === true;
 
-    if (p.refundStatus !== 'REQUESTED')
+    const finishingUnknown = p.refundStatus === 'PROCESSING' && !viaChapa;
+    if (p.refundStatus !== 'REQUESTED' && !finishingUnknown) {
       throw new BadRequestException('no_refund_is_awaiting_execution');
+    }
     if (p.refundRequestedById === admin.id) {
       throw new ForbiddenException('refund_must_be_executed_by_a_different_admin');
     }
-    if (p.status !== PaymentStatus.PAID) throw new BadRequestException('payment_is_not_paid');
+    const heldRejected = this.isHeldRejected(p);
+    const expectedStatus = heldRejected ? PaymentStatus.FAILED : PaymentStatus.PAID;
+    if (p.status !== expectedStatus) throw new BadRequestException('payment_is_not_paid');
     if (p.heldAt) throw new ConflictException('payment_is_on_hold');
+    if (!viaChapa && !dto.reference) {
+      throw new BadRequestException('reference_required_for_a_manual_refund');
+    }
 
     const refundAmount = dec(p.refundAmount);
-    const full = refundAmount.gte(p.amount);
+    const full = heldRejected || refundAmount.gte(p.amount);
+
+    let refundReference = dto.reference as string;
+    const method: 'CHAPA' | 'MANUAL' = viaChapa ? 'CHAPA' : 'MANUAL';
+
+    if (viaChapa) {
+      if (!p.chapaReference) throw new BadRequestException('payment_has_no_chapa_reference');
+      await this.assertPayoutsAllowRefund(this.prisma, paymentId, full);
+
+      const claimed = await this.prisma.payment.updateMany({
+        where: { id: paymentId, refundStatus: 'REQUESTED', status: expectedStatus },
+        data: { refundStatus: 'PROCESSING', refundDecidedById: admin.id },
+      });
+      if (claimed.count === 0) throw new ConflictException('refund_already_processed');
+
+      // A payout may have started between the first check and the claim, and execute now refuses payments in refund.
+      try {
+        await this.assertPayoutsAllowRefund(this.prisma, paymentId, full);
+      } catch (guardErr) {
+        await this.prisma.payment.updateMany({
+          where: { id: paymentId, refundStatus: 'PROCESSING' },
+          data: { refundStatus: 'REQUESTED', refundDecidedById: null },
+        });
+        throw guardErr;
+      }
+
+      refundReference = `ehte-rf-${p.id}`;
+      try {
+        await this.chapa.refund({
+          chapaReference: p.chapaReference,
+          amount: refundAmount,
+          reason: p.refundReason,
+          reference: refundReference,
+        });
+      } catch (err) {
+        if (this.chapa.isDefiniteRejection(err)) {
+          await this.prisma.payment.updateMany({
+            where: { id: paymentId, refundStatus: 'PROCESSING' },
+            data: { refundStatus: 'FAILED' },
+          });
+          await this.events.log({
+            actorId: admin.id,
+            action: AuditEventEnum.PAYMENT_REFUND_REJECTED,
+            outcome: AuditOutcome.FAILURE,
+            severity: AuditSeverity.WARNING,
+            entityType: 'Payment',
+            entityId: paymentId,
+            metadata: { reason: 'chapa_refused_refund', message: (err as Error).message },
+          });
+          throw err;
+        }
+        await this.events.log({
+          actorId: admin.id,
+          action: AuditEventEnum.SECURITY_ALERT,
+          severity: AuditSeverity.WARNING,
+          entityType: 'Payment',
+          entityId: paymentId,
+          metadata: { reason: 'refund_outcome_unknown' },
+        });
+        throw new ServiceUnavailableException(
+          'Chapa did not confirm this refund. Check the Chapa dashboard. If it went through, finish it here with the manual reference. Do not send it again.',
+        );
+      }
+    }
 
     const result = await this.prisma.$transaction(async (tx) => {
-      const allocations = await tx.paymentAllocation.findMany({
+      await this.assertPayoutsAllowRefund(tx, paymentId, full);
+
+      const allocationRows = await tx.paymentAllocation.findMany({
         where: { paymentId },
-        include: { disbursements: true },
+        select: { id: true, partyType: true, institutionId: true, amount: true },
+        orderBy: { id: 'asc' },
       });
-      const disbursements = allocations.flatMap((a) => a.disbursements);
+      const refundAllocations = this.splitRefund(refundAmount, allocationRows);
 
-      if (disbursements.some((d) => d.status === 'PROCESSING')) {
-        throw new ConflictException('a_payout_is_in_progress');
-      }
-
-      if (full) {
-        if (disbursements.some((d) => d.status === 'PAID_OUT')) {
-          throw new ConflictException('money_was_already_paid_out_use_a_partial_refund');
-        }
-      } else {
-        const unsettled = allocations.some(
-          (a) => a.settlementStatus !== 'PAID_OUT' && a.settlementStatus !== 'CANCELLED',
-        );
-        if (unsettled) throw new BadRequestException('partial_refund_requires_settled_allocations');
-      }
-
-      // Only the first writer wins.
       const { count } = await tx.payment.updateMany({
-        where: { id: paymentId, refundStatus: 'REQUESTED', status: PaymentStatus.PAID },
+        where: {
+          id: paymentId,
+          refundStatus: viaChapa ? 'PROCESSING' : { in: ['REQUESTED', 'PROCESSING'] },
+          status: expectedStatus,
+        },
         data: {
+          refundAllocations: refundAllocations as Prisma.InputJsonValue,
           refundStatus: 'REFUNDED',
           refundedAt: new Date(),
-          refundReference: dto.reference,
+          refundReference,
           refundDecidedById: admin.id,
           ...(full ? { status: PaymentStatus.REFUNDED } : {}),
         },
@@ -750,6 +832,16 @@ export class PaymentAdminService {
             data: { status: 'CANCELLED' },
           });
         }
+        if (p.type === PaymentType.MISSING_PERSON_REWARD && p.missingPersonId) {
+          await tx.missingPerson.updateMany({
+            where: { id: p.missingPersonId, fundingStatus: 'REFUND_DUE' },
+            data: { fundingStatus: 'REFUNDED' },
+          });
+          await tx.rewardClaim.updateMany({
+            where: { missingPersonId: p.missingPersonId, status: 'APPROVED_FOR_REWARD' },
+            data: { status: 'REFUNDED' },
+          });
+        }
         if (p.type === PaymentType.VICTIM_PROFILE_POSTING_FEE && p.victimProfileId) {
           await tx.victimProfile.updateMany({
             where: { id: p.victimProfileId },
@@ -764,7 +856,7 @@ export class PaymentAdminService {
         }
       }
 
-      return { cancelledDisbursements };
+      return { cancelledDisbursements, refundAllocations };
     });
 
     await this.events.log({
@@ -779,7 +871,8 @@ export class PaymentAdminService {
         reference: dto.reference,
         requestedById: p.refundRequestedById,
         cancelledDisbursements: result.cancelledDisbursements,
-        method: 'MANUAL',
+        refundAllocations: result.refundAllocations,
+        method,
       },
     });
 
@@ -792,7 +885,6 @@ export class PaymentAdminService {
     };
   }
 
-  // BL-34
   async rejectRefund(adminId: string, paymentId: string, reason: string) {
     const p = await this.loadPayment(paymentId);
     if (p.refundStatus !== 'REQUESTED')
@@ -815,19 +907,18 @@ export class PaymentAdminService {
     return { paymentId, refundStatus: 'REJECTED' };
   }
 
-  // BL-35. Puts a FAILED or REJECTED refund back in the queue.
   async retryRefund(adminId: string, paymentId: string) {
     const p = await this.loadPayment(paymentId);
     if (p.refundStatus !== 'FAILED' && p.refundStatus !== 'REJECTED') {
       throw new BadRequestException('only_failed_or_rejected_refunds_can_be_retried');
     }
-    if (p.status !== PaymentStatus.PAID) throw new BadRequestException('payment_is_not_paid');
+    const retryStatus = this.isHeldRejected(p) ? PaymentStatus.FAILED : PaymentStatus.PAID;
+    if (p.status !== retryStatus) throw new BadRequestException('payment_is_not_paid');
 
     await this.prisma.payment.update({
       where: { id: paymentId },
       data: {
         refundStatus: 'REQUESTED',
-        // The person who re-queues it becomes the requester, so they cannot execute it.
         refundRequestedById: adminId,
         refundRequestedAt: new Date(),
         refundDecidedById: null,
@@ -845,16 +936,183 @@ export class PaymentAdminService {
     return { paymentId, refundStatus: 'REQUESTED' };
   }
 
-  // BL-36. Each item succeeds or fails on its own.
+  private isHeldRejected(p: { status: string; paidAt: Date | null; refundStatus: string | null }) {
+    return p.status === PaymentStatus.FAILED && !p.paidAt && p.refundStatus !== null;
+  }
+
+  private splitRefund(
+    refund: Prisma.Decimal,
+    allocations: {
+      id: string;
+      partyType: string;
+      institutionId: string | null;
+      amount: Prisma.Decimal;
+    }[],
+  ) {
+    const rows = allocations.map((a) => ({
+      allocationId: a.id,
+      partyType: a.partyType,
+      institutionId: a.institutionId,
+      weight: a.amount.mul(100).round().toNumber(),
+      minor: 0,
+    }));
+    const totalMinor = rows.reduce((sum, r) => sum + r.weight, 0);
+    if (rows.length === 0 || totalMinor <= 0) return [];
+
+    const refundMinor = refund.mul(100).round().toNumber();
+    for (const r of rows) r.minor = Math.floor((refundMinor * r.weight) / totalMinor);
+
+    let left = refundMinor - rows.reduce((sum, r) => sum + r.minor, 0);
+    const bySize = [...rows].sort((x, y) => y.weight - x.weight);
+    for (let i = 0; left > 0; i = (i + 1) % bySize.length, left--) bySize[i].minor += 1;
+
+    return rows.map((r) => ({
+      allocationId: r.allocationId,
+      partyType: r.partyType,
+      institutionId: r.institutionId,
+      amount: (r.minor / 100).toFixed(2),
+    }));
+  }
+
+  async listExcess(q: PagingDto) {
+    const { page, limit, skip } = pageArgs(q);
+    const where: Prisma.PaymentWhereInput = {
+      excessAmount: { gt: 0 },
+      excessRefundedAt: null,
+    };
+
+    const [items, total] = await Promise.all([
+      this.prisma.payment.findMany({
+        where,
+        orderBy: { paidAt: 'asc' },
+        skip,
+        take: limit,
+        select: {
+          id: true,
+          txRef: true,
+          type: true,
+          status: true,
+          amount: true,
+          excessAmount: true,
+          excessRefundReference: true,
+          payerUserId: true,
+          paidAt: true,
+        },
+      }),
+      this.prisma.payment.count({ where }),
+    ]);
+
+    return pageResult(items, total, page, limit);
+  }
+
+  async executeExcessRefund(admin: CurrentUserDto, paymentId: string, dto: ExecuteRefundDto) {
+    const p = await this.loadPayment(paymentId);
+    const excess = dec(p.excessAmount);
+    if (excess.lte(0)) throw new BadRequestException('no_excess_to_refund');
+    if (p.excessRefundedAt) throw new ConflictException('excess_already_refunded');
+    if (p.status !== PaymentStatus.PAID && p.status !== PaymentStatus.REFUNDED) {
+      throw new BadRequestException('payment_is_not_paid');
+    }
+    if (p.excessResolvedById === admin.id) {
+      throw new ForbiddenException('excess_must_be_refunded_by_a_different_admin');
+    }
+    if (p.heldAt) throw new ConflictException('payment_is_on_hold');
+
+    const viaChapa = dto.viaChapa === true;
+    if (!viaChapa && !dto.reference) {
+      throw new BadRequestException('reference_required_for_a_manual_refund');
+    }
+
+    let reference = dto.reference as string;
+    if (viaChapa) {
+      if (!p.chapaReference) throw new BadRequestException('payment_has_no_chapa_reference');
+      reference = `ehte-ex-${p.id}`;
+
+      const claimed = await this.prisma.payment.updateMany({
+        where: { id: paymentId, excessRefundedAt: null, excessRefundReference: null },
+        data: { excessRefundReference: reference },
+      });
+      if (claimed.count === 0) {
+        throw new ConflictException('excess_refund_already_in_progress_or_done');
+      }
+
+      try {
+        await this.chapa.refund({
+          chapaReference: p.chapaReference,
+          amount: excess,
+          reason: 'excess_payment',
+          reference,
+        });
+      } catch (err) {
+        if (this.chapa.isDefiniteRejection(err)) {
+          await this.prisma.payment.updateMany({
+            where: { id: paymentId, excessRefundedAt: null },
+            data: { excessRefundReference: null },
+          });
+          await this.events.log({
+            actorId: admin.id,
+            action: AuditEventEnum.PAYMENT_REFUND_REJECTED,
+            outcome: AuditOutcome.FAILURE,
+            severity: AuditSeverity.WARNING,
+            entityType: 'Payment',
+            entityId: paymentId,
+            metadata: { reason: 'chapa_refused_excess_refund', message: (err as Error).message },
+          });
+          throw err;
+        }
+        await this.events.log({
+          actorId: admin.id,
+          action: AuditEventEnum.SECURITY_ALERT,
+          severity: AuditSeverity.WARNING,
+          entityType: 'Payment',
+          entityId: paymentId,
+          metadata: { reason: 'excess_refund_outcome_unknown' },
+        });
+        throw new ServiceUnavailableException(
+          'Chapa did not confirm this refund. Check the Chapa dashboard. If it went through, finish it here with the manual reference. Do not send it again.',
+        );
+      }
+    }
+
+    const { count } = await this.prisma.payment.updateMany({
+      where: {
+        id: paymentId,
+        excessRefundedAt: null,
+        OR: [{ excessRefundReference: null }, { excessRefundReference: { startsWith: 'ehte-ex-' } }],
+      },
+      data: { excessRefundedAt: new Date(), excessRefundReference: reference },
+    });
+    if (count === 0) throw new ConflictException('excess_refund_already_processed');
+
+    await this.events.log({
+      actorId: admin.id,
+      action: AuditEventEnum.PAYMENT_REFUND_EXECUTED,
+      entityType: 'Payment',
+      entityId: paymentId,
+      severity: AuditSeverity.WARNING,
+      metadata: {
+        excess: true,
+        amount: excess.toFixed(2),
+        method: viaChapa ? 'CHAPA' : 'MANUAL',
+        resolvedById: p.excessResolvedById,
+      },
+    });
+
+    return { paymentId, excessRefunded: money(excess), method: viaChapa ? 'CHAPA' : 'MANUAL' };
+  }
+
   async bulkExecuteRefunds(
     admin: CurrentUserDto,
-    items: { paymentId: string; reference: string }[],
+    items: { paymentId: string; reference?: string; viaChapa?: boolean }[],
   ) {
     const results: Array<{ paymentId: string; ok: boolean; error?: string }> = [];
 
     for (const item of items) {
       try {
-        await this.executeRefund(admin, item.paymentId, { reference: item.reference });
+        await this.executeRefund(admin, item.paymentId, {
+          reference: item.reference,
+          viaChapa: item.viaChapa,
+        });
         results.push({ paymentId: item.paymentId, ok: true });
       } catch (err) {
         const message = (err as { message?: string }).message ?? 'failed';

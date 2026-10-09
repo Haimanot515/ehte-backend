@@ -20,7 +20,7 @@ import {
 } from '../dto/reward-claim.dto';
 import { EVALUATION_WEIGHTS_TOTAL } from '../reward.constants';
 
-const OPEN_CLAIM_STATUSES: RewardClaimStatus[] = ['SUBMITTED', 'UNDER_REVIEW'];
+const OPEN_CLAIM_STATUSES: RewardClaimStatus[] = ['SUBMITTED', 'UNDER_REVIEW', 'VALID'];
 const DECIDABLE_STATUSES: RewardClaimStatus[] = ['SUBMITTED', 'UNDER_REVIEW'];
 
 @Injectable()
@@ -247,9 +247,20 @@ export class RewardService {
 
     const mp = await this.prisma.missingPerson.findUnique({
       where: { id: missingPersonId },
-      select: { agreementId: true, agreementVersion: true },
+      select: { agreementId: true, agreementVersion: true, fundingStatus: true },
     });
     if (!mp) throw new NotFoundException('missing_person_not_found');
+    if (mp.fundingStatus === 'REFUND_DUE' || mp.fundingStatus === 'REFUNDED') {
+      throw new BadRequestException('reward_is_closed');
+    }
+    const refundPending = await this.prisma.payment.count({
+      where: {
+        missingPersonId,
+        type: 'MISSING_PERSON_REWARD',
+        refundStatus: { in: ['REQUESTED', 'PROCESSING'] },
+      },
+    });
+    if (refundPending > 0) throw new ConflictException('a_refund_is_pending_for_this_reward');
 
     const pool = await this.prisma.paymentAllocation.aggregate({
       where: {
@@ -271,9 +282,24 @@ export class RewardService {
       throw new BadRequestException('Every named claim must be VALID before it can be split');
     }
 
+    const poolMinor = poolAmount.mul(100).round().toNumber();
+    const shares = dto.splits.map((s) => ({
+      claimId: s.claimId,
+      percentage: s.percentage,
+      minor: Math.floor((poolMinor * s.percentage) / 100),
+    }));
+    let leftover = poolMinor - shares.reduce((sum, x) => sum + x.minor, 0);
+    const byPercentageDesc = [...shares].sort((a, b) => b.percentage - a.percentage);
+    for (let i = 0; leftover > 0; i = (i + 1) % byPercentageDesc.length, leftover--) {
+      byPercentageDesc[i].minor += 1;
+    }
+    const amountByClaim = new Map(
+      shares.map((x) => [x.claimId, new Prisma.Decimal(x.minor).div(100)]),
+    );
+
     await this.prisma.$transaction(async (tx) => {
       for (const split of dto.splits) {
-        const amount = poolAmount.mul(split.percentage).div(100);
+        const amount = amountByClaim.get(split.claimId) as Prisma.Decimal;
         await tx.rewardClaim.update({
           where: { id: split.claimId },
           data: {
@@ -309,6 +335,18 @@ export class RewardService {
       select: { fundingStatus: true, fundedAmount: true },
     });
     if (!mp) throw new NotFoundException('missing_person_not_found');
+    if (mp.fundingStatus === 'REFUND_DUE' || mp.fundingStatus === 'REFUNDED') {
+      throw new ConflictException('reward_already_closed');
+    }
+
+    const rewardAllocation = {
+      partyType: 'REWARD_BENEFICIARY' as const,
+      payment: { missingPersonId, type: 'MISSING_PERSON_REWARD' as const },
+    };
+    const payoutStarted = await this.prisma.disbursement.count({
+      where: { allocation: rewardAllocation, status: { in: ['PROCESSING', 'PAID_OUT'] } },
+    });
+    if (payoutStarted > 0) throw new BadRequestException('reward_payout_started_cannot_close');
 
     const openClaims = await this.prisma.rewardClaim.findMany({
       where: { missingPersonId, status: { in: OPEN_CLAIM_STATUSES } },
@@ -319,18 +357,23 @@ export class RewardService {
     }
 
     await this.prisma.$transaction(async (tx) => {
+      if (mp.fundedAmount.gt(0)) {
+        const { count } = await tx.missingPerson.updateMany({
+          where: { id: missingPersonId, fundingStatus: { notIn: ['REFUND_DUE', 'REFUNDED'] } },
+          data: { fundingStatus: 'REFUND_DUE', closureReason: reason, closedAt: new Date() },
+        });
+        if (count === 0) throw new ConflictException('reward_already_closed');
+      }
       if (openClaims.length > 0) {
         await tx.rewardClaim.updateMany({
           where: { id: { in: openClaims.map((c) => c.id) } },
           data: { status: 'REJECTED', decisionReason: reason },
         });
       }
-      if (mp.fundedAmount.gt(0)) {
-        await tx.missingPerson.update({
-          where: { id: missingPersonId },
-          data: { fundingStatus: 'REFUND_DUE', closureReason: reason, closedAt: new Date() },
-        });
-      }
+      await tx.disbursement.updateMany({
+        where: { allocation: rewardAllocation, status: { in: ['PENDING_APPROVAL', 'APPROVED'] } },
+        data: { status: 'CANCELLED', failureReason: 'reward_closed' },
+      });
     });
     await this.events.log({
       actorId: adminId,
@@ -359,7 +402,6 @@ export class RewardService {
         });
         if (!mp) return null;
 
-        // fulfilledAt is claimed in the same transaction as the funding update, so a repeated event does nothing
         const { count } = await tx.payment.updateMany({
           where: { id: e.paymentId, fulfilledAt: null },
           data: { fulfilledAt: new Date() },

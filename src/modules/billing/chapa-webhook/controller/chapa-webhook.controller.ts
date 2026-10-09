@@ -34,11 +34,11 @@ export class ChapaWebhookController {
   @AuditEvent({ action: AuditEventEnum.PAYMENT_WEBHOOK_REJECTED, entity: 'PaymentWebhook', onSuccess: false, onError: (e) => e instanceof UnauthorizedException ? AuditEventEnum.PAYMENT_WEBHOOK_REJECTED : e instanceof BadRequestException ? AuditEventEnum.PAYMENT_WEBHOOK_PAYLOAD_INVALID : null })
   async handle(
     @Req() req: RawBodyRequest<Request>,
-    @Headers('x-chapa-signature') sigA?: string,
-    @Headers('chapa-signature') sigB?: string,
+    @Headers('x-chapa-signature') payloadSignature?: string,
+    @Headers('chapa-signature') secretSignature?: string,
   ) {
     const raw = req.rawBody;
-    if (!raw || !this.chapa.verifyWebhookSignature(raw, sigA ?? sigB)) {
+    if (!raw || !this.chapa.verifyWebhookSignature(raw, payloadSignature, secretSignature)) {
       throw new UnauthorizedException('Invalid signature');
     }
 
