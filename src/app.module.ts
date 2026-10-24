@@ -255,7 +255,6 @@ const REDIS_URL_SCHEMES = { scheme: ['redis', 'rediss'] };
         ),
 
         PAYMENTS_ENABLED: Joi.boolean().default(false),
-        PAYMENTS_REWARDS_ENABLED: Joi.boolean().default(false),
         PAYMENTS_RETURN_URL: Joi.string()
           .uri()
           .when('PAYMENTS_ENABLED', {
@@ -264,9 +263,6 @@ const REDIS_URL_SCHEMES = { scheme: ['redis', 'rediss'] };
             otherwise: Joi.optional().allow(''),
           }),
         PAYMENTS_MIN_SUPPORT_ETB: Joi.number().default(10),
-
-        // Days before an unanswered non-financial support offer is auto-cancelled.
-        SUPPORT_OFFER_EXPIRY_DAYS: Joi.number().integer().min(1).default(14),
 
         CHAPA_SECRET_KEY: Joi.string().when('PAYMENTS_ENABLED', {
           is: true,

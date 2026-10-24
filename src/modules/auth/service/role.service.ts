@@ -79,12 +79,11 @@ const ROLE_TEMPLATES: {
     id: 'finance-officer',
     name: 'FINANCE_OFFICER',
     description:
-      'Reads support and payments, verifies reward claims and prepares disbursements. Cannot approve or pay them out.',
+      'Reads support and payments and prepares disbursements. Cannot approve or pay them out.',
     permissions: [
       PermissionsEnum.DASHBOARD_READ,
       PermissionsEnum.SUPPORT_READ,
       PermissionsEnum.SUPPORT_PAYMENT_READ,
-      PermissionsEnum.REWARDS_VERIFY_CLAIM,
       PermissionsEnum.DISBURSEMENTS_CREATE,
     ],
   },

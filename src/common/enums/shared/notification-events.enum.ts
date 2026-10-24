@@ -32,25 +32,9 @@ export enum NotificationEventEnum {
   INFORMATION_SUBMISSION_APPEALED = 'notification.information_submission_appealed',
   INFORMATION_SUBMISSION_ESCALATED = 'notification.information_submission_escalated',
   INFORMATION_SUBMISSION_EVIDENCE_ADDED = 'notification.information_submission_evidence_added',
-
-  SUPPORT_PLEDGE_CREATED = 'notification.support_pledge_created',
   SUPPORT_PAYMENT_CONFIRMED = 'notification.support_payment_confirmed',
 
   SUPPORT_RECEIVED = 'notification.support_received',
-  SUPPORT_OFFER_CONFIRMED = 'notification.support_offer_confirmed',
-  SUPPORT_OFFER_COMPLETED = 'notification.support_offer_completed',
-  SUPPORT_OFFER_EXPIRED = 'notification.support_offer_expired',
-
-  SUPPORT_OFFER_DECLINED = 'notification.support_offer_declined',
-  SUPPORT_OFFER_FAILED = 'notification.support_offer_failed',
-  SUPPORT_OFFER_REOPENED = 'notification.support_offer_reopened',
-  SUPPORT_MESSAGE_RECEIVED = 'notification.support_message_received',
-  SUPPORT_STAFF_MESSAGE = 'notification.support_staff_message',
-  SUPPORT_THANKS_RECEIVED = 'notification.support_thanks_received',
-  SUPPORT_DISPUTE_OPENED = 'notification.support_dispute_opened',
-  SUPPORT_DISPUTE_RESOLVED = 'notification.support_dispute_resolved',
-  SUPPORT_REVIEWER_ASSIGNED = 'notification.support_reviewer_assigned',
-  SUPPORT_SUPPORTER_RESTRICTED = 'notification.support_supporter_restricted',
 
   NEW_REPORT = 'notification.new_report',
   HIGH_PRIORITY_REPORT = 'notification.high_priority_report',

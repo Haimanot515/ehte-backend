@@ -95,22 +95,6 @@ export interface SupportReceivedEvent {
   totalRaised: string;
 }
 
-// Victim-facing, non-financial: sent when an admin confirms and again when it is completed.
-export interface SupportOfferVictimEvent {
-  userId: string;
-  supportId: string;
-  victimProfileId: string;
-  supporterName: string | null;
-  categories: string[];
-}
-
-// Supporter-facing: an unanswered non-financial offer was auto-cancelled.
-export interface SupportOfferExpiredEvent {
-  userId: string;
-  supportId: string;
-  expiryDays: number;
-}
-
 export interface NewMissingPersonRequestEvent {
   userId: string;
   missingPersonId: string;

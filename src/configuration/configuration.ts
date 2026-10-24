@@ -253,9 +253,6 @@ export default () => ({
 
     enabled: process.env.SUPPORT_ENABLED !== 'false',
 
-    // Days an unanswered non-financial offer stays PENDING before SupportAutomationService.expireStaleOffers()
-    // cancels it and tells the supporter.
-    offerExpiryDays: parseInt(process.env.SUPPORT_OFFER_EXPIRY_DAYS ?? '14', 10),
   },
 
   missingPersons: {
@@ -268,7 +265,6 @@ export default () => ({
 
   payments: {
     enabled: process.env.PAYMENTS_ENABLED === 'true',
-    rewardsEnabled: process.env.PAYMENTS_REWARDS_ENABLED === 'true',
     returnUrl: process.env.PAYMENTS_RETURN_URL || '',
     minSupportEtb: process.env.PAYMENTS_MIN_SUPPORT_ETB || '10',
 

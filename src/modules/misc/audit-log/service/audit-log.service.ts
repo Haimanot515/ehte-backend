@@ -242,7 +242,6 @@ const SENSITIVE_ENTITIES = [
   'Report',
   'VictimProfile',
   'PayoutDestination',
-  'RewardClaim',
   'InformationSubmission',
   'MissingPerson',
 ];
@@ -271,7 +270,6 @@ const MONEY_ENTITIES = [
   'PaymentAllocation',
   'Disbursement',
   'PayoutDestination',
-  'RewardClaim',
 ];
 const MONEY_ACTION_KEYWORDS = [
   'REFUND',
@@ -279,7 +277,6 @@ const MONEY_ACTION_KEYWORDS = [
   'DISBURSEMENT',
   'PAYMENT_VERIFIED',
   'MANUAL_PAYMENT',
-  'REWARD_CLAIM',
 ];
 
 /** Ready-made alert rules (AL-28, AL-29). */

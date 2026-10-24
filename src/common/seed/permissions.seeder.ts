@@ -142,7 +142,6 @@ export class PermissionsSeeder {
       // PROFILE_DELETE, PROFILE_CHILD_SAFETY_REVIEW, PROFILE_BANK_DETAILS_MANAGE: SUPER_ADMIN-only.
 
       PermissionsEnum.SUPPORT_READ,
-      PermissionsEnum.SUPPORT_REVIEW,
 
       PermissionsEnum.USER_ROLE_ASSIGN,
       // USER_PROMOTE: SUPER_ADMIN-only.

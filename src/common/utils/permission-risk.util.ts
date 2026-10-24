@@ -26,11 +26,6 @@ const SENSITIVE: ReadonlySet<string> = new Set<string>([
 
   // Money
   P.SUPPORT_PAYMENT_MANAGE,
-  P.INSTITUTIONS_MANAGE,
-  P.AGREEMENTS_MANAGE,
-  P.AGREEMENTS_ACTIVATE,
-  P.REWARDS_APPROVE,
-  P.REWARDS_VERIFY_CLAIM,
   P.DISBURSEMENTS_CREATE,
   P.DISBURSEMENTS_APPROVE,
   P.DISBURSEMENTS_EXECUTE,
@@ -66,7 +61,6 @@ const TWO_PERSON_APPROVAL: ReadonlySet<string> = new Set<string>([
   P.REPORT_REVEAL_REPORTER,
   P.PROFILE_BANK_DETAILS_MANAGE,
   P.SUPPORT_PAYMENT_MANAGE,
-  P.REWARDS_APPROVE,
   P.DISBURSEMENTS_CREATE,
   P.DISBURSEMENTS_APPROVE,
   P.DISBURSEMENTS_EXECUTE,
@@ -115,16 +109,6 @@ const DUTY_RULES: DutyRule[] = [
     why: 'The person who creates a disbursement could also pay it out.',
   },
   {
-    id: 'reward-verify-approve',
-    permissions: [P.REWARDS_VERIFY_CLAIM, P.REWARDS_APPROVE],
-    why: 'The person who verifies a reward claim could also approve it.',
-  },
-  {
-    id: 'agreement-manage-activate',
-    permissions: [P.AGREEMENTS_MANAGE, P.AGREEMENTS_ACTIVATE],
-    why: 'The person who drafts an agreement could also activate it.',
-  },
-  {
     id: 'profile-create-approve',
     permissions: [P.PROFILE_CREATE, P.PROFILE_APPROVE],
     why: 'The person who creates a victim profile could also approve it.',
@@ -133,11 +117,6 @@ const DUTY_RULES: DutyRule[] = [
     id: 'official-post-create-approve',
     permissions: [P.POST_CREATE_OFFICIAL, P.POST_APPROVE],
     why: 'The person who writes an official post could also approve it.',
-  },
-  {
-    id: 'payment-manage-review',
-    permissions: [P.SUPPORT_PAYMENT_MANAGE, P.SUPPORT_REVIEW],
-    why: 'The person who manages a payment could also review the support it belongs to.',
   },
   {
     id: 'role-edit-assign',
