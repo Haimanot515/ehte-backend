@@ -1,7 +1,6 @@
-import { Module, forwardRef } from '@nestjs/common';
+import { Module } from '@nestjs/common';
 
 import { AuthModule } from 'src/modules/auth/auth.module';
-import { RewardModule } from 'src/modules/billing/reward/reward.module';
 
 import { MissingPersonController } from './controller/missing-person.controller';
 
@@ -21,7 +20,7 @@ import { MissingPersonExportService } from './service/missing-person-export.serv
 import { MissingPersonStatsService } from './service/missing-person-stats.service';
 
 @Module({
-  imports: [AuthModule, forwardRef(() => RewardModule)],
+  imports: [AuthModule],
 
   controllers: [MissingPersonController],
 

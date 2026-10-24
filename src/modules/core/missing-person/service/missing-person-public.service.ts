@@ -63,9 +63,8 @@ export class MissingPersonPublicService {
       throw new NotFoundException('missing_person_not_found');
     }
 
-    const masked = this.missingPersonCommonService.maskUnapprovedReward(missingPerson);
-    await this.cache.setMissingPerson(id, masked);
-    return masked;
+    await this.cache.setMissingPerson(id, missingPerson);
+    return missingPerson;
   }
 
   async findAll(query: ListMissingPersonsQueryDto) {
@@ -95,7 +94,7 @@ export class MissingPersonPublicService {
     ]);
 
     return {
-      data: data.map((item) => this.missingPersonCommonService.maskUnapprovedReward(item)),
+      data,
       meta: { page, limit, total, totalPages: Math.ceil(total / limit) },
     };
   }
@@ -125,7 +124,7 @@ export class MissingPersonPublicService {
     ]);
 
     return {
-      data: data.map((item) => this.missingPersonCommonService.maskUnapprovedReward(item)),
+      data,
       meta: this.missingPersonCommonService.pageMeta(page, limit, total),
     };
   }
@@ -151,7 +150,7 @@ export class MissingPersonPublicService {
       orderBy: { createdAt: 'desc' },
       take: query.limit ?? 10,
     });
-    return { data: data.map((item) => this.missingPersonCommonService.maskUnapprovedReward(item)) };
+    return { data };
   }
 
   private escapeHtml(value: string): string {
@@ -175,10 +174,6 @@ export class MissingPersonPublicService {
       : null;
 
     const contactPhone = this.configService.get<string>('MISSING_PERSON_POSTER_CONTACT') ?? null;
-    const reward =
-      mp.rewardApproved && mp.rewardAmount
-        ? { amount: mp.rewardAmount, details: mp.rewardDetails }
-        : null;
     const url = this.publicWebUrl(mp.id);
 
     const e = (v: string | null | undefined) => this.escapeHtml(v ?? '');
@@ -192,7 +187,6 @@ export class MissingPersonPublicService {
       `<h2>${e(mp.name ?? 'Name not provided')}</h2>` +
       `<p>Last seen ${e(mp.dateLastSeen.toISOString().slice(0, 10))} near ${e(mp.lastKnownArea)}</p>` +
       `<p>${e(mp.description)}</p>` +
-      (reward ? `<p><strong>Reward: ${reward.amount}</strong></p>` : '') +
       (contactPhone ? `<p>Call: ${e(contactPhone)}</p>` : '') +
       `<p>${e(url)}</p></body></html>`;
 
@@ -205,7 +199,6 @@ export class MissingPersonPublicService {
       dateLastSeen: mp.dateLastSeen,
       lastKnownArea: mp.lastKnownArea,
       photoUrl,
-      reward,
       contactPhone,
       url,
       html,

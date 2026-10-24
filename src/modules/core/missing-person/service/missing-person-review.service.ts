@@ -10,7 +10,6 @@ import {
   MissingPersonStatus,
   MissingPersonType,
   Prisma,
-  RewardClaimStatus,
 } from '@prisma/client';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { ConfigService } from '@nestjs/config';
@@ -21,7 +20,6 @@ import { RolesEnum } from 'src/common/enums/roles.enum';
 import { AuditEventEnum } from 'src/common/enums/shared/audit-events.enum';
 import { NotificationEventEnum } from 'src/common/enums/shared/notification-events.enum';
 import { CacheService } from 'src/infrastructure/redis/cache.service';
-import { RewardService } from 'src/modules/billing/reward/service/reward.service';
 import { PaginationQueryDto } from '../dto/missing-person.dto';
 import {
   MissingPersonAuditRef,
@@ -39,7 +37,6 @@ export class MissingPersonReviewService {
     private readonly eventEmitter: EventEmitter2,
     private readonly configService: ConfigService,
     private readonly cache: CacheService,
-    private readonly rewardService: RewardService,
     private readonly missingPersonCommonService: MissingPersonCommonService,
   ) {}
 
@@ -202,39 +199,6 @@ export class MissingPersonReviewService {
           result: 'flagged_for_review',
         },
       });
-    }
-  }
-
-  private async syncRewardClaimOnClosure(
-    adminId: string,
-    missingPersonId: string,
-    status: MissingPersonStatus,
-  ): Promise<void> {
-    if (status !== MissingPersonStatus.FOUND && status !== MissingPersonStatus.REJECTED) return;
-
-    const funded = await this.missingPersonCommonService.isRewardFunded(missingPersonId);
-    if (!funded) return;
-
-    if (status === MissingPersonStatus.FOUND) {
-      const settledForPayout = await this.prisma.rewardClaim.findFirst({
-        where: {
-          missingPersonId,
-          status: { in: [RewardClaimStatus.APPROVED_FOR_REWARD, RewardClaimStatus.PAID_OUT] },
-        },
-        select: { id: true },
-      });
-      if (settledForPayout) return;
-    }
-
-    const reason =
-      status === MissingPersonStatus.REJECTED
-        ? 'case_rejected_after_funding'
-        : 'case_found_with_no_approved_informant';
-
-    try {
-      await this.rewardService.closeWithoutPayout(adminId, missingPersonId, reason);
-    } catch (err) {
-      if (!(err instanceof BadRequestException)) throw err;
     }
   }
 
@@ -430,8 +394,6 @@ export class MissingPersonReviewService {
       await this.maybeFlagUserForRejections(existing.userId);
     }
 
-    await this.syncRewardClaimOnClosure(admin.id, id, status);
-
     return updated;
   }
 
@@ -588,7 +550,7 @@ export class MissingPersonReviewService {
     }
 
     if (confirmed) {
-      // Reuses the normal APPROVED -> FOUND path so claims, notifications and reward closure all run.
+      // Reuses the normal APPROVED -> FOUND path so claims and notifications all run.
       await this.updateStatus(admin, id, MissingPersonStatus.FOUND, reviewNote);
       const updated = await this.prisma.missingPerson.update({
         where: { id },
@@ -646,9 +608,6 @@ export class MissingPersonReviewService {
       throw new BadRequestException('use_lift_takedown_for_taken_down_cases');
     if (!reopenable.includes(existing.status)) {
       throw new BadRequestException('only_expired_cancelled_or_found_cases_can_be_reopened');
-    }
-    if (existing.fundingStatus === 'REFUND_DUE' || existing.fundingStatus === 'REFUNDED') {
-      throw new ConflictException('reward_refund_in_progress_cannot_reopen');
     }
 
     const target =

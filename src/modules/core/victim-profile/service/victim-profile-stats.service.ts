@@ -137,22 +137,6 @@ export class VictimProfileStatsService {
     return { total: Object.values(counts).reduce((a, b) => a + b, 0), byStatus: counts };
   }
 
-  // VP-93
-  async getStatsByCategory(_admin: CurrentUserDto, query: StatsQueryDto) {
-    const grouped = await this.prisma.victimProfile.groupBy({
-      by: ['supportType'],
-      where: this.victimProfileCommonService.statsWhere(query),
-      _count: { _all: true },
-      _sum: { totalRaised: true },
-      orderBy: { supportType: 'asc' },
-    });
-    return grouped.map((r) => ({
-      category: r.supportType ?? 'UNSPECIFIED',
-      count: r._count._all,
-      totalRaised: money(r._sum.totalRaised),
-    }));
-  }
-
   // VP-94  (derived from the audit trail, so it also covers decisions made by the older methods)
   async getStatsReviewTime(_admin: CurrentUserDto, query: StatsQueryDto) {
     const profiles = await this.prisma.victimProfile.findMany({
@@ -277,7 +261,7 @@ export class VictimProfileStatsService {
     };
   }
 
-  // VP-98  (monthly series of PAID support payments: gross, recipient share, platform share, provider fee, paid out)
+  // VP-98  (monthly series: confirmed donations raised, what Chapa charged, and what was sent to the victims)
   async getStatsFunding(_admin: CurrentUserDto, query: StatsQueryDto) {
     const { from, to } = this.victimProfileCommonService.parseRange(query);
     const { createdAt: _ignored, ...profileWhere } = this.victimProfileCommonService.statsWhere({
@@ -286,84 +270,83 @@ export class VictimProfileStatsService {
       to: undefined,
     }) as Prisma.VictimProfileWhereInput & { createdAt?: unknown };
 
-    const payments = await this.prisma.payment.findMany({
-      where: {
-        type: 'SUPPORT',
-        status: 'PAID',
-        support: { status: { not: 'CANCELLED' } },
-        victimProfile: { is: profileWhere },
-        ...(from || to
-          ? { paidAt: { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) } }
-          : {}),
-      },
-      select: {
-        paidAt: true,
-        createdAt: true,
-        amount: true,
-        chapaFee: true,
-        allocations: {
-          select: {
-            partyType: true,
-            amount: true,
-            disbursements: { where: { status: 'PAID_OUT' }, select: { amount: true } },
-          },
+    const paidAtRange: { paidAt?: Prisma.DateTimeNullableFilter } =
+      from || to ? { paidAt: { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) } } : {};
+
+    const [payments, transfers] = await Promise.all([
+      this.prisma.payment.findMany({
+        where: {
+          status: 'PAID',
+          victimProfile: { is: profileWhere },
+          ...paidAtRange,
         },
-      },
-      take: STATS_ROW_CAP,
-    });
+        select: { paidAt: true, createdAt: true, amount: true, chapaFee: true },
+        take: STATS_ROW_CAP,
+      }),
+      this.prisma.disbursement.findMany({
+        where: {
+          status: 'PAID',
+          victimProfile: { is: profileWhere },
+          ...paidAtRange,
+        },
+        select: { paidAt: true, createdAt: true, amount: true, transferFee: true },
+        take: STATS_ROW_CAP,
+      }),
+    ]);
 
     type Row = {
-      gross: Prisma.Decimal;
-      recipient: Prisma.Decimal;
-      platform: Prisma.Decimal;
-      providerFee: Prisma.Decimal;
-      paidOut: Prisma.Decimal;
       payments: number;
+      raised: Prisma.Decimal;
+      collectionFees: Prisma.Decimal;
+      sent: Prisma.Decimal;
+      transferFees: Prisma.Decimal;
+      transfers: number;
     };
     const zero = (): Row => ({
-      gross: new Prisma.Decimal(0),
-      recipient: new Prisma.Decimal(0),
-      platform: new Prisma.Decimal(0),
-      providerFee: new Prisma.Decimal(0),
-      paidOut: new Prisma.Decimal(0),
       payments: 0,
+      raised: new Prisma.Decimal(0),
+      collectionFees: new Prisma.Decimal(0),
+      sent: new Prisma.Decimal(0),
+      transferFees: new Prisma.Decimal(0),
+      transfers: 0,
     });
     const total = zero();
     const months = new Map<string, Row>();
+    const rowFor = (d: Date) => {
+      const key = this.bucketKey(d, StatsInterval.MONTH);
+      const row = months.get(key) ?? zero();
+      months.set(key, row);
+      return row;
+    };
 
     for (const p of payments) {
-      const key = this.bucketKey(p.paidAt ?? p.createdAt, StatsInterval.MONTH);
-      const row = months.get(key) ?? zero();
-      for (const target of [row, total]) {
+      for (const target of [rowFor(p.paidAt ?? p.createdAt), total]) {
         target.payments += 1;
-        target.gross = target.gross.add(p.amount);
-        if (p.chapaFee) target.providerFee = target.providerFee.add(p.chapaFee);
-        for (const a of p.allocations) {
-          if (a.partyType === 'RECIPIENT') {
-            target.recipient = target.recipient.add(a.amount);
-            for (const d of a.disbursements) target.paidOut = target.paidOut.add(d.amount);
-          } else if (a.partyType === 'PLATFORM') {
-            target.platform = target.platform.add(a.amount);
-          }
-        }
+        target.raised = target.raised.add(p.amount);
+        if (p.chapaFee) target.collectionFees = target.collectionFees.add(p.chapaFee);
       }
-      months.set(key, row);
+    }
+    for (const d of transfers) {
+      for (const target of [rowFor(d.paidAt ?? d.createdAt), total]) {
+        target.transfers += 1;
+        target.sent = target.sent.add(d.amount);
+        if (d.transferFee) target.transferFees = target.transferFees.add(d.transferFee);
+      }
     }
 
     const fmt = (r: Row) => ({
       payments: r.payments,
-      gross: money(r.gross),
-      recipientShare: money(r.recipient),
-      platformShare: money(r.platform),
-      providerFees: money(r.providerFee),
-      paidOut: money(r.paidOut),
-      awaitingPayout: money(Prisma.Decimal.max(r.recipient.sub(r.paidOut), 0)),
+      raised: money(r.raised),
+      collectionFees: money(r.collectionFees),
+      transfers: r.transfers,
+      sent: money(r.sent),
+      transferFees: money(r.transferFees),
     });
 
     return {
       currency: 'ETB',
-      truncated: payments.length >= STATS_ROW_CAP,
-      totals: fmt(total),
+      truncated: payments.length >= STATS_ROW_CAP || transfers.length >= STATS_ROW_CAP,
+      totals: { ...fmt(total), notYetSent: money(Prisma.Decimal.max(total.raised.sub(total.sent), 0)) },
       series: [...months.entries()]
         .sort(([a], [b]) => a.localeCompare(b))
         .map(([month, r]) => ({ month, ...fmt(r) })),
@@ -557,7 +540,6 @@ export class VictimProfileStatsService {
   async getStatsOverview(admin: CurrentUserDto, query: StatsQueryDto) {
     const [
       byStatus,
-      byCategory,
       aging,
       approval,
       funding,
@@ -568,7 +550,6 @@ export class VictimProfileStatsService {
       paused,
     ] = await Promise.all([
       this.getStatsByStatus(admin, query),
-      this.getStatsByCategory(admin, query),
       this.getStatsAging(admin, query),
       this.getStatsApprovalRate(admin, query),
       this.getStatsFunding(admin, query),
@@ -587,10 +568,9 @@ export class VictimProfileStatsService {
         published: byStatus.byStatus[VictimProfileStatus.PUBLISHED],
         pending: aging.totalPending,
         donationsPaused: paused,
-        totalRaised: funding.totals.recipientShare,
+        totalRaised: funding.totals.raised,
       },
       byStatus: byStatus.byStatus,
-      byCategory,
       aging: aging.buckets,
       approvalRate: approval,
       funding: funding.totals,

@@ -1,7 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import {
   Prisma,
-  SupportType,
   VictimProfileAppealStatus,
   VictimProfileFlagStatus,
   VictimProfileStatus,
@@ -67,7 +66,6 @@ export class VictimProfileSearchService {
 
     const [
       byStatus,
-      byCategory,
       byChild,
       byAssignee,
       unassigned,
@@ -82,12 +80,6 @@ export class VictimProfileSearchService {
         where,
         _count: { _all: true },
         orderBy: { status: 'asc' },
-      }),
-      this.prisma.victimProfile.groupBy({
-        by: ['supportType'],
-        where,
-        _count: { _all: true },
-        orderBy: { supportType: 'asc' },
       }),
       this.prisma.victimProfile.groupBy({
         by: ['involvesChild'],
@@ -113,9 +105,6 @@ export class VictimProfileSearchService {
 
     return {
       status: Object.fromEntries(byStatus.map((r) => [r.status, r._count._all])),
-      category: Object.fromEntries(
-        byCategory.map((r) => [r.supportType ?? 'UNSPECIFIED', r._count._all]),
-      ),
       involvesChild: Object.fromEntries(
         byChild.map((r) => [String(r.involvesChild), r._count._all]),
       ),
@@ -146,7 +135,6 @@ export class VictimProfileSearchService {
 
     return {
       statuses: Object.values(VictimProfileStatus),
-      categories: Object.values(SupportType),
       flagReasons: Object.values(FlagReason),
       flagStatuses: Object.values(VictimProfileFlagStatus),
       appealStatuses: Object.values(VictimProfileAppealStatus),

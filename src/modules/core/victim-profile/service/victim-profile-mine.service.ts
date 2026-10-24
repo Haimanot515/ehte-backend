@@ -31,7 +31,6 @@ import {
   MediaBearingDto,
   UPDATABLE_FIELD_NAMES,
   money,
-  CONFIRMED_SUPPORT_STATUSES,
   CREATOR_EDITABLE_STATUSES,
   CREATOR_WITHDRAWABLE_STATUSES,
   CREATOR_RESUBMITTABLE_STATUSES,
@@ -127,7 +126,6 @@ export class VictimProfileMineService {
       name: p.name,
       description: p.description,
       story: p.story,
-      supportType: p.supportType,
       supportGoal: p.supportGoal ? money(p.supportGoal) : null,
       photo: p.photo,
       video: p.video,
@@ -313,7 +311,6 @@ export class VictimProfileMineService {
         name: data.name,
         description: data.description,
         story: data.story,
-        supportType: data.supportType,
         supportGoal: data.supportGoal,
         photo: data.photo,
         video: data.video,
@@ -583,37 +580,21 @@ export class VictimProfileMineService {
   async getMineFunding(user: CurrentUserDto, id: string) {
     const profile = await this.victimProfileCommonService.getMineOr404(user, id);
 
-    const [supporterCount, paidOut] = await Promise.all([
-      this.prisma.support.count({
-        where: {
-          victimProfileId: id,
-          type: 'FINANCIAL',
-          status: { in: [...CONFIRMED_SUPPORT_STATUSES] },
-        },
-      }),
-      this.prisma.disbursement.aggregate({
-        where: {
-          status: 'PAID_OUT',
-          allocation: {
-            partyType: 'RECIPIENT',
-            payment: { victimProfileId: id, type: 'SUPPORT' },
-          },
-        },
-        _sum: { amount: true },
-      }),
+    const [totals, supporterCount] = await Promise.all([
+      this.victimProfileCommonService.getMoneyTotals(id),
+      this.victimProfileCommonService.getDonorCount(id),
     ]);
-
-    const raised = new Prisma.Decimal(profile.totalRaised);
-    const paid = new Prisma.Decimal(paidOut._sum.amount ?? 0);
-    const awaiting = Prisma.Decimal.max(raised.sub(paid), 0);
 
     // Deliberately no donor names, ids or per-donation rows.
     return {
       currency: 'ETB',
       supportGoal: profile.supportGoal ? money(profile.supportGoal) : null,
-      totalRaised: money(raised),
-      paidOut: money(paid),
-      awaitingPayout: money(awaiting),
+      totalRaised: money(totals.raised),
+      paidOut: money(totals.sent),
+      onTheWay: money(totals.onTheWay),
+      waiting: money(totals.waiting),
+      // Everything raised that has not reached the bank yet (on the way + waiting).
+      awaitingPayout: money(Prisma.Decimal.max(totals.raised.sub(totals.sent), 0)),
       supporterCount,
       donationsPaused: profile.donationsPaused,
     };
@@ -699,16 +680,13 @@ export class VictimProfileMineService {
     return { updated };
   }
 
-  // VP-24
+  // VP-24  (profiles I have donated to; a donation counts once Chapa has confirmed it)
   async findMySupported(user: CurrentUserDto, query: PagedQueryDto) {
     const { page, limit, skip } = this.victimProfileCommonService.pageOf(query);
-    const supportFilter = {
-      userId: user.id,
-      status: { in: [...CONFIRMED_SUPPORT_STATUSES] },
-    } satisfies Prisma.SupportWhereInput;
+    const myPaid = { payerUserId: user.id, status: 'PAID' } satisfies Prisma.PaymentWhereInput;
     const where: Prisma.VictimProfileWhereInput = {
       ...this.victimProfileCommonService.publicWhere(),
-      supports: { some: supportFilter },
+      payments: { some: myPaid },
     };
 
     const [rows, total] = await this.prisma.$transaction([
@@ -722,9 +700,9 @@ export class VictimProfileMineService {
       this.prisma.victimProfile.count({ where }),
     ]);
 
-    const mine = await this.prisma.support.groupBy({
+    const mine = await this.prisma.payment.groupBy({
       by: ['victimProfileId'],
-      where: { ...supportFilter, victimProfileId: { in: rows.map((r) => r.id) } },
+      where: { ...myPaid, victimProfileId: { in: rows.map((r) => r.id) } },
       _count: { _all: true },
       orderBy: { victimProfileId: 'asc' },
     });

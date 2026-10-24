@@ -16,7 +16,7 @@ import {
 } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
 
-import { SupportType, VictimProfileStatus } from '@prisma/client';
+import { VictimProfileStatus } from '@prisma/client';
 
 export enum AccountHolderRelationship {
   SELF = 'SELF',
@@ -39,9 +39,6 @@ export class CreateVictimProfileDto {
   @IsString()
   @MinLength(10)
   story: string;
-
-  @IsEnum(SupportType)
-  supportType: SupportType;
 
   @IsOptional()
   @IsNumber()
@@ -98,10 +95,6 @@ export class UpdateVictimProfileDto {
   @IsString()
   @MinLength(10)
   story?: string;
-
-  @IsOptional()
-  @IsEnum(SupportType)
-  supportType?: SupportType;
 
   @IsOptional()
   @IsNumber()
@@ -231,10 +224,6 @@ export class FindPublicVictimProfilesQueryDto {
   @IsOptional()
   @Type(() => Number)
   limit?: number = 20;
-
-  @IsOptional()
-  @IsEnum(SupportType)
-  supportType?: SupportType;
 
   @IsOptional()
   @IsString()
@@ -592,17 +581,12 @@ export class DateRangeQueryDto {
   to?: string;
 }
 
-// Shared filters for every stats route: from, to, status, category,
+// Shared filters for every stats route: from, to, status,
 // creatorId, involvesChild, assignedTo.
 export class StatsQueryDto extends DateRangeQueryDto {
   @IsOptional()
   @IsEnum(VictimProfileStatus)
   status?: VictimProfileStatus;
-
-  @IsOptional()
-  @IsString()
-  @MaxLength(100)
-  category?: string;
 
   @IsOptional()
   @IsString()

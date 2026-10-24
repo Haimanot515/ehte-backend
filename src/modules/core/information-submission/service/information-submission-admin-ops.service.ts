@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { AuditSeverity, InformationStatus, RewardClaimStatus } from '@prisma/client';
+import { AuditSeverity, InformationStatus } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
 import { AuditEventEnum } from 'src/common/enums/shared/audit-events.enum';
@@ -340,21 +340,6 @@ export class InformationSubmissionAdminOpsService {
 
     if (submission.anonymizedAt) {
       return submission;
-    }
-
-    const releasable: RewardClaimStatus[] = [
-      RewardClaimStatus.INVALID,
-      RewardClaimStatus.DUPLICATE,
-      RewardClaimStatus.ALREADY_KNOWN,
-      RewardClaimStatus.INELIGIBLE,
-      RewardClaimStatus.REJECTED,
-      RewardClaimStatus.REFUNDED,
-    ];
-    const activeClaims = await this.prisma.rewardClaim.count({
-      where: { informationSubmissionId: id, status: { notIn: releasable } },
-    });
-    if (activeClaims > 0) {
-      throw new BadRequestException('reward_claim_in_progress');
     }
 
     const informantId = submission.userId;

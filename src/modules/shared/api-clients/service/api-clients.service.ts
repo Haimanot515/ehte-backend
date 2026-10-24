@@ -27,14 +27,6 @@ export class ApiClientsService {
 
   // SH-88
   async create(admin: CurrentUserDto, body: CreateApiClientDto) {
-    if (body.institutionId) {
-      const institution = await this.prisma.institution.findUnique({
-        where: { id: body.institutionId },
-        select: { id: true },
-      });
-      if (!institution) throw new BadRequestException('institution_not_found');
-    }
-
     const secret = this.newSecret();
     const row = await this.prisma.apiClient.create({
       data: {
@@ -44,7 +36,6 @@ export class ApiClientsService {
         scopes: body.scopes,
         ipAllowlist: body.ipAllowlist ?? [],
         rateLimitPerMinute: body.rateLimitPerMinute ?? null,
-        institutionId: body.institutionId ?? null,
         createdById: admin.id,
       },
     });
@@ -58,7 +49,6 @@ export class ApiClientsService {
     const { page, limit, skip } = paging(q);
     const where: Prisma.ApiClientWhereInput = {
       ...(q.status ? { status: q.status } : {}),
-      ...(q.institutionId ? { institutionId: q.institutionId } : {}),
       ...(q.q ? { name: { contains: q.q, mode: 'insensitive' } } : {}),
       ...(q.unusedForDays
         ? this.unusedWhere(new Date(Date.now() - q.unusedForDays * DAY_MS))

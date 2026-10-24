@@ -11,7 +11,6 @@ import { FollowsController } from './follows/controller/follows.controller';
 import { HelpDeskController } from './help-desk/controller/help.controller';
 import { LegalController } from './legal/controller/legal.controller';
 import { AdminNotesController } from './notes/controller/admin-notes.controller';
-import { AdminReferralsController } from './referrals/controller/admin-referrals.controller';
 import { UserBlockingAbuseController } from './user-blocking-abuse/controller/user-blocking-abuse.controller';
 
 import { AdminWorkspaceService } from './admin-workspace/service/admin-workspace.service';
@@ -23,7 +22,6 @@ import { FollowsService } from './follows/service/follows.service';
 import { HelpDeskService } from './help-desk/service/help-desk.service';
 import { LegalService } from './legal/service/legal.service';
 import { AdminNotesService } from './notes/service/admin-notes.service';
-import { AdminReferralsService } from './referrals/service/admin-referrals.service';
 import { UserBlockingAbuseService } from './user-blocking-abuse/service/user-blocking-abuse.service';
 
 @Module({
@@ -39,7 +37,6 @@ import { UserBlockingAbuseService } from './user-blocking-abuse/service/user-blo
     HelpDeskController,
     LegalController,
     AdminNotesController,
-    AdminReferralsController,
     UserBlockingAbuseController,
   ],
 
@@ -53,7 +50,6 @@ import { UserBlockingAbuseService } from './user-blocking-abuse/service/user-blo
     HelpDeskService,
     LegalService,
     AdminNotesService,
-    AdminReferralsService,
     UserBlockingAbuseService,
   ],
 })

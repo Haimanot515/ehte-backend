@@ -4,7 +4,6 @@ enum SharedRecordType {
   MISSING_PERSON
   VICTIM_PROFILE
   INFORMATION_SUBMISSION
-  SUPPORT
 }
 
 enum FollowableType {

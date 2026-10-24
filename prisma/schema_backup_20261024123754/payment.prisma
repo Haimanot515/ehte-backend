@@ -1,0 +1,34 @@
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+  REVIEW_REQUIRED
+  REFUNDED
+}
+
+model Payment {
+  id              String        @id @default(uuid())
+  status          PaymentStatus @default(PENDING)
+  victimProfileId String
+  payerUserId     String?
+  isAnonymous     Boolean       @default(false)
+
+  amount   Decimal @db.Decimal(14, 2)
+  currency String  @default("ETB")
+
+  txRef          String   @unique
+  chapaReference String?  @unique
+  chapaFee       Decimal? @db.Decimal(14, 2)
+  failureReason  String?
+
+  paidAt    DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  victimProfile VictimProfile @relation(fields: [victimProfileId], references: [id], onDelete: Restrict)
+  payerUser     User?         @relation("PaymentPayer", fields: [payerUserId], references: [id], onDelete: SetNull)
+
+  @@index([victimProfileId, status])
+  @@index([status, createdAt])
+  @@map("payments")
+}

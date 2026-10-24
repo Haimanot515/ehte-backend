@@ -31,22 +31,22 @@ model User {
 
   pendingEmail String?
 
-  auditLogs            AuditLog[]                 @relation("AuditLogActor")
-  auditLogsAsTarget    AuditLog[]                 @relation("AuditLogTarget")
-  informationReports   InformationSubmission[]    @relation("InformationSubmissionOwner")
-  missingPersons       MissingPerson[]            @relation("MissingPersonOwner")
-  notifications        Notification[]
-  posts                Post[]                     @relation("PostOwner")
-  assignedReports      Report[]                   @relation("ReportAssignee")
-  reports              Report[]                   @relation("ReportReporter")
-  requestedInformation ReportInformationRequest[] @relation("InfoRequestRequestedBy")
-  sessions             Session[]
-  loginAttempts        LoginAttempt[]
-  supports             Support[]
-  payments             Payment[]
-  otps                 UserOtp[]
-  userRoles            UserRole[]
-  assignedRoles        UserRole[]                 @relation("UserRoleAssignedBy")
+  auditLogs                  AuditLog[]                 @relation("AuditLogActor")
+  auditLogsAsTarget          AuditLog[]                 @relation("AuditLogTarget")
+  informationReports         InformationSubmission[]    @relation("InformationSubmissionOwner")
+  missingPersons             MissingPerson[]            @relation("MissingPersonOwner")
+  notifications              Notification[]
+  posts                      Post[]                     @relation("PostOwner")
+  assignedReports            Report[]                   @relation("ReportAssignee")
+  reports                    Report[]                   @relation("ReportReporter")
+  requestedInformation       ReportInformationRequest[] @relation("InfoRequestRequestedBy")
+  sessions                   Session[]
+  loginAttempts              LoginAttempt[]
+  payments                   Payment[]                  @relation("PaymentPayer")
+  verifiedPayoutDestinations PayoutDestination[]        @relation("PayoutDestinationVerifier")
+  otps                       UserOtp[]
+  userRoles                  UserRole[]
+  assignedRoles              UserRole[]                 @relation("UserRoleAssignedBy")
 
   deviceTokens            DeviceToken[]
   notificationPreferences NotificationPreference[]
@@ -61,7 +61,6 @@ model User {
   userConsents        UserConsent[]         @relation("UserConsentUser")
   abuseReportsAgainst AbuseReport[]         @relation("AbuseReportTarget")
 
-  sponsoredMissingPersons      MissingPerson[]         @relation("MissingPersonSponsor")
   claimedMissingPersons        MissingPerson[]         @relation("MissingPersonClaimedBy")
   firstConfirmedMissingPersons MissingPerson[]         @relation("MissingPersonChildSafetyFirst")
   claimedPosts                 Post[]                  @relation("PostClaimedBy")
@@ -69,14 +68,6 @@ model User {
   createdVictimProfiles        VictimProfile[]         @relation("VictimProfileCreatedBy")
   claimedVictimProfiles        VictimProfile[]         @relation("VictimProfileClaimedBy")
   firstConfirmedVictimProfiles VictimProfile[]         @relation("VictimProfileChildSafetyFirst")
-  informantRewardClaims        RewardClaim[]           @relation("RewardClaimInformant")
-  reviewedRewardClaims         RewardClaim[]           @relation("RewardClaimReviewedBy")
-  approvedRewardClaims         RewardClaim[]           @relation("RewardClaimApprovedBy")
-  createdDisbursements         Disbursement[]          @relation("DisbursementCreatedBy")
-  approvedDisbursements        Disbursement[]          @relation("DisbursementApprovedBy")
-  executedDisbursements        Disbursement[]          @relation("DisbursementExecutedBy")
-  approvedAgreements           Agreement[]             @relation("AgreementApprovedBy")
-  retiredAgreements            Agreement[]             @relation("AgreementRetiredBy")
   createdBroadcasts            NotificationBroadcast[]
   createdAuditAlerts           AuditAlert[]
   auditSavedFilters            AuditSavedFilter[]
@@ -119,11 +110,6 @@ model User {
   victimProfileRevisions  VictimProfileRevision[]  @relation("VictimProfileRevisionEditor")
   victimProfileExportJobs VictimProfileExportJob[] @relation("VictimProfileExportJobRequester")
 
-  supportsAssigned      Support[]              @relation("SupportAssignedReviewer")
-  supportAdminReads     SupportAdminRead[]     @relation("SupportAdminReadAdmin")
-  supporterRestrictions SupporterRestriction[] @relation("SupporterRestrictionUser")
-  supportExportJobs     SupportExportJob[]     @relation("SupportExportJobRequester")
-
   archivedRoles                  Role[]                    @relation("RoleArchivedBy")
   roleAssignmentRequestsTargeted RoleAssignmentRequest[]   @relation("RoleAssignmentRequestTarget")
   roleAssignmentRequestsMade     RoleAssignmentRequest[]   @relation("RoleAssignmentRequestRequester")
@@ -142,13 +128,13 @@ model User {
   twoFactorResetsReviewed TwoFactorResetRequest[] @relation("TwoFactorResetReviewer")
   twoFactorPolicyUpdates  TwoFactorPolicy[]       @relation("TwoFactorPolicyUpdatedBy")
 
-  follows                 Follow[]                @relation("UserFollows")
-  legalAcceptances        LegalAcceptance[]       @relation("UserLegalAcceptances")
-  helpTickets             HelpTicket[]            @relation("UserHelpTickets")
-  announcementDismissals  AnnouncementDismissal[] @relation("UserAnnouncementDismissals")
-  announcementEvents      AnnouncementEvent[]     @relation("UserAnnouncementEvents")
-  blocksMade              UserBlock[]             @relation("UserBlocksMade")
-  blocksReceived          UserBlock[]             @relation("UserBlocksReceived")
+  follows                Follow[]                @relation("UserFollows")
+  legalAcceptances       LegalAcceptance[]       @relation("UserLegalAcceptances")
+  helpTickets            HelpTicket[]            @relation("UserHelpTickets")
+  announcementDismissals AnnouncementDismissal[] @relation("UserAnnouncementDismissals")
+  announcementEvents     AnnouncementEvent[]     @relation("UserAnnouncementEvents")
+  blocksMade             UserBlock[]             @relation("UserBlocksMade")
+  blocksReceived         UserBlock[]             @relation("UserBlocksReceived")
 
   @@map("user")
 }

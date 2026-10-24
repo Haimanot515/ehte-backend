@@ -4,6 +4,7 @@ import { AuthModule } from 'src/modules/auth/auth.module';
 import { ChapaModule } from 'src/infrastructure/chapa/chapa.module';
 
 import { VictimProfileController } from './controller/victim-profile.controller';
+import { AdminVictimProfileController } from './controller/admin-victim-profile.controller';
 
 import { VictimProfileCommonService } from './service/victim-profile-common.service';
 import { VictimProfileSubmissionService } from './service/victim-profile-submission.service';
@@ -23,7 +24,7 @@ import { VictimProfileWorkflowService } from './service/victim-profile-workflow.
 @Module({
   imports: [AuthModule, ChapaModule],
 
-  controllers: [VictimProfileController],
+  controllers: [VictimProfileController, AdminVictimProfileController],
 
   providers: [
     VictimProfileCommonService,

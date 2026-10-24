@@ -133,8 +133,6 @@ export class VictimProfileWorkflowService {
       this.prisma.payoutDestination.groupBy({
         by: ['accountNumber'],
         where: {
-          accountNumber: { not: null },
-          victimProfileId: { not: null },
           victimProfile: { is: { deletedAt: null } },
         },
         _count: { id: true },

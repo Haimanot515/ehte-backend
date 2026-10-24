@@ -45,10 +45,6 @@ export async function findSharedRecord(
       });
       return row ? { exists: true, ownerId: row.userId, contactPhone: null } : MISSING;
     }
-    case SharedRecordType.SUPPORT: {
-      const row = await prisma.support.findUnique({ where: { id }, select: { userId: true } });
-      return row ? { exists: true, ownerId: row.userId, contactPhone: null } : MISSING;
-    }
     default:
       return MISSING;
   }

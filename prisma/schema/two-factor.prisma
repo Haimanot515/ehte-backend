@@ -1,13 +1,13 @@
 model TwoFactorSecret {
-  id              String            @id @default(uuid())
-  userId          String            @unique
+  id              String              @id @default(uuid())
+  userId          String              @unique
   method          TwoFactorMethodEnum @default(TOTP)
   secretEncrypted String
-  isEnabled       Boolean           @default(false)
+  isEnabled       Boolean             @default(false)
   confirmedAt     DateTime?
   lastUsedStep    Int?
-  createdAt       DateTime          @default(now())
-  updatedAt       DateTime          @updatedAt
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -28,16 +28,16 @@ model TwoFactorRecoveryCode {
 }
 
 model TwoFactorChallenge {
-  id          String              @id @default(uuid())
+  id          String                        @id @default(uuid())
   userId      String
   purpose     TwoFactorChallengePurposeEnum @default(LOGIN)
   methods     TwoFactorMethodEnum[]
   smsCodeHash String?
-  attempts    Int                 @default(0)
+  attempts    Int                           @default(0)
   expiresAt   DateTime
   consumedAt  DateTime?
   ipAddress   String?
-  createdAt   DateTime            @default(now())
+  createdAt   DateTime                      @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 

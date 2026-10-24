@@ -250,13 +250,6 @@ export class InformationSubmissionController {
     return this.informationSubmissionMineService.getMyOutcome(user, id);
   }
 
-  @Get(':id/reward-status')
-  @Header('Cache-Control', 'no-store')
-  @ApiOperation({ summary: 'Get the status of any reward claim linked to my tip' })
-  async getMyRewardStatus(@Param('id') id: string, @CurrentUser() user: CurrentUserDto) {
-    return this.informationSubmissionMineService.getMyRewardStatus(user, id);
-  }
-
   @Post(':id/appeal')
   @ApiOperation({ summary: 'Appeal the rejection of my tip' })
   async appeal(

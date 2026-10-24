@@ -48,20 +48,20 @@ model AuditLog {
   diff     Json?
   metadata Json?
 
-  ipAddress String?
-  userAgent String?
-  country   String?
-  city      String?
-  region    String?
-  timezone  String?
-  asn       Int?
-  isp       String?
+  ipAddress     String?
+  userAgent     String?
+  country       String?
+  city          String?
+  region        String?
+  timezone      String?
+  asn           Int?
+  isp           String?
   deviceLabel   String?
   clientVersion String?
-  source    AuditSource?
-  method    String?
-  path      String?
-  requestId String?
+  source        AuditSource?
+  method        String?
+  path          String?
+  requestId     String?
 
   seq      Int?    @unique
   hash     String?

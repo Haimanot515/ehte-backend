@@ -22,9 +22,6 @@ export const UPDATABLE_FIELD_NAMES = [
   'pdf',
   'document',
   'other',
-  'rewardOffered',
-  'rewardAmount',
-  'rewardDetails',
 ] as const;
 
 export type MissingPersonAuditRef = Pick<MissingPerson, 'id' | 'name' | 'personType' | 'userId'>;
@@ -96,10 +93,6 @@ export const PUBLIC_SELECT = {
   status: true,
   createdAt: true,
   updatedAt: true,
-  rewardOffered: true,
-  rewardApproved: true,
-  rewardAmount: true,
-  rewardDetails: true,
 } as const;
 
 // Deleted and merged cases are hidden from the admin queues below.

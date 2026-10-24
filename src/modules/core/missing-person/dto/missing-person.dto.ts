@@ -13,7 +13,6 @@ import {
   Max,
   Min,
   MinLength,
-  ValidateIf,
 } from 'class-validator';
 import { Transform, TransformFnParams, Type } from 'class-transformer';
 
@@ -149,34 +148,6 @@ export class CreateMissingPersonDto {
 
   @ApiPropertyOptional({
     description:
-      'Whether the submitter is offering a reward for information - "I will pay this amount if the missing person is found."',
-  })
-  @IsOptional()
-  @IsBoolean()
-  rewardOffered?: boolean;
-
-  @ApiPropertyOptional({
-    description:
-      'Reward amount to pay if the missing person is found (platform base currency unit). Required when rewardOffered is true.',
-    example: 20000,
-  })
-  @ValidateIf((o: CreateMissingPersonDto) => o.rewardOffered === true)
-  @IsInt()
-  @Min(1)
-  rewardAmount?: number;
-
-  @ApiPropertyOptional({
-    description:
-      'Free-text reward details (e.g. conditions, how to claim). Only meaningful when rewardOffered is true; ignored otherwise.',
-    maxLength: 1000,
-  })
-  @IsOptional()
-  @IsString()
-  @MaxLength(1000)
-  rewardDetails?: string;
-
-  @ApiPropertyOptional({
-    description:
       'Account password (or Discreet Mode passcode, if enabled) confirming this sensitive action. Optional here if provided instead via the X-Reauth-Credential header.',
     example: 'StrongPassword123',
   })
@@ -185,18 +156,10 @@ export class CreateMissingPersonDto {
   credential?: string;
 }
 
-// Admin create: same as a user submission, minus the re-auth credential, plus rewardApproved.
+// Admin create: same as a user submission, minus the re-auth credential.
 export class AdminCreateMissingPersonDto extends OmitType(CreateMissingPersonDto, [
   'credential',
-] as const) {
-  @ApiPropertyOptional({
-    description:
-      'Approve the proposed reward at creation. Requires rewardOffered and rewardAmount.',
-  })
-  @IsOptional()
-  @IsBoolean()
-  rewardApproved?: boolean;
-}
+] as const) {}
 
 export class UpdateMissingPersonDto {
   @ApiPropertyOptional({ enum: MissingPersonType })
@@ -283,34 +246,6 @@ export class UpdateMissingPersonDto {
 
   @ApiPropertyOptional({
     description:
-      'Whether the submitter is offering a reward for information - "I will pay this amount if the missing person is found."',
-  })
-  @IsOptional()
-  @IsBoolean()
-  rewardOffered?: boolean;
-
-  @ApiPropertyOptional({
-    description:
-      'Reward amount to pay if the missing person is found (platform base currency unit). Required when this request sets rewardOffered to true.',
-    example: 20000,
-  })
-  @ValidateIf((o: UpdateMissingPersonDto) => o.rewardOffered === true)
-  @IsInt()
-  @Min(1)
-  rewardAmount?: number;
-
-  @ApiPropertyOptional({
-    description:
-      'Free-text reward details (e.g. conditions, how to claim). Only meaningful when rewardOffered is true; ignored otherwise.',
-    maxLength: 1000,
-  })
-  @IsOptional()
-  @IsString()
-  @MaxLength(1000)
-  rewardDetails?: string;
-
-  @ApiPropertyOptional({
-    description:
       'Account password (or Discreet Mode passcode, if enabled) confirming this sensitive action. Optional here if provided instead via the X-Reauth-Credential header.',
     example: 'StrongPassword123',
   })
@@ -338,34 +273,6 @@ export class UpdateMissingPersonStatusDto {
   @IsOptional()
   @IsBoolean()
   childSafetyConfirmed?: boolean;
-}
-
-export class UpdateMissingPersonRewardDto {
-  @ApiProperty({
-    description:
-      "Whether the case's proposed reward is approved for public display. Requires the case to have rewardOffered = true and a final reward amount (existing or provided here).",
-  })
-  @IsBoolean()
-  rewardApproved: boolean;
-
-  @ApiPropertyOptional({
-    description:
-      "Override the reward amount (platform base currency unit). Omit to keep the submitter's proposed amount.",
-    example: 50000,
-  })
-  @IsOptional()
-  @IsInt()
-  @Min(1)
-  rewardAmount?: number;
-
-  @ApiPropertyOptional({
-    description: "Override the reward details text. Omit to keep the submitter's proposed details.",
-    maxLength: 1000,
-  })
-  @IsOptional()
-  @IsString()
-  @MaxLength(1000)
-  rewardDetails?: string;
 }
 
 export class ListMissingPersonsQueryDto {

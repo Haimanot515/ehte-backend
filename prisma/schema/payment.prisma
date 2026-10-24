@@ -1,123 +1,36 @@
-enum PaymentType {
-  SUPPORT
-  MISSING_PERSON_REWARD
-  VICTIM_PROFILE_POSTING_FEE
-  MISSING_PERSON_POSTING_FEE
-}
-
 enum PaymentStatus {
   PENDING
   PAID
   FAILED
-  EXPIRED
   REVIEW_REQUIRED
   REFUNDED
 }
 
-enum PartyType {
-  RECIPIENT
-  RESPONSIBLE_ORGANIZATION
-  PLATFORM
-  REWARD_BENEFICIARY
-}
-
-enum SettlementStatus {
-  PENDING
-  PARTIALLY_PAID_OUT
-  PAID_OUT
-  CANCELLED
-}
-
 model Payment {
-  id       String        @id @default(uuid())
-  type     PaymentType
-  status   PaymentStatus @default(PENDING)
-  amount   Decimal       @db.Decimal(14, 2)
-  currency String        @default("ETB")
+  id              String        @id @default(uuid())
+  status          PaymentStatus @default(PENDING)
+  victimProfileId String
+  payerUserId     String?
+  isAnonymous     Boolean       @default(false)
 
-  fxRate             Decimal?  @db.Decimal(18, 8)
-  fxRateCapturedAt   DateTime?
-  settlementCurrency String?
+  amount   Decimal @db.Decimal(14, 2)
+  currency String  @default("ETB")
 
   txRef          String   @unique
-  chapaReference String?
+  chapaReference String?  @unique
   chapaFee       Decimal? @db.Decimal(14, 2)
-  checkoutUrl    String?
+  failureReason  String?
 
-  idempotencyKey String?
+  paidAt    DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
 
-  supportAnonymous Boolean @default(true)
-
-  payerUserId     String
-  victimProfileId String?
-  supportId       String?
+  victimProfile   VictimProfile  @relation(fields: [victimProfileId], references: [id], onDelete: Restrict)
+  payerUser       User?          @relation("PaymentPayer", fields: [payerUserId], references: [id], onDelete: SetNull)
+  missingPerson   MissingPerson? @relation(fields: [missingPersonId], references: [id])
   missingPersonId String?
 
-  agreementId      String?
-  agreementVersion Int?
-
-  allocationSnapshot Json
-  previewShownAt     DateTime
-
-  refundStatus        String?
-  refundAmount        Decimal?  @db.Decimal(14, 2)
-  refundReason        String?
-  refundReference     String?
-  refundRequestedById String?
-  refundRequestedAt   DateTime?
-  refundDecidedById   String?
-  refundedAt          DateTime?
-  refundAllocations   Json?
-
-  excessAmount          Decimal?  @db.Decimal(14, 2)
-  excessResolvedById    String?
-  excessRefundReference String?
-  excessRefundedAt      DateTime?
-
-  heldAt     DateTime?
-  holdReason String?
-  heldById   String?
-
-  fulfilledAt DateTime?
-  paidAt      DateTime?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-
-  payer         User                @relation(fields: [payerUserId], references: [id])
-  victimProfile VictimProfile?      @relation(fields: [victimProfileId], references: [id])
-  support       Support?            @relation(fields: [supportId], references: [id])
-  agreement     Agreement?          @relation(fields: [agreementId], references: [id])
-  missingPerson MissingPerson?      @relation(fields: [missingPersonId], references: [id])
-  allocations   PaymentAllocation[]
-  disputes      PaymentDispute[]
-
+  @@index([victimProfileId, status])
   @@index([status, createdAt])
-  @@index([refundStatus])
-  @@index([payerUserId])
-  @@index([victimProfileId])
-  @@index([supportId])
-  @@index([missingPersonId])
-  @@index([type, missingPersonId, status])
-  @@index([type, victimProfileId, status])
-  @@unique([payerUserId, idempotencyKey])
   @@map("payments")
-}
-
-model PaymentAllocation {
-  id               String           @id @default(uuid())
-  paymentId        String
-  partyType        PartyType
-  institutionId    String?
-  amount           Decimal          @db.Decimal(14, 2)
-  ruleId           String?
-  settlementStatus SettlementStatus @default(PENDING)
-  createdAt        DateTime         @default(now())
-
-  payment       Payment         @relation(fields: [paymentId], references: [id], onDelete: Restrict)
-  institution   Institution?    @relation(fields: [institutionId], references: [id])
-  rule          AllocationRule? @relation(fields: [ruleId], references: [id], onDelete: Restrict)
-  disbursements Disbursement[]
-
-  @@index([paymentId])
-  @@map("payment_allocations")
 }

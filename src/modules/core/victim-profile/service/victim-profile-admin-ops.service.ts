@@ -231,15 +231,7 @@ export class VictimProfileAdminOpsService {
   }
 
   private async assertNoUnsettledPayments(profileId: string): Promise<boolean> {
-    const unsettled = await this.prisma.payment.findFirst({
-      where: {
-        victimProfileId: profileId,
-        status: 'PAID',
-        allocations: { some: { settlementStatus: 'PENDING' } },
-      },
-      select: { id: true },
-    });
-    return !!unsettled;
+    return this.victimProfileCommonService.hasUndeliveredMoney(profileId);
   }
 
   // VP-67
@@ -613,17 +605,8 @@ export class VictimProfileAdminOpsService {
           anonymizedAt: new Date(),
         },
       }),
-      this.prisma.payoutDestination.updateMany({
-        where: { victimProfileId: id },
-        data: {
-          accountNumber: null,
-          bankName: null,
-          bankCode: null,
-          telebirrPhone: null,
-          accountHolder: 'ANONYMIZED',
-          isVerified: false,
-        },
-      }),
+      // Bank details are required columns, so the payout destination is deleted instead of blanked.
+      this.prisma.payoutDestination.deleteMany({ where: { victimProfileId: id } }),
       this.prisma.victimProfileUpdate.deleteMany({ where: { profileId: id } }),
       this.prisma.victimProfileRevision.deleteMany({ where: { profileId: id } }),
       this.prisma.victimProfileFollow.deleteMany({ where: { profileId: id } }),

@@ -3,7 +3,6 @@ model VictimProfile {
   name                  String?
   description           String?
   story                 String?
-  supportType           SupportType?
   supportGoal           Decimal?            @db.Decimal(12, 2)
   photo                 String[]
   video                 String[]
@@ -37,12 +36,6 @@ model VictimProfile {
   childSafetyFirstConfirmedAt       DateTime?
 
   totalRaised Decimal @default(0) @db.Decimal(12, 2)
-
-  postingFeeAmount   Decimal?         @db.Decimal(14, 2)
-  postingFeeCurrency String           @default("ETB")
-  postingFeeStatus   PostingFeeStatus @default(NOT_REQUIRED)
-
-  agreementId String?
 
   reviewNote    String?
   reviewNoteAt  DateTime?
@@ -83,14 +76,16 @@ model VictimProfile {
   childFlagProposedAt     DateTime?
   childFlagProposedReason String?
 
-  agreement                       Agreement?         @relation(fields: [agreementId], references: [id])
   createdByUser                   User?              @relation("VictimProfileCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
   claimedByUser                   User?              @relation("VictimProfileClaimedBy", fields: [claimedByUserId], references: [id], onDelete: SetNull)
   childSafetyFirstConfirmedByUser User?              @relation("VictimProfileChildSafetyFirst", fields: [childSafetyFirstConfirmedByUserId], references: [id], onDelete: SetNull)
   assignedReviewer                User?              @relation("VictimProfileAssignedReviewer", fields: [assignedReviewerId], references: [id], onDelete: SetNull)
-  supports                        Support[]
   payments                        Payment[]
   payoutDestination               PayoutDestination?
+
+  // Added for payouts
+  payoutsPaused Boolean        @default(false)
+  disbursements Disbursement[]
 
   readStates VictimProfileReadState[]
   updates    VictimProfileUpdate[]

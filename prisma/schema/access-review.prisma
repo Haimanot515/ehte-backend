@@ -17,15 +17,15 @@ model AccessReview {
 }
 
 model AccessReviewItem {
-  id          String                @id @default(uuid())
+  id          String               @id @default(uuid())
   reviewId    String
   userId      String
   roleId      String
-  decision    AccessReviewDecision  @default(PENDING)
+  decision    AccessReviewDecision @default(PENDING)
   decidedById String?
   note        String?
   decidedAt   DateTime?
-  createdAt   DateTime              @default(now())
+  createdAt   DateTime             @default(now())
 
   review    AccessReview @relation(fields: [reviewId], references: [id], onDelete: Cascade)
   user      User         @relation("AccessReviewItemUser", fields: [userId], references: [id], onDelete: Cascade)

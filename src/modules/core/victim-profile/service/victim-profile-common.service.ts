@@ -10,7 +10,6 @@ import {
   AuditOutcome,
   AuditSeverity,
   Prisma,
-  SupportType,
   VictimProfile,
   VictimProfileStatus,
 } from '@prisma/client';
@@ -279,7 +278,6 @@ export class VictimProfileCommonService {
     id: string;
     name: string | null;
     story: string | null;
-    supportType: unknown;
     supportGoal: Prisma.Decimal | null;
     photo: string[];
     involvesChild: boolean;
@@ -290,7 +288,6 @@ export class VictimProfileCommonService {
       id: profile.id,
       name: profile.name,
       story: profile.story ?? '',
-      supportType: profile.supportType,
       supportGoal: profile.supportGoal ? money(profile.supportGoal) : null,
 
       photo: profile.involvesChild ? [] : profile.photo,
@@ -331,7 +328,7 @@ export class VictimProfileCommonService {
   }
 
   /**
-   * Approval/publish gate: true only when the profile has a VERIFIED, complete BANK
+   * Approval/publish gate: true only when the profile has a VERIFIED, complete
    * PayoutDestination (account holder, number, bank name and Chapa bank code).
    * Unverified or incomplete destinations do not satisfy the gate.
    */
@@ -339,7 +336,6 @@ export class VictimProfileCommonService {
     const d = await this.prisma.payoutDestination.findUnique({
       where: { victimProfileId: profileId },
       select: {
-        rail: true,
         isVerified: true,
         accountHolder: true,
         accountNumber: true,
@@ -350,7 +346,6 @@ export class VictimProfileCommonService {
     return (
       !!d &&
       d.isVerified &&
-      d.rail === 'BANK' &&
       !!d.accountHolder &&
       !!d.accountNumber &&
       !!d.bankName &&
@@ -543,6 +538,64 @@ export class VictimProfileCommonService {
 
   // ── New shared helpers ──────────────────────────────────────────────────────
 
+  // ── Money (only donations exist: Payment in, Disbursement out) ──
+
+  /**
+   * raised   = PAID donations           sent     = PAID transfers to the victim
+   * onTheWay = CREATED + SUBMITTED + UNKNOWN transfers
+   * waiting  = raised - sent - onTheWay (never below 0)
+   * Same rule as PayoutService.getBalance() and the admin totals.
+   */
+  async getMoneyTotals(profileId: string) {
+    const [paid, groups] = await Promise.all([
+      this.prisma.payment.aggregate({
+        where: { victimProfileId: profileId, status: 'PAID' },
+        _sum: { amount: true },
+        _count: { _all: true },
+      }),
+      this.prisma.disbursement.groupBy({
+        by: ['status'],
+        where: { victimProfileId: profileId },
+        _sum: { amount: true },
+      }),
+    ]);
+
+    const raised = new Prisma.Decimal(paid._sum.amount ?? 0);
+    let sent = new Prisma.Decimal(0);
+    let onTheWay = new Prisma.Decimal(0);
+    for (const g of groups) {
+      const amount = new Prisma.Decimal(g._sum.amount ?? 0);
+      if (g.status === 'PAID') sent = sent.add(amount);
+      else if (g.status === 'CREATED' || g.status === 'SUBMITTED' || g.status === 'UNKNOWN') {
+        onTheWay = onTheWay.add(amount);
+      }
+    }
+    const left = raised.sub(sent).sub(onTheWay);
+    return {
+      raised,
+      sent,
+      onTheWay,
+      waiting: left.lt(0) ? new Prisma.Decimal(0) : left,
+      paymentCount: paid._count._all,
+    };
+  }
+
+  /** Number of donors: each signed-in donor counts once, a payment with no donor attached counts on its own. */
+  async getDonorCount(profileId: string): Promise<number> {
+    const donors = await this.prisma.payment.groupBy({
+      by: ['payerUserId'],
+      where: { victimProfileId: profileId, status: 'PAID' },
+      _count: { _all: true },
+    });
+    return donors.reduce((n, g) => n + (g.payerUserId === null ? g._count._all : 1), 0);
+  }
+
+  /** True while any donated money has not reached the victim yet (waiting or on its way). */
+  async hasUndeliveredMoney(profileId: string): Promise<boolean> {
+    const t = await this.getMoneyTotals(profileId);
+    return t.waiting.gt(0) || t.onTheWay.gt(0);
+  }
+
   pageOf(q: { page?: number; limit?: number }) {
     const page = q.page && q.page > 0 ? q.page : 1;
     const limit = q.limit && q.limit > 0 ? Math.min(q.limit, 100) : 20;
@@ -630,7 +683,6 @@ export class VictimProfileCommonService {
         id: true,
         name: true,
         involvesChild: true,
-        supportType: true,
         supportGoal: true,
         totalRaised: true,
         fundingEndsAt: true,
@@ -676,22 +728,12 @@ export class VictimProfileCommonService {
   statsWhere(q: StatsQueryDto): Prisma.VictimProfileWhereInput {
     const { from, to } = this.parseRange(q);
 
-    // "Need category" is the profile's supportType today.
-    let supportType: SupportType | undefined;
-    if (q.category) {
-      if (!(Object.values(SupportType) as string[]).includes(q.category)) {
-        throw new BadRequestException('invalid_category');
-      }
-      supportType = q.category as SupportType;
-    }
-
     return {
       deletedAt: null,
       ...(from || to
         ? { createdAt: { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) } }
         : {}),
       ...(q.status ? { status: q.status } : {}),
-      ...(supportType ? { supportType } : {}),
       ...(q.creatorId ? { createdByUserId: q.creatorId } : {}),
       ...(q.involvesChild !== undefined ? { involvesChild: q.involvesChild } : {}),
       ...(q.assignedTo ? { assignedReviewerId: q.assignedTo } : {}),

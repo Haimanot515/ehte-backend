@@ -16,7 +16,6 @@ export const USER_CONTENT_SOURCES: Record<string, [string, string]> = {
   posts: ['post', 'ownerId'],
   missingPersons: ['missingPerson', 'ownerId'],
   victimProfiles: ['victimProfile', 'createdById'],
-  supports: ['support', 'supporterId'],
   payments: ['payment', 'userId'],
 };
 

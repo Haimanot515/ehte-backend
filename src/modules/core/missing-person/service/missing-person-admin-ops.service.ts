@@ -15,9 +15,7 @@ import {
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
-import { resolveActorType } from 'src/common/utils/actor-type.util';
 import { AuditEventEnum } from 'src/common/enums/shared/audit-events.enum';
-import { NotificationEventEnum } from 'src/common/enums/shared/notification-events.enum';
 import { CacheService } from 'src/infrastructure/redis/cache.service';
 import {
   AdminEditMissingPersonDto,
@@ -83,106 +81,6 @@ export class MissingPersonAdminOpsService {
     });
   }
 
-  // Independent of the status workflow and claims. Approval needs an existing offer and amount.
-  async updateReward(
-    admin: CurrentUserDto,
-    id: string,
-    rewardApproved: boolean,
-    rewardAmount?: number,
-    rewardDetails?: string,
-  ) {
-    const existing = await this.prisma.missingPerson.findUnique({ where: { id } });
-
-    if (!existing) {
-      throw new NotFoundException('missing_person_not_found');
-    }
-
-    if (await this.missingPersonCommonService.isRewardFunded(id)) {
-      this.missingPersonCommonService.emitCaseFailure(
-        admin,
-        AuditEventEnum.MISSING_PERSON_UPDATED,
-        existing,
-        'reward_terms_locked_once_funded',
-        { metadata: { operation: 'reward_review_blocked' } },
-      );
-      throw new ConflictException('reward_terms_locked_once_funded');
-    }
-
-    if (rewardApproved && !existing.rewardOffered) {
-      this.missingPersonCommonService.emitCaseFailure(
-        admin,
-        AuditEventEnum.MISSING_PERSON_UPDATED,
-        existing,
-        'cannot_approve_reward_that_was_not_offered',
-        { metadata: { operation: 'reward_review' } },
-      );
-      throw new BadRequestException('cannot_approve_reward_that_was_not_offered');
-    }
-
-    const finalAmount = rewardAmount !== undefined ? rewardAmount : existing.rewardAmount;
-    const finalDetails = rewardDetails !== undefined ? rewardDetails : existing.rewardDetails;
-
-    if (rewardApproved && (finalAmount === undefined || finalAmount === null)) {
-      this.missingPersonCommonService.emitCaseFailure(
-        admin,
-        AuditEventEnum.MISSING_PERSON_UPDATED,
-        existing,
-        'reward_amount_required_when_approved',
-        { metadata: { operation: 'reward_review' } },
-      );
-      throw new BadRequestException('reward_amount_required_when_approved');
-    }
-
-    const updated = await this.prisma.missingPerson.update({
-      where: { id },
-      data: {
-        rewardApproved,
-        rewardAmount: finalAmount,
-        rewardDetails: finalDetails,
-      },
-    });
-
-    // rewardApproved/rewardAmount/rewardDetails feed maskUnapprovedReward() on the
-    // public detail/list views, so any change here can change what's shown publicly.
-    await this.cache.invalidateMissingPersonEverywhere(id);
-
-    this.missingPersonCommonService.emitAudit({
-      userId: admin.id,
-      ...this.missingPersonCommonService.targetUserFor(admin, existing),
-      actorType: resolveActorType(admin.roles ?? []),
-      action: AuditEventEnum.MISSING_PERSON_UPDATED,
-      entity: 'MissingPerson',
-      entityId: id,
-      entityLabel: this.missingPersonCommonService.caseLabel(updated),
-      diff: {
-        previousRewardApproved: existing.rewardApproved,
-        previousRewardAmount: existing.rewardAmount,
-        previousRewardDetails: existing.rewardDetails,
-        rewardApproved: updated.rewardApproved,
-        rewardAmount: updated.rewardAmount,
-        rewardDetails: updated.rewardDetails,
-        result: 'success',
-      },
-      metadata: {
-        operation: 'reward_review',
-        amountOverriddenByAdmin:
-          rewardAmount !== undefined && rewardAmount !== existing.rewardAmount,
-        detailsOverriddenByAdmin:
-          rewardDetails !== undefined && rewardDetails !== existing.rewardDetails,
-      },
-    });
-
-    this.eventEmitter.emit(NotificationEventEnum.MISSING_PERSON_UPDATED, {
-      userId: existing.userId,
-      missingPersonId: updated.id,
-      status: updated.status,
-      rewardApproved: updated.rewardApproved,
-      rewardAmount: updated.rewardAmount,
-    });
-
-    return updated;
-  }
-
   // Soft delete. Non-terminal cases move to CANCELLED so every existing status-based query hides them.
   async removeByAdmin(admin: CurrentUserDto, id: string, reason: string) {
     const existing = await this.missingPersonCommonService.loadCase(id);
@@ -199,12 +97,6 @@ export class MissingPersonAdminOpsService {
         },
       );
       throw new ConflictException('case_under_legal_hold');
-    }
-    if (
-      Number(existing.fundedAmount) > 0 ||
-      (await this.missingPersonCommonService.isRewardFunded(id))
-    ) {
-      throw new ConflictException('reward_funded_cannot_delete');
     }
 
     const wasTerminal = TERMINAL_STATUSES.includes(existing.status);

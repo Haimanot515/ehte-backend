@@ -166,11 +166,6 @@ export class VictimProfileReviewService {
     const [profiles, total] = await this.prisma.$transaction([
       this.prisma.victimProfile.findMany({
         where,
-        include: {
-          supports: {
-            orderBy: { createdAt: 'desc' },
-          },
-        },
         orderBy: { createdAt: 'desc' },
         skip: (page - 1) * limit,
         take: limit,

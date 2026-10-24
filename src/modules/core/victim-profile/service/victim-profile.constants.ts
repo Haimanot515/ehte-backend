@@ -14,7 +14,6 @@ export const UPDATABLE_FIELD_NAMES = [
   'name',
   'description',
   'story',
-  'supportType',
   'supportGoal',
   'photo',
   'video',
@@ -57,8 +56,6 @@ export async function mapWithConcurrency<T, R>(
   await Promise.all(Array.from({ length: Math.min(size, items.length) }, worker));
   return results;
 }
-
-export const CONFIRMED_SUPPORT_STATUSES = ['CONFIRMED', 'COMPLETED'] as const;
 
 // Creator-side lifecycle rules.
 export const CREATOR_EDITABLE_STATUSES: VictimProfileStatus[] = [
@@ -224,7 +221,6 @@ export const PUBLIC_PROFILE_SELECT = {
   id: true,
   name: true,
   story: true,
-  supportType: true,
   supportGoal: true,
   photo: true,
   involvesChild: true,
@@ -267,7 +263,6 @@ export const EXPORT_COLUMNS = [
     'id',
     'label',
     'status',
-    'supportType',
     'supportGoal',
     'totalRaised',
     'involvesChild',

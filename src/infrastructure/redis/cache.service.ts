@@ -93,7 +93,7 @@ interface PendingOp {
 const LIST_QUERY_FIELDS: Record<string, readonly string[]> = {
   post: ['type'],
   'missing-person': ['type'],
-  'victim-profile': ['supportType'],
+  'victim-profile': [], // public list is keyed on page, limit and search only
   'information-submission': [], // service ignores `status`; nothing else to key on
 };
 

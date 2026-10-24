@@ -25,8 +25,6 @@ export class MissingPersonStatsService {
       statusGrouped,
       typeGrouped,
       claimedCount,
-      rewardOfferedCount,
-      rewardApprovedCount,
       pendingChildSafetyConfirmation,
       totalInformationSubmissions,
       pendingToApprovedAgg,
@@ -48,8 +46,6 @@ export class MissingPersonStatsService {
       }),
 
       this.prisma.missingPerson.count({ where: { claimedByUserId: { not: null } } }),
-      this.prisma.missingPerson.count({ where: { rewardOffered: true } }),
-      this.prisma.missingPerson.count({ where: { rewardApproved: true } }),
 
       this.prisma.missingPerson.count({
         where: {
@@ -110,11 +106,6 @@ export class MissingPersonStatsService {
 
       claimedCount,
       pendingChildSafetyConfirmation,
-
-      reward: {
-        offeredCount: rewardOfferedCount,
-        approvedCount: rewardApprovedCount,
-      },
 
       rejectionRate: total > 0 ? Number((rejected / total).toFixed(4)) : 0,
       resolutionRate: total > 0 ? Number((found / total).toFixed(4)) : 0,

@@ -1,0 +1,117 @@
+enum NotificationPriority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+
+model Notification {
+  id     String           @id @default(uuid())
+  userId String
+  type   NotificationType
+  title  String
+  body   String
+
+  priority NotificationPriority @default(NORMAL)
+
+  entity    String?
+  entityId  String?
+  actorId   String?
+  actionUrl String?
+
+  actorName String?
+  actorRole String?
+
+  broadcastId String?
+
+  data Json?
+
+  isRead Boolean   @default(false)
+  readAt DateTime?
+
+  expiresAt DateTime?
+  dedupeKey String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user       User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  broadcast  NotificationBroadcast? @relation(fields: [broadcastId], references: [id], onDelete: SetNull)
+  deliveries NotificationDelivery[]
+
+  @@unique([userId, dedupeKey])
+  @@index([userId, createdAt])
+  @@index([userId, readAt, createdAt])
+  @@index([userId, isRead])
+  @@index([type])
+  @@index([expiresAt])
+  @@index([entity, entityId])
+  @@index([broadcastId])
+  @@index([actorId, createdAt])
+  @@map("notification")
+}
+
+enum NotificationType {
+  GENERAL
+  REPORT_RECEIVED
+  REPORT_UPDATED
+  MORE_INFORMATION_REQUESTED
+  POST_APPROVED
+  POST_REJECTED
+  MISSING_PERSON_UPDATED
+  NEW_MISSING_PERSON_INFORMATION
+  SUPPORT_PLEDGE_CREATED
+  SUPPORT_PAYMENT_CONFIRMED
+  NEW_REPORT
+  HIGH_PRIORITY_REPORT
+  NEW_POST
+  NEW_MISSING_PERSON_REQUEST
+  SECURITY_ALERT
+  PASSWORD_CHANGED
+  PASSWORD_RESET
+
+  REPORT_ASSIGNED
+  INFORMATION_REQUEST_RESPONDED
+  POST_CHANGES_REQUESTED
+  POST_UNPUBLISHED
+  MISSING_PERSON_APPROVED
+  MISSING_PERSON_REJECTED
+  MISSING_PERSON_FOUND
+  MISSING_PERSON_MORE_INFORMATION_REQUESTED
+
+  VICTIM_PROFILE_CREATED
+  VICTIM_PROFILE_UPDATED
+  VICTIM_PROFILE_DELETED
+  VICTIM_PROFILE_GATES_UPDATED
+  VICTIM_PROFILE_CHILD_SAFETY_REVIEWED
+  VICTIM_PROFILE_CONSENT_REVOKED
+  VICTIM_PROFILE_BANK_DETAILS_UPDATED
+  VICTIM_PROFILE_PUBLISHED
+  VICTIM_PROFILE_UNPUBLISHED
+  VICTIM_PROFILE_REJECTED
+  VICTIM_PROFILE_RESUBMITTED
+
+  INFORMATION_SUBMISSION_REVIEWED
+  INFORMATION_SUBMISSION_REJECTED
+  INFORMATION_SUBMISSION_QUESTION_ASKED
+  INFORMATION_SUBMISSION_QUESTION_ANSWERED
+  INFORMATION_SUBMISSION_MESSAGE
+  INFORMATION_SUBMISSION_ASSIGNED
+  INFORMATION_SUBMISSION_APPEALED
+  INFORMATION_SUBMISSION_ESCALATED
+  INFORMATION_SUBMISSION_EVIDENCE_ADDED
+
+  PAYMENT_VERIFIED
+  REWARD_CLAIM_APPROVED
+  DISBURSEMENT_PAID_OUT
+  INSTITUTION_SIGNED
+  AGREEMENT_CREATED
+  AGREEMENT_ACTIVATED
+  AGREEMENT_RETIRED
+  VICTIM_PROFILE_AGREEMENT_ASSIGNED
+
+  SUPPORT_RECEIVED
+  SUPPORT_OFFER_CONFIRMED
+  SUPPORT_OFFER_COMPLETED
+  SUPPORT_OFFER_EXPIRED
+}

@@ -64,8 +64,6 @@ export class UssdMissingPersonService {
         dateLastSeen: new Date(input.dateLastSeen),
         lastKnownArea: input.lastKnownArea,
         status: MissingPersonStatus.PENDING,
-        rewardApproved: false,
-        rewardOffered: false,
         channel: SubmissionChannel.USSD,
       },
     });

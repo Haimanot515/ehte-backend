@@ -22,11 +22,11 @@ model StaffNote {
 }
 
 model StaffNoteRevision {
-  id         String    @id @default(uuid())
+  id         String   @id @default(uuid())
   noteId     String
-  body       String    @db.Text
+  body       String   @db.Text
   editedById String
-  createdAt  DateTime  @default(now())
+  createdAt  DateTime @default(now())
 
   note StaffNote @relation(fields: [noteId], references: [id], onDelete: Cascade)
 

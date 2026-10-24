@@ -134,21 +134,10 @@ export class MissingPersonDuplicatesService {
     if (duplicate.deletedAt || duplicate.mergedIntoId)
       throw new BadRequestException('duplicate_case_not_available');
     if (duplicate.legalHold) throw new ConflictException('duplicate_under_legal_hold');
-    if (
-      Number(duplicate.fundedAmount) > 0 ||
-      duplicate.fundingStatus !== 'UNFUNDED' ||
-      (await this.missingPersonCommonService.isRewardFunded(duplicateId))
-    ) {
-      throw new ConflictException('duplicate_has_funded_reward');
-    }
 
     const now = new Date();
     await this.prisma.$transaction([
       this.prisma.informationSubmission.updateMany({
-        where: { missingPersonId: duplicateId },
-        data: { missingPersonId: id },
-      }),
-      this.prisma.rewardClaim.updateMany({
         where: { missingPersonId: duplicateId },
         data: { missingPersonId: id },
       }),

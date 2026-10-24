@@ -10,11 +10,7 @@ import {
   PagedQueryDto,
   PublicSearchQueryDto,
 } from '../dto/victim-profile.dto';
-import {
-  money,
-  CONFIRMED_SUPPORT_STATUSES,
-  PUBLIC_PROFILE_SELECT,
-} from './victim-profile.constants';
+import { money, PUBLIC_PROFILE_SELECT } from './victim-profile.constants';
 import { VictimProfileCommonService } from './victim-profile-common.service';
 
 @Injectable()
@@ -85,8 +81,6 @@ export class VictimProfilePublicService {
       isPrivacyReviewed: true,
       isAdminApproved: true,
 
-      ...(query.supportType ? { supportType: query.supportType } : {}),
-
       ...(query.search
         ? {
             OR: [
@@ -106,7 +100,6 @@ export class VictimProfilePublicService {
           name: true,
           story: true,
 
-          supportType: true,
           supportGoal: true,
 
           photo: true,
@@ -166,7 +159,6 @@ export class VictimProfilePublicService {
         name: true,
         story: true,
 
-        supportType: true,
         supportGoal: true,
 
         photo: true,
@@ -221,46 +213,38 @@ export class VictimProfilePublicService {
     return { data: rows, meta: this.victimProfileCommonService.metaOf(page, limit, total) };
   }
 
-  // VP-16
+  // VP-16  (donors of a published profile; only confirmed donations)
   async findPublicSupporters(_user: CurrentUserDto, id: string, query: PagedQueryDto) {
     await this.victimProfileCommonService.assertPublishedProfile(id);
     const { page, limit, skip } = this.victimProfileCommonService.pageOf(query);
-    const where: Prisma.SupportWhereInput = {
-      victimProfileId: id,
-      status: { in: [...CONFIRMED_SUPPORT_STATUSES] },
-    };
+    const where: Prisma.PaymentWhereInput = { victimProfileId: id, status: 'PAID' };
 
     const [rows, total] = await this.prisma.$transaction([
-      this.prisma.support.findMany({
+      this.prisma.payment.findMany({
         where,
-        orderBy: { createdAt: 'desc' },
+        orderBy: { paidAt: 'desc' },
         skip,
         take: limit,
         select: {
           id: true,
-          type: true,
-          anonymous: true,
-          message: true,
+          isAnonymous: true,
           amount: true,
-          categories: true,
+          paidAt: true,
           createdAt: true,
-          user: { select: { name: true } },
+          payerUser: { select: { name: true } },
         },
       }),
-      this.prisma.support.count({ where }),
+      this.prisma.payment.count({ where }),
     ]);
 
-    // Anonymity is the default and wins: no name, no amount, no message for anonymous supporters.
+    // Anonymity wins: no name and no amount for an anonymous donor. Never fees, references or transfer state.
     return {
       data: rows.map((s) => ({
         id: s.id,
-        type: s.type,
-        anonymous: s.anonymous,
-        name: s.anonymous ? null : (s.user?.name ?? null),
-        amount: !s.anonymous && s.type === 'FINANCIAL' ? money(s.amount) : null,
-        categories: s.categories,
-        message: s.anonymous ? null : s.message,
-        createdAt: s.createdAt,
+        anonymous: s.isAnonymous,
+        name: s.isAnonymous ? null : (s.payerUser?.name ?? null),
+        amount: s.isAnonymous ? null : money(s.amount),
+        createdAt: s.paidAt ?? s.createdAt,
       })),
       meta: this.victimProfileCommonService.metaOf(page, limit, total),
     };

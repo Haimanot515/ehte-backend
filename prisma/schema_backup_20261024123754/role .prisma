@@ -1,0 +1,20 @@
+model Role {
+  id              String           @id @default(uuid())
+  name            String           @unique
+  description     String?
+  isProtected     Boolean          @default(false)
+  createdAt       DateTime         @default(now())
+  rolePermissions RolePermission[]
+  userRoles       UserRole[]
+
+  archivedAt   DateTime?
+  archivedById String?
+  archivedBy   User?     @relation("RoleArchivedBy", fields: [archivedById], references: [id], onDelete: SetNull)
+
+  assignmentRequests   RoleAssignmentRequest[]
+  temporaryAssignments RoleTemporaryAssignment[]
+  accessReviewItems    AccessReviewItem[]
+
+  @@index([archivedAt])
+  @@map("role")
+}

@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Prisma, SupportType, VictimProfileFlagStatus, VictimProfileStatus } from '@prisma/client';
+import { Prisma, VictimProfileFlagStatus, VictimProfileStatus } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
 import {
@@ -136,20 +136,6 @@ export class VictimProfileInboxService {
       Object.values(VictimProfileStatus).map((s) => [s, 0]),
     ) as Record<VictimProfileStatus, number>;
     for (const row of grouped) counts[row.status] = row._count._all;
-    return counts;
-  }
-
-  // VP-33  ("need category" = supportType; swap the groupBy field if you later add a dedicated column)
-  async countUnreadByCategory(admin: CurrentUserDto) {
-    const grouped = await this.prisma.victimProfile.groupBy({
-      by: ['supportType'],
-      where: this.victimProfileCommonService.unreadWhere(admin),
-      _count: { _all: true },
-      orderBy: { supportType: 'asc' },
-    });
-    const counts: Record<string, number> = {};
-    for (const t of Object.values(SupportType)) counts[t] = 0;
-    for (const row of grouped) counts[row.supportType ?? 'UNSPECIFIED'] = row._count._all;
     return counts;
   }
 

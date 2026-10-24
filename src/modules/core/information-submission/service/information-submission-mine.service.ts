@@ -1,5 +1,5 @@
 import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
-import { AuditOutcome, InformationStatus, Prisma, RewardClaimStatus } from '@prisma/client';
+import { AuditOutcome, InformationStatus, Prisma } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
 import { AuditEventEnum } from 'src/common/enums/shared/audit-events.enum';
@@ -249,16 +249,10 @@ export class InformationSubmissionMineService {
       AuditEventEnum.INFORMATION_SUBMISSION_UPDATED,
     );
 
-    const [claims, appeal] = await Promise.all([
-      this.prisma.rewardClaim.findMany({
-        where: { informationSubmissionId: id },
-        select: { status: true },
-      }),
-      this.prisma.informationAppeal.findUnique({
-        where: { submissionId: id },
-        select: { status: true },
-      }),
-    ]);
+    const appeal = await this.prisma.informationAppeal.findUnique({
+      where: { submissionId: id },
+      select: { status: true },
+    });
 
     let outcome: 'IN_PROGRESS' | 'ACCEPTED' | 'NOT_ACCEPTED' | 'DUPLICATE' | 'ALREADY_KNOWN';
     if (OPEN_STATUSES.includes(submission.status)) {
@@ -273,25 +267,8 @@ export class InformationSubmissionMineService {
       outcome = 'NOT_ACCEPTED';
     }
 
-    const positive: RewardClaimStatus[] = [
-      RewardClaimStatus.VALID,
-      RewardClaimStatus.APPROVED_FOR_REWARD,
-      RewardClaimStatus.PAID_OUT,
-    ];
-    const negative: RewardClaimStatus[] = [
-      RewardClaimStatus.INVALID,
-      RewardClaimStatus.INELIGIBLE,
-      RewardClaimStatus.REJECTED,
-    ];
-
-    let helped: boolean | null = null;
-    if (outcome === 'NOT_ACCEPTED' || outcome === 'DUPLICATE' || outcome === 'ALREADY_KNOWN') {
-      helped = false;
-    } else if (claims.some((c) => positive.includes(c.status))) {
-      helped = true;
-    } else if (claims.length > 0 && claims.every((c) => negative.includes(c.status))) {
-      helped = false;
-    }
+    // In progress: not decided yet. Accepted: it helped. Anything else: it did not.
+    const helped: boolean | null = outcome === 'IN_PROGRESS' ? null : outcome === 'ACCEPTED';
 
     const decidedAt = TERMINAL_STATUSES.includes(submission.status)
       ? await this.informationSubmissionCommonService.decisionAt(
@@ -309,54 +286,6 @@ export class InformationSubmissionMineService {
       decidedAt,
       appealFiled: !!appeal,
       appealStatus: appeal?.status ?? null,
-    };
-  }
-
-  // The informant's own reward claim state. Amounts only once a share has been approved.
-  async getMyRewardStatus(user: CurrentUserDto, id: string) {
-    await this.informationSubmissionCommonService.findOwnedOrThrow(
-      user,
-      id,
-      AuditEventEnum.INFORMATION_SUBMISSION_UPDATED,
-    );
-
-    const claims = await this.prisma.rewardClaim.findMany({
-      where: { informationSubmissionId: id },
-      orderBy: { createdAt: 'asc' },
-      select: {
-        id: true,
-        status: true,
-        rewardAmount: true,
-        approvedAt: true,
-        createdAt: true,
-        missingPerson: { select: { rewardCurrency: true } },
-        disbursements: {
-          orderBy: { createdAt: 'desc' },
-          take: 1,
-          select: { status: true, executedAt: true },
-        },
-      },
-    });
-
-    const showAmount: RewardClaimStatus[] = [
-      RewardClaimStatus.APPROVED_FOR_REWARD,
-      RewardClaimStatus.PAID_OUT,
-    ];
-
-    return {
-      submissionId: id,
-      hasClaim: claims.length > 0,
-      claims: claims.map((c) => ({
-        id: c.id,
-        status: c.status,
-        rewardAmount: showAmount.includes(c.status) ? c.rewardAmount : null,
-        currency: c.missingPerson.rewardCurrency,
-        approvedAt: c.approvedAt,
-        createdAt: c.createdAt,
-        payout: c.disbursements[0]
-          ? { status: c.disbursements[0].status, paidAt: c.disbursements[0].executedAt }
-          : null,
-      })),
     };
   }
 }

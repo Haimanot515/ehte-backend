@@ -64,7 +64,6 @@ import {
   SearchMissingPersonsQueryDto,
   TakedownMissingPersonDto,
   UpdateMissingPersonDto,
-  UpdateMissingPersonRewardDto,
   UpdateMissingPersonStatusDto,
   VerifyFoundMissingPersonDto,
 } from '../dto/missing-person.dto';
@@ -849,26 +848,6 @@ export class MissingPersonController {
   @ApiOperation({ summary: 'Admin: release a claimed missing person case' })
   async unclaim(@CurrentUser() admin: CurrentUserDto, @Param('id') id: string) {
     return this.missingPersonReviewService.unclaimMissingPerson(admin, id);
-  }
-
-  @Patch('admin/:id/reward')
-  @ApiBearerAuth('access-token')
-  @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
-  @RequirePermissions(PermissionsEnum.MISSING_PERSON_REVIEW, PermissionsEnum.REWARDS_APPROVE)
-  @RequireReauthentication()
-  @ApiOperation({ summary: 'Admin: approve or revise the reward for a missing person case' })
-  async updateReward(
-    @CurrentUser() admin: CurrentUserDto,
-    @Param('id') id: string,
-    @Body() data: UpdateMissingPersonRewardDto,
-  ) {
-    return this.missingPersonAdminOpsService.updateReward(
-      admin,
-      id,
-      data.rewardApproved,
-      data.rewardAmount,
-      data.rewardDetails,
-    );
   }
 
   @Patch('admin/:id/read')

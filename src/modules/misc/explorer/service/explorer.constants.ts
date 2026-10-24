@@ -20,18 +20,12 @@ export const ENTITY_POLICY: Record<string, EntityPolicy> = {
 
   missingPerson: { permission: P.MISSING_PERSON_READ, audit: true },
   informationSubmission: { permission: P.MISSING_PERSON_INFO_READ, audit: true },
-  rewardClaim: { permission: P.REWARDS_VERIFY_CLAIM, audit: true },
 
   victimProfile: { permission: P.PROFILE_READ, audit: true },
-  support: { permission: P.SUPPORT_READ, audit: true },
 
   payment: { permission: P.SUPPORT_PAYMENT_READ, audit: true },
-  paymentAllocation: { permission: P.SUPPORT_PAYMENT_READ, audit: true },
   disbursement: { permission: P.DISBURSEMENTS_CREATE, audit: true },
   payoutDestination: { permission: P.DISBURSEMENTS_CREATE, audit: true },
-  agreement: { permission: P.AGREEMENTS_MANAGE, audit: false },
-  allocationRule: { permission: P.AGREEMENTS_MANAGE, audit: false },
-  institution: { permission: P.INSTITUTIONS_MANAGE, audit: false },
 
   notification: { permission: P.NOTIFICATION_READ, audit: false },
   notificationDelivery: { permission: P.NOTIFICATION_READ, audit: false },

@@ -71,10 +71,6 @@ export class MissingPersonExportService {
       'claimedByUserId',
       'gender',
       'ageGroup',
-      'rewardOffered',
-      'rewardApproved',
-      'rewardAmount',
-      'fundingStatus',
     ];
 
     const lines = [header.join(',')];
@@ -93,10 +89,6 @@ export class MissingPersonExportService {
           r.claimedByUserId,
           r.gender,
           r.ageGroup,
-          r.rewardOffered,
-          r.rewardApproved,
-          r.rewardAmount,
-          r.fundingStatus,
         ]
           .map((v) => this.csvCell(v))
           .join(','),

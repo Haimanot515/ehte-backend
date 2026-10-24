@@ -20,31 +20,10 @@ model MissingPerson {
 
   childSafetyConfirmed Boolean @default(false)
   reviewNote           String?
-  rewardAmount         Int?
-  rewardApproved       Boolean @default(false)
-  rewardDetails        String?
-  rewardOffered        Boolean @default(false)
-  rewardCurrency       String  @default("ETB")
-
-  publicRewardVersion Int     @default(1)
-  rewardConditions    String?
-
-  fundingMethod  RewardFundingMethod?
-  fundingStatus  RewardFundingStatus  @default(UNFUNDED)
-  fundedAmount   Decimal              @default(0) @db.Decimal(14, 2)
-  reservedAmount Decimal              @default(0) @db.Decimal(14, 2)
-  sponsorUserId  String?
-
-  postingFeeAmount   Decimal?         @db.Decimal(14, 2)
-  postingFeeCurrency String           @default("ETB")
-  postingFeeStatus   PostingFeeStatus @default(NOT_REQUIRED)
 
   timeWeight        Int?
   evidenceWeight    Int?
   credibilityWeight Int?
-
-  agreementId      String?
-  agreementVersion Int?
 
   idempotencyKey String?
 
@@ -107,16 +86,13 @@ model MissingPerson {
   ownerLastSeenAt DateTime?
 
   informationSubmissions          InformationSubmission[]
-  rewardClaims                    RewardClaim[]
   user                            User?                   @relation("MissingPersonOwner", fields: [userId], references: [id], onDelete: Cascade)
-  sponsorUser                     User?                   @relation("MissingPersonSponsor", fields: [sponsorUserId], references: [id], onDelete: SetNull)
   claimedByUser                   User?                   @relation("MissingPersonClaimedBy", fields: [claimedByUserId], references: [id], onDelete: SetNull)
   childSafetyFirstConfirmedByUser User?                   @relation("MissingPersonChildSafetyFirst", fields: [childSafetyFirstConfirmedByUserId], references: [id], onDelete: SetNull)
-  agreement                       Agreement?              @relation(fields: [agreementId], references: [id])
 
-  assignedToUser   User?            @relation("MissingPersonAssignee", fields: [assignedToUserId], references: [id], onDelete: SetNull)
-  mergedInto       MissingPerson?   @relation("MissingPersonMerge", fields: [mergedIntoId], references: [id], onDelete: SetNull)
-  mergedDuplicates MissingPerson[]  @relation("MissingPersonMerge")
+  assignedToUser   User?           @relation("MissingPersonAssignee", fields: [assignedToUserId], references: [id], onDelete: SetNull)
+  mergedInto       MissingPerson?  @relation("MissingPersonMerge", fields: [mergedIntoId], references: [id], onDelete: SetNull)
+  mergedDuplicates MissingPerson[] @relation("MissingPersonMerge")
 
   readStates MissingPersonReadState[]
   flags      MissingPersonFlag[]
@@ -134,7 +110,6 @@ model MissingPerson {
   @@index([status])
   @@index([personType])
   @@index([status, createdAt])
-  @@index([fundingStatus])
   @@index([assignedToUserId])
   @@index([claimedByUserId])
   @@index([deletedAt])
@@ -160,31 +135,6 @@ enum MissingPersonStatus {
   MORE_INFORMATION_REQUESTED
   EXPIRED
   CANCELLED
-}
-
-enum RewardFundingMethod {
-  PROMISE_TO_PAY
-  PREPAID
-}
-
-enum RewardFundingStatus {
-  UNFUNDED
-  PARTIALLY_FUNDED
-  FULLY_FUNDED
-  PAYMENT_DUE
-  PAYMENT_OVERDUE
-  PAYMENT_DEFAULTED
-  REFUND_DUE
-  REFUNDED
-}
-
-enum PostingFeeStatus {
-  NOT_REQUIRED
-  PENDING
-  PAID
-  WAIVED
-  REFUND_DUE
-  REFUNDED
 }
 
 model MissingPersonReadState {

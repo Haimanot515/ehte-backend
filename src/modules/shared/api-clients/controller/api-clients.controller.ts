@@ -19,7 +19,7 @@ import {
 } from '../dto/api-clients.dto';
 
 /**
- * PARTNER API ACCESS (SH-88 to SH-95) — only needed if institutions will call your API.
+ * PARTNER API ACCESS (SH-88 to SH-95) — only needed if partners will call your API.
  * The secret is returned once (create, rotate) and stored hashed; it is never logged or audited.
  * Create, rotate and revoke require re-auth (credential-issuing actions); this is an addition to
  * the doc, remove @RequireReauthentication() if you do not want it.

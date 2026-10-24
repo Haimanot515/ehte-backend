@@ -124,12 +124,11 @@ model InformationSubmission {
   anonymizedAt   DateTime?
   anonymizedById String?
 
-  missingPerson MissingPerson          @relation(fields: [missingPersonId], references: [id], onDelete: Cascade)
-  user          User?                  @relation("InformationSubmissionOwner", fields: [userId], references: [id], onDelete: Cascade)
-  assignedTo    User?                  @relation("InformationSubmissionAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
+  missingPerson MissingPerson           @relation(fields: [missingPersonId], references: [id], onDelete: Cascade)
+  user          User?                   @relation("InformationSubmissionOwner", fields: [userId], references: [id], onDelete: Cascade)
+  assignedTo    User?                   @relation("InformationSubmissionAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
   duplicateOf   InformationSubmission?  @relation("InformationSubmissionDuplicate", fields: [duplicateOfId], references: [id], onDelete: SetNull)
   duplicates    InformationSubmission[] @relation("InformationSubmissionDuplicate")
-  rewardClaims  RewardClaim[]
 
   adminReads     InformationAdminRead[]
   questions      InformationQuestion[]

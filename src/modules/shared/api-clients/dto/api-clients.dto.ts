@@ -1,4 +1,4 @@
-import { OmitType, PartialType } from '@nestjs/swagger';
+import { PartialType } from '@nestjs/swagger';
 import { ApiClientStatus } from '@prisma/client';
 import { Transform, Type } from 'class-transformer';
 import {
@@ -11,7 +11,6 @@ import {
   IsInt,
   IsOptional,
   IsString,
-  IsUUID,
   Matches,
   Max,
   MaxLength,
@@ -87,14 +86,10 @@ export class CreateApiClientDto {
   @Min(1)
   @Max(MAX_RATE_LIMIT_PER_MINUTE)
   rateLimitPerMinute?: number | null;
-
-  @IsOptional()
-  @IsUUID()
-  institutionId?: string;
 }
 
-// SH-91. The owning institution is fixed at creation, the rest can change.
-export class UpdateApiClientDto extends PartialType(OmitType(CreateApiClientDto, ['institutionId'] as const)) {}
+// SH-91
+export class UpdateApiClientDto extends PartialType(CreateApiClientDto) {}
 
 // SH-89
 export class ApiClientsQueryDto extends PagedQueryDto {
@@ -107,10 +102,6 @@ export class ApiClientsQueryDto extends PagedQueryDto {
   @IsString()
   @MaxLength(100)
   q?: string;
-
-  @IsOptional()
-  @IsUUID()
-  institutionId?: string;
 
   // Clients that have not called the API for this many days (or never), to find ones to retire
   @IsOptional()

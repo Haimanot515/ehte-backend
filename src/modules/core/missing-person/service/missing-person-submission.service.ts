@@ -1,6 +1,5 @@
 import {
   BadRequestException,
-  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -56,35 +55,6 @@ export class MissingPersonSubmissionService {
     }
 
     return { added, removed };
-  }
-
-  // Reward amount and details are stored only while rewardOffered is true.
-  private buildRewardProposalUpdate(
-    incoming: { rewardOffered?: boolean; rewardAmount?: number; rewardDetails?: string },
-    existing?: {
-      rewardOffered: boolean;
-      rewardAmount: number | null;
-      rewardDetails: string | null;
-    },
-  ): { rewardOffered: boolean; rewardAmount: number | null; rewardDetails: string | null } | null {
-    const touched =
-      incoming.rewardOffered !== undefined ||
-      incoming.rewardAmount !== undefined ||
-      incoming.rewardDetails !== undefined;
-
-    if (!touched && existing) return null;
-
-    const base = existing ?? { rewardOffered: false, rewardAmount: null, rewardDetails: null };
-
-    const rewardOffered = incoming.rewardOffered ?? base.rewardOffered;
-    const rewardAmount = rewardOffered
-      ? (incoming.rewardAmount ?? base.rewardAmount ?? null)
-      : null;
-    const rewardDetails = rewardOffered
-      ? (incoming.rewardDetails ?? base.rewardDetails ?? null)
-      : null;
-
-    return { rewardOffered, rewardAmount, rewardDetails };
   }
 
   private async enforceCreateRateLimit(userId: string): Promise<void> {
@@ -157,15 +127,12 @@ export class MissingPersonSubmissionService {
 
     const { merged, totalBytes } = await this.buildCreateInput(data);
 
-    const rewardProposal = this.buildRewardProposalUpdate(data)!;
-
     const missingPerson = await this.createWithIdempotencyRaceHandling(
       user,
       data,
       merged,
       totalBytes,
-      rewardProposal,
-      { status: MissingPersonStatus.PENDING, rewardApproved: false },
+      { status: MissingPersonStatus.PENDING },
       idempotencyKey,
     );
 
@@ -182,7 +149,6 @@ export class MissingPersonSubmissionService {
         result: 'success',
       },
       metadata: {
-        rewardOffered: missingPerson.rewardOffered,
         attachmentCount: this.missingPersonCommonService.collectMediaFields(merged).length,
         mediaTotalBytes: totalBytes,
       },
@@ -211,13 +177,6 @@ export class MissingPersonSubmissionService {
     }
 
     const { merged, totalBytes } = await this.buildCreateInput(data);
-    const rewardProposal = this.buildRewardProposalUpdate(data)!;
-
-    // An admin can approve a reward only if one was offered with an amount.
-    const rewardApproved = data.rewardApproved === true;
-    if (rewardApproved && (!rewardProposal.rewardOffered || rewardProposal.rewardAmount === null)) {
-      throw new BadRequestException('cannot_approve_reward_without_offer_and_amount');
-    }
 
     const status =
       data.personType === MissingPersonType.CHILD
@@ -229,8 +188,7 @@ export class MissingPersonSubmissionService {
       data,
       merged,
       totalBytes,
-      rewardProposal,
-      { status, rewardApproved },
+      { status },
       idempotencyKey,
     );
 
@@ -253,8 +211,6 @@ export class MissingPersonSubmissionService {
       },
       metadata: {
         operation: 'admin_create',
-        rewardOffered: missingPerson.rewardOffered,
-        rewardApproved: missingPerson.rewardApproved,
         attachmentCount: this.missingPersonCommonService.collectMediaFields(merged).length,
         mediaTotalBytes: totalBytes,
       },
@@ -277,12 +233,7 @@ export class MissingPersonSubmissionService {
     data: CreateMissingPersonDto,
     merged: MediaBearing,
     totalBytes: number,
-    rewardProposal: {
-      rewardOffered: boolean;
-      rewardAmount: number | null;
-      rewardDetails: string | null;
-    },
-    initial: { status: MissingPersonStatus; rewardApproved: boolean },
+    initial: { status: MissingPersonStatus },
     idempotencyKey?: string,
   ) {
     try {
@@ -302,10 +253,6 @@ export class MissingPersonSubmissionService {
           other: merged.other,
           mediaTotalBytes: totalBytes,
           status: initial.status,
-          rewardApproved: initial.rewardApproved,
-          rewardOffered: rewardProposal.rewardOffered,
-          rewardAmount: rewardProposal.rewardAmount,
-          rewardDetails: rewardProposal.rewardDetails,
           idempotencyKey: idempotencyKey ?? null,
         },
       });
@@ -413,27 +360,6 @@ export class MissingPersonSubmissionService {
     const shouldReturnToPending =
       existing.status === MissingPersonStatus.MORE_INFORMATION_REQUESTED;
 
-    const rewardUpdate = this.buildRewardProposalUpdate(data, existing);
-
-    if (rewardUpdate !== null && (await this.missingPersonCommonService.isRewardFunded(id))) {
-      this.missingPersonCommonService.emitCaseFailure(
-        user,
-        AuditEventEnum.MISSING_PERSON_UPDATED,
-        existing,
-        'reward_terms_locked_once_funded',
-        { metadata: { operation: 'reward_edit_blocked' } },
-      );
-      throw new ConflictException('reward_terms_locked_once_funded');
-    }
-
-    // Changing the terms of an approved reward resets its approval.
-    const rewardTermsChanged =
-      rewardUpdate !== null &&
-      (rewardUpdate.rewardOffered !== existing.rewardOffered ||
-        rewardUpdate.rewardAmount !== existing.rewardAmount ||
-        rewardUpdate.rewardDetails !== existing.rewardDetails);
-    const shouldResetRewardApproval = rewardTermsChanged && existing.rewardApproved;
-
     const fieldsUpdated = UPDATABLE_FIELD_NAMES.filter((field) => data[field] !== undefined);
 
     const updated = await this.prisma.missingPerson.update({
@@ -450,14 +376,6 @@ export class MissingPersonSubmissionService {
         ...(data.pdf !== undefined ? { pdf: data.pdf } : {}),
         ...(data.document !== undefined ? { document: data.document } : {}),
         ...(data.other !== undefined ? { other: data.other } : {}),
-        ...(rewardUpdate !== null
-          ? {
-              rewardOffered: rewardUpdate.rewardOffered,
-              rewardAmount: rewardUpdate.rewardAmount,
-              rewardDetails: rewardUpdate.rewardDetails,
-            }
-          : {}),
-        ...(shouldResetRewardApproval ? { rewardApproved: false } : {}),
         ...(shouldReturnToPending ? { status: MissingPersonStatus.PENDING } : {}),
         mediaTotalBytes: newTotalBytes,
       },
@@ -477,7 +395,6 @@ export class MissingPersonSubmissionService {
         returnedToPending: shouldReturnToPending,
         previousStatus: existing.status,
         currentStatus: updated.status,
-        rewardApprovalReset: shouldResetRewardApproval,
         result: 'success',
       },
       metadata: {
@@ -546,7 +463,6 @@ export class MissingPersonSubmissionService {
       metadata: {
         mediaFilesDeleted: mediaKeys.length,
         mediaTotalBytes: existing.mediaTotalBytes,
-        rewardOffered: existing.rewardOffered,
       },
     });
 
@@ -554,7 +470,7 @@ export class MissingPersonSubmissionService {
   }
 
   // There is no DRAFT status, so the copy is a normal PENDING case with the person-specific
-  // fields (name, media, reward) left empty for the owner to fill in via PATCH :id.
+  // fields (name, media) left empty for the owner to fill in via PATCH :id.
   async duplicateAsDraft(user: CurrentUserDto, id: string, idempotencyKey?: string) {
     const source = await this.missingPersonCommonService.loadOwnCase(user, id);
 

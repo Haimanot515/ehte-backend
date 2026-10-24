@@ -121,7 +121,6 @@ export class VictimProfileSubmissionService {
           description: data.description,
           story: data.story,
 
-          supportType: data.supportType,
           supportGoal: data.supportGoal,
 
           photo: merged.photo,
@@ -183,7 +182,6 @@ export class VictimProfileSubmissionService {
         status: profile.status,
       },
       metadata: {
-        supportType: profile.supportType,
         involvesChild: profile.involvesChild,
         attachmentCount: this.victimProfileCommonService.collectMediaFields(merged).length,
         mediaTotalBytes: totalBytes,
@@ -202,20 +200,23 @@ export class VictimProfileSubmissionService {
     const profile = await this.prisma.victimProfile.findUnique({
       where: { id },
       include: {
-        supports: {
-          where: { status: { in: ['CONFIRMED', 'COMPLETED'] }, type: 'FINANCIAL' },
+        // Confirmed donations only (admin view, so fees are included).
+        payments: {
+          where: { status: 'PAID' },
+          orderBy: { paidAt: 'desc' },
+          take: 100,
           select: {
             id: true,
-            type: true,
-            status: true,
-            agreementType: true,
             amount: true,
-            recipientAmount: true,
-            organizationAmount: true,
-            platformAmount: true,
-            message: true,
+            currency: true,
+            chapaFee: true,
+            isAnonymous: true,
+            paidAt: true,
             createdAt: true,
           },
+        },
+        payoutDestination: {
+          select: { bankName: true, accountHolder: true, isVerified: true, verifiedAt: true },
         },
       },
     });
@@ -292,7 +293,6 @@ export class VictimProfileSubmissionService {
         description: data.description,
         story: data.story,
 
-        supportType: data.supportType,
         supportGoal: data.supportGoal,
 
         photo: data.photo,
@@ -374,15 +374,8 @@ export class VictimProfileSubmissionService {
       AuditEventEnum.VICTIM_PROFILE_DELETED,
     );
 
-    const unsettled = await this.prisma.payment.findFirst({
-      where: {
-        victimProfileId: id,
-        status: 'PAID',
-        allocations: { some: { settlementStatus: 'PENDING' } },
-      },
-      select: { id: true },
-    });
-    if (unsettled) {
+    // Donated money must reach the victim before the profile can be removed.
+    if (await this.victimProfileCommonService.hasUndeliveredMoney(id)) {
       this.victimProfileCommonService.emitProfileFailure(
         admin,
         AuditEventEnum.VICTIM_PROFILE_DELETED,

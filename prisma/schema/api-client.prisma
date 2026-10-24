@@ -14,7 +14,6 @@ model ApiClient {
   scopes                  String[]        @default([])
   ipAllowlist             String[]        @default([])
   rateLimitPerMinute      Int?
-  institutionId           String?
   status                  ApiClientStatus @default(ACTIVE)
   lastUsedAt              DateTime?
   revokedAt               DateTime?

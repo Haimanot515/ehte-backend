@@ -40,7 +40,6 @@ export class VictimProfileFundingService {
         id: true,
         payoutDestination: {
           select: {
-            rail: true,
             bankName: true,
             bankCode: true,
             accountNumber: true,
@@ -59,6 +58,7 @@ export class VictimProfileFundingService {
     return profile;
   }
 
+  // Admin view of one profile's donations: only money, only confirmed (PAID) payments.
   async getSupportsSummary(id: string) {
     const profile = await this.prisma.victimProfile.findUnique({
       where: { id },
@@ -69,23 +69,44 @@ export class VictimProfileFundingService {
       throw new NotFoundException('victim_profile_not_found');
     }
 
-    const supports = await this.prisma.support.findMany({
-      where: {
-        victimProfileId: id,
-        status: { in: ['CONFIRMED', 'COMPLETED'] },
-      },
-      orderBy: { createdAt: 'desc' },
-    });
-
-    // Only financial supports carry money; non-financial offers never count toward the total.
-    const totalReceived = supports
-      .filter((support) => support.type === 'FINANCIAL')
-      .reduce((sum, support) => sum + Number(support.recipientAmount ?? support.amount ?? 0), 0);
+    const [totals, donorCount, payments] = await Promise.all([
+      this.victimProfileCommonService.getMoneyTotals(id),
+      this.victimProfileCommonService.getDonorCount(id),
+      this.prisma.payment.findMany({
+        where: { victimProfileId: id, status: 'PAID' },
+        orderBy: { paidAt: 'desc' },
+        take: 200,
+        select: {
+          id: true,
+          amount: true,
+          currency: true,
+          chapaFee: true,
+          isAnonymous: true,
+          paidAt: true,
+          createdAt: true,
+          payerUser: { select: { id: true, name: true } },
+        },
+      }),
+    ]);
 
     return {
-      totalReceived,
-      supportCount: supports.length,
-      supports,
+      currency: 'ETB',
+      totalReceived: money(totals.raised),
+      sent: money(totals.sent),
+      onTheWay: money(totals.onTheWay),
+      waiting: money(totals.waiting),
+      supportCount: totals.paymentCount,
+      donorCount,
+      supports: payments.map((p) => ({
+        id: p.id,
+        amount: money(p.amount),
+        currency: p.currency,
+        chapaFee: p.chapaFee ? money(p.chapaFee) : null,
+        isAnonymous: p.isAnonymous,
+        paidAt: p.paidAt,
+        createdAt: p.createdAt,
+        payer: p.payerUser ? { id: p.payerUser.id, name: p.payerUser.name } : null,
+      })),
     };
   }
 
@@ -129,6 +150,21 @@ export class VictimProfileFundingService {
     }
     const bankName = String(bank.name);
 
+    // The account must not change while money is on its way to the old one.
+    const inFlight = await this.prisma.disbursement.findFirst({
+      where: { victimProfileId: id, status: { in: ['CREATED', 'SUBMITTED', 'UNKNOWN'] } },
+      select: { id: true },
+    });
+    if (inFlight) {
+      this.victimProfileCommonService.emitProfileFailure(
+        admin,
+        AuditEventEnum.VICTIM_PROFILE_BANK_DETAILS_UPDATED,
+        profile,
+        'transfer_in_progress',
+      );
+      throw new ConflictException('transfer_in_progress');
+    }
+
     const previousDestination = await this.prisma.payoutDestination.findUnique({
       where: { victimProfileId: id },
       select: { accountHolder: true, accountNumber: true, bankCode: true },
@@ -162,25 +198,20 @@ export class VictimProfileFundingService {
     await this.prisma.payoutDestination.upsert({
       where: { victimProfileId: id },
       create: {
-        rail: 'BANK',
         bankName,
         bankCode: data.bankCode,
         accountNumber: data.bankAccountNumber,
         accountHolder: data.accountHolderName,
-        lastEditedById: admin.id,
         victimProfileId: id,
       },
       update: {
-        rail: 'BANK',
         bankName,
         bankCode: data.bankCode,
         accountNumber: data.bankAccountNumber,
         accountHolder: data.accountHolderName,
-        lastEditedById: admin.id,
         isVerified: false,
         verifiedById: null,
         verifiedAt: null,
-        verifiedNote: null,
       },
     });
 
@@ -228,16 +259,9 @@ export class VictimProfileFundingService {
       throw new NotFoundException('victim_profile_not_found');
     }
 
-    const agg = await this.prisma.paymentAllocation.aggregate({
-      where: {
-        partyType: 'RECIPIENT',
-        payment: {
-          victimProfileId: id,
-          type: 'SUPPORT',
-          status: 'PAID',
-          support: { status: { not: 'CANCELLED' } },
-        },
-      },
+    // The truth is the sum of confirmed (PAID) donations. REFUNDED / FAILED / REVIEW_REQUIRED never count.
+    const agg = await this.prisma.payment.aggregate({
+      where: { victimProfileId: id, status: 'PAID' },
       _sum: { amount: true },
       _count: true,
     });
@@ -391,7 +415,6 @@ export class VictimProfileFundingService {
       this.prisma.payoutDestination.findUnique({
         where: { victimProfileId: id },
         select: {
-          rail: true,
           bankName: true,
           bankCode: true,
           accountNumber: true,
@@ -405,7 +428,6 @@ export class VictimProfileFundingService {
     return {
       current: destination
         ? {
-            rail: destination.rail,
             bankName: destination.bankName,
             bankCode: destination.bankCode,
             accountNumberMasked: maskAccount(destination.accountNumber),
@@ -474,7 +496,6 @@ export class VictimProfileFundingService {
         isVerified: true,
         verifiedById: admin.id,
         verifiedAt: new Date(),
-        verifiedNote: data.notes ?? null,
       },
     });
     if (result.count === 0) throw new ConflictException('victim_profile_transition_conflict');
@@ -501,18 +522,12 @@ export class VictimProfileFundingService {
     const payments = await this.prisma.payment.findMany({
       where: {
         victimProfileId: id,
-        type: 'SUPPORT',
         status: 'PAID',
-        support: { status: { not: 'CANCELLED' } },
         ...(from || to
           ? { paidAt: { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) } }
           : {}),
       },
-      select: {
-        paidAt: true,
-        createdAt: true,
-        allocations: { where: { partyType: 'RECIPIENT' }, select: { amount: true } },
-      },
+      select: { paidAt: true, createdAt: true, amount: true },
       take: 50_000,
     });
 
@@ -521,7 +536,7 @@ export class VictimProfileFundingService {
       const day = (p.paidAt ?? p.createdAt).toISOString().slice(0, 10);
       const cur = days.get(day) ?? { count: 0, total: new Prisma.Decimal(0) };
       cur.count += 1;
-      for (const a of p.allocations) cur.total = cur.total.add(a.amount);
+      cur.total = cur.total.add(p.amount);
       days.set(day, cur);
     }
 

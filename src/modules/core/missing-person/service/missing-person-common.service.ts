@@ -47,7 +47,6 @@ const MISSING_PERSON_OPERATION_ACTIONS: Record<string, AuditEventEnum> = {
   unassign: AuditEventEnum.MISSING_PERSON_UNASSIGNED,
   claim: AuditEventEnum.MISSING_PERSON_CLAIMED,
   unclaim: AuditEventEnum.MISSING_PERSON_UNCLAIMED,
-  reward_review: AuditEventEnum.MISSING_PERSON_REWARD_REVIEWED,
   redact_media_requested: AuditEventEnum.MISSING_PERSON_MEDIA_REDACTION_REQUESTED,
   case_update_posted: AuditEventEnum.MISSING_PERSON_CASE_UPDATE_POSTED,
   child_flag_first_confirmation: AuditEventEnum.MISSING_PERSON_CHILD_FLAG_FIRST_CONFIRMED,
@@ -235,18 +234,6 @@ export class MissingPersonCommonService {
     await Promise.allSettled(filepaths.map((fp) => this.minioService.deleteFile(fp)));
   }
 
-  // Hides reward amount and details publicly until an admin approves.
-  maskUnapprovedReward<
-    T extends {
-      rewardApproved: boolean;
-      rewardAmount: number | null;
-      rewardDetails: string | null;
-    },
-  >(record: T): T {
-    if (record.rewardApproved) return record;
-    return { ...record, rewardAmount: null, rewardDetails: null };
-  }
-
   // Blocks status changes on a case claimed by another admin.
   assertNotClaimedByOther(
     actor: CurrentUserDto,
@@ -260,13 +247,6 @@ export class MissingPersonCommonService {
       });
       throw new ForbiddenException('missing_person_claimed_by_another_admin');
     }
-  }
-
-  async isRewardFunded(missingPersonId: string): Promise<boolean> {
-    const count = await this.prisma.payment.count({
-      where: { missingPersonId, type: 'MISSING_PERSON_REWARD', status: 'PAID' },
-    });
-    return count > 0;
   }
 
   pageArgs(query: PageQuery): { page: number; limit: number; skip: number } {
@@ -338,7 +318,7 @@ export class MissingPersonCommonService {
     if (!missingPerson || missingPerson.status !== MissingPersonStatus.APPROVED) {
       throw new NotFoundException('missing_person_not_found');
     }
-    return this.maskUnapprovedReward(missingPerson);
+    return missingPerson;
   }
 
   async presignKeys(keys: string[]): Promise<Array<{ key: string; url: string | null }>> {
@@ -372,11 +352,6 @@ export class MissingPersonCommonService {
       reviewNote: missingPerson.reviewNote,
       createdAt: missingPerson.createdAt,
       updatedAt: missingPerson.updatedAt,
-      rewardOffered: missingPerson.rewardOffered,
-      rewardApproved: missingPerson.rewardApproved,
-      rewardAmount: missingPerson.rewardAmount,
-      rewardDetails: missingPerson.rewardDetails,
-      fundingStatus: missingPerson.fundingStatus,
       expiresAt: missingPerson.expiresAt,
       renewalCount: missingPerson.renewalCount,
       foundReportedAt: missingPerson.foundReportedAt,

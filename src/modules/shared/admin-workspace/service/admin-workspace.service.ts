@@ -7,13 +7,11 @@ import {
   Prisma,
   ReportStatus,
   SharedRecordType,
-  SupportDisputeStatus,
   VictimProfileFlagStatus,
   HelpTicketStatus,
   MissingPersonStatus,
   VictimProfileStatus,
   InformationStatus,
-  SupportStatus,
 } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
@@ -161,18 +159,6 @@ const MODULES: Record<SharedRecordType, ModuleConfig> = {
     sensitive: () => false,
     read: { delegate: 'informationAdminRead', relation: 'submission' },
   },
-  SUPPORT: {
-    delegate: 'support',
-    auditEntity: 'Support',
-    ownerFields: ['assignedReviewerId'],
-    open: { status: { in: [SupportStatus.PENDING] } },
-    labelField: 'transferReference',
-    fallbackLabel: 'Support offer',
-    staleHours: 72,
-    slaHours: 48,
-    select: { id: true, transferReference: true, status: true, createdAt: true, updatedAt: true },
-    sensitive: () => false,
-  },
 };
 
 const NEXT_ACTION: Record<string, string> = {
@@ -273,13 +259,6 @@ export class AdminWorkspaceService {
         this.db('INFORMATION_SUBMISSION').findMany({
           where: { deletedAt: null, OR: [...byId, { information: contains }, { location: contains }] },
           select: MODULES.INFORMATION_SUBMISSION.select,
-          orderBy: { createdAt: 'desc' },
-          take,
-        }),
-      SUPPORT: () =>
-        this.db('SUPPORT').findMany({
-          where: { OR: [...byId, { transferReference: contains }] },
-          select: MODULES.SUPPORT.select,
           orderBy: { createdAt: 'desc' },
           take,
         }),
@@ -463,7 +442,6 @@ export class AdminWorkspaceService {
       queueOf('POST_FLAGS', 'Open post flags', this.prisma.postFlag as unknown as Delegate, { status: PostFlagStatus.OPEN }),
       queueOf('MISSING_PERSON_FLAGS', 'Open missing person flags', this.prisma.missingPersonFlag as unknown as Delegate, { status: MissingPersonFlagState.OPEN }),
       queueOf('VICTIM_PROFILE_FLAGS', 'Open victim profile flags', this.prisma.victimProfileFlag as unknown as Delegate, { status: VictimProfileFlagStatus.OPEN }),
-      queueOf('SUPPORT_DISPUTES', 'Open support disputes', this.prisma.supportDispute as unknown as Delegate, { status: SupportDisputeStatus.OPEN }),
       queueOf('HELP_TICKETS', 'Help tickets waiting for an owner', this.prisma.helpTicket as unknown as Delegate, {
         status: { in: [HelpTicketStatus.OPEN, HelpTicketStatus.IN_PROGRESS] },
         assignedToId: null,
@@ -844,13 +822,12 @@ export class AdminWorkspaceService {
   }
 
   private async openFlagCounts() {
-    const [posts, missingPersons, victimProfiles, supportDisputes] = await Promise.all([
+    const [posts, missingPersons, victimProfiles] = await Promise.all([
       this.prisma.postFlag.count({ where: { status: PostFlagStatus.OPEN } }),
       this.prisma.missingPersonFlag.count({ where: { status: MissingPersonFlagState.OPEN } }),
       this.prisma.victimProfileFlag.count({ where: { status: VictimProfileFlagStatus.OPEN } }),
-      this.prisma.supportDispute.count({ where: { status: SupportDisputeStatus.OPEN } }),
     ]);
-    return { posts, missingPersons, victimProfiles, supportDisputes, total: posts + missingPersons + victimProfiles + supportDisputes };
+    return { posts, missingPersons, victimProfiles, total: posts + missingPersons + victimProfiles };
   }
 
   private db(m: SharedRecordType): Delegate {

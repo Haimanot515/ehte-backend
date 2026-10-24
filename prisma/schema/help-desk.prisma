@@ -19,27 +19,27 @@ enum HelpMessageAuthor {
 }
 
 model HelpTicket {
-  id             String             @id @default(uuid())
-  reference      String             @unique
-  userId         String
-  category       String
-  subject        String
-  status         HelpTicketStatus   @default(OPEN)
-  priority       HelpTicketPriority @default(NORMAL)
-  linkedEntity   SharedRecordType?
-  linkedEntityId String?
-  assignedToId   String?
+  id              String             @id @default(uuid())
+  reference       String             @unique
+  userId          String
+  category        String
+  subject         String
+  status          HelpTicketStatus   @default(OPEN)
+  priority        HelpTicketPriority @default(NORMAL)
+  linkedEntity    SharedRecordType?
+  linkedEntityId  String?
+  assignedToId    String?
   firstResponseAt DateTime?
-  resolvedAt     DateTime?
-  closedAt       DateTime?
-  closedBy       HelpMessageAuthor?
-  reopenCount    Int                @default(0)
-  ratingScore    Int?
-  ratingComment  String?
-  ratedAt        DateTime?
-  lastMessageAt  DateTime           @default(now())
-  createdAt      DateTime           @default(now())
-  updatedAt      DateTime           @updatedAt
+  resolvedAt      DateTime?
+  closedAt        DateTime?
+  closedBy        HelpMessageAuthor?
+  reopenCount     Int                @default(0)
+  ratingScore     Int?
+  ratingComment   String?
+  ratedAt         DateTime?
+  lastMessageAt   DateTime           @default(now())
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
 
   user     User                @relation("UserHelpTickets", fields: [userId], references: [id], onDelete: Cascade)
   messages HelpTicketMessage[]

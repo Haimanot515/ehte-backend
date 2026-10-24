@@ -1,0 +1,203 @@
+model NotificationPreference {
+  id              String           @id @default(uuid())
+  userId          String
+  type            NotificationType
+  email           Boolean?
+  sms             Boolean?
+  push            Boolean?
+  quietHoursStart String?
+  quietHoursEnd   String?
+  timezone        String?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @default(now()) @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, type])
+  @@index([userId])
+  @@map("notification_preference")
+}
+
+model NotificationDelivery {
+  id             String    @id @default(uuid())
+  notificationId String
+  userId         String
+  channel        String
+  status         String    @default("PENDING")
+  attempts       Int       @default(0)
+  nextAttemptAt  DateTime  @default(now())
+  lastError      String?
+  sentAt         DateTime?
+  providerMessageId String?
+  providerStatus    String?
+  deliveredAt       DateTime?
+  failedAt          DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @default(now()) @updatedAt
+
+  notification Notification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+
+  @@unique([notificationId, channel])
+  @@index([status, nextAttemptAt])
+  @@index([userId, createdAt])
+  @@index([channel, status])
+  @@index([providerMessageId])
+  @@map("notification_delivery")
+}
+
+model DeviceToken {
+  id         String   @id @default(uuid())
+  userId     String
+  token      String   @unique
+  platform   String
+  lastSeenAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("device_token")
+}
+
+model NotificationBroadcast {
+  id             String               @id @default(uuid())
+  createdById    String?
+  audience       String
+  type           NotificationType
+  title          String
+  body           String
+  priority       NotificationPriority @default(NORMAL)
+  templateId     String?
+  status         String               @default("SCHEDULED")
+  scheduledAt    DateTime             @default(now())
+  startedAt      DateTime?
+  finishedAt     DateTime?
+  recipientCount Int                  @default(0)
+  attempts       Int                  @default(0)
+  error          String?
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @default(now()) @updatedAt
+
+  requiresApproval Boolean   @default(false)
+  approvedById     String?
+  approvedAt       DateTime?
+  rejectedById     String?
+  rejectedAt       DateTime?
+  rejectionReason  String?
+
+  stopRequestedAt   DateTime?
+  stopRequestedById String?
+  stoppedAt         DateTime?
+
+  notifications Notification[]
+  createdBy     User?                 @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  template      NotificationTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+
+  @@index([status, scheduledAt])
+  @@index([createdById, createdAt])
+  @@map("notification_broadcast")
+}
+
+model NotificationTemplate {
+  id          String           @id @default(uuid())
+  type        NotificationType
+  language    String
+  title       String
+  body        String
+  isActive    Boolean          @default(true)
+  createdById String?
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @default(now()) @updatedAt
+
+  retiredAt   DateTime?
+  retiredById String?
+
+  broadcasts NotificationBroadcast[]
+
+  @@unique([type, language])
+  @@map("notification_template")
+}
+
+model NotificationIdempotencyKey {
+  id        String   @id @default(uuid())
+  actorId   String
+  key       String
+  result    Json?
+  createdAt DateTime @default(now())
+
+  @@unique([actorId, key])
+  @@index([createdAt])
+  @@map("notification_idempotency_key")
+}
+
+model NotificationSnooze {
+  id        String   @id @default(uuid())
+  userId    String   @unique
+  until     DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([until])
+  @@map("notification_snooze")
+}
+
+model NotificationEntityMute {
+  id        String   @id @default(uuid())
+  userId    String
+  entity    String
+  entityId  String
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, entity, entityId])
+  @@index([entity, entityId])
+  @@map("notification_entity_mute")
+}
+
+model NotificationBounce {
+  id             String    @id @default(uuid())
+  channel        String
+  address        String
+  userId         String?
+  reason         String
+  providerCode   String?
+  status         String    @default("ACTIVE")
+  bounceCount    Int       @default(1)
+  firstBouncedAt DateTime  @default(now())
+  lastBouncedAt  DateTime  @default(now())
+  clearedAt      DateTime?
+  clearedById    String?
+  clearNote      String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @default(now()) @updatedAt
+
+  @@unique([channel, address])
+  @@index([status, lastBouncedAt])
+  @@index([userId])
+  @@map("notification_bounce")
+}
+
+model NotificationSetting {
+  key         String   @id
+  value       Json
+  updatedById String?
+  updatedAt   DateTime @default(now()) @updatedAt
+
+  @@map("notification_setting")
+}
+
+model NotificationQueueState {
+  channel     String    @id
+  paused      Boolean   @default(false)
+  reason      String?
+  pausedAt    DateTime?
+  pausedById  String?
+  resumedAt   DateTime?
+  resumedById String?
+  updatedAt   DateTime  @default(now()) @updatedAt
+
+  @@map("notification_queue_state")
+}

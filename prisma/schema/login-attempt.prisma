@@ -1,5 +1,5 @@
 model LoginAttempt {
-  id            String             @id @default(uuid())
+  id            String          @id @default(uuid())
   userId        String?
   identifier    String
   result        LoginResultEnum
@@ -9,7 +9,7 @@ model LoginAttempt {
   deviceLabel   String?
   country       String?
   city          String?
-  createdAt     DateTime           @default(now())
+  createdAt     DateTime        @default(now())
 
   user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
 
