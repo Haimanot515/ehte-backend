@@ -1,0 +1,315 @@
+enum ActorType {
+  USER
+  ADMIN
+  SUPER_ADMIN
+  SYSTEM
+  ANONYMOUS
+}
+
+enum AuditOutcome {
+  SUCCESS
+  FAILURE
+  DENIED
+}
+
+enum AuditSeverity {
+  INFO
+  WARNING
+  CRITICAL
+}
+
+enum AuditSource {
+  WEB
+  MOBILE
+  API
+  SYSTEM
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+
+  userId       String?
+  actorType    ActorType
+  actorName    String?
+  actorRole    String?
+  sessionId    String?
+  targetUserId String?
+
+  action   String
+  outcome  AuditOutcome  @default(SUCCESS)
+  severity AuditSeverity @default(INFO)
+  reason   String?
+
+  entity      String
+  entityId    String?
+  entityLabel String?
+
+  diff     Json?
+  metadata Json?
+
+  ipAddress String?
+  userAgent String?
+  country   String?
+  city      String?
+  region    String?
+  timezone  String?
+  asn       Int?
+  isp       String?
+  deviceLabel   String?
+  clientVersion String?
+  source    AuditSource?
+  method    String?
+  path      String?
+  requestId String?
+
+  seq      Int?    @unique
+  hash     String?
+  prevHash String?
+
+  legalHold    Boolean   @default(false)
+  anonymizedAt DateTime?
+
+  user       User? @relation("AuditLogActor", fields: [userId], references: [id], onDelete: SetNull)
+  targetUser User? @relation("AuditLogTarget", fields: [targetUserId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([createdAt])
+  @@index([entity, entityId, createdAt])
+  @@index([action, createdAt])
+  @@index([outcome])
+  @@index([targetUserId, createdAt])
+  @@index([ipAddress])
+  @@index([requestId])
+  @@index([actorType])
+  @@index([severity, createdAt])
+  @@index([sessionId])
+  @@index([country, createdAt])
+  @@map("audit_log")
+}
+
+model AuditExport {
+  id           String   @id @default(uuid())
+  exportedById String?
+  filter       Json?
+  rowCount     Int
+  truncated    Boolean  @default(false)
+  createdAt    DateTime @default(now())
+
+  exportedBy User? @relation(fields: [exportedById], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+  @@map("audit_export")
+}
+
+model AuditSavedFilter {
+  id        String   @id @default(uuid())
+  userId    String
+  name      String
+  filter    Json
+  createdAt DateTime @default(now())
+
+  updatedAt        DateTime @default(now()) @updatedAt
+  sharedWithAdmins Boolean  @default(false)
+
+  user   User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  shares AuditSavedFilterShare[]
+
+  @@unique([userId, name])
+  @@map("audit_saved_filter")
+}
+
+model AuditAlert {
+  id              String         @id @default(uuid())
+  name            String
+  enabled         Boolean        @default(true)
+  action          String?
+  entity          String?
+  outcome         AuditOutcome?
+  severity        AuditSeverity?
+  threshold       Int
+  windowMinutes   Int
+  cooldownMinutes Int            @default(60)
+  lastTriggeredAt DateTime?
+  createdById     String?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  createdBy User? @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  triggers AuditAlertTrigger[]
+
+  @@map("audit_alert")
+}
+
+model AuditPurgeRun {
+  id            String    @id @default(uuid())
+  tokenId       String    @unique
+  cutoff        DateTime
+  reason        String
+  status        String
+  requestedById String?
+  archiveKey    String?
+  archivedCount Int       @default(0)
+  deletedCount  Int       @default(0)
+  heldCount     Int       @default(0)
+  minSeq        Int?
+  maxSeq        Int?
+  error         String?
+  createdAt     DateTime  @default(now())
+  finishedAt    DateTime?
+
+  requestedBy User? @relation(fields: [requestedById], references: [id], onDelete: SetNull)
+
+  @@map("audit_purge_run")
+}
+
+model AuditLegalHold {
+  id                   String    @id @default(uuid())
+  kind                 String    @default("FILTER")
+  caseReference        String
+  reason               String
+  filter               Json
+  status               String    @default("ACTIVE")
+  rowCount             Int       @default(0)
+  appliedAt            DateTime  @default(now())
+  createdById          String?
+  releasedAt           DateTime?
+  releasedById         String?
+  releaseRequestedById String?
+  releaseReason        String?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @default(now()) @updatedAt
+
+  @@index([status, createdAt])
+  @@index([caseReference])
+  @@map("audit_legal_hold")
+}
+
+model AuditApprovalRequest {
+  id            String    @id @default(uuid())
+  kind          String
+  targetKey     String
+  payloadHash   String
+  payload       Json?
+  reason        String?
+  status        String    @default("PENDING")
+  requestedById String
+  approvedById  String?
+  expiresAt     DateTime
+  decidedAt     DateTime?
+  createdAt     DateTime  @default(now())
+
+  @@index([kind, targetKey, status])
+  @@index([status, expiresAt])
+  @@map("audit_approval_request")
+}
+
+model AuditPurgeSchedule {
+  id            String    @id @default(uuid())
+  olderThan     DateTime
+  runAt         DateTime
+  reason        String
+  status        String    @default("SCHEDULED")
+  createdById   String
+  cancelledById String?
+  cancelReason  String?
+  cancelledAt   DateTime?
+  purgeRunId    String?
+  error         String?
+  executedAt    DateTime?
+  createdAt     DateTime  @default(now())
+
+  @@index([status, runAt])
+  @@map("audit_purge_schedule")
+}
+
+model AuditRetentionPolicy {
+  id            String   @id @default(uuid())
+  scope         String
+  key           String
+  retentionDays Int
+  updatedById   String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @default(now()) @updatedAt
+
+  @@unique([scope, key])
+  @@map("audit_retention_policy")
+}
+
+model AuditIntegrityRun {
+  id            String    @id @default(uuid())
+  trigger       String
+  requestedById String?
+  ok            Boolean
+  complete      Boolean
+  checked       Int
+  unchainedRows Int
+  rangeFrom     DateTime?
+  rangeTo       DateTime?
+  firstBreak    Json?
+  head          Json?
+  createdAt     DateTime  @default(now())
+
+  @@index([createdAt])
+  @@index([ok, createdAt])
+  @@map("audit_integrity_run")
+}
+
+model AuditIntegritySchedule {
+  id            String    @id @default("default")
+  enabled       Boolean   @default(false)
+  intervalHours Int       @default(24)
+  lastRunAt     DateTime?
+  nextRunAt     DateTime?
+  updatedById   String?
+  updatedAt     DateTime  @default(now()) @updatedAt
+
+  @@map("audit_integrity_schedule")
+}
+
+model AuditHealthSnapshot {
+  id            String    @id @default(uuid())
+  createdAt     DateTime  @default(now())
+  lastWriteAt   DateTime?
+  lagSeconds    Int?
+  writeFailures Int       @default(0)
+  estimatedRows Float?
+  sizeBytes     Float?
+  unchainedRows Int       @default(0)
+
+  @@index([createdAt])
+  @@map("audit_health_snapshot")
+}
+
+model AuditAlertTrigger {
+  id               String    @id @default(uuid())
+  alertId          String
+  firedAt          DateTime  @default(now())
+  matchCount       Int
+  windowStart      DateTime
+  windowEnd        DateTime
+  sampleIds        Json?
+  acknowledgedAt   DateTime?
+  acknowledgedById String?
+  acknowledgeNote  String?
+
+  alert AuditAlert @relation(fields: [alertId], references: [id], onDelete: Cascade)
+
+  @@index([alertId, firedAt])
+  @@index([acknowledgedAt, firedAt])
+  @@map("audit_alert_trigger")
+}
+
+model AuditSavedFilterShare {
+  id        String   @id @default(uuid())
+  filterId  String
+  userId    String
+  createdAt DateTime @default(now())
+
+  filter AuditSavedFilter @relation(fields: [filterId], references: [id], onDelete: Cascade)
+
+  @@unique([filterId, userId])
+  @@index([userId])
+  @@map("audit_saved_filter_share")
+}

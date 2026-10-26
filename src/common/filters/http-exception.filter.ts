@@ -15,6 +15,8 @@ export class GlobalExceptionFilter implements ExceptionFilter {
 
     let message = 'Internal server error';
 
+    let missingGates: string[] | undefined;
+
     if (exception instanceof HttpException) {
       status = exception.getStatus();
 
@@ -30,6 +32,12 @@ export class GlobalExceptionFilter implements ExceptionFilter {
         ).message;
 
         message = Array.isArray(msg) ? msg.join(', ') : msg || message;
+
+        const gates = (exceptionResponse as { missingGates?: unknown }).missingGates;
+
+        if (Array.isArray(gates)) {
+          missingGates = gates as string[];
+        }
       }
     } else if (exception instanceof Error) {
       message = exception.message;
@@ -40,6 +48,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       statusCode: status,
       message,
       error: HttpStatus[status],
+      ...(missingGates ? { missingGates } : {}),
       timestamp: new Date().toISOString(),
       path: request.url,
     });

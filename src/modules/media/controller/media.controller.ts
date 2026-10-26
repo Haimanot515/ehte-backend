@@ -1,77 +1,73 @@
-import { Body, Controller, Delete, Post, Query } from '@nestjs/common';
-
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  Body,
+  Controller,
+  Delete,
+  Post,
+  Query,
+  UploadedFile,
+  UseInterceptors,
+} from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { ApiBearerAuth, ApiBody, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
+import type { Express } from 'express';
 
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { RolesEnum } from 'src/common/enums/roles.enum';
 import { RequirePermissions } from 'src/common/decorators/require-permissions.decorator';
 import { PermissionsEnum } from 'src/common/enums/permissions.enum';
+import { MediaFolder } from 'src/common/enums/media-folder.enum';
 
 import { MediaService } from '../service/media.service';
 import { PresignedUploadDto } from '../dto/presigned-upload.dto';
 import { MediaKeyQueryDto } from '../dto/media-key-query.dto';
+import { UploadMediaDto } from '../dto/upload-media.dto';
+import { AuditEvent } from 'src/common/decorators/audit-event.decorator';
+import { AuditEventEnum } from 'src/common/enums/shared/audit-events.enum';
+import { AuditSeverity } from '@prisma/client';
 
-// ─────────────────────────────────────────────
-// Generic media module: presigned-upload + delete only.
-//
-// Deliberately does NOT expose a generic download endpoint — see
-// MediaService's header comment and VictimProfileService's
-// getMediaDownloadUrl / getPublicMediaDownloadUrl for why download
-// authorization must live next to the domain's own visibility
-// rules (child-profile photo suppression, publish-state gating,
-// etc.) rather than here.
-//
-// ASSUMPTION: PermissionsEnum.MEDIA_UPLOAD / MEDIA_DELETE are new
-// members that need to be added to PermissionsEnum, and wired into
-// whichever role→permission map already grants ADMIN/SUPER_ADMIN
-// their other permissions (the same file that currently withholds
-// SUPPORT_PAYMENT_MANAGE from plain ADMIN). Swap these for existing
-// enum values if you'd rather reuse something already defined.
-// ─────────────────────────────────────────────
+const MAX_UPLOAD_BYTES = 52_428_800;
 
 @ApiTags('Media')
 @Controller('media')
 export class MediaController {
   constructor(private readonly mediaService: MediaService) {}
 
-  // ─────────────────────────────────────────────
-  // POST /media/presigned-upload
-  //
-  // Open to any authenticated user (PRD §10/§27: reporters attach
-  // their own photo/video/audio evidence directly). Gated only by
-  // the global JwtAuthGuard — no role/permission check here.
-  // Uploading a file does not by itself grant access to any report,
-  // post, or profile; a key only becomes meaningful once it's
-  // referenced in a create/update call the caller is authorized to
-  // make (e.g. their own report), so opening this endpoint does not
-  // expand write access anywhere else.
-  // ─────────────────────────────────────────────
-
   @Post('presigned-upload')
   @ApiBearerAuth('access-token')
   @ApiOperation({
     summary: 'Get a presigned upload URL for a direct-to-storage upload',
   })
-  async createPresignedUpload(
-    @Body()
-    data: PresignedUploadDto,
-  ) {
+  @AuditEvent({ action: AuditEventEnum.MEDIA_PRESIGNED_UPLOAD_CREATED, entity: 'Media' })
+  async createPresignedUpload(@Body() data: PresignedUploadDto) {
     return this.mediaService.createPresignedUpload(data);
   }
 
-  // ─────────────────────────────────────────────
-  // DELETE /media?key=...
-  //
-  // Stays admin-only: deleting an object by key has no ownership
-  // check, so opening this to regular users would let anyone
-  // delete media they don't own if they can guess/see the key.
-  //
-  // key is a query param, not a route param — object keys contain
-  // slashes (e.g. victim-profiles/photos/<uuid>.jpg) and a plain
-  // Express/Nest route segment does not span multiple `/`-delimited
-  // segments, so `:key` would silently truncate at the first slash.
-  // ─────────────────────────────────────────────
+  @Post('upload')
+  @ApiBearerAuth('access-token')
+  @ApiOperation({
+    summary: 'Upload a file through the API (use this to test uploads from Swagger)',
+  })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['file', 'folder'],
+      properties: {
+        file: { type: 'string', format: 'binary' },
+        folder: { type: 'string', enum: Object.values(MediaFolder) },
+      },
+    },
+  })
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_UPLOAD_BYTES } }))
+  @AuditEvent({ action: AuditEventEnum.MEDIA_UPLOADED, entity: 'Media', entityId: { response: ['key', 'id', 'filepath', 'path'] } })
+  async uploadFile(
+    @UploadedFile() file: Express.Multer.File | undefined,
+    @Body() body: UploadMediaDto,
+  ) {
+    return this.mediaService.uploadFile(file, body.folder);
+  }
 
+  // Object keys contain slashes, so key is a query param and not a route param.
   @Delete()
   @Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN)
   @RequirePermissions(PermissionsEnum.MEDIA_DELETE)
@@ -79,10 +75,8 @@ export class MediaController {
   @ApiOperation({
     summary: 'Admin: delete an object from the media bucket',
   })
-  async deleteObject(
-    @Query()
-    query: MediaKeyQueryDto,
-  ) {
+  @AuditEvent({ action: AuditEventEnum.MEDIA_DELETED, entity: 'Media', entityId: { query: 'key' }, severity: AuditSeverity.WARNING })
+  async deleteObject(@Query() query: MediaKeyQueryDto) {
     return this.mediaService.deleteObject(query.key);
   }
 }

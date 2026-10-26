@@ -1,14 +1,13 @@
 import { Module } from '@nestjs/common';
 
+import { ClamavModule } from '../../infrastructure/clamav/clamav.module';
 import { MediaController } from './controller/media.controller';
 import { MediaService } from './service/media.service';
-
-// No MinioModule import needed here — confirmed @Global(), so
-// MinioService is already resolvable app-wide without importing
-// its module into every consumer.
+import { MediaScanWorker } from './service/media-scan.worker';
 
 @Module({
+  imports: [ClamavModule],
   controllers: [MediaController],
-  providers: [MediaService],
+  providers: [MediaService, MediaScanWorker],
 })
 export class MediaModule {}

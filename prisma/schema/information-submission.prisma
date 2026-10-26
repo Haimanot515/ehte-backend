@@ -1,7 +1,81 @@
+enum InformationStatus {
+  PENDING
+  UNDER_REVIEW
+  REVIEWED
+  REJECTED
+}
+
+enum InformationPriority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+
+enum InformationCredibility {
+  UNVERIFIED
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum InformationResolution {
+  DUPLICATE
+  ALREADY_KNOWN
+}
+
+enum InformationTimelineEventType {
+  QUESTION_ASKED
+  QUESTION_ANSWERED
+  MESSAGE
+  EVIDENCE_ADDED
+  APPEAL_FILED
+}
+
+enum InformationAppealStatus {
+  PENDING
+  UPHELD
+  OVERTURNED
+}
+
+enum InformationScanStatus {
+  PENDING
+  CLEAN
+  INFECTED
+  FAILED
+  SKIPPED
+}
+
+enum InformationRedactionMode {
+  BLUR_FACES
+  BLUR_REGION
+}
+
+enum InformationRedactionStatus {
+  NONE
+  REQUESTED
+  COMPLETED
+  FAILED
+}
+
+enum InformationIdentityAccessKind {
+  REVEAL
+  INFORMANT_LOOKUP
+}
+
+enum InformationExportJobStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+  EXPIRED
+}
+
 model InformationSubmission {
-  id              String @id @default(uuid())
-  userId          String
+  id              String            @id @default(uuid())
+  userId          String?
   missingPersonId String
+  channel         SubmissionChannel @default(APP)
 
   information String
   location    String?
@@ -13,9 +87,6 @@ model InformationSubmission {
   document String[]
   other    String[]
 
-  // NEW (item #13) — running total of attached media bytes, computed
-  // from validateMediaFilesExist()'s statObject() results so updates
-  // don't need to re-stat already-attached files just to know the total.
   mediaTotalBytes Int @default(0)
 
   status     InformationStatus @default(PENDING)
@@ -23,28 +94,237 @@ model InformationSubmission {
   updatedAt  DateTime          @updatedAt
   reviewNote String?
 
-  // NEW (item #5) — duplicate-submission protection. Scoped to the
-  // user, not global, same reasoning as Post: two different users
-  // retrying with the same client-generated key must not collide,
-  // and Postgres treats NULLs as distinct so rows with no key never
-  // conflict with each other.
   idempotencyKey String?
 
-  missingPerson MissingPerson @relation(fields: [missingPersonId], references: [id], onDelete: Cascade)
-  user          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  priority           InformationPriority    @default(NORMAL)
+  credibility        InformationCredibility @default(UNVERIFIED)
+  credibilityReason  String?
+  credibilitySetById String?
+  credibilitySetAt   DateTime?
+
+  resolution    InformationResolution?
+  duplicateOfId String?
+
+  assignedToId String?
+  assignedAt   DateTime?
+  assignedById String?
+
+  informantSeenStatus InformationStatus @default(PENDING)
+  informantSeenAt     DateTime?
+
+  legalHold       Boolean   @default(false)
+  legalHoldReason String?
+  legalHoldAt     DateTime?
+  legalHoldById   String?
+
+  deletedAt    DateTime?
+  deletedById  String?
+  deleteReason String?
+
+  anonymizedAt   DateTime?
+  anonymizedById String?
+
+  missingPerson MissingPerson           @relation(fields: [missingPersonId], references: [id], onDelete: Cascade)
+  user          User?                   @relation("InformationSubmissionOwner", fields: [userId], references: [id], onDelete: Cascade)
+  assignedTo    User?                   @relation("InformationSubmissionAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
+  duplicateOf   InformationSubmission?  @relation("InformationSubmissionDuplicate", fields: [duplicateOfId], references: [id], onDelete: SetNull)
+  duplicates    InformationSubmission[] @relation("InformationSubmissionDuplicate")
+
+  adminReads     InformationAdminRead[]
+  questions      InformationQuestion[]
+  timelineEvents InformationTimelineEvent[]
+  appeal         InformationAppeal?
+  escalations    InformationEscalation[]
+  attachments    InformationAttachment[]
+  revisions      InformationRevision[]
+  accessLogs     InformationAccessLog[]
+  identityAccess InformationIdentityAccess[]
 
   @@unique([userId, idempotencyKey])
   @@index([userId])
+  @@index([userId, status])
   @@index([missingPersonId])
+  @@index([missingPersonId, status])
   @@index([status])
-  // Supports findStalePending() (item #15).
   @@index([status, createdAt])
+  @@index([assignedToId, status])
+  @@index([priority])
+  @@index([deletedAt])
+  @@index([duplicateOfId])
   @@map("information_submission")
 }
 
-enum InformationStatus {
-  PENDING
-  UNDER_REVIEW
-  REVIEWED
-  REJECTED
+model InformationAdminRead {
+  submissionId String
+  adminId      String
+  readAt       DateTime @default(now())
+
+  submission InformationSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  admin      User                  @relation("InformationAdminReadAdmin", fields: [adminId], references: [id], onDelete: Cascade)
+
+  @@id([submissionId, adminId])
+  @@index([adminId])
+  @@map("information_admin_read")
+}
+
+model InformationQuestion {
+  id           String    @id @default(uuid())
+  submissionId String
+  askedById    String?
+  question     String
+  answer       String?
+  answeredAt   DateTime?
+  createdAt    DateTime  @default(now())
+
+  submission InformationSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  @@index([submissionId, answeredAt])
+  @@index([createdAt])
+  @@map("information_question")
+}
+
+model InformationTimelineEvent {
+  id           String                       @id @default(uuid())
+  submissionId String
+  type         InformationTimelineEventType
+  actorId      String?
+  message      String?
+  data         Json?
+  createdAt    DateTime                     @default(now())
+
+  submission InformationSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  @@index([submissionId, createdAt])
+  @@map("information_timeline_event")
+}
+
+model InformationAppeal {
+  id           String                  @id @default(uuid())
+  submissionId String                  @unique
+  userId       String?
+  reason       String
+  status       InformationAppealStatus @default(PENDING)
+  decidedById  String?
+  decidedAt    DateTime?
+  decisionNote String?
+  createdAt    DateTime                @default(now())
+
+  submission InformationSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  @@index([status, createdAt])
+  @@map("information_appeal")
+}
+
+model InformationEscalation {
+  id            String              @id @default(uuid())
+  submissionId  String
+  escalatedById String
+  priority      InformationPriority
+  note          String
+  createdAt     DateTime            @default(now())
+
+  submission InformationSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  @@index([submissionId, createdAt])
+  @@index([createdAt])
+  @@map("information_escalation")
+}
+
+model InformationAttachment {
+  id           String                @id @default(uuid())
+  submissionId String
+  key          String
+  field        String
+  size         Int                   @default(0)
+  contentType  String?
+  etag         String?
+  sha256       String?
+  scanStatus   InformationScanStatus @default(PENDING)
+  scannedAt    DateTime?
+
+  redactionStatus InformationRedactionStatus @default(NONE)
+  redactionMode   InformationRedactionMode?
+  redactionReason String?
+  redactionById   String?
+  redactionAt     DateTime?
+  redactedKey     String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  submission InformationSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  @@unique([submissionId, key])
+  @@index([scanStatus])
+  @@index([redactionStatus])
+  @@map("information_attachment")
+}
+
+model InformationRevision {
+  id           String   @id @default(uuid())
+  submissionId String
+  actorId      String?
+  field        String
+  oldValue     Json?
+  newValue     Json?
+  reason       String?
+  createdAt    DateTime @default(now())
+
+  submission InformationSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  @@index([submissionId, createdAt])
+  @@map("information_revision")
+}
+
+model InformationAccessLog {
+  id           String   @id @default(uuid())
+  submissionId String
+  adminId      String
+  action       String
+  createdAt    DateTime @default(now())
+
+  submission InformationSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  @@index([submissionId, createdAt])
+  @@index([adminId, createdAt])
+  @@map("information_access_log")
+}
+
+model InformationIdentityAccess {
+  id           String                        @id @default(uuid())
+  submissionId String?
+  informantId  String?
+  adminId      String
+  kind         InformationIdentityAccessKind
+  reason       String?
+  createdAt    DateTime                      @default(now())
+
+  submission InformationSubmission? @relation(fields: [submissionId], references: [id], onDelete: SetNull)
+
+  @@index([submissionId, createdAt])
+  @@index([informantId, createdAt])
+  @@index([adminId, createdAt])
+  @@map("information_identity_access")
+}
+
+model InformationExportJob {
+  id            String                     @id @default(uuid())
+  requestedById String
+  filters       Json?
+  status        InformationExportJobStatus @default(QUEUED)
+  storageKey    String?
+  rowCount      Int?
+  truncated     Boolean                    @default(false)
+  error         String?
+  startedAt     DateTime?
+  completedAt   DateTime?
+  expiresAt     DateTime?
+  createdAt     DateTime                   @default(now())
+
+  requestedBy User @relation("InformationExportJobRequester", fields: [requestedById], references: [id], onDelete: Cascade)
+
+  @@index([requestedById, createdAt])
+  @@index([status])
+  @@index([expiresAt])
+  @@map("information_export_job")
 }

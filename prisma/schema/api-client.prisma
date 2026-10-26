@@ -1,0 +1,46 @@
+enum ApiClientStatus {
+  ACTIVE
+  REVOKED
+}
+
+model ApiClient {
+  id                      String          @id @default(uuid())
+  name                    String
+  clientId                String          @unique
+  secretHash              String
+  previousSecretHash      String?
+  previousSecretExpiresAt DateTime?
+  secretRotatedAt         DateTime?
+  scopes                  String[]        @default([])
+  ipAllowlist             String[]        @default([])
+  rateLimitPerMinute      Int?
+  status                  ApiClientStatus @default(ACTIVE)
+  lastUsedAt              DateTime?
+  revokedAt               DateTime?
+  revokedById             String?
+  createdById             String
+  createdAt               DateTime        @default(now())
+  updatedAt               DateTime        @updatedAt
+
+  calls ApiClientCall[]
+
+  @@index([status])
+  @@map("api_client")
+}
+
+model ApiClientCall {
+  id         String   @id @default(uuid())
+  clientId   String
+  method     String
+  route      String
+  statusCode Int
+  durationMs Int?
+  ipAddress  String?
+  createdAt  DateTime @default(now())
+
+  client ApiClient @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  @@index([clientId, createdAt])
+  @@index([createdAt])
+  @@map("api_client_call")
+}

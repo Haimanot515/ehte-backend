@@ -1,16 +1,9 @@
-// ─────────────────────────────────────────────
-// MissingPerson model — updated for the hardening checklist
-// (mirrors the same additions already applied to Report/Post).
-//
-// Paste this in place of the existing `model MissingPerson { ... }`
-// block in your schema.prisma, then run:
-//   npx prisma migrate dev --name harden_missing_person
-// ─────────────────────────────────────────────
-
 model MissingPerson {
   id            String              @id @default(uuid())
-  userId        String
+  userId        String?
+  contactPhone  String?
   personType    MissingPersonType
+  channel       SubmissionChannel   @default(APP)
   name          String?
   description   String
   dateLastSeen  DateTime
@@ -27,64 +20,107 @@ model MissingPerson {
 
   childSafetyConfirmed Boolean @default(false)
   reviewNote           String?
-  rewardAmount         Int?
-  rewardApproved       Boolean @default(false)
-  rewardDetails        String?
-  rewardOffered        Boolean @default(false)
 
-  // NEW — duplicate-submission protection (item #5), mirrors
-  // Report.idempotencyKey. Scoped to the user, not global: two
-  // different users retrying with the same client-generated key
-  // must not collide. Postgres treats NULLs as distinct, so rows
-  // with a null idempotencyKey don't conflict with each other.
+  timeWeight        Int?
+  evidenceWeight    Int?
+  credibilityWeight Int?
+
   idempotencyKey String?
 
-  // NEW — running total of attached-media bytes (item #13), mirrors
-  // Report.mediaTotalBytes / Post.mediaTotalBytes. Lets update()
-  // recompute the total from a delta (added/removed bytes) instead
-  // of re-statting every already-attached file on every write.
-  mediaTotalBytes Int @default(0)
-
-  // NEW — timestamp set when the owning account is suspended (item
-  // #6), so admin tooling can filter/flag these. Deliberately does
-  // NOT change `status` or pull the case out of the review queue —
-  // same reasoning as Report.ownerSuspendedAt: a missing-person case
-  // has no safe "hidden" intermediate state, and is if anything MORE
-  // safety-critical than a report.
+  mediaTotalBytes  Int       @default(0)
   ownerSuspendedAt DateTime?
 
-  // NEW — self-serve admin claim (item #17), mirrors Post's
-  // claimedByUserId/claimedAt. MissingPerson has no dedicated
-  // "assignee" relation (unlike Report's SUPER_ADMIN-mediated
-  // assign/unassign), so this follows Post's lighter self-serve
-  // model instead.
   claimedByUserId String?
   claimedAt       DateTime?
 
-  // NEW — child-safety dual control (item #16). Only meaningful
-  // when personType = CHILD. Mirrors Post's
-  // childSafetyFirstConfirmedByUserId/At exactly: the first admin's
-  // approval-with-confirmation is recorded here, and a second,
-  // distinct admin must confirm again before the case can actually
-  // move to APPROVED.
   childSafetyFirstConfirmedByUserId String?
   childSafetyFirstConfirmedAt       DateTime?
 
-  informationSubmissions InformationSubmission[]
-  user                   User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  closureReason String?
+  closedAt      DateTime?
+
+  gender   String?
+  ageGroup String?
+
+  assignedToUserId String?
+  assignedById     String?
+  assignedAt       DateTime?
+
+  expiresAt     DateTime?
+  renewalCount  Int       @default(0)
+  lastRenewedAt DateTime?
+
+  foundReportedAt       DateTime?
+  foundReportDetails    String?
+  foundReportDate       DateTime?
+  foundReportLocation   String?
+  foundReportResolvedAt DateTime?
+  foundReportConfirmed  Boolean?
+
+  takedownReason         String?
+  takedownAt             DateTime?
+  takedownById           String?
+  takedownPreviousStatus MissingPersonStatus?
+
+  deletedAt             DateTime?
+  deletedById           String?
+  deleteReason          String?
+  deletedPreviousStatus MissingPersonStatus?
+
+  legalHold       Boolean   @default(false)
+  legalHoldReason String?
+  legalHoldAt     DateTime?
+  legalHoldById   String?
+
+  childFlagProposedValue  Boolean?
+  childFlagProposedById   String?
+  childFlagProposedAt     DateTime?
+  childFlagProposedReason String?
+
+  mergedIntoId String?
+  mergedAt     DateTime?
+  mergedById   String?
+
+  copiedFromId String?
+
+  ownerLastSeenAt DateTime?
+
+  informationSubmissions          InformationSubmission[]
+  user                            User?                   @relation("MissingPersonOwner", fields: [userId], references: [id], onDelete: Cascade)
+  claimedByUser                   User?                   @relation("MissingPersonClaimedBy", fields: [claimedByUserId], references: [id], onDelete: SetNull)
+  childSafetyFirstConfirmedByUser User?                   @relation("MissingPersonChildSafetyFirst", fields: [childSafetyFirstConfirmedByUserId], references: [id], onDelete: SetNull)
+
+  assignedToUser   User?           @relation("MissingPersonAssignee", fields: [assignedToUserId], references: [id], onDelete: SetNull)
+  mergedInto       MissingPerson?  @relation("MissingPersonMerge", fields: [mergedIntoId], references: [id], onDelete: SetNull)
+  mergedDuplicates MissingPerson[] @relation("MissingPersonMerge")
+
+  readStates MissingPersonReadState[]
+  flags      MissingPersonFlag[]
+  appeals    MissingPersonAppeal[]
+  updates    MissingPersonUpdate[]
+  messages   MissingPersonMessage[]
+  revisions  MissingPersonRevision[]
+  redactions MissingPersonRedaction[]
+  views      MissingPersonView[]
+
+  payments Payment[]
 
   @@unique([userId, idempotencyKey])
   @@index([userId])
   @@index([status])
   @@index([personType])
-  // NEW — supports findStalePending()'s cutoff query (item #15),
-  // same pattern as Report/Post's [status, createdAt] index.
   @@index([status, createdAt])
+  @@index([assignedToUserId])
+  @@index([claimedByUserId])
+  @@index([deletedAt])
+  @@index([takedownAt])
+  @@index([mergedIntoId])
+  @@index([foundReportedAt])
+  @@index([expiresAt])
+  @@index([lastKnownArea])
   @@map("missing_person")
 }
 
-// MissingPersonType / MissingPersonStatus enums are unchanged —
-// no new enum values were needed for this pass.
 enum MissingPersonType {
   WOMAN
   CHILD
@@ -97,4 +133,198 @@ enum MissingPersonStatus {
   REJECTED
   FOUND
   MORE_INFORMATION_REQUESTED
+  EXPIRED
+  CANCELLED
+}
+
+model MissingPersonReadState {
+  missingPersonId String
+  adminId         String
+  readAt          DateTime @default(now())
+
+  missingPerson MissingPerson @relation(fields: [missingPersonId], references: [id], onDelete: Cascade)
+  admin         User          @relation("MissingPersonReadStateAdmin", fields: [adminId], references: [id], onDelete: Cascade)
+
+  @@id([missingPersonId, adminId])
+  @@index([adminId])
+  @@map("missing_person_read_state")
+}
+
+enum MissingPersonFlagState {
+  OPEN
+  RESOLVED
+}
+
+model MissingPersonFlag {
+  id              String                 @id @default(uuid())
+  missingPersonId String
+  reporterId      String
+  reason          String
+  details         String?
+  status          MissingPersonFlagState @default(OPEN)
+  resolvedAction  String?
+  resolvedById    String?
+  resolvedAt      DateTime?
+  resolutionNote  String?
+  createdAt       DateTime               @default(now())
+
+  missingPerson MissingPerson @relation(fields: [missingPersonId], references: [id], onDelete: Cascade)
+  reporter      User          @relation("MissingPersonFlagReporter", fields: [reporterId], references: [id], onDelete: Cascade)
+
+  @@unique([missingPersonId, reporterId])
+  @@index([status, createdAt])
+  @@index([missingPersonId, status])
+  @@map("missing_person_flag")
+}
+
+enum MissingPersonAppealState {
+  PENDING
+  ACCEPTED
+  DECLINED
+}
+
+model MissingPersonAppeal {
+  id              String                   @id @default(uuid())
+  missingPersonId String
+  authorId        String
+  reason          String
+  status          MissingPersonAppealState @default(PENDING)
+  decidedById     String?
+  decidedAt       DateTime?
+  decisionNote    String?
+  createdAt       DateTime                 @default(now())
+
+  missingPerson MissingPerson @relation(fields: [missingPersonId], references: [id], onDelete: Cascade)
+  author        User          @relation("MissingPersonAppealAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@index([status, createdAt])
+  @@index([missingPersonId])
+  @@index([authorId, createdAt])
+  @@map("missing_person_appeal")
+}
+
+enum MissingPersonUpdateAuthorType {
+  OWNER
+  STAFF
+}
+
+model MissingPersonUpdate {
+  id              String                        @id @default(uuid())
+  missingPersonId String
+  authorId        String?
+  authorType      MissingPersonUpdateAuthorType
+  message         String
+  photo           String[]
+  createdAt       DateTime                      @default(now())
+
+  missingPerson MissingPerson @relation(fields: [missingPersonId], references: [id], onDelete: Cascade)
+  author        User?         @relation("MissingPersonUpdateAuthor", fields: [authorId], references: [id], onDelete: SetNull)
+
+  @@index([missingPersonId, createdAt])
+  @@index([authorId])
+  @@map("missing_person_update")
+}
+
+enum MissingPersonMessageKind {
+  MESSAGE
+  WARNING
+}
+
+model MissingPersonMessage {
+  id              String                   @id @default(uuid())
+  missingPersonId String
+  authorId        String?
+  kind            MissingPersonMessageKind @default(MESSAGE)
+  message         String
+  createdAt       DateTime                 @default(now())
+
+  missingPerson MissingPerson @relation(fields: [missingPersonId], references: [id], onDelete: Cascade)
+  author        User?         @relation("MissingPersonMessageAuthor", fields: [authorId], references: [id], onDelete: SetNull)
+
+  @@index([missingPersonId, createdAt])
+  @@map("missing_person_message")
+}
+
+model MissingPersonRevision {
+  id              String   @id @default(uuid())
+  missingPersonId String
+  field           String
+  oldValue        Json?
+  newValue        Json?
+  changedById     String?
+  reason          String?
+  createdAt       DateTime @default(now())
+
+  missingPerson MissingPerson @relation(fields: [missingPersonId], references: [id], onDelete: Cascade)
+  changedBy     User?         @relation("MissingPersonRevisionAuthor", fields: [changedById], references: [id], onDelete: SetNull)
+
+  @@index([missingPersonId, createdAt])
+  @@map("missing_person_revision")
+}
+
+enum MissingPersonRedactionStatus {
+  PENDING
+  COMPLETED
+  FAILED
+}
+
+model MissingPersonRedaction {
+  id              String                       @id @default(uuid())
+  missingPersonId String
+  mediaKey        String
+  mode            String
+  reason          String?
+  status          MissingPersonRedactionStatus @default(PENDING)
+  requestedById   String?
+  completedAt     DateTime?
+  createdAt       DateTime                     @default(now())
+
+  missingPerson MissingPerson @relation(fields: [missingPersonId], references: [id], onDelete: Cascade)
+  requestedBy   User?         @relation("MissingPersonRedactionRequester", fields: [requestedById], references: [id], onDelete: SetNull)
+
+  @@index([missingPersonId, mediaKey])
+  @@index([status, createdAt])
+  @@map("missing_person_redaction")
+}
+
+model MissingPersonView {
+  id              String   @id @default(uuid())
+  missingPersonId String
+  userId          String
+  viewedOn        DateTime @db.Date
+  createdAt       DateTime @default(now())
+
+  missingPerson MissingPerson @relation(fields: [missingPersonId], references: [id], onDelete: Cascade)
+  user          User          @relation("MissingPersonViewer", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([missingPersonId, userId, viewedOn])
+  @@index([missingPersonId])
+  @@map("missing_person_view")
+}
+
+enum MissingPersonExportStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+model MissingPersonExportJob {
+  id            String                    @id @default(uuid())
+  requestedById String
+  filter        Json?
+  status        MissingPersonExportStatus @default(PENDING)
+  rowCount      Int                       @default(0)
+  truncated     Boolean                   @default(false)
+  content       String?                   @db.Text
+  error         String?
+  createdAt     DateTime                  @default(now())
+  completedAt   DateTime?
+  expiresAt     DateTime
+
+  requestedBy User @relation("MissingPersonExportRequester", fields: [requestedById], references: [id], onDelete: Cascade)
+
+  @@index([requestedById, createdAt])
+  @@index([expiresAt])
+  @@map("missing_person_export_job")
 }

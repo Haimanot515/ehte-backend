@@ -10,10 +10,6 @@ type TokenPair = {
   refreshToken: string;
 };
 
-// Extracted from AuthService: JWT issuing + opaque-token (refresh/registration/
-// promotion/email-change) hashing, used across login, refresh, registration,
-// promotion, and email-change flows.
-
 @Injectable()
 export class TokenUtil {
   constructor(
@@ -32,6 +28,9 @@ export class TokenUtil {
     permissions: string[],
     // Optional tx client so refresh() creates the session inside the same transaction.
     tx: Pick<typeof this.prisma, 'session'> = this.prisma,
+    // Optional and backward compatible: callers that pass the request's IP and User-Agent get a
+    // session list with device details (AR-24, AR-25). Callers that don't still work as before.
+    device?: { ipAddress?: string | null; userAgent?: string | null },
   ): Promise<TokenPair> {
     const phone = identity.phone ?? null;
     const email = identity.email ?? null;
@@ -43,13 +42,6 @@ export class TokenUtil {
 
     const expiresIn = expiresInStr as any;
 
-    // Generated up front so the same id can be embedded in both tokens (as
-    // `sid`) AND used as the Session row's own primary key below — one
-    // create, no separate update to attach it after the fact. Assumes
-    // Session.id is a plain string PK (e.g. `id String @id @default(uuid())`);
-    // @default() only applies when the field is omitted, so passing it
-    // explicitly here is safe. Confirm against schema.prisma if Session.id
-    // isn't a string uuid.
     const sessionId = randomUUID();
 
     const accessToken = this.jwtService.sign(
@@ -92,10 +84,46 @@ export class TokenUtil {
         // Store an HMAC hash, not the raw token, so a DB read can't be replayed.
         refreshToken: this.hashOpaqueToken(refreshToken, 'refresh'),
         expiresAt: new Date(Date.now() + this.parseDurationToMs(refreshExpiresIn)),
+        lastActiveAt: new Date(),
+        ipAddress: device?.ipAddress ?? null,
+        userAgent: device?.userAgent ?? null,
+        deviceLabel: this.describeDevice(device?.userAgent),
       },
     });
 
     return { accessToken, refreshToken };
+  }
+
+  // A short, human label such as "Chrome on Windows" for the session list. Not a security check.
+  private describeDevice(userAgent?: string | null): string | null {
+    if (!userAgent) return null;
+
+    const browser = /Edg\//.test(userAgent)
+      ? 'Edge'
+      : /OPR\/|Opera/.test(userAgent)
+        ? 'Opera'
+        : /Chrome\//.test(userAgent)
+          ? 'Chrome'
+          : /Firefox\//.test(userAgent)
+            ? 'Firefox'
+            : /Safari\//.test(userAgent)
+              ? 'Safari'
+              : null;
+
+    const os = /Windows/.test(userAgent)
+      ? 'Windows'
+      : /Android/.test(userAgent)
+        ? 'Android'
+        : /iPhone|iPad|iOS/.test(userAgent)
+          ? 'iOS'
+          : /Mac OS X|Macintosh/.test(userAgent)
+            ? 'macOS'
+            : /Linux/.test(userAgent)
+              ? 'Linux'
+              : null;
+
+    if (browser && os) return `${browser} on ${os}`;
+    return browser ?? os ?? null;
   }
 
   // Deterministic HMAC-SHA256 for lookup by equality (bcrypt can't be queried directly).

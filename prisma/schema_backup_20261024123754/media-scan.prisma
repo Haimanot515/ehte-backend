@@ -1,0 +1,15 @@
+model MediaScan {
+  id        String    @id @default(uuid())
+  objectKey String    @unique
+  status    String    @default("PENDING")
+  signature String?
+  attempts  Int       @default(0)
+  lockedAt  DateTime?
+  scannedAt DateTime?
+  expiresAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @default(now()) @updatedAt
+
+  @@index([status, updatedAt])
+  @@map("media_scan")
+}

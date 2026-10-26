@@ -1,0 +1,307 @@
+const nodeEnv = process.env.NODE_ENV || 'development';
+
+const redisKeyPrefix =
+  process.env.REDIS_KEY_PREFIX ?? (nodeEnv === 'production' ? 'ehte:' : `ehte:${nodeEnv}:`);
+
+export default () => ({
+  app: {
+    name: process.env.APP_NAME || 'Ehte',
+    env: nodeEnv,
+    port: Number(process.env.PORT) || 3000,
+
+    // Public URL of this API deployment (Swagger, EmailTemplateService links).
+    // Falls back to localhost when APP_URL is unset.
+    url: process.env.APP_URL || `http://localhost:${Number(process.env.PORT) || 3000}`,
+
+    // Public URL of the admin web client, used for invite and promotion links.
+    // Falls back to APP_URL, then localhost.
+    adminUrl:
+      process.env.ADMIN_APP_URL ||
+      process.env.APP_URL ||
+      `http://localhost:${Number(process.env.PORT) || 3000}`,
+
+    emailLogoUrl: process.env.EMAIL_LOGO_URL || undefined,
+
+    // Public web origin used when building share links (VictimProfilePublicService.getShareInfo).
+    // Falls back to WEB_BASE_URL, then FRONTEND_URL.
+    publicUrl: process.env.WEB_BASE_URL || process.env.FRONTEND_URL || undefined,
+
+    // Number of reverse-proxy hops Express should trust (main.ts 'trust proxy').
+    // 0 = trust none.
+    trustProxyHops: parseInt(process.env.TRUST_PROXY_HOPS ?? '0', 10),
+
+    // Enables dev-only OTP console logging. MUST be false in production.
+    debug: process.env.APP_DEBUG === 'true',
+  },
+
+  turnstile: {
+    // Cloudflare Turnstile captcha (TurnstileGuard). Off unless TURNSTILE_ENABLED=true.
+    enabled: process.env.TURNSTILE_ENABLED === 'true',
+    secretKey: process.env.TURNSTILE_SECRET_KEY || undefined,
+  },
+
+  geo: {
+    // Paths to MaxMind GeoLite2-City.mmdb and GeoLite2-ASN.mmdb. Leave empty to disable the lookup.
+    cityDbPath: process.env.GEOIP_CITY_DB_PATH || undefined,
+    asnDbPath: process.env.GEOIP_ASN_DB_PATH || undefined,
+    // Read x-geo-country, x-geo-city and x-geo-region set by nginx. Only enable if nginx overwrites them.
+    trustHeaders: process.env.GEO_TRUST_HEADERS === 'true',
+  },
+
+  sms: {
+    // Reserved: sms-notification.provider.ts still uses a hardcoded 300.
+    maxLength: parseInt(process.env.SMS_MAX_LENGTH ?? '300', 10),
+
+    afroMessage: {
+      apiUrl: process.env.AFROMESSAGE_URL,
+      apiKey: process.env.AFROMESSAGE_TOKEN,
+      senderName: process.env.AFROMESSAGE_SENDER_NAME || 'Ehte',
+      identifierId: process.env.AFROMESSAGE_IDENTIFIER_ID,
+    },
+
+    // SendET provider config, read by SendetService. Coexists with afroMessage
+    // until cutover; sendSms() still throws until the API contract is confirmed.
+    sendet: {
+      apiUrl: process.env.SENDET_URL,
+      token: process.env.SENDET_TOKEN,
+      senderName: process.env.SENDET_SENDER_NAME || 'PITRON TECH',
+      timeoutMs: parseInt(process.env.SENDET_TIMEOUT_MS ?? '10000', 10),
+    },
+  },
+
+  firebase: {
+    projectId: process.env.FIREBASE_PROJECT_ID,
+    clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+    privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+  },
+
+  database: {
+    url: process.env.DATABASE_URL,
+  },
+
+  jwt: {
+    secret: process.env.JWT_SECRET,
+
+    expiresIn: process.env.JWT_EXPIRES_IN || '15m',
+
+    // Without this mapping, refresh lookups silently fell back to jwt.secret.
+    refreshSecret: process.env.JWT_REFRESH_SECRET,
+
+    refreshExpiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '7d',
+
+    // HMAC key for registration / promotion / email-change opaque tokens
+    // (TokenUtil.hashOpaqueToken). Falls back to refreshSecret, then secret, if unset.
+    registrationSecret: process.env.JWT_REGISTRATION_SECRET,
+  },
+
+  // Self-service account reactivation (AuthService). Off by default.
+  auth: {
+    selfReactivationEnabled: process.env.SELF_REACTIVATION_ENABLED === 'true',
+  },
+
+  twoFactor: {
+    // Issuer label shown in authenticator apps.
+    issuer: process.env.TWO_FACTOR_ISSUER || 'Ehte',
+
+    // Allow SMS as a second factor in addition to TOTP.
+    smsEnabled: process.env.TWO_FACTOR_SMS_ENABLED === 'true',
+  },
+
+  google: {
+    clientId: process.env.GOOGLE_CLIENT_ID,
+  },
+
+  facebook: {
+    appId: process.env.FACEBOOK_APP_ID,
+    appSecret: process.env.FACEBOOK_APP_SECRET,
+  },
+
+  apple: {
+    // Services ID (web/Android) or app bundle ID (native iOS) — whichever
+    // audience your client's Sign in with Apple flow actually uses.
+    clientId: process.env.APPLE_CLIENT_ID,
+  },
+
+  cors: {
+    origin: process.env.CORS_ORIGIN || '*',
+    credentials: process.env.CORS_CREDENTIALS === 'true',
+  },
+
+  // Swagger is off by default; enable with SWAGGER_ENABLED=true.
+  swagger: {
+    enabled: process.env.SWAGGER_ENABLED === 'true',
+  },
+
+  rateLimit: {
+    ttl: parseInt(process.env.RATE_LIMIT_TTL ?? '60', 10),
+    limit: parseInt(process.env.RATE_LIMIT_LIMIT ?? '100', 10),
+  },
+
+  otp: {
+    expiresInMinutes: parseInt(process.env.OTP_EXPIRES_IN_MINUTES ?? '10', 10),
+
+    // Minimum gap between OTP resends, enforced in AuthService.issueAndSendOtp().
+    resendCooldownSeconds: parseInt(process.env.OTP_RESEND_COOLDOWN_SECONDS ?? '60', 10),
+
+    // Max failed verify attempts before lockout, enforced in AuthService
+    // (verifySignupOtp, resetPassword, changePasswordVerify).
+    maxAttempts: parseInt(process.env.OTP_MAX_ATTEMPTS ?? '5', 10),
+  },
+
+  minio: {
+    // Production: the S3-compatible provider endpoint. Local: minio.
+    endpoint: process.env.MINIO_ENDPOINT || 'localhost',
+
+    // Production: 443. Local: 9000.
+    port: Number(process.env.MINIO_PORT || 9000),
+
+    // Browser-facing origin used to sign presigned URLs, e.g. https://minio.example.com.
+    // Needed when MINIO_ENDPOINT is an internal docker hostname (shared-minio).
+    publicUrl: process.env.MINIO_PUBLIC_URL || undefined,
+
+    accessKey: process.env.MINIO_ACCESS_KEY,
+
+    secretKey: process.env.MINIO_SECRET_KEY,
+
+    // Default matches the real bucket name, 'ehte-media'.
+    bucketName: process.env.MINIO_BUCKET_NAME || 'ehte-media',
+
+    // Production: true (HTTPS). Local: false.
+    useSSL: process.env.MINIO_USE_SSL === 'true',
+
+    // Some providers need an explicit region (e.g. 'auto' for Cloudflare R2).
+    region: process.env.MINIO_REGION || 'us-east-1',
+
+    // Presigned URL lifetime; short so a leaked URL stops working quickly.
+    presignDurationSeconds: parseInt(process.env.DURATION_OF_PRE_SIGNED_DOCUMENT ?? '600', 10),
+  },
+
+  // SMTP settings, read by EmailService.
+  email: {
+    host: process.env.SMTP_HOST || '',
+    port: Number(process.env.SMTP_PORT || 587),
+
+    secure: String(process.env.SMTP_SECURE || 'false').toLowerCase() === 'true',
+
+    user: process.env.SMTP_USER || '',
+    password: process.env.SMTP_PASSWORD || '',
+
+    from: process.env.SMTP_FROM || process.env.SMTP_USER || 'no-reply@ehte.org',
+
+    fromName: process.env.SMTP_FROM_NAME || 'Ehte',
+  },
+
+  // Mirrors the REDIS_* vars RedisService reads. REDIS_URL wins over host/port.
+  redis: {
+    url: process.env.REDIS_URL,
+    host: process.env.REDIS_HOST || 'localhost',
+    port: parseInt(process.env.REDIS_PORT ?? '6379', 10),
+    password: process.env.REDIS_PASSWORD,
+    db: parseInt(process.env.REDIS_DB ?? '0', 10),
+
+    // TLS is selected by the rediss:// scheme in REDIS_URL (ioredis enables it
+    // automatically). Host/port mode has no TLS support in RedisService.
+    tls: (process.env.REDIS_URL ?? '').startsWith('rediss://'),
+
+    // Production refuses to boot without TLS + password unless this is true
+    // (see app.module.ts). Only for Redis on a trusted private network.
+    allowInsecure: process.env.REDIS_ALLOW_INSECURE === 'true',
+
+    securityUrl: process.env.REDIS_SECURITY_URL,
+
+    keyPrefix: redisKeyPrefix,
+  },
+
+  security: {
+    // Login lockout, enforced in AuthService for login() and adminLogin().
+    maxLoginAttempts: parseInt(process.env.MAX_LOGIN_ATTEMPTS ?? '5', 10),
+
+    lockoutDurationMinutes: parseInt(process.env.LOCKOUT_DURATION_MINUTES ?? '15', 10),
+
+    // Password hashing cost. OTP hashing uses its own, higher-cost setting below.
+    bcryptSaltRounds: parseInt(process.env.BCRYPT_SALT_ROUNDS ?? '10', 10),
+
+    // OTP hashing cost, used only in AuthService.signup() when hashing the OTP.
+    bcryptOtpSaltRounds: parseInt(process.env.BCRYPT_OTP_SALT_ROUNDS ?? '12', 10),
+
+    // 64 hex chars (32 bytes), e.g. `openssl rand -hex 32`. Encrypts stored 2FA secrets;
+    // AuthService uses getOrThrow, so 2FA enrolment fails without it.
+    twoFactorEncryptionKey: process.env.TWO_FACTOR_ENCRYPTION_KEY,
+
+    // Password length rules (no composition rules). Users 8+, admins 12+.
+    passwordMinLength: parseInt(process.env.PASSWORD_MIN_LENGTH ?? '8', 10),
+    adminPasswordMinLength: parseInt(process.env.ADMIN_PASSWORD_MIN_LENGTH ?? '12', 10),
+
+    // Max failed re-authentication attempts (ReauthService).
+    maxReauthAttempts: parseInt(process.env.MAX_REAUTH_ATTEMPTS ?? '5', 10),
+  },
+
+  // Fallbacks kept in sync with the Joi defaults in app.module.ts.
+  media: {
+    maxFileSize: parseInt(process.env.MEDIA_MAX_FILE_SIZE ?? '52428800', 10),
+
+    allowedMimeTypes:
+      process.env.MEDIA_ALLOWED_MIME_TYPES ||
+      'image/jpeg,image/png,image/webp,video/mp4,video/quicktime,audio/mpeg,audio/wav,audio/mp4,application/pdf',
+  },
+
+  // content.* is not namespaced: services read CONTENT_*, POST_*, REPORT_*,
+  // MISSING_PERSON_* and PROFILE_* env vars directly (declared in app.module.ts).
+
+  support: {
+    currency: process.env.SUPPORT_CURRENCY || 'ETB',
+
+    enabled: process.env.SUPPORT_ENABLED !== 'false',
+
+  },
+
+  missingPersons: {
+    enabled: process.env.MISSING_PERSONS_ENABLED !== 'false',
+  },
+
+  victimSupport: {
+    enabled: process.env.VICTIM_SUPPORT_ENABLED !== 'false',
+  },
+
+  payments: {
+    enabled: process.env.PAYMENTS_ENABLED === 'true',
+    returnUrl: process.env.PAYMENTS_RETURN_URL || '',
+    minSupportEtb: process.env.PAYMENTS_MIN_SUPPORT_ETB || '10',
+
+    duplicateWindowMinutes: parseInt(process.env.PAYMENT_DUPLICATE_WINDOW_MINUTES ?? '30', 10),
+
+    // Age past which a still-PENDING payment is considered stale by
+    // PaymentService.reconcileStale().
+    staleAfterMinutes: parseInt(process.env.PAYMENT_STALE_AFTER_MINUTES ?? '15', 10),
+
+    // Age past which a stale payment is treated as expired (also
+    // reconcileStale()).
+    expiryHours: parseInt(process.env.PAYMENT_EXPIRY_HOURS ?? '24', 10),
+
+    repair: {
+      minAgeMinutes: parseInt(process.env.PAYMENT_REPAIR_MIN_AGE_MINUTES ?? '2', 10),
+      maxAgeDays: parseInt(process.env.PAYMENT_REPAIR_MAX_AGE_DAYS ?? '7', 10),
+    },
+
+    reconcileIntervalMinutes: parseInt(process.env.PAYMENT_RECONCILE_INTERVAL_MINUTES ?? '10', 10),
+  },
+
+  disbursement: {
+    processingTimeoutMinutes: parseInt(
+      process.env.DISBURSEMENT_PROCESSING_TIMEOUT_MINUTES ?? '60',
+      10,
+    ),
+  },
+
+  chapa: {
+    secretKey: process.env.CHAPA_SECRET_KEY,
+    webhookSecret: process.env.CHAPA_WEBHOOK_SECRET,
+    baseUrl: process.env.CHAPA_BASE_URL || 'https://api.chapa.co/v1',
+    fallbackEmail: process.env.CHAPA_FALLBACK_EMAIL,
+
+    // Request timeout and checkout field length caps, read by ChapaService.
+    timeoutMs: parseInt(process.env.CHAPA_TIMEOUT_MS ?? '15000', 10),
+    titleMaxLength: parseInt(process.env.CHAPA_TITLE_MAX_LENGTH ?? '16', 10),
+    descriptionMaxLength: parseInt(process.env.CHAPA_DESCRIPTION_MAX_LENGTH ?? '50', 10),
+  },
+});

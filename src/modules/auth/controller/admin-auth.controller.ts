@@ -1,6 +1,6 @@
-import { Body, Controller, Post } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Post, Query, Req } from '@nestjs/common';
 
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiParam, ApiTags } from '@nestjs/swagger';
 
 import { Throttle } from '@nestjs/throttler';
 
@@ -20,14 +20,24 @@ import {
   PromoteUserDto,
   PromoteUserResendDto,
   PromoteVerifyDto,
+  PromoteCancelDto,
+  AdminChangeEmailResendDto,
+  DemoteAdminDto,
+  AdminStatsQueryDto,
+  AdminLoginHistoryQueryDto,
 } from '../dto/admin-auth.dto';
 
+import { RefreshTokenDto } from '../dto/auth.dto';
+
 import { AllowAnonymous } from 'src/common/decorators/public.decorator';
+import { RequireCaptcha } from 'src/common/decorators/require-captcha.decorator';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import { CurrentUserDto } from 'src/common/dtos/current-user.dto';
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { RolesEnum } from 'src/common/enums/roles.enum';
 import { RequireReauthentication } from 'src/common/decorators/reauth.decorator';
+import { AuditEvent } from 'src/common/decorators/audit-event.decorator';
+import { AuditEventEnum } from 'src/common/enums/shared/audit-events.enum';
 
 @ApiTags('Authentication')
 @Controller('admin/auth')
@@ -119,11 +129,6 @@ export class AdminAuthController {
     return this.adminAuthService.adminChangeEmailVerify(data);
   }
 
-  // ADMIN — CHANGE PASSWORD (STEP 1): authenticated admin verifies their current password;
-  // an OTP is then emailed to their own address. Dedicated admin-only endpoint — the
-  // shared /auth/change-password endpoint now rejects admin-role accounts and points
-  // them here instead (see AuthService.changePassword()).
-
   @Throttle({ default: { limit: 5, ttl: 60000 } })
   @Post('change-password/initiate')
   @ApiBearerAuth('access-token')
@@ -146,7 +151,7 @@ export class AdminAuthController {
   @Post('change-password/verify')
   @ApiOperation({
     summary:
-      "Step 2 of admin self-service password change: verify the emailed OTP and set the new password",
+      'Step 2 of admin self-service password change: verify the emailed OTP and set the new password',
   })
   async changePasswordVerify(@Body() data: ResetPasswordDto) {
     return this.adminAuthService.adminChangePasswordVerify(data);
@@ -195,6 +200,7 @@ export class AdminAuthController {
 
   @AllowAnonymous()
   @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @RequireCaptcha()
   @Post('login')
   @ApiOperation({
     summary: 'Admin login with email and password',
@@ -208,6 +214,7 @@ export class AdminAuthController {
 
   @AllowAnonymous()
   @Throttle({ default: { limit: 3, ttl: 60000 } })
+  @RequireCaptcha()
   @Post('forgot-password')
   @ApiOperation({
     summary: 'Request password reset OTP via admin email (for an admin who forgot their password)',
@@ -221,11 +228,180 @@ export class AdminAuthController {
 
   @AllowAnonymous()
   @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @RequireCaptcha()
   @Post('reset-password')
   @ApiOperation({
     summary: 'Reset admin password using the emailed OTP (admin-scoped, forgot-password flow)',
   })
   async resetPassword(@Body() data: ResetPasswordDto) {
     return this.adminAuthService.adminResetPassword(data);
+  }
+
+  // ───────────────────────────── NEW ENDPOINTS ─────────────────────────────
+  // "Admin" access = SUPER_ADMIN or ADMIN. Adjust @Roles if your guard is not any-of.
+
+  // AR-13 — CANCEL PENDING PROMOTION (registration has cancel; promotion did not).
+
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @Post('promote/cancel')
+  @ApiBearerAuth('access-token')
+  @Roles(RolesEnum.SUPER_ADMIN)
+  @ApiOperation({ summary: 'Cancel a pending admin promotion' })
+  async cancelPromotion(@CurrentUser() user: CurrentUserDto, @Body() data: PromoteCancelDto) {
+    return this.adminAuthService.promoteUserCancel(user, data);
+  }
+
+  // AR-14
+
+  @Get('promote/pending')
+  @ApiBearerAuth('access-token')
+  @Roles(RolesEnum.SUPER_ADMIN)
+  @ApiOperation({ summary: 'List pending promotions with their expiry' })
+  async listPendingPromotions(@CurrentUser() user: CurrentUserDto) {
+    return this.adminAuthService.listPendingPromotions(user);
+  }
+
+  // AR-15
+
+  @Get('register/pending')
+  @ApiBearerAuth('access-token')
+  @Roles(RolesEnum.SUPER_ADMIN)
+  @ApiOperation({ summary: 'List pending admin registrations with their expiry' })
+  async listPendingRegistrations(@CurrentUser() user: CurrentUserDto) {
+    return this.adminAuthService.listPendingRegistrations(user);
+  }
+
+  // AR-16 — RESEND ADMIN RESET CODE. Tightest throttle: email-bombing vector.
+
+  @AllowAnonymous()
+  @Throttle({ default: { limit: 2, ttl: 60000 } })
+  @RequireCaptcha()
+  @Post('forgot-password/resend-otp/:verificationId')
+  @ApiOperation({ summary: 'Resend the admin password reset code' })
+  @AuditEvent({ action: AuditEventEnum.OTP_RESENT, entity: 'Otp', metadata: { purpose: 'admin_forgot_password' } })
+  async resendForgotPasswordOtp(@Param('verificationId') verificationId: string) {
+    return this.adminAuthService.adminResendForgotPasswordOtp(verificationId);
+  }
+
+  // AR-17
+
+  @Throttle({ default: { limit: 3, ttl: 60000 } })
+  @Post('change-email/resend')
+  @ApiBearerAuth('access-token')
+  @Roles(RolesEnum.SUPER_ADMIN, RolesEnum.ADMIN)
+  @ApiOperation({ summary: 'Resend a pending email change verification' })
+  async changeEmailResend(
+    @CurrentUser() user: CurrentUserDto,
+    @Body() data: AdminChangeEmailResendDto,
+  ) {
+    return this.adminAuthService.adminChangeEmailResend(user, data);
+  }
+
+  // AR-18 — check first: /auth/logout may already work for admins.
+
+  @Post('logout')
+  @ApiBearerAuth('access-token')
+  @Roles(RolesEnum.SUPER_ADMIN, RolesEnum.ADMIN)
+  @ApiOperation({ summary: 'Sign an admin out' })
+  async logout(@CurrentUser() user: CurrentUserDto, @Req() req: any) {
+    return this.adminAuthService.adminLogout(user, req);
+  }
+
+  // AR-19 — check first: /auth/refresh may already work for admins.
+
+  @AllowAnonymous()
+  @Post('refresh')
+  @ApiOperation({ summary: 'Refresh an admin access token' })
+  async refresh(@Body() data: RefreshTokenDto) {
+    return this.adminAuthService.adminRefresh(data);
+  }
+
+  // AR-20
+
+  @Post('logout-all')
+  @ApiBearerAuth('access-token')
+  @Roles(RolesEnum.SUPER_ADMIN, RolesEnum.ADMIN)
+  @ApiOperation({ summary: 'Sign an admin out everywhere' })
+  async logoutAll(@CurrentUser() user: CurrentUserDto, @Req() req: any) {
+    return this.adminAuthService.adminLogoutAll(user, req);
+  }
+
+  // AR-21
+
+  @Get('me')
+  @ApiBearerAuth('access-token')
+  @Roles(RolesEnum.SUPER_ADMIN, RolesEnum.ADMIN)
+  @ApiOperation({ summary: "The signed-in admin's profile, roles and last sign-in" })
+  async me(@CurrentUser() user: CurrentUserDto) {
+    return this.adminAuthService.adminMe(user);
+  }
+
+  // AR-22 — DEMOTE. Reason + re-auth; the last Super Admin can never be demoted.
+
+  @Throttle({ default: { limit: 3, ttl: 60000 } })
+  @Post('demote')
+  @ApiBearerAuth('access-token')
+  @Roles(RolesEnum.SUPER_ADMIN)
+  @RequireReauthentication()
+  @ApiOperation({ summary: 'Remove the ADMIN role from a user (reason and re-auth required)' })
+  async demote(@CurrentUser() user: CurrentUserDto, @Body() data: DemoteAdminDto) {
+    return this.adminAuthService.demoteAdmin(user, data);
+  }
+
+  // AR-24
+
+  @Get('sessions')
+  @ApiBearerAuth('access-token')
+  @Roles(RolesEnum.SUPER_ADMIN, RolesEnum.ADMIN)
+  @ApiOperation({ summary: "An admin's own sessions with device and time" })
+  async mySessions(@CurrentUser() user: CurrentUserDto) {
+    return this.adminAuthService.listMySessions(user);
+  }
+
+  // AR-25
+
+  @Delete('sessions/:sessionId')
+  @ApiBearerAuth('access-token')
+  @Roles(RolesEnum.SUPER_ADMIN, RolesEnum.ADMIN)
+  @ApiParam({ name: 'sessionId', type: 'string' })
+  @ApiOperation({ summary: 'Revoke one of my admin sessions' })
+  async revokeMySession(
+    @CurrentUser() user: CurrentUserDto,
+    @Param('sessionId') sessionId: string,
+  ) {
+    return this.adminAuthService.revokeMySession(user, sessionId);
+  }
+
+  // AR-28
+
+  @Get('login-history')
+  @ApiBearerAuth('access-token')
+  @Roles(RolesEnum.SUPER_ADMIN)
+  @ApiOperation({ summary: 'Recent admin sign-ins with device, place and result' })
+  async loginHistory(
+    @CurrentUser() user: CurrentUserDto,
+    @Query() query: AdminLoginHistoryQueryDto,
+  ) {
+    return this.adminAuthService.loginHistory(user, query);
+  }
+
+  // AR-78
+
+  @Get('stats/logins')
+  @ApiBearerAuth('access-token')
+  @Roles(RolesEnum.SUPER_ADMIN)
+  @ApiOperation({ summary: 'Sign-ins, failures and lockouts over time' })
+  async statsLogins(@CurrentUser() user: CurrentUserDto, @Query() query: AdminStatsQueryDto) {
+    return this.adminAuthService.statsLogins(user, query);
+  }
+
+  // AR-79
+
+  @Get('stats/2fa-adoption')
+  @ApiBearerAuth('access-token')
+  @Roles(RolesEnum.SUPER_ADMIN)
+  @ApiOperation({ summary: 'Share of accounts with 2FA, by role' })
+  async stats2faAdoption(@CurrentUser() user: CurrentUserDto) {
+    return this.adminAuthService.stats2faAdoption(user);
   }
 }

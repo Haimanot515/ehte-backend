@@ -1,47 +1,111 @@
 model Report {
-  id            String         @id @default(uuid())
-  userId        String
-  caseReference String         @unique
+  id            String            @id @default(uuid())
+  userId        String?
+  caseReference String            @unique
   description   String
   location      String?
   incidentAt    DateTime?
+  channel       SubmissionChannel @default(APP)
   photo         String[]
   video         String[]
   audio         String[]
   pdf           String[]
   document      String[]
   other         String[]
-  status        ReportStatus   @default(PENDING)
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime       @updatedAt
+  status        ReportStatus      @default(PENDING)
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
   assignedToId  String?
   category      ReportCategory
 
-  // NEW — duplicate-submission protection (item #5), mirrors Post.
-  // Scoped to the user, not global: two different users retrying
-  // with the same client-generated key must not collide. Postgres
-  // treats NULLs as distinct, so rows with a null idempotencyKey
-  // don't conflict with each other.
   idempotencyKey String?
 
-  // NEW — running total of attached-media bytes (item #13), mirrors
-  // Post.mediaTotalBytes. Lets update() recompute the total from a
-  // delta (added/removed bytes) instead of re-statting every
-  // already-attached file on every write.
   mediaTotalBytes Int @default(0)
 
-  // NEW — timestamp set when the owning account is suspended (item
-  // #6), so admin tooling can filter/flag these. Deliberately does
-  // NOT change `status` or pull the report out of the review queue —
-  // unlike Post (which has a safe DRAFT state to fall back to),
-  // a Report has no non-terminal "hidden" state, and safety-related
-  // reports should be preserved/visible to admins even if the
-  // reporter's account is later suspended.
   ownerSuspendedAt DateTime?
 
+  priority       ReportPriority    @default(MEDIUM)
+  sensitivity    ReportSensitivity @default(STANDARD)
+  assignedTeamId String?
+  region         String?
+
+  isAnonymous       Boolean             @default(false)
+  contactMethod     ReportContactMethod @default(IN_APP)
+  contactWindow     String?
+  updatesMuted      Boolean             @default(false)
+  updatesMutedUntil DateTime?
+  urgentFlaggedAt   DateTime?
+  urgentDetails     String?
+  clientCreatedAt   DateTime?
+  reporterUpdatedAt DateTime            @default(now())
+  reporterSeenAt    DateTime?
+
+  latitude               Float?
+  longitude              Float?
+  locationAccuracyMeters Float?
+  locationCapturedAt     DateTime?
+  locationAddress        String?
+  locationVerified       Boolean   @default(false)
+  locationVerifiedAt     DateTime?
+  locationVerifiedById   String?
+  locationNote           String?
+
+  dueAt            DateTime?
+  firstRespondedAt DateTime?
+  lastActivityAt   DateTime  @default(now())
+  closedAt         DateTime?
+
+  resolutionOutcome ReportResolutionOutcome?
+  resolutionSummary String?
+  resolvedById      String?
+
+  integrityFlag   ReportIntegrityFlag?
+  integrityReason String?
+  integrityFlagAt DateTime?
+  integrityById   String?
+
+  archivedAt      DateTime?
+  archivedById    String?
+  archiveReason   String?
+  deletedAt       DateTime?
+  deletedById     String?
+  deleteReason    String?
+  legalHold       Boolean   @default(false)
+  legalHoldReason String?
+  legalHoldAt     DateTime?
+  legalHoldById   String?
+
+  mergedIntoId String?
+  mergedAt     DateTime?
+  splitFromId  String?
+
   assignedTo          User?                      @relation("ReportAssignee", fields: [assignedToId], references: [id])
-  user                User                       @relation("ReportReporter", fields: [userId], references: [id], onDelete: Cascade)
+  user                User?                      @relation("ReportReporter", fields: [userId], references: [id], onDelete: Cascade)
+  mergedInto          Report?                    @relation("ReportMergedInto", fields: [mergedIntoId], references: [id], onDelete: SetNull)
+  mergedReports       Report[]                   @relation("ReportMergedInto")
+  splitFrom           Report?                    @relation("ReportSplitFrom", fields: [splitFromId], references: [id], onDelete: SetNull)
+  splitReports        Report[]                   @relation("ReportSplitFrom")
   informationRequests ReportInformationRequest[]
+
+  evidence          ReportEvidence[]
+  messages          ReportMessage[]
+  statusHistory     ReportStatusHistory[]
+  assignmentHistory ReportAssignmentHistory[]
+  escalations       ReportEscalation[]
+  revisions         ReportRevision[]
+  reopenRequests    ReportReopenRequest[]
+  erasureRequests   ReportErasureRequest[]
+  reporterReveals   ReportReporterReveal[]
+  merges            ReportMerge[]
+  links             ReportLink[]
+  followUps         ReportFollowUp[]
+  tags              ReportTagOnReport[]
+  watchers          ReportWatcher[]
+  adminReads        ReportAdminRead[]
+  accessGrants      ReportAccessGrant[]
+  accessLogs        ReportAccessLog[]
+  emails            ReportEmail[]
+  feedback          ReportFeedback?
 
   @@unique([userId, idempotencyKey])
   @@index([userId])
@@ -49,10 +113,19 @@ model Report {
   @@index([assignedToId])
   @@index([caseReference])
   @@index([category])
-  // NEW — supports findStalePending()'s cutoff query (item #15) and
-  // any future retention sweep (item #19), same pattern as Post's
-  // [status, createdAt] index.
+  @@index([channel])
   @@index([status, createdAt])
+  @@index([priority])
+  @@index([status, priority, createdAt])
+  @@index([assignedTeamId])
+  @@index([region])
+  @@index([dueAt])
+  @@index([lastActivityAt])
+  @@index([deletedAt])
+  @@index([archivedAt])
+  @@index([integrityFlag])
+  @@index([mergedIntoId])
+  @@index([latitude, longitude])
   @@map("report")
 }
 
@@ -67,13 +140,417 @@ model ReportInformationRequest {
   respondedAt     DateTime?
   createdAt       DateTime                 @default(now())
   updatedAt       DateTime                 @updatedAt
-  report          Report                   @relation(fields: [reportId], references: [id], onDelete: Cascade)
-  requestedBy     User                     @relation("InfoRequestRequestedBy", fields: [requestedById], references: [id], onDelete: Cascade)
+
+  dueAt         DateTime?
+  remindedAt    DateTime?
+  remindCount   Int       @default(0)
+  cancelledAt   DateTime?
+  cancelledById String?
+  cancelReason  String?
+  reviewedAt    DateTime?
+  reviewedById  String?
+  reviewNote    String?
+
+  report      Report @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  requestedBy User   @relation("InfoRequestRequestedBy", fields: [requestedById], references: [id], onDelete: Cascade)
 
   @@index([reportId])
   @@index([requestedById])
   @@index([status])
+  @@index([status, dueAt])
   @@map("report_information_request")
+}
+
+model ReportEvidence {
+  id         String             @id @default(uuid())
+  reportId   String
+  kind       ReportEvidenceKind
+  storageKey String
+  mimeType   String?
+  sizeBytes  Int?
+  sha256     String?
+  note       String?
+  addedById  String?
+  createdAt  DateTime           @default(now())
+
+  redactedAt         DateTime?
+  redactedById       String?
+  redactionReason    String?
+  redactedStorageKey String?
+  redactedRegions    Json?
+
+  removedAt     DateTime?
+  removedById   String?
+  removalReason String?
+
+  report  Report                  @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  custody ReportEvidenceCustody[]
+
+  @@index([reportId])
+  @@index([reportId, removedAt])
+  @@map("report_evidence")
+}
+
+model ReportEvidenceCustody {
+  id         String   @id @default(uuid())
+  evidenceId String
+  action     String
+  actorId    String?
+  note       String?
+  ipAddress  String?
+  createdAt  DateTime @default(now())
+
+  evidence ReportEvidence @relation(fields: [evidenceId], references: [id], onDelete: Cascade)
+
+  @@index([evidenceId, createdAt])
+  @@map("report_evidence_custody")
+}
+
+model ReportMessage {
+  id         String    @id @default(uuid())
+  reportId   String
+  authorId   String?
+  authorType ActorType
+  message    String
+  readAt     DateTime?
+  createdAt  DateTime  @default(now())
+
+  report Report @relation(fields: [reportId], references: [id], onDelete: Cascade)
+
+  @@index([reportId, createdAt])
+  @@map("report_message")
+}
+
+model ReportStatusHistory {
+  id          String        @id @default(uuid())
+  reportId    String
+  fromStatus  ReportStatus?
+  toStatus    ReportStatus
+  changedById String?
+  note        String?
+  createdAt   DateTime      @default(now())
+
+  report Report @relation(fields: [reportId], references: [id], onDelete: Cascade)
+
+  @@index([reportId, createdAt])
+  @@index([toStatus, createdAt])
+  @@map("report_status_history")
+}
+
+model ReportAssignmentHistory {
+  id           String   @id @default(uuid())
+  reportId     String
+  assignedToId String?
+  assignedById String?
+  note         String?
+  createdAt    DateTime @default(now())
+
+  report Report @relation(fields: [reportId], references: [id], onDelete: Cascade)
+
+  @@index([reportId, createdAt])
+  @@index([assignedToId, createdAt])
+  @@map("report_assignment_history")
+}
+
+model ReportRevision {
+  id         String   @id @default(uuid())
+  reportId   String
+  editedById String?
+  changes    Json
+  createdAt  DateTime @default(now())
+
+  report Report @relation(fields: [reportId], references: [id], onDelete: Cascade)
+
+  @@index([reportId, createdAt])
+  @@map("report_revision")
+}
+
+model ReportEscalation {
+  id                 String    @id @default(uuid())
+  reportId           String
+  escalatedById      String?
+  reason             String
+  createdAt          DateTime  @default(now())
+  deEscalatedAt      DateTime?
+  deEscalatedById    String?
+  deEscalationReason String?
+
+  report Report @relation(fields: [reportId], references: [id], onDelete: Cascade)
+
+  @@index([reportId, createdAt])
+  @@index([createdAt])
+  @@map("report_escalation")
+}
+
+model ReportReopenRequest {
+  id            String    @id @default(uuid())
+  reportId      String
+  requestedById String?
+  reason        String
+  createdAt     DateTime  @default(now())
+  handledAt     DateTime?
+  handledById   String?
+  approved      Boolean?
+
+  report Report @relation(fields: [reportId], references: [id], onDelete: Cascade)
+
+  @@index([reportId])
+  @@index([createdAt])
+  @@map("report_reopen_request")
+}
+
+model ReportErasureRequest {
+  id            String                     @id @default(uuid())
+  reportId      String
+  requestedById String?
+  reason        String?
+  status        ReportErasureRequestStatus @default(PENDING)
+  handledById   String?
+  handledAt     DateTime?
+  createdAt     DateTime                   @default(now())
+
+  report Report @relation(fields: [reportId], references: [id], onDelete: Cascade)
+
+  @@index([reportId])
+  @@index([status])
+  @@map("report_erasure_request")
+}
+
+model ReportFeedback {
+  id        String   @id @default(uuid())
+  reportId  String   @unique
+  userId    String?
+  rating    Int
+  comment   String?
+  createdAt DateTime @default(now())
+
+  report Report @relation(fields: [reportId], references: [id], onDelete: Cascade)
+
+  @@index([rating])
+  @@map("report_feedback")
+}
+
+model ReportDraft {
+  id        String    @id @default(uuid())
+  userId    String
+  data      Json
+  expiresAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  user User @relation("ReportDraftOwner", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, updatedAt])
+  @@index([expiresAt])
+  @@map("report_draft")
+}
+
+model ReportAdminRead {
+  reportId String
+  adminId  String
+  readAt   DateTime @default(now())
+
+  report Report @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  admin  User   @relation("ReportAdminReadAdmin", fields: [adminId], references: [id], onDelete: Cascade)
+
+  @@id([reportId, adminId])
+  @@index([adminId])
+  @@map("report_admin_read")
+}
+
+model ReportWatcher {
+  reportId  String
+  adminId   String
+  createdAt DateTime @default(now())
+
+  report Report @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  admin  User   @relation("ReportWatcherAdmin", fields: [adminId], references: [id], onDelete: Cascade)
+
+  @@id([reportId, adminId])
+  @@index([adminId])
+  @@map("report_watcher")
+}
+
+model ReportFollowUp {
+  id         String    @id @default(uuid())
+  reportId   String
+  adminId    String
+  remindAt   DateTime
+  note       String?
+  notifiedAt DateTime?
+  doneAt     DateTime?
+  createdAt  DateTime  @default(now())
+
+  report Report @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  admin  User   @relation("ReportFollowUpAdmin", fields: [adminId], references: [id], onDelete: Cascade)
+
+  @@index([adminId, doneAt, remindAt])
+  @@index([reportId])
+  @@index([remindAt, notifiedAt])
+  @@map("report_follow_up")
+}
+
+model ReportTag {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  createdAt DateTime @default(now())
+
+  reports ReportTagOnReport[]
+
+  @@map("report_tag")
+}
+
+model ReportTagOnReport {
+  reportId  String
+  tagId     String
+  addedById String?
+  createdAt DateTime @default(now())
+
+  report Report    @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  tag    ReportTag @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([reportId, tagId])
+  @@index([tagId])
+  @@map("report_tag_on_report")
+}
+
+model ReportSavedView {
+  id        String   @id @default(uuid())
+  adminId   String
+  name      String
+  filters   Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  admin User @relation("ReportSavedViewAdmin", fields: [adminId], references: [id], onDelete: Cascade)
+
+  @@unique([adminId, name])
+  @@map("report_saved_view")
+}
+
+model ReportLink {
+  id          String               @id @default(uuid())
+  reportId    String
+  recordType  ReportLinkRecordType
+  recordId    String
+  note        String?
+  createdById String?
+  createdAt   DateTime             @default(now())
+
+  report Report @relation(fields: [reportId], references: [id], onDelete: Cascade)
+
+  @@unique([reportId, recordType, recordId])
+  @@index([recordType, recordId])
+  @@map("report_link")
+}
+
+model ReportMerge {
+  id             String    @id @default(uuid())
+  sourceReportId String
+  targetReportId String
+  mergedById     String?
+  reason         String?
+  snapshot       Json?
+  createdAt      DateTime  @default(now())
+  unmergedAt     DateTime?
+  unmergedById   String?
+  unmergeReason  String?
+
+  source Report @relation(fields: [sourceReportId], references: [id], onDelete: Cascade)
+
+  @@index([sourceReportId])
+  @@index([targetReportId])
+  @@map("report_merge")
+}
+
+model ReportAccessGrant {
+  id          String    @id @default(uuid())
+  reportId    String
+  adminId     String
+  grantedById String?
+  reason      String
+  expiresAt   DateTime?
+  revokedAt   DateTime?
+  revokedById String?
+  createdAt   DateTime  @default(now())
+
+  report Report @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  admin  User   @relation("ReportAccessGrantee", fields: [adminId], references: [id], onDelete: Cascade)
+
+  @@index([reportId, revokedAt])
+  @@index([adminId, revokedAt])
+  @@index([expiresAt])
+  @@map("report_access_grant")
+}
+
+model ReportAccessLog {
+  id        String   @id @default(uuid())
+  reportId  String
+  userId    String?
+  action    String
+  ipAddress String?
+  createdAt DateTime @default(now())
+
+  report Report @relation(fields: [reportId], references: [id], onDelete: Cascade)
+
+  @@index([reportId, createdAt])
+  @@index([userId, createdAt])
+  @@map("report_access_log")
+}
+
+model ReportReporterReveal {
+  id           String   @id @default(uuid())
+  reportId     String
+  revealedById String
+  reason       String
+  ticketRef    String?
+  createdAt    DateTime @default(now())
+
+  report Report @relation(fields: [reportId], references: [id], onDelete: Cascade)
+
+  @@index([reportId, createdAt])
+  @@index([revealedById, createdAt])
+  @@map("report_reporter_reveal")
+}
+
+model ReportEmail {
+  id          String               @id @default(uuid())
+  reportId    String
+  direction   ReportEmailDirection
+  subject     String?
+  body        String
+  fromAddress String?
+  toAddress   String?
+  messageId   String?
+  sentById    String?
+  createdAt   DateTime             @default(now())
+
+  report Report @relation(fields: [reportId], references: [id], onDelete: Cascade)
+
+  @@index([reportId, createdAt])
+  @@map("report_email")
+}
+
+model ReportExportJob {
+  id            String                @id @default(uuid())
+  requestedById String
+  format        ReportExportFormat    @default(csv)
+  filters       Json?
+  status        ReportExportJobStatus @default(QUEUED)
+  storageKey    String?
+  rowCount      Int?
+  error         String?
+  startedAt     DateTime?
+  completedAt   DateTime?
+  expiresAt     DateTime?
+  createdAt     DateTime              @default(now())
+
+  requestedBy User @relation("ReportExportJobRequester", fields: [requestedById], references: [id], onDelete: Cascade)
+
+  @@index([requestedById, createdAt])
+  @@index([status])
+  @@index([expiresAt])
+  @@map("report_export_job")
 }
 
 enum ReportCategory {
@@ -101,4 +578,81 @@ enum ReportStatus {
 enum InformationRequestStatus {
   PENDING
   RESPONDED
+  ACCEPTED
+  CANCELLED
+}
+
+enum ReportPriority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum ReportSensitivity {
+  STANDARD
+  RESTRICTED
+  CHILD_INVOLVED
+}
+
+enum ReportContactMethod {
+  IN_APP
+  EMAIL
+  PHONE
+  SMS
+  NONE
+}
+
+enum ReportResolutionOutcome {
+  RESOLVED
+  NO_ACTION
+  REFERRED
+  UNFOUNDED
+}
+
+enum ReportIntegrityFlag {
+  SPAM
+  FALSE_REPORT
+  MALICIOUS_FALSE_REPORT
+}
+
+enum ReportEvidenceKind {
+  PHOTO
+  VIDEO
+  AUDIO
+  PDF
+  DOCUMENT
+  OTHER
+}
+
+enum ReportLinkRecordType {
+  REPORT
+  MISSING_PERSON
+  VICTIM_PROFILE
+  INFORMATION_SUBMISSION
+  POST
+}
+
+enum ReportEmailDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum ReportErasureRequestStatus {
+  PENDING
+  APPROVED
+  DENIED
+}
+
+enum ReportExportFormat {
+  csv
+  xlsx
+}
+
+enum ReportExportJobStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+  EXPIRED
 }

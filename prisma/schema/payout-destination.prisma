@@ -1,0 +1,21 @@
+model PayoutDestination {
+  id              String @id @default(uuid())
+  victimProfileId String @unique
+
+  bankName      String
+  bankCode      String
+  accountNumber String
+  accountHolder String
+
+  isVerified   Boolean   @default(false)
+  verifiedById String?
+  verifiedAt   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  victimProfile VictimProfile @relation(fields: [victimProfileId], references: [id], onDelete: Cascade)
+  verifiedBy    User?         @relation("PayoutDestinationVerifier", fields: [verifiedById], references: [id], onDelete: SetNull)
+
+  @@map("payout_destinations")
+}

@@ -9,6 +9,15 @@ export interface RequestContextStore {
   method?: string;
   path?: string;
   source?: AuditSource;
+  // Network and device details, filled once per request by RequestContextMiddleware
+  country?: string;
+  city?: string;
+  region?: string;
+  timezone?: string;
+  asn?: number;
+  isp?: string;
+  deviceLabel?: string;
+  clientVersion?: string;
   // Filled later (after the auth guard) once the JWT strategy is shared
   userId?: string;
   actorName?: string;

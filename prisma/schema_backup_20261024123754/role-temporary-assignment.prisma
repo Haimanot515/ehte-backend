@@ -1,0 +1,27 @@
+model RoleTemporaryAssignment {
+  id          String                    @id @default(uuid())
+  userId      String
+  roleId      String
+  grantedById String?
+  reason      String
+  startsAt    DateTime                  @default(now())
+  expiresAt   DateTime
+  status      TemporaryAssignmentStatus @default(ACTIVE)
+  endedAt     DateTime?
+  createdAt   DateTime                  @default(now())
+
+  user      User  @relation("TemporaryRoleHolder", fields: [userId], references: [id], onDelete: Cascade)
+  role      Role  @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  grantedBy User? @relation("TemporaryRoleGrantedBy", fields: [grantedById], references: [id], onDelete: SetNull)
+
+  @@index([status, expiresAt])
+  @@index([userId])
+  @@index([roleId])
+  @@map("role_temporary_assignment")
+}
+
+enum TemporaryAssignmentStatus {
+  ACTIVE
+  EXPIRED
+  REVOKED
+}

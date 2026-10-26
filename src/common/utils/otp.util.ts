@@ -5,15 +5,17 @@ import * as bcrypt from 'bcrypt';
 import { randomInt } from 'crypto';
 
 import { PrismaService } from 'src/prisma/prisma.service';
+import { CacheService } from 'src/infrastructure/redis/cache.service'; // REDIS
 
-import { sendSms } from 'src/services/sms/sendet.service';
-import { renderOtpSms } from 'src/services/sms/templates/sms-otp.template';
+import { sendSms } from 'src/infrastructure/sms/sendet.service';
+import { renderOtpSms } from 'src/infrastructure/sms/templates/sms-otp.template';
 
-import { sendEmail } from 'src/services/email/email.service';
+import { EmailService } from 'src/infrastructure/email/email.service';
+import { EmailTemplateService } from 'src/infrastructure/email/email-template.service';
 import {
   renderOtpEmailSubject,
   renderOtpEmailHtml,
-} from 'src/services/email/templates/otp-email.template';
+} from 'src/infrastructure/email/templates/otp-email.template';
 
 type OtpDb = Pick<Prisma.TransactionClient, 'userOtp'>;
 
@@ -24,6 +26,9 @@ export class OtpUtil {
   constructor(
     private readonly prisma: PrismaService,
     private readonly configService: ConfigService,
+    private readonly emailService: EmailService,
+    private readonly emailTemplates: EmailTemplateService,
+    private readonly cache: CacheService, // REDIS
   ) {}
 
   async issueAndSendOtp(
@@ -31,9 +36,16 @@ export class OtpUtil {
     contact: string,
     purpose: UserOtpPurposeEnum,
     channel: OtpChannelEnum = OtpChannelEnum.sms,
+    // adminEmail: use the admin-only password email (reset/change) instead of the generic OTP email.
+    options: { adminEmail?: boolean; recipientName?: string } = {},
   ): Promise<{ verificationId: string }> {
     const cooldownSeconds = this.configService.get<number>('otp.resendCooldownSeconds', 60);
     const otpExpiresInMinutes = this.configService.get<number>('otp.expiresInMinutes', 10);
+
+    const cachedId = await this.cache.getOtpCooldown(userId, purpose, channel);
+    if (cachedId) {
+      return { verificationId: cachedId };
+    }
 
     const cooling = await this.findCooldownOtp(
       this.prisma,
@@ -44,6 +56,7 @@ export class OtpUtil {
     );
 
     if (cooling) {
+      await this.cache.setOtpCooldown(userId, purpose, channel, cooling.id, cooldownSeconds);
       return { verificationId: cooling.id };
     }
 
@@ -76,6 +89,16 @@ export class OtpUtil {
       return { reused: false as const, verificationId: created.id };
     });
 
+    // REDIS: cache the cooldown regardless of which branch created it, so the NEXT repeat
+    // tap (not this one) hits the fast path above instead of Postgres.
+    await this.cache.setOtpCooldown(
+      userId,
+      purpose,
+      channel,
+      result.verificationId,
+      cooldownSeconds,
+    );
+
     if (result.reused) {
       return { verificationId: result.verificationId };
     }
@@ -84,11 +107,33 @@ export class OtpUtil {
 
     if (channel === OtpChannelEnum.email) {
       try {
-        await sendEmail(
-          contact,
-          renderOtpEmailSubject(),
-          renderOtpEmailHtml({ otp, expiresInMinutes: otpExpiresInMinutes }),
-        );
+        const adminPurpose =
+          options.adminEmail &&
+          (purpose === UserOtpPurposeEnum.password_reset ||
+            purpose === UserOtpPurposeEnum.password_change)
+            ? purpose
+            : null;
+
+        if (adminPurpose) {
+          const params = {
+            purpose: adminPurpose,
+            otp,
+            expiresInMinutes: otpExpiresInMinutes,
+            recipientName: options.recipientName,
+          };
+          await this.emailService.send(
+            contact,
+            this.emailTemplates.adminPasswordOtpSubject(adminPurpose),
+            this.emailTemplates.adminPasswordOtpHtml(params),
+            this.emailTemplates.adminPasswordOtpText(params),
+          );
+        } else {
+          await this.emailService.send(
+            contact,
+            renderOtpEmailSubject(),
+            renderOtpEmailHtml({ otp, expiresInMinutes: otpExpiresInMinutes }),
+          );
+        }
       } catch (error) {
         this.logger.error(
           `Failed to send OTP (${purpose}) to ${maskedContact}`,
@@ -136,7 +181,9 @@ export class OtpUtil {
     });
 
     const active =
-      !!latest && !latest.usedAt && Date.now() - latest.createdAt.getTime() < cooldownSeconds * 1000;
+      !!latest &&
+      !latest.usedAt &&
+      Date.now() - latest.createdAt.getTime() < cooldownSeconds * 1000;
 
     return active ? latest : null;
   }

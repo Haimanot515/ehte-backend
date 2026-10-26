@@ -35,7 +35,7 @@ async function bootstrap() {
     }
   }
 
-  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, { rawBody: true });
 
   const configService = app.get(ConfigService);
 
@@ -51,7 +51,8 @@ async function bootstrap() {
 
   const corsCredentials = configService.getOrThrow<boolean>('cors.credentials');
 
-  app.set('trust proxy', 1);
+  // Was hardcoded to 1; now reads TRUST_PROXY_HOPS (defaults to 0, no proxy trusted).
+  app.set('trust proxy', configService.get<number>('app.trustProxyHops', 0));
 
   if (corsCredentials && corsOrigin.includes('*')) {
     throw new Error(
@@ -102,7 +103,16 @@ async function bootstrap() {
 
   app.use(compression());
 
-  app.use(json({ limit: '10mb' }));
+  // Keep the exact bytes for webhook signature checks (Chapa, delivery webhooks).
+  // This parser runs before Nest's own, so it has to save the raw body itself.
+  app.use(
+    json({
+      limit: '10mb',
+      verify: (req: any, _res, buf: Buffer) => {
+        req.rawBody = buf;
+      },
+    }),
+  );
   app.use(urlencoded({ extended: true, limit: '10mb' }));
 
   app.enableCors({
@@ -171,6 +181,10 @@ Most endpoints require a valid JWT access token.
 Use the **Authorize** button and enter:
 
 \`Bearer <access_token>\`
+
+## Re-authentication
+
+Sensitive endpoints require re-authentication. Fill in the **X-Reauth-Credential** header with your account password (or Discreet Mode passcode, if enabled). JSON endpoints also accept it as \`credential\` in the body.
 `,
       )
       .setVersion('1.0.0')
@@ -203,7 +217,6 @@ Use the **Authorize** button and enter:
       .addTag('Missing Persons')
       .addTag('Information Submissions')
       .addTag('Victim Profiles')
-      .addTag('Support')
       .addTag('Notifications')
       .addTag('Users')
       .addTag('Roles')

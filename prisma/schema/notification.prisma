@@ -14,25 +14,18 @@ model Notification {
 
   priority NotificationPriority @default(NORMAL)
 
-  // Link to the domain object
   entity    String?
   entityId  String?
   actorId   String?
   actionUrl String?
 
-  // Who caused it, stored on the row so it survives later name or role changes.
-  // Both are null for system-generated notifications.
   actorName String?
   actorRole String?
 
-  // Set when the row was created by an admin broadcast
   broadcastId String?
 
-  // Structured, non-sensitive data only
   data Json?
 
-  // Read state
-  // isRead is kept temporarily for compatibility; remove it after all code uses readAt
   isRead Boolean   @default(false)
   readAt DateTime?
 
@@ -100,4 +93,19 @@ enum NotificationType {
 
   INFORMATION_SUBMISSION_REVIEWED
   INFORMATION_SUBMISSION_REJECTED
+  INFORMATION_SUBMISSION_QUESTION_ASKED
+  INFORMATION_SUBMISSION_QUESTION_ANSWERED
+  INFORMATION_SUBMISSION_MESSAGE
+  INFORMATION_SUBMISSION_ASSIGNED
+  INFORMATION_SUBMISSION_APPEALED
+  INFORMATION_SUBMISSION_ESCALATED
+  INFORMATION_SUBMISSION_EVIDENCE_ADDED
+
+  PAYMENT_VERIFIED
+  DISBURSEMENT_PAID_OUT
+
+  SUPPORT_RECEIVED
+  SUPPORT_OFFER_CONFIRMED
+  SUPPORT_OFFER_COMPLETED
+  SUPPORT_OFFER_EXPIRED
 }

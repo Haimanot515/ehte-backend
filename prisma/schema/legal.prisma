@@ -1,0 +1,47 @@
+enum LegalDocumentStatus {
+  DRAFT
+  PUBLISHED
+  RETIRED
+}
+
+model LegalDocument {
+  id                   String              @id @default(uuid())
+  type                 String
+  language             String
+  version              String
+  title                String
+  body                 String              @db.Text
+  status               LegalDocumentStatus @default(DRAFT)
+  effectiveAt          DateTime
+  requiresReacceptance Boolean             @default(false)
+  createdById          String
+  publishedById        String?
+  publishedAt          DateTime?
+  createdAt            DateTime            @default(now())
+  updatedAt            DateTime            @updatedAt
+
+  acceptances LegalAcceptance[]
+
+  @@unique([type, language, version])
+  @@index([type, language, status, effectiveAt])
+  @@map("legal_document")
+}
+
+model LegalAcceptance {
+  id           String   @id @default(uuid())
+  userId       String
+  documentId   String
+  documentType String
+  version      String
+  channel      String
+  ipAddress    String?
+  acceptedAt   DateTime @default(now())
+
+  user     User          @relation("UserLegalAcceptances", fields: [userId], references: [id], onDelete: Cascade)
+  document LegalDocument @relation(fields: [documentId], references: [id], onDelete: Restrict)
+
+  @@unique([userId, documentId])
+  @@index([documentId])
+  @@index([userId, documentType, acceptedAt])
+  @@map("legal_acceptance")
+}

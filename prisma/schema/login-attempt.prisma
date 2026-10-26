@@ -1,0 +1,27 @@
+model LoginAttempt {
+  id            String          @id @default(uuid())
+  userId        String?
+  identifier    String
+  result        LoginResultEnum
+  failureReason String?
+  ipAddress     String?
+  userAgent     String?
+  deviceLabel   String?
+  country       String?
+  city          String?
+  createdAt     DateTime        @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([result, createdAt])
+  @@index([createdAt])
+  @@map("login_attempt")
+}
+
+enum LoginResultEnum {
+  SUCCESS
+  FAILED
+  LOCKED
+  TWO_FACTOR_REQUIRED
+}

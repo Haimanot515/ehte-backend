@@ -1,17 +1,15 @@
-import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcrypt';
 
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RolesEnum } from '../enums/roles.enum';
 
-// Seeds the initial SUPER_ADMIN account on boot, keyed by EMAIL — matching
-// AuthService.adminLoginByEmail(), the only admin login path. Phone-based
-// admin seeding/login has been removed; this seeder no longer touches
-// phone at all. Configure via ADMIN_EMAIL / ADMIN_NAME / ADMIN_PASSWORD.
+const DEV_DEFAULT_PASSWORD = 'P@ssw0rd';
+const MIN_PROD_PASSWORD_LENGTH = 12;
 
 @Injectable()
-export class AdminSeeder implements OnApplicationBootstrap {
+export class AdminSeeder {
   private readonly logger = new Logger(AdminSeeder.name);
 
   constructor(
@@ -19,16 +17,34 @@ export class AdminSeeder implements OnApplicationBootstrap {
     private readonly config: ConfigService,
   ) {}
 
-  async onApplicationBootstrap(): Promise<void> {
-    const rawEmail = this.config.get<string>('ADMIN_EMAIL', 'admin@ehte.com');
+  private isDevLike(): boolean {
+    const env = this.config.get<string>('app.env') ?? process.env.NODE_ENV ?? '';
+    return env === 'development' || env === 'test';
+  }
+
+  async run(): Promise<void> {
+    const devLike = this.isDevLike();
+
+    const configuredEmail = this.config.get<string>('ADMIN_EMAIL');
+    const configuredPassword = this.config.get<string>('ADMIN_PASSWORD');
+
+    // Outside development there are no fallback credentials: both must be set explicitly.
+    if (!devLike && (!configuredEmail || !configuredPassword)) {
+      this.logger.error(
+        'Initial SUPER_ADMIN not seeded: set ADMIN_EMAIL and ADMIN_PASSWORD (no defaults outside development).',
+      );
+      return;
+    }
+
+    const rawEmail = configuredEmail || 'admin@ehte.com';
 
     // Normalize the same way AuthService does (trim + lowercase), so the
     // seeded row matches what adminLoginByEmail()'s findUnique({ email }) expects
     const email = rawEmail.trim().toLowerCase();
 
-    const name = this.config.get<string>('ADMIN_NAME', 'Ehte System Admin');
+    const name = this.config.get<string>('ADMIN_NAME') || 'Ehte System Admin';
 
-    const password = this.config.get<string>('ADMIN_PASSWORD', 'P@ssw0rd');
+    const password = configuredPassword || DEV_DEFAULT_PASSWORD;
 
     const existingUser = await this.prisma.user.findUnique({
       where: { email },
@@ -36,6 +52,25 @@ export class AdminSeeder implements OnApplicationBootstrap {
 
     if (existingUser) {
       return;
+    }
+
+    if (!devLike && (password === DEV_DEFAULT_PASSWORD || password.length < MIN_PROD_PASSWORD_LENGTH)) {
+      this.logger.error(
+        `Initial SUPER_ADMIN not seeded: ADMIN_PASSWORD must be at least ${MIN_PROD_PASSWORD_LENGTH} characters and not the development default.`,
+      );
+      return;
+    }
+
+    const role = await this.prisma.role.findUnique({
+      where: {
+        name: RolesEnum.SUPER_ADMIN,
+      },
+    });
+
+    if (!role) {
+      throw new Error(
+        `Required role "${RolesEnum.SUPER_ADMIN}" was not found. Ensure RolesSeeder runs before AdminSeeder.`,
+      );
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
@@ -51,18 +86,6 @@ export class AdminSeeder implements OnApplicationBootstrap {
         isEmailVerified: true,
       },
     });
-
-    const role = await this.prisma.role.findUnique({
-      where: {
-        name: RolesEnum.SUPER_ADMIN,
-      },
-    });
-
-    if (!role) {
-      throw new Error(
-        `Required role "${RolesEnum.SUPER_ADMIN}" was not found. Ensure RolesSeeder runs before AdminSeeder.`,
-      );
-    }
 
     await this.prisma.userRole.create({
       data: {

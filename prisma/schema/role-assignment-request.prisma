@@ -1,0 +1,33 @@
+model RoleAssignmentRequest {
+  id            String                      @id @default(uuid())
+  roleId        String
+  targetUserId  String
+  requestedById String
+  reason        String
+  status        RoleAssignmentRequestStatus @default(PENDING)
+  reviewedById  String?
+  reviewNote    String?
+  reviewedAt    DateTime?
+  expiresAt     DateTime
+  createdAt     DateTime                    @default(now())
+  updatedAt     DateTime                    @updatedAt
+
+  role        Role  @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  targetUser  User  @relation("RoleAssignmentRequestTarget", fields: [targetUserId], references: [id], onDelete: Cascade)
+  requestedBy User  @relation("RoleAssignmentRequestRequester", fields: [requestedById], references: [id], onDelete: Cascade)
+  reviewedBy  User? @relation("RoleAssignmentRequestReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+
+  @@index([status, expiresAt])
+  @@index([roleId])
+  @@index([targetUserId])
+  @@index([requestedById])
+  @@map("role_assignment_request")
+}
+
+enum RoleAssignmentRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+  EXPIRED
+}

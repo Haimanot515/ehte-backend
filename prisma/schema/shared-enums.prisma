@@ -1,0 +1,12 @@
+enum SharedRecordType {
+  REPORT
+  POST
+  MISSING_PERSON
+  VICTIM_PROFILE
+  INFORMATION_SUBMISSION
+}
+
+enum FollowableType {
+  MISSING_PERSON
+  VICTIM_PROFILE
+}

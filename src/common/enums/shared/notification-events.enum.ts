@@ -1,15 +1,4 @@
-/**
- * Event names emitted on the EventEmitter for NOTIFICATIONS.
- *
- * Every value is prefixed with `notification.` so it can never collide with
- * an AuditEventEnum value (audit values such as REPORT_ASSIGNED are stored in
- * audit_log.action and must NOT be changed). Event names are not persisted,
- * so changing these values is safe. Emit sites that use the enum
- * (NotificationEventEnum.X) need no edits.
- *
- * Verify no raw-string emits remain:
- *   grep -rnE "emit\(\s*['\"]" src
- */
+// Values are prefixed with notification. so they never collide with an AuditEventEnum value
 export enum NotificationEventEnum {
   REPORT_RECEIVED = 'notification.report_received',
   REPORT_UPDATED = 'notification.report_updated',
@@ -21,6 +10,10 @@ export enum NotificationEventEnum {
   POST_REJECTED = 'notification.post_rejected',
   POST_CHANGES_REQUESTED = 'notification.post_changes_requested',
   POST_UNPUBLISHED = 'notification.post_unpublished',
+  POST_TAKEN_DOWN = 'notification.post_taken_down',
+  POST_APPEAL_DECIDED = 'notification.post_appeal_decided',
+  POST_APPEAL_SUBMITTED = 'notification.post_appeal_submitted',
+  POST_FLAGGED = 'notification.post_flagged',
 
   MISSING_PERSON_UPDATED = 'notification.missing_person_updated',
   MISSING_PERSON_APPROVED = 'notification.missing_person_approved',
@@ -32,10 +25,16 @@ export enum NotificationEventEnum {
   INFORMATION_SUBMISSION_REVIEWED = 'notification.information_submission_reviewed',
   INFORMATION_SUBMISSION_REJECTED = 'notification.information_submission_rejected',
 
-  // Emitted by SupportService.create() (status PENDING).
-  // SUPPORT_PAYMENT_CONFIRMED is reserved for the CONFIRMED transition only.
-  SUPPORT_PLEDGE_CREATED = 'notification.support_pledge_created',
+  INFORMATION_SUBMISSION_QUESTION_ASKED = 'notification.information_submission_question_asked',
+  INFORMATION_SUBMISSION_QUESTION_ANSWERED = 'notification.information_submission_question_answered',
+  INFORMATION_SUBMISSION_MESSAGE = 'notification.information_submission_message',
+  INFORMATION_SUBMISSION_ASSIGNED = 'notification.information_submission_assigned',
+  INFORMATION_SUBMISSION_APPEALED = 'notification.information_submission_appealed',
+  INFORMATION_SUBMISSION_ESCALATED = 'notification.information_submission_escalated',
+  INFORMATION_SUBMISSION_EVIDENCE_ADDED = 'notification.information_submission_evidence_added',
   SUPPORT_PAYMENT_CONFIRMED = 'notification.support_payment_confirmed',
+
+  SUPPORT_RECEIVED = 'notification.support_received',
 
   NEW_REPORT = 'notification.new_report',
   HIGH_PRIORITY_REPORT = 'notification.high_priority_report',
@@ -44,7 +43,6 @@ export enum NotificationEventEnum {
 
   SECURITY_ALERT = 'notification.security_alert',
 
-  // VICTIM PROFILE
   VICTIM_PROFILE_CREATED = 'notification.victim_profile_created',
   VICTIM_PROFILE_UPDATED = 'notification.victim_profile_updated',
   VICTIM_PROFILE_DELETED = 'notification.victim_profile_deleted',
@@ -57,7 +55,29 @@ export enum NotificationEventEnum {
   VICTIM_PROFILE_REJECTED = 'notification.victim_profile_rejected',
   VICTIM_PROFILE_RESUBMITTED = 'notification.victim_profile_resubmitted',
 
-  // AUTH (already namespaced before)
+  VICTIM_PROFILE_CHANGES_REQUESTED = 'notification.victim_profile_changes_requested',
+  VICTIM_PROFILE_COMPLETED = 'notification.victim_profile_completed',
+  VICTIM_PROFILE_REOPENED = 'notification.victim_profile_reopened',
+  VICTIM_PROFILE_TAKEN_DOWN = 'notification.victim_profile_taken_down',
+  VICTIM_PROFILE_APPEAL_DECIDED = 'notification.victim_profile_appeal_decided',
+  VICTIM_PROFILE_UPDATE_POSTED = 'notification.victim_profile_update_posted',
+  VICTIM_PROFILE_ASSIGNED = 'notification.victim_profile_assigned',
+  VICTIM_PROFILE_FLAGGED = 'notification.victim_profile_flagged',
+  VICTIM_PROFILE_EXPORT_READY = 'notification.victim_profile_export_ready',
+
   PASSWORD_CHANGED = 'notification.password_changed',
   PASSWORD_RESET = 'notification.password_reset',
+
+  PAYMENT_VERIFIED = 'notification.payment_verified',
+  REWARD_CLAIM_APPROVED = 'notification.reward_claim_approved',
+  DISBURSEMENT_PAID_OUT = 'notification.disbursement_paid_out',
+  INSTITUTION_SIGNED = 'INSTITUTION_SIGNED',
+  AGREEMENT_CREATED = 'AGREEMENT_CREATED',
+  AGREEMENT_ACTIVATED = 'AGREEMENT_ACTIVATED',
+  AGREEMENT_RETIRED = 'AGREEMENT_RETIRED',
+  VICTIM_PROFILE_AGREEMENT_ASSIGNED = 'VICTIM_PROFILE_AGREEMENT_ASSIGNED',
+
+  // Events with no userId in the payload are meant for admins, and AUDIT_ALERT_TRIGGERED goes to every active SUPER_ADMIN
+  AUDIT_ALERT_TRIGGERED = 'notification.audit_alert_triggered',
+  EXPORT_JOB_FINISHED = 'notification.export_job_finished',
 }

@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 
 import { PrismaService } from 'src/prisma/prisma.service';
 
@@ -13,7 +13,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 @Injectable()
-export class PermissionsSeeder implements OnApplicationBootstrap {
+export class PermissionsSeeder {
   private readonly logger = new Logger(PermissionsSeeder.name);
 
   constructor(private readonly prisma: PrismaService) {}
@@ -47,30 +47,28 @@ export class PermissionsSeeder implements OnApplicationBootstrap {
     throw lastError;
   }
 
-  async onApplicationBootstrap(): Promise<void> {
+  async run(): Promise<void> {
     const permissions = Object.values(PermissionsEnum);
 
-    for (const name of permissions) {
-      await this.withRetry(`Seed permission "${name}"`, () =>
-        this.prisma.permission.upsert({
-          where: { name },
-          create: { name },
-          update: {},
-        }),
-      );
-    }
-
-    const adminRole = await this.withRetry('Look up ADMIN role', () =>
-      this.prisma.role.findUnique({ where: { name: RolesEnum.ADMIN } }),
+    // One round trip for all permissions instead of one upsert each. Rows that
+    // already exist are left untouched, same as the old `update: {}`.
+    await this.withRetry('Seed permissions', () =>
+      this.prisma.permission.createMany({
+        data: permissions.map((name) => ({ name })),
+        skipDuplicates: true,
+      }),
     );
 
-    const superAdminRole = await this.withRetry('Look up SUPER_ADMIN role', () =>
-      this.prisma.role.findUnique({ where: { name: RolesEnum.SUPER_ADMIN } }),
+    const roles = await this.withRetry('Look up ADMIN, SUPER_ADMIN and SYSTEM roles', () =>
+      this.prisma.role.findMany({
+        where: { name: { in: [RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN, RolesEnum.SYSTEM] } },
+        select: { id: true, name: true },
+      }),
     );
 
-    const systemRole = await this.withRetry('Look up SYSTEM role', () =>
-      this.prisma.role.findUnique({ where: { name: RolesEnum.SYSTEM } }),
-    );
+    const adminRole = roles.find((role) => role.name === RolesEnum.ADMIN);
+    const superAdminRole = roles.find((role) => role.name === RolesEnum.SUPER_ADMIN);
+    const systemRole = roles.find((role) => role.name === RolesEnum.SYSTEM);
 
     if (!adminRole) {
       throw new Error(
@@ -100,6 +98,13 @@ export class PermissionsSeeder implements OnApplicationBootstrap {
       PermissionsEnum.REPORT_ESCALATE,
       PermissionsEnum.REPORT_CLOSE,
       PermissionsEnum.REPORT_EVIDENCE_READ,
+      PermissionsEnum.REPORT_TRIAGE,
+      PermissionsEnum.REPORT_EVIDENCE_MANAGE,
+      PermissionsEnum.REPORT_LOCATION_READ,
+      PermissionsEnum.REPORT_LOCATION_UPDATE,
+      PermissionsEnum.REPORT_EMAIL_REPLY,
+      // REPORT_AUDIT_READ, REPORT_DELETE, REPORT_EXPORT, REPORT_REVEAL_REPORTER,
+      // REPORT_SENSITIVITY_MANAGE: SUPER_ADMIN-only.
 
       PermissionsEnum.POST_READ,
       PermissionsEnum.POST_REVIEW,
@@ -110,6 +115,9 @@ export class PermissionsSeeder implements OnApplicationBootstrap {
       PermissionsEnum.POST_UNPUBLISH,
       PermissionsEnum.POST_CREATE_OFFICIAL,
       PermissionsEnum.POST_DELETE,
+      PermissionsEnum.POST_FLAG_REVIEW,
+      PermissionsEnum.POST_TAKEDOWN,
+      PermissionsEnum.POST_APPEAL_DECIDE,
 
       PermissionsEnum.MISSING_PERSON_READ,
       PermissionsEnum.MISSING_PERSON_REVIEW,
@@ -134,7 +142,6 @@ export class PermissionsSeeder implements OnApplicationBootstrap {
       // PROFILE_DELETE, PROFILE_CHILD_SAFETY_REVIEW, PROFILE_BANK_DETAILS_MANAGE: SUPER_ADMIN-only.
 
       PermissionsEnum.SUPPORT_READ,
-      PermissionsEnum.SUPPORT_REVIEW,
 
       PermissionsEnum.USER_ROLE_ASSIGN,
       // USER_PROMOTE: SUPER_ADMIN-only.
@@ -146,10 +153,21 @@ export class PermissionsSeeder implements OnApplicationBootstrap {
       PermissionsEnum.AUDIT_LOG_READ,
       // AUDIT_LOG_EXPORT/PURGE/ANONYMIZE/VERIFY_INTEGRITY, AUDIT_ALERT_MANAGE: SUPER_ADMIN-only.
 
+      PermissionsEnum.ANNOUNCEMENT_MANAGE,
+
+      PermissionsEnum.NOTE_READ,
+      PermissionsEnum.NOTE_WRITE,
+      PermissionsEnum.REFERRAL_MANAGE,
+      PermissionsEnum.HELP_MANAGE,
+      PermissionsEnum.LEGAL_MANAGE,
+      // REFERRAL_SENSITIVE: SUPER_ADMIN-only.
+
       PermissionsEnum.DASHBOARD_READ,
 
       PermissionsEnum.MEDIA_UPLOAD,
       PermissionsEnum.MEDIA_DELETE,
+
+      PermissionsEnum.APP_ACCESS_QR_READ,
     ];
 
     // Deliberately empty — no automated/service use case defined yet; add when there's a real one.
@@ -157,62 +175,40 @@ export class PermissionsSeeder implements OnApplicationBootstrap {
 
     // USER gets nothing here — this module is admin-only; USER-level auth lives elsewhere.
 
-    for (const permissionName of adminPermissions) {
-      const permission = await this.prisma.permission.findUnique({
-        where: { name: permissionName },
+    const stored = await this.withRetry('Load permission ids', () =>
+      this.prisma.permission.findMany({
+        where: { name: { in: permissions } },
+        select: { id: true, name: true },
+      }),
+    );
+    const idByName = new Map(stored.map((permission) => [permission.name, permission.id]));
+
+    const idsFor = (names: PermissionsEnum[]): string[] =>
+      names.map((name) => {
+        const id = idByName.get(name);
+        if (!id) {
+          throw new Error(`Permission "${name}" was not found after seeding.`);
+        }
+        return id;
       });
 
-      if (!permission) {
-        throw new Error(`Permission "${permissionName}" was not found after seeding.`);
+    const grants = [
+      { label: 'ADMIN', roleId: adminRole.id, names: adminPermissions },
+      { label: 'SYSTEM', roleId: systemRole.id, names: systemPermissions },
+      { label: 'SUPER_ADMIN', roleId: superAdminRole.id, names: permissions },
+    ];
+
+    for (const grant of grants) {
+      const permissionIds = idsFor(grant.names);
+
+      if (permissionIds.length === 0) {
+        continue;
       }
 
-      await this.withRetry(`Assign "${permissionName}" to ADMIN`, () =>
-        this.prisma.rolePermission.upsert({
-          where: {
-            roleId_permissionId: { roleId: adminRole.id, permissionId: permission.id },
-          },
-          create: { roleId: adminRole.id, permissionId: permission.id },
-          update: {},
-        }),
-      );
-    }
-
-    for (const permissionName of systemPermissions) {
-      const permission = await this.prisma.permission.findUnique({
-        where: { name: permissionName },
-      });
-
-      if (!permission) {
-        throw new Error(`Permission "${permissionName}" was not found after seeding.`);
-      }
-
-      await this.withRetry(`Assign "${permissionName}" to SYSTEM`, () =>
-        this.prisma.rolePermission.upsert({
-          where: {
-            roleId_permissionId: { roleId: systemRole.id, permissionId: permission.id },
-          },
-          create: { roleId: systemRole.id, permissionId: permission.id },
-          update: {},
-        }),
-      );
-    }
-
-    for (const permissionName of permissions) {
-      const permission = await this.prisma.permission.findUnique({
-        where: { name: permissionName },
-      });
-
-      if (!permission) {
-        throw new Error(`Permission "${permissionName}" was not found after seeding.`);
-      }
-
-      await this.withRetry(`Assign "${permissionName}" to SUPER_ADMIN`, () =>
-        this.prisma.rolePermission.upsert({
-          where: {
-            roleId_permissionId: { roleId: superAdminRole.id, permissionId: permission.id },
-          },
-          create: { roleId: superAdminRole.id, permissionId: permission.id },
-          update: {},
+      await this.withRetry(`Assign permissions to ${grant.label}`, () =>
+        this.prisma.rolePermission.createMany({
+          data: permissionIds.map((permissionId) => ({ roleId: grant.roleId, permissionId })),
+          skipDuplicates: true,
         }),
       );
     }

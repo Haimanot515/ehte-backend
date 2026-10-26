@@ -1,0 +1,12 @@
+model AdminRecentRecord {
+  id       String           @id @default(uuid())
+  adminId  String
+  entity   SharedRecordType
+  entityId String
+  label    String?
+  openedAt DateTime         @default(now())
+
+  @@unique([adminId, entity, entityId])
+  @@index([adminId, openedAt])
+  @@map("admin_recent_record")
+}

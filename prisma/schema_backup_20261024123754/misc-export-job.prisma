@@ -1,0 +1,21 @@
+model MiscExportJob {
+  id            String    @id @default(uuid())
+  scope         String
+  requestedById String
+  filter        Json?
+  status        String    @default("QUEUED")
+  rowCount      Int       @default(0)
+  truncated     Boolean   @default(false)
+  partCount     Int       @default(0)
+  fileKeys      Json?
+  error         String?
+  expiresAt     DateTime?
+  startedAt     DateTime?
+  finishedAt    DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @default(now()) @updatedAt
+
+  @@index([scope, requestedById, createdAt])
+  @@index([status, updatedAt])
+  @@map("misc_export_job")
+}

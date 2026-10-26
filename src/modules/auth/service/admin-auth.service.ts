@@ -25,35 +25,38 @@ import { normalizePhoneNumber } from 'src/common/utils/phone.util';
 import { normalizeEmail } from 'src/common/utils/email.util';
 import { resolveActorType } from 'src/common/utils/actor-type.util';
 import { RolesEnum } from 'src/common/enums/roles.enum';
+import { hasStaffRole, NON_INVITABLE_ROLE_NAMES } from 'src/common/utils/role-protection.util';
 
 import { OtpUtil } from 'src/common/utils/otp.util';
+import { assertStrongPassword } from 'src/common/utils/password-policy.util';
 import { LockoutUtil } from 'src/common/utils/lockout.util';
 import { TokenUtil } from 'src/common/utils/token.util';
 
-import { sendEmail } from 'src/services/email/email.service';
+import { EmailService } from 'src/infrastructure/email/email.service';
+import { EmailTemplateService } from 'src/infrastructure/email/email-template.service';
 import {
   renderEmailChangeVerificationSubject,
   renderEmailChangeVerificationHtml,
-} from 'src/services/email/templates/email-change-verification.template';
+} from 'src/infrastructure/email/templates/email-change-verification.template';
 
 import {
   renderAdminRegistrationEmailSubject,
   renderAdminRegistrationEmailHtml,
-} from 'src/services/email/templates/admin-registration-email.template';
+} from 'src/infrastructure/email/templates/admin-registration-email.template';
 
 import {
   renderPromotionEmailSubject,
   renderPromotionEmailHtml,
-} from 'src/services/email/templates/promotion-email.template';
+} from 'src/infrastructure/email/templates/promotion-email.template';
 
 import { AuditEventEnum } from 'src/common/enums/shared/audit-events.enum';
-import { AuditEventPayload } from 'src/modules/misc/events/audit.events';
+import { AuditEventPayload } from 'src/modules/misc/audit-log/events/audit.events';
 
 import { NotificationEventEnum } from 'src/common/enums/shared/notification-events.enum';
 import {
   PasswordChangedEvent,
   PasswordResetEvent,
-} from 'src/modules/misc/events/notification.events';
+} from 'src/modules/misc/notification/events/notification.events';
 
 import {
   ResetPasswordDto,
@@ -69,31 +72,42 @@ import {
   PromoteUserDto,
   PromoteUserResendDto,
   PromoteVerifyDto,
+  PromoteCancelDto,
+  AdminChangeEmailResendDto,
+  DemoteAdminDto,
+  AdminStatsQueryDto,
+  AdminLoginHistoryQueryDto,
 } from '../dto/admin-auth.dto';
+
+import { RefreshTokenDto } from '../dto/auth.dto';
+import { AuthService } from './auth.service';
+import { CacheService } from 'src/infrastructure/redis/cache.service';
+import { PENDING_REGISTRATION_WHERE } from 'src/common/utils/registration-state.util';
 
 type TokenPair = {
   accessToken: string;
   refreshToken: string;
 };
 
-const REGISTRATION_TOKEN_EXPIRES_MINUTES = 60 * 24; // 24h to complete registration
-const PROMOTION_TOKEN_EXPIRES_MINUTES = 60 * 24; // 24h to click the promotion email link
-const EMAIL_CHANGE_TOKEN_EXPIRES_MINUTES = 60; // 1h to click the email-change verification link
+const REGISTRATION_TOKEN_EXPIRES_MINUTES = 60 * 24;
+const PROMOTION_TOKEN_EXPIRES_MINUTES = 60 * 24;
+const EMAIL_CHANGE_TOKEN_EXPIRES_MINUTES = 60;
 
-const ADMIN_ROLES = [RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN];
-
-// ASSUMPTION: resolveActorType only knows about role-bearing actors; cast until
-// AuditEventPayload's actorType union is extended with a SYSTEM variant. Same cast
-// ReportService/PostService use for system-triggered rows.
+// Cast until AuditEventPayload's actorType union gains a SYSTEM variant, same as the report services and the post services
 const SYSTEM_ACTOR_TYPE = 'SYSTEM' as unknown as ReturnType<typeof resolveActorType>;
 
-// Shape shared by every userRoles->role->rolePermissions->permission Prisma query result.
 type UserRoleWithPermissions = {
   role: {
     name: string;
     rolePermissions: { permission: { name: string } }[];
   };
 };
+
+// ── constants for the new admin auth features ──
+const OTP_RESEND_COOLDOWN_MS = 30 * 1000;
+const OTP_RESEND_HOURLY_CAP = 5;
+// Admin login events carry this context in their audit diff (see adminLoginByEmail).
+const ADMIN_LOGIN_CONTEXT = 'admin_login_email';
 
 @Injectable()
 export class AdminAuthService {
@@ -104,29 +118,49 @@ export class AdminAuthService {
     private readonly otpUtil: OtpUtil,
     private readonly lockoutUtil: LockoutUtil,
     private readonly tokenUtil: TokenUtil,
+    private readonly emailService: EmailService,
+    private readonly emailTemplates: EmailTemplateService,
+    private readonly authService: AuthService,
+    private readonly cache: CacheService,
   ) {}
 
-  // Typed audit-emit helper so a missing field is caught at compile time, not silently dropped.
   private emitAudit(payload: AuditEventPayload): void {
     this.eventEmitter.emit(payload.action, payload);
   }
 
-  // Human-readable label for a User entity row — name, falling back to email — so an
-  // audit list identifies *which* user without joining back to the users table.
+  // Security confirmation after an admin password reset/change. A failed send must never
+  // fail the password operation itself, which has already been committed.
+  private async sendAdminPasswordSuccessEmail(
+    user: { name?: string | null; email?: string | null },
+    kind: 'reset' | 'changed',
+  ): Promise<void> {
+    if (!user.email) return;
+
+    try {
+      const params = {
+        kind,
+        occurredAt: new Date(),
+        recipientName: user.name ?? undefined,
+      };
+      await this.emailService.send(
+        user.email,
+        this.emailTemplates.adminPasswordSuccessSubject(kind),
+        this.emailTemplates.adminPasswordSuccessHtml(params),
+        this.emailTemplates.adminPasswordSuccessText(params),
+      );
+    } catch (error) {
+      console.error(`[EHTE EMAIL] Failed to send admin password ${kind} email`, error);
+    }
+  }
+
+  // Admins need a longer password than normal users (ADMIN_PASSWORD_MIN_LENGTH, default 12).
+  private adminPasswordMinLength(): number {
+    return this.configService.get<number>('security.adminPasswordMinLength', 12);
+  }
+
   private userLabel(user: { name?: string | null; email?: string | null }): string | undefined {
     return user.name ?? user.email ?? undefined;
   }
-
-  // ─────────────────────────────────────────────
-  // ACCESS CONTROL HELPERS
-  //
-  // FIX (audit review, item #1): every SUPER_ADMIN-only / admin-only guard in this file
-  // threw 'insufficient_permissions' with no audit trail at all. These two helpers write
-  // a DENIED/WARNING row before throwing, so a non-super-admin attempting to invite,
-  // promote, or cancel admins is visible in the log instead of leaving no trace.
-  // Callers pass the specific action being attempted so the row records what was
-  // actually blocked.
-  // ─────────────────────────────────────────────
 
   private assertSuperAdmin(
     actor: CurrentUserDto,
@@ -179,12 +213,6 @@ export class AdminAuthService {
     throw new UnauthorizedException('insufficient_permissions');
   }
 
-  // FIX (audit review, items #1/#2): the OTP-abuse lockout is a SYSTEM action taken
-  // against the account that owns the OTP — there is no human actor. Previously this was
-  // written as userId = the locked account with no outcome/severity, which read as a
-  // routine SUCCESS/INFO row performed *by* that user. It is now recorded as
-  // targetUserId + SYSTEM actor, outcome DENIED, severity WARNING. Shared by both
-  // OTP-claim flows (reset / change password), and by both attempt-limit branches in each.
   private emitOtpAbuseAlert(
     otpId: string,
     targetUserId: string,
@@ -208,13 +236,10 @@ export class AdminAuthService {
     });
   }
 
-  // Shared "is this role set an admin?" check — duplicated from AuthService by design
-  // (auth/ and admin-auth/ deliberately don't import from each other).
   private hasAdminRole(roles: string[]): boolean {
-    return roles.some((role) => ADMIN_ROLES.includes(role as RolesEnum));
+    return hasStaffRole(roles);
   }
 
-  // Flattens every permission across every role a user holds into one deduped array.
   private derivePermissions(userRoles: UserRoleWithPermissions[]): string[] {
     return [
       ...new Set(
@@ -225,17 +250,99 @@ export class AdminAuthService {
     ];
   }
 
-  // Detects a Prisma P2002 unique-constraint violation for clean 400s on races.
   private isUniqueConstraintError(error: unknown): boolean {
     return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002';
   }
 
-  // Shared token/link/email logic for issuing (or re-issuing) an admin registration
-  // invite. Used by adminRegister() — both on first invite and when re-inviting an
-  // email whose registration is still pending — and by adminRegisterResend().
-  // Overwrites any previous invite token, so a stale/leaked link is invalidated as a
-  // side effect of calling this.
-  private async issueRegistrationInvite(adminId: string, email: string): Promise<void> {
+  // Raw links go to the console on a developer machine only, never in production.
+  private shouldLogDevLinks(): boolean {
+    return (
+      this.configService.get<boolean>('app.debug', false) && process.env.NODE_ENV !== 'production'
+    );
+  }
+
+  // An invite lives 24h, so when it was issued is its expiry minus 24h.
+  private assertInviteResendCooldown(admin: { inviteTokenExpiresAt: Date | null }): void {
+    if (!admin.inviteTokenExpiresAt) return;
+
+    const cooldownMs = this.configService.get<number>('otp.resendCooldownSeconds', 60) * 1000;
+    const issuedAt =
+      admin.inviteTokenExpiresAt.getTime() - REGISTRATION_TOKEN_EXPIRES_MINUTES * 60 * 1000;
+
+    if (Date.now() - issuedAt < cooldownMs) {
+      throw new BadRequestException('resend_too_soon');
+    }
+  }
+
+  // The email a promotion is waiting on. Promotions started before pendingEmail existed kept the
+  // new, unverified email on the user itself, so that older shape is still understood.
+  private promotionTargetEmail(user: {
+    email: string | null;
+    pendingEmail: string | null;
+    isEmailVerified: boolean;
+  }): string | null {
+    if (user.pendingEmail) return user.pendingEmail;
+    return user.email && !user.isEmailVerified ? user.email : null;
+  }
+
+  private async assertPromotionResendAllowed(userId: string): Promise<void> {
+    const cooldownMs = this.configService.get<number>('otp.resendCooldownSeconds', 60) * 1000;
+
+    const recent = await this.prisma.userOtp.findMany({
+      where: {
+        userId,
+        purpose: UserOtpPurposeEnum.promotion_verification,
+        createdAt: { gt: new Date(Date.now() - 60 * 60 * 1000) },
+      },
+      orderBy: { createdAt: 'desc' },
+      select: { createdAt: true },
+    });
+
+    if (recent.length > 0 && Date.now() - recent[0].createdAt.getTime() < cooldownMs) {
+      throw new BadRequestException('resend_too_soon');
+    }
+
+    if (recent.length >= OTP_RESEND_HOURLY_CAP) {
+      throw new BadRequestException('too_many_resend_requests');
+    }
+  }
+
+  // Resend and cancel only make sense for an invite nobody has finished. An account that is
+  // active but never got a password gets its own reason instead of "already completed".
+  private assertRegistrationOpen(
+    admin: {
+      id: string;
+      name?: string | null;
+      email?: string | null;
+      passwordHash: string | null;
+      isActive: boolean;
+    },
+    actor: CurrentUserDto,
+    actorType: ReturnType<typeof resolveActorType>,
+    action: AuditEventEnum,
+  ): void {
+    if (!admin.passwordHash && !admin.isActive) return;
+
+    const reason = admin.passwordHash
+      ? 'registration_already_completed'
+      : 'account_active_without_password';
+
+    this.emitAudit({
+      userId: actor.id,
+      targetUserId: admin.id,
+      actorType,
+      action,
+      outcome: AuditOutcome.FAILURE,
+      severity: AuditSeverity.WARNING,
+      entity: 'User',
+      entityId: admin.id,
+      entityLabel: this.userLabel(admin),
+      diff: { result: 'failure', reason },
+    });
+    throw new BadRequestException(reason);
+  }
+
+  private async issueRegistrationInvite(adminId: string, email: string): Promise<boolean> {
     const rawRegistrationToken = randomBytes(32).toString('hex');
     const inviteTokenHash = this.tokenUtil.hashOpaqueToken(rawRegistrationToken, 'registration');
     const inviteTokenExpiresAt = new Date(
@@ -251,8 +358,10 @@ export class AdminAuthService {
     const registrationLink = `${appUrl}/admin/register?token=${rawRegistrationToken}`;
     const registrationExpiresInHours = Math.round(REGISTRATION_TOKEN_EXPIRES_MINUTES / 60);
 
+    let emailSent = true;
+
     try {
-      await sendEmail(
+      await this.emailService.send(
         email,
         renderAdminRegistrationEmailSubject(),
         renderAdminRegistrationEmailHtml({
@@ -261,41 +370,21 @@ export class AdminAuthService {
         }),
       );
     } catch (error) {
+      emailSent = false;
       console.error(`[EHTE EMAIL] Failed to send admin registration email to ${email}`, error);
     }
 
-    if (this.configService.get<boolean>('app.debug', false)) {
+    if (this.shouldLogDevLinks()) {
       console.log(`[EHTE DEV] Admin registration link for ${email}: ${registrationLink}`);
     }
-  }
 
-  // ADMIN — REGISTER: leaves the account inactive/"REGISTERING" until password is set.
-  //
-  // If the email belongs to a still-pending (never-completed) registration — i.e. no
-  // password has ever been set and the account was never activated — this re-issues a
-  // fresh invite instead of blocking with "email_already_registered". This mirrors
-  // AuthService.signup()'s "unverified existing account: resend" behavior on the user
-  // side. Only an email whose registration has actually completed (passwordHash set,
-  // or isActive) is refused as genuinely taken.
-  //
-  // FIX (audit review, item #2): the actor here is the SUPER_ADMIN doing the inviting,
-  // and the affected user is the invited admin. Both rows previously had that backwards —
-  // userId was the invited admin (with actorType resolved from the *invited* roles) and
-  // the real actor was smuggled into diff.registeredBy. Now userId = creator,
-  // targetUserId = invited admin, actorType resolved from the creator's roles, and the
-  // redundant diff.registeredBy is gone.
-  //
-  // FIX (audit review, item #1): every guard here (insufficient permissions, non-admin
-  // role in the invite, email already registered — both the up-front check and the P2002
-  // race — and unconfigured roles) threw with no audit row. All now emit DENIED/FAILURE
-  // first. The pre-creation failures use entityId: null since there is no User row yet
-  // (same null-entityId shape LOGIN_FAILED already uses for unknown accounts).
+    return emailSent;
+  }
 
   async adminRegister(
     creator: CurrentUserDto,
     data: AdminRegisterDto,
-  ): Promise<{ adminId: string; message: string }> {
-    // Restricted to SUPER_ADMIN
+  ): Promise<{ adminId: string; message: string; emailSent: boolean }> {
     const creatorRoles = creator.roles ?? [];
     const actorType = resolveActorType(creatorRoles);
 
@@ -305,9 +394,7 @@ export class AdminAuthService {
 
     const email = this.normalizeEmailOrThrow(data.email);
 
-    // Defense-in-depth check against inviting with a non-admin role (permanently locked out).
-    const invitableRoles = [RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN];
-    if (data.roles.some((role) => !invitableRoles.includes(role))) {
+    if (data.roles.some((role) => NON_INVITABLE_ROLE_NAMES.includes(role))) {
       this.emitAudit({
         userId: creator.id,
         actorType,
@@ -323,58 +410,6 @@ export class AdminAuthService {
       throw new BadRequestException('only_admin_roles_may_be_registered');
     }
 
-    const existingUser = await this.prisma.user.findUnique({
-      where: { email },
-      include: { userRoles: { include: { role: true } } },
-    });
-
-    if (existingUser) {
-      // Registration already completed (password set, or account active) — genuinely taken.
-      if (existingUser.passwordHash || existingUser.isActive) {
-        this.emitAudit({
-          userId: creator.id,
-          targetUserId: existingUser.id,
-          actorType,
-          action: AuditEventEnum.ADMIN_REGISTERED,
-          outcome: AuditOutcome.FAILURE,
-          severity: AuditSeverity.WARNING,
-          entity: 'User',
-          entityId: existingUser.id,
-          entityLabel: this.userLabel(existingUser),
-          diff: { result: 'failure', reason: 'email_already_registered' },
-          metadata: { attemptedEmail: email, attemptedRoles: data.roles },
-        });
-        throw new BadRequestException('email_already_registered');
-      }
-
-      // Pending, never-completed registration — re-issue a fresh invite rather than
-      // blocking the super admin with no way to recover (e.g. the original email
-      // bounced or was mistyped).
-      //
-      // NOTE: this does not update existingUser's roles to match data.roles if they
-      // differ from the original invite — only the invite token/link is refreshed. If
-      // the invited roles need to change, cancel the pending registration
-      // (adminCancelRegistration) and re-invite from scratch instead.
-      await this.issueRegistrationInvite(existingUser.id, email);
-
-      this.emitAudit({
-        userId: creator.id,
-        targetUserId: existingUser.id,
-        actorType,
-        action: AuditEventEnum.ADMIN_REGISTRATION_RESENT,
-        entity: 'User',
-        entityId: existingUser.id,
-        entityLabel: this.userLabel(existingUser),
-        diff: {
-          result: 'success',
-          context: 'registration_resent_via_register_endpoint',
-        },
-      });
-
-      return { adminId: existingUser.id, message: 'admin_registered' };
-    }
-
-    // Resolve every requested role up front so a typo'd role fails before any writes.
     const roleRecords = await this.prisma.role.findMany({
       where: { name: { in: data.roles } },
     });
@@ -399,6 +434,67 @@ export class AdminAuthService {
       throw new BadRequestException('one_or_more_roles_not_configured');
     }
 
+    const existingUser = await this.prisma.user.findUnique({
+      where: { email },
+      include: { userRoles: { include: { role: true } } },
+    });
+
+    if (existingUser) {
+      if (existingUser.passwordHash || existingUser.isActive) {
+        this.emitAudit({
+          userId: creator.id,
+          targetUserId: existingUser.id,
+          actorType,
+          action: AuditEventEnum.ADMIN_REGISTERED,
+          outcome: AuditOutcome.FAILURE,
+          severity: AuditSeverity.WARNING,
+          entity: 'User',
+          entityId: existingUser.id,
+          entityLabel: this.userLabel(existingUser),
+          diff: { result: 'failure', reason: 'email_already_registered' },
+          metadata: { attemptedEmail: email, attemptedRoles: data.roles },
+        });
+        throw new BadRequestException('email_already_registered');
+      }
+
+      this.assertInviteResendCooldown(existingUser);
+
+      // GAP FIX: a re-invite used to silently keep the OLD roles and ignore data.roles.
+      // The account is still inactive with no password, so replacing roles is safe.
+      const previousRoles = existingUser.userRoles.map((userRole) => userRole.role.name);
+      await this.prisma.$transaction([
+        this.prisma.userRole.deleteMany({ where: { userId: existingUser.id } }),
+        this.prisma.userRole.createMany({
+          data: roleRecords.map((role) => ({ userId: existingUser.id, roleId: role.id })),
+        }),
+      ]);
+
+      const emailSent = await this.issueRegistrationInvite(existingUser.id, email);
+
+      this.emitAudit({
+        userId: creator.id,
+        targetUserId: existingUser.id,
+        actorType,
+        action: AuditEventEnum.ADMIN_REGISTRATION_RESENT,
+        entity: 'User',
+        entityId: existingUser.id,
+        entityLabel: this.userLabel(existingUser),
+        diff: {
+          result: 'success',
+          context: 'registration_resent_via_register_endpoint',
+          emailSent,
+          previousRoles,
+          currentRoles: roleRecords.map((role) => role.name),
+        },
+      });
+
+      return {
+        adminId: existingUser.id,
+        message: emailSent ? 'admin_registered' : 'admin_registered_email_not_sent',
+        emailSent,
+      };
+    }
+
     let admin: { id: string };
 
     try {
@@ -406,7 +502,6 @@ export class AdminAuthService {
         data: {
           email,
           name: data.name,
-          // No phone, no password — this is the "REGISTERING" state
           passwordHash: null,
           isPhoneVerified: false,
           isEmailVerified: false,
@@ -417,7 +512,6 @@ export class AdminAuthService {
         },
       });
     } catch (error) {
-      // Closes the race between the existingUser check above and this write.
       if (this.isUniqueConstraintError(error)) {
         this.emitAudit({
           userId: creator.id,
@@ -429,14 +523,18 @@ export class AdminAuthService {
           entityId: null,
           entityLabel: data.name,
           diff: { result: 'failure', reason: 'email_already_registered' },
-          metadata: { attemptedEmail: email, attemptedRoles: data.roles, detectedBy: 'unique_constraint' },
+          metadata: {
+            attemptedEmail: email,
+            attemptedRoles: data.roles,
+            detectedBy: 'unique_constraint',
+          },
         });
         throw new BadRequestException('email_already_registered');
       }
       throw error;
     }
 
-    await this.issueRegistrationInvite(admin.id, email);
+    const emailSent = await this.issueRegistrationInvite(admin.id, email);
 
     this.emitAudit({
       userId: creator.id,
@@ -451,26 +549,20 @@ export class AdminAuthService {
         roles: data.roles,
         status: 'registered',
       },
-      metadata: { invitedEmail: email },
+      metadata: { invitedEmail: email, emailSent },
     });
 
-    return { adminId: admin.id, message: 'admin_registered' };
+    return {
+      adminId: admin.id,
+      message: emailSent ? 'admin_registered' : 'admin_registered_email_not_sent',
+      emailSent,
+    };
   }
-
-  // ADMIN — RESEND REGISTRATION: only valid while still "REGISTERING" (no password set).
-  //
-  // FIX (audit review, item #2): same actor/target inversion as adminRegister() — userId
-  // was the invited admin, actorType was resolveActorType([]) (i.e. no roles at all), and
-  // the SUPER_ADMIN who actually triggered the resend was only in diff.resentBy. Now
-  // userId = creator (with their real actorType), targetUserId = invited admin.
-  //
-  // FIX (audit review, item #1): insufficient-permissions and registration-already-
-  // completed guards now emit before throwing.
 
   async adminRegisterResend(
     creator: CurrentUserDto,
     data: AdminRegisterResendDto,
-  ): Promise<{ message: string }> {
+  ): Promise<{ message: string; emailSent: boolean }> {
     const creatorRoles = creator.roles ?? [];
     const actorType = resolveActorType(creatorRoles);
 
@@ -486,24 +578,10 @@ export class AdminAuthService {
       throw new NotFoundException('registration_not_found');
     }
 
-    // Once a password has been set (or activated), the registration flow is complete.
-    if (admin.passwordHash || admin.isActive) {
-      this.emitAudit({
-        userId: creator.id,
-        targetUserId: admin.id,
-        actorType,
-        action: AuditEventEnum.ADMIN_REGISTRATION_RESENT,
-        outcome: AuditOutcome.FAILURE,
-        severity: AuditSeverity.WARNING,
-        entity: 'User',
-        entityId: admin.id,
-        entityLabel: this.userLabel(admin),
-        diff: { result: 'failure', reason: 'registration_already_completed' },
-      });
-      throw new BadRequestException('registration_already_completed');
-    }
+    this.assertRegistrationOpen(admin, creator, actorType, AuditEventEnum.ADMIN_REGISTRATION_RESENT);
+    this.assertInviteResendCooldown(admin);
 
-    await this.issueRegistrationInvite(admin.id, email);
+    const emailSent = await this.issueRegistrationInvite(admin.id, email);
 
     this.emitAudit({
       userId: creator.id,
@@ -516,27 +594,15 @@ export class AdminAuthService {
       diff: {
         result: 'success',
         context: 'registration_resent',
+        emailSent,
       },
     });
 
-    return { message: 'registration_resent' };
+    return {
+      message: emailSent ? 'registration_resent' : 'registration_resent_email_not_sent',
+      emailSent,
+    };
   }
-
-  // ADMIN — COMPLETE REGISTRATION: token proves inbox control, sets password + activates.
-  //
-  // FIX (audit review, item #1): both token guards (invalid/expired, and already-used)
-  // threw with no audit row. This is an unauthenticated endpoint, so a burst of failures
-  // here is exactly what someone guessing registration tokens looks like. Both now emit a
-  // FAILURE/WARNING row first. Uses the same PASSWORD_CHANGED action + context as the
-  // success row below, so the two are easy to pair up. When the token doesn't match any
-  // user there is no account to attach the row to, so userId/entityId are null (same
-  // shape LOGIN_FAILED uses for unknown accounts).
-  //
-  // NOTE (not changed): the `admin_email_missing` guard further down runs AFTER the
-  // password has been set and the account activated, and after the success row has been
-  // emitted — so in that (should-never-happen) case the log says SUCCESS but the caller
-  // gets a 400 and no tokens. Worth moving the guard above the write; left alone here
-  // because that's a behavior change rather than an audit fix.
 
   async adminCompleteRegistration(data: AdminCompleteRegistrationDto): Promise<TokenPair> {
     const inviteTokenHash = this.tokenUtil.hashOpaqueToken(data.registrationToken, 'registration');
@@ -576,7 +642,6 @@ export class AdminAuthService {
     }
 
     if (admin.passwordHash) {
-      // Registration token already used to set a password once
       this.emitAudit({
         userId: admin.id,
         actorType: resolveActorType(admin.userRoles.map((userRole) => userRole.role.name)),
@@ -595,22 +660,30 @@ export class AdminAuthService {
       throw new BadRequestException('registration_token_already_used');
     }
 
+    assertStrongPassword(data.password, {
+      minLength: this.adminPasswordMinLength(),
+      personal: [admin.email, admin.name],
+    });
+
     const hashedPassword = await bcrypt.hash(data.password, 10);
     const roles = admin.userRoles.map((userRole) => userRole.role.name);
     const permissions = this.derivePermissions(admin.userRoles);
 
-    await this.prisma.user.update({
-      where: { id: admin.id },
+    // Only the request that still finds "no password + this token" wins; a second one changes nothing.
+    const activated = await this.prisma.user.updateMany({
+      where: { id: admin.id, passwordHash: null, inviteTokenHash },
       data: {
         passwordHash: hashedPassword,
-        // Possessing the token proved control of the registering inbox — activate now
         isEmailVerified: true,
         isActive: true,
-        // Single-use: clear the registration token now that it's been consumed
         inviteTokenHash: null,
         inviteTokenExpiresAt: null,
       },
     });
+
+    if (activated.count === 0) {
+      throw new BadRequestException('registration_token_already_used');
+    }
 
     this.emitAudit({
       userId: admin.id,
@@ -623,27 +696,11 @@ export class AdminAuthService {
     });
 
     if (!admin.email) {
-      // Shouldn't happen for a registration-created admin, but guard anyway
       throw new BadRequestException('admin_email_missing');
     }
 
-    // Admin has no phone at this point — issue tokens with email set, phone left null.
     return this.tokenUtil.issueTokens(admin.id, { email: admin.email }, roles, permissions);
   }
-
-  // ADMIN — CANCEL PENDING REGISTRATION: only valid pre-activation; deletes the row outright.
-  //
-  // FIX (audit review, item #1): insufficient-permissions and registration-already-
-  // completed guards now emit before throwing.
-  //
-  // FIX (audit review, item #4): the row being deleted is gone by the time anyone reads
-  // this log, so entityLabel now carries the cancelled invite's email (it used to live
-  // only in diff.cancelledEmail, and diff.cancelledBy just duplicated userId).
-  //
-  // NOTE (item #2, deliberately NOT applied on the success row): targetUserId is left off
-  // because the target user is deleted in this same call — if AuditLog.targetUserId is a
-  // foreign key to User, writing a deleted user's id there would fail the insert. entityId
-  // still records the id; the failure rows above (user still exists) do set targetUserId.
 
   async adminCancelRegistration(
     actor: CurrentUserDto,
@@ -664,27 +721,13 @@ export class AdminAuthService {
       throw new NotFoundException('registration_not_found');
     }
 
-    if (admin.passwordHash || admin.isActive) {
-      // Already completed — use UserController's deactivate/revoke-role endpoints instead.
-      this.emitAudit({
-        userId: actor.id,
-        targetUserId: admin.id,
-        actorType,
-        action: AuditEventEnum.ADMIN_REGISTRATION_CANCELLED,
-        outcome: AuditOutcome.FAILURE,
-        severity: AuditSeverity.WARNING,
-        entity: 'User',
-        entityId: admin.id,
-        entityLabel: this.userLabel(admin),
-        diff: { result: 'failure', reason: 'registration_already_completed' },
-      });
-      throw new BadRequestException('registration_already_completed');
-    }
+    this.assertRegistrationOpen(admin, actor, actorType, AuditEventEnum.ADMIN_REGISTRATION_CANCELLED);
 
     await this.prisma.user.delete({
       where: { id: admin.id },
     });
 
+    // targetUserId is omitted on success because the target row is deleted in this same call
     this.emitAudit({
       userId: actor.id,
       actorType,
@@ -701,24 +744,10 @@ export class AdminAuthService {
     return { message: 'registration_cancelled' };
   }
 
-  // ADMIN — PROMOTE EXISTING USER (STEP 1): attaches an email; ADMIN role granted at verify.
-  //
-  // FIX (audit review, item #2): the promoted user is the affected party, the SUPER_ADMIN
-  // is the actor. userId was the promoted user (actorType from *their* roles) with the
-  // real actor in diff.initiatedBy. Now userId = actor, targetUserId = promoted user.
-  //
-  // FIX (audit review, item #1): every guard (insufficient permissions, user inactive,
-  // phone unverified, already admin, email already registered — both the up-front check
-  // and the P2002 race) now emits before throwing. The two "not eligible" guards share
-  // one error code externally, but are recorded with distinct reasons.
-  //
-  // FIX (audit review, item #5): otpId isn't a diff of anything — moved to metadata as
-  // promotionOtpId.
-
   async promoteUserInitiate(
     actor: CurrentUserDto,
     data: PromoteUserDto,
-  ): Promise<{ message: string }> {
+  ): Promise<{ message: string; emailSent: boolean }> {
     const actorRoles = actor.roles ?? [];
     const actorType = resolveActorType(actorRoles);
 
@@ -736,7 +765,6 @@ export class AdminAuthService {
       throw new NotFoundException('user_not_found');
     }
 
-    // Requires the existing account to be active and phone-verified before promotion.
     if (!user.isActive) {
       this.emitAudit({
         userId: actor.id,
@@ -807,41 +835,17 @@ export class AdminAuthService {
       throw new BadRequestException('email_already_registered');
     }
 
-    // Attach the email now (unverified); ADMIN role granted only after verify.
-    try {
-      await this.prisma.user.update({
-        where: { id: user.id },
-        data: { email, isEmailVerified: false },
-      });
-    } catch (error) {
-      // Closes the race between the emailInUse check above and this write.
-      if (this.isUniqueConstraintError(error)) {
-        this.emitAudit({
-          userId: actor.id,
-          targetUserId: user.id,
-          actorType,
-          action: AuditEventEnum.USER_PROMOTION_INITIATED,
-          outcome: AuditOutcome.FAILURE,
-          severity: AuditSeverity.WARNING,
-          entity: 'User',
-          entityId: user.id,
-          entityLabel: this.userLabel(user),
-          diff: { result: 'failure', reason: 'email_already_registered' },
-          metadata: { attemptedEmail: email, detectedBy: 'unique_constraint' },
-        });
-        throw new BadRequestException('email_already_registered');
-      }
-      throw error;
-    }
+    // The new email waits in pendingEmail until the person proves they own it. The account's
+    // real email (and its verified flag) is not touched, and nothing is locked meanwhile.
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: { pendingEmail: email },
+    });
 
-    // The clickable link is the proof of inbox ownership, so a high-entropy raw token is used.
     const rawToken = randomBytes(32).toString('hex');
     const tokenHash = this.tokenUtil.hashOpaqueToken(rawToken, 'promotion');
     const expiresAt = new Date(Date.now() + PROMOTION_TOKEN_EXPIRES_MINUTES * 60 * 1000);
 
-    // Invalidate any previous unused promotion link for this user. This also makes a
-    // repeat call to promoteUserInitiate() for the same still-pending user safe: it
-    // simply supersedes the old link with a fresh one rather than erroring.
     await this.prisma.userOtp.updateMany({
       where: { userId: user.id, purpose: UserOtpPurposeEnum.promotion_verification, usedAt: null },
       data: { usedAt: new Date() },
@@ -861,17 +865,20 @@ export class AdminAuthService {
     const promotionLink = `${appUrl}/admin/promote/verify?token=${rawToken}`;
     const expiresInHours = Math.round(PROMOTION_TOKEN_EXPIRES_MINUTES / 60);
 
+    let emailSent = true;
+
     try {
-      await sendEmail(
+      await this.emailService.send(
         email,
         renderPromotionEmailSubject(),
         renderPromotionEmailHtml({ promotionLink, expiresInHours }),
       );
     } catch (error) {
+      emailSent = false;
       console.error(`[EHTE EMAIL] Failed to send promotion link to ${email}`, error);
     }
 
-    if (this.configService.get<boolean>('app.debug', false)) {
+    if (this.shouldLogDevLinks()) {
       console.log(`[EHTE DEV] Promotion link for ${email}: ${promotionLink}`);
     }
 
@@ -887,24 +894,19 @@ export class AdminAuthService {
         result: 'success',
         context: 'promotion_initiated',
       },
-      metadata: { promotionOtpId: promotionOtp.id, promotionEmail: email },
+      metadata: { promotionOtpId: promotionOtp.id, promotionEmail: email, emailSent },
     });
 
-    return { message: 'promotion_email_sent' };
+    return {
+      message: emailSent ? 'promotion_email_sent' : 'promotion_email_not_sent',
+      emailSent,
+    };
   }
-
-  // ADMIN — RESEND PROMOTION: fresh token for a still-pending (unverified) promotion.
-  //
-  // FIX (audit review, item #2): same actor/target inversion as promoteUserInitiate() —
-  // now userId = actor, targetUserId = user being promoted (diff.resentBy dropped).
-  //
-  // FIX (audit review, item #1): insufficient-permissions, promotion-not-initiated,
-  // already-admin, and promotion-already-completed guards now emit before throwing.
 
   async promoteUserResend(
     actor: CurrentUserDto,
     data: PromoteUserResendDto,
-  ): Promise<{ message: string }> {
+  ): Promise<{ message: string; emailSent: boolean }> {
     const actorRoles = actor.roles ?? [];
     const actorType = resolveActorType(actorRoles);
 
@@ -921,8 +923,9 @@ export class AdminAuthService {
       throw new NotFoundException('user_not_found');
     }
 
-    if (!user.email) {
-      // promoteUserInitiate() was never called for this user
+    const targetEmail = this.promotionTargetEmail(user);
+
+    if (!targetEmail) {
       this.emitAudit({
         userId: actor.id,
         targetUserId: user.id,
@@ -957,24 +960,8 @@ export class AdminAuthService {
       throw new BadRequestException('user_already_admin');
     }
 
-    if (user.isEmailVerified) {
-      // Already completed — nothing pending to resend
-      this.emitAudit({
-        userId: actor.id,
-        targetUserId: user.id,
-        actorType,
-        action: AuditEventEnum.USER_PROMOTION_RESENT,
-        outcome: AuditOutcome.FAILURE,
-        severity: AuditSeverity.WARNING,
-        entity: 'User',
-        entityId: user.id,
-        entityLabel: this.userLabel(user),
-        diff: { result: 'failure', reason: 'promotion_already_completed' },
-      });
-      throw new BadRequestException('promotion_already_completed');
-    }
+    await this.assertPromotionResendAllowed(user.id);
 
-    // Invalidate any previous unused promotion link, same as promoteUserInitiate().
     await this.prisma.userOtp.updateMany({
       where: { userId: user.id, purpose: UserOtpPurposeEnum.promotion_verification, usedAt: null },
       data: { usedAt: new Date() },
@@ -998,18 +985,21 @@ export class AdminAuthService {
     const promotionLink = `${appUrl}/admin/promote/verify?token=${rawToken}`;
     const expiresInHours = Math.round(PROMOTION_TOKEN_EXPIRES_MINUTES / 60);
 
+    let emailSent = true;
+
     try {
-      await sendEmail(
-        user.email,
+      await this.emailService.send(
+        targetEmail,
         renderPromotionEmailSubject(),
         renderPromotionEmailHtml({ promotionLink, expiresInHours }),
       );
     } catch (error) {
-      console.error(`[EHTE EMAIL] Failed to resend promotion link to ${user.email}`, error);
+      emailSent = false;
+      console.error(`[EHTE EMAIL] Failed to resend promotion link to ${targetEmail}`, error);
     }
 
-    if (this.configService.get<boolean>('app.debug', false)) {
-      console.log(`[EHTE DEV] Resent promotion link for ${user.email}: ${promotionLink}`);
+    if (this.shouldLogDevLinks()) {
+      console.log(`[EHTE DEV] Resent promotion link for ${targetEmail}: ${promotionLink}`);
     }
 
     this.emitAudit({
@@ -1024,23 +1014,14 @@ export class AdminAuthService {
         result: 'success',
         context: 'promotion_resent',
       },
-      metadata: { promotionOtpId: promotionOtp.id, promotionEmail: user.email },
+      metadata: { promotionOtpId: promotionOtp.id, promotionEmail: targetEmail, emailSent },
     });
 
-    return { message: 'promotion_email_resent' };
+    return {
+      message: emailSent ? 'promotion_email_resent' : 'promotion_email_not_sent',
+      emailSent,
+    };
   }
-
-  // ADMIN — PROMOTE EXISTING USER (STEP 2): possessing the token proves email ownership.
-  //
-  // FIX (audit review, item #1): the invalid/expired-token guard, the
-  // admin-role-not-configured guard, and the lost-the-claim-race guard inside the
-  // transaction all threw with no audit row. All now emit OTP_VERIFIED / FAILURE first
-  // (the same action + entity the success row uses). When the token doesn't match any
-  // OTP there is no entity to attach to, so entityId is null. The raw token / hash is
-  // never written to the log.
-  //
-  // FIX (audit review, item #4): entityLabel added — the promoted user's name/email on
-  // the UserOtp row, so the list shows who the row is about without a join.
 
   async promoteUserVerify(data: PromoteVerifyDto): Promise<{ message: string }> {
     const tokenHash = this.tokenUtil.hashOpaqueToken(data.token, 'promotion');
@@ -1081,11 +1062,7 @@ export class AdminAuthService {
     const user = otpRecord.user;
     const roles = user.userRoles.map((userRole) => userRole.role.name);
 
-    const adminRole = await this.prisma.role.findUnique({
-      where: { name: RolesEnum.ADMIN },
-    });
-
-    if (!adminRole) {
+    const failVerify = (reason: string, code: string): never => {
       this.emitAudit({
         userId: user.id,
         actorType: resolveActorType(roles),
@@ -1095,55 +1072,91 @@ export class AdminAuthService {
         entity: 'UserOtp',
         entityId: otpRecord.id,
         entityLabel: this.userLabel(user),
-        diff: {
-          purpose: 'promotion_verification',
-          result: 'failure',
-          reason: 'admin_role_not_configured',
-        },
+        diff: { purpose: 'promotion_verification', result: 'failure', reason },
       });
-      throw new BadRequestException('admin_role_not_configured');
+      throw new BadRequestException(code);
+    };
+
+    const targetEmail = this.promotionTargetEmail(user);
+
+    if (!targetEmail) {
+      return failVerify('promotion_not_initiated', 'invalid_or_expired_token');
     }
 
-    await this.prisma.$transaction(async (tx) => {
-      // Atomically claim the token so a replayed link can't be used twice.
-      const claimed = await tx.userOtp.updateMany({
-        where: {
-          id: otpRecord.id,
-          usedAt: null,
-          expiresAt: { gt: new Date() },
-        },
-        data: { usedAt: new Date() },
-      });
+    const adminRole = await this.prisma.role.findUnique({
+      where: { name: RolesEnum.ADMIN },
+    });
 
-      if (claimed.count === 0) {
-        this.emitAudit({
-          userId: user.id,
-          actorType: resolveActorType(roles),
-          action: AuditEventEnum.OTP_VERIFIED,
-          outcome: AuditOutcome.FAILURE,
-          severity: AuditSeverity.WARNING,
-          entity: 'UserOtp',
-          entityId: otpRecord.id,
-          entityLabel: this.userLabel(user),
-          diff: {
-            purpose: 'promotion_verification',
-            result: 'failure',
-            reason: 'token_already_claimed',
+    if (!adminRole) {
+      return failVerify('admin_role_not_configured', 'admin_role_not_configured');
+    }
+
+    // Checked before the link is claimed, so a weak password does not burn it. Every promoted
+    // admin ends up with a password that meets the admin rules, including Google/Apple users who
+    // had none and users who signed up under the shorter public rule.
+    assertStrongPassword(data.password, {
+      minLength: this.adminPasswordMinLength(),
+      personal: [targetEmail, user.name],
+    });
+
+    const passwordHash = await bcrypt.hash(data.password, 10);
+
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        const claimed = await tx.userOtp.updateMany({
+          where: {
+            id: otpRecord.id,
+            usedAt: null,
+            expiresAt: { gt: new Date() },
+          },
+          data: { usedAt: new Date() },
+        });
+
+        if (claimed.count === 0) {
+          return failVerify('token_already_claimed', 'invalid_or_expired_token');
+        }
+
+        // Look at the person again NOW. Eligibility was only checked when the link was sent, and
+        // the link lives 24h: they may have been deactivated, deleted or promoted since.
+        const current = await tx.user.findUnique({
+          where: { id: user.id },
+          select: {
+            isActive: true,
+            deletedAt: true,
+            anonymizedAt: true,
+            userRoles: { select: { role: { select: { name: true } } } },
           },
         });
-        throw new BadRequestException('invalid_or_expired_token');
+
+        if (!current || !current.isActive || current.deletedAt || current.anonymizedAt) {
+          return failVerify('user_no_longer_eligible', 'user_not_eligible_for_promotion');
+        }
+
+        if (this.hasAdminRole(current.userRoles.map((userRole) => userRole.role.name))) {
+          return failVerify('user_already_admin', 'user_already_admin');
+        }
+
+        await tx.user.update({
+          where: { id: user.id },
+          data: { email: targetEmail, pendingEmail: null, isEmailVerified: true, passwordHash },
+        });
+
+        await tx.userRole.create({
+          data: { userId: user.id, roleId: adminRole.id },
+        });
+
+        // New password and new role: every old sign-in has to start again with both.
+        await tx.session.deleteMany({ where: { userId: user.id } });
+      });
+    } catch (error) {
+      // Someone else took the email between the link being sent and now.
+      if (this.isUniqueConstraintError(error)) {
+        return failVerify('email_already_registered', 'email_already_registered');
       }
+      throw error;
+    }
 
-      await tx.user.update({
-        where: { id: user.id },
-        data: { isEmailVerified: true },
-      });
-
-      // Additive: grant ADMIN alongside every role the user already has (USER stays).
-      await tx.userRole.create({
-        data: { userId: user.id, roleId: adminRole.id },
-      });
-    });
+    await this.cache.purgeUserCache(user.id);
 
     this.emitAudit({
       userId: user.id,
@@ -1158,24 +1171,14 @@ export class AdminAuthService {
         previousRoles: roles,
         addedRole: RolesEnum.ADMIN,
         retainedRoles: roles,
+        passwordSet: true,
+        sessionsRevoked: true,
       },
+      metadata: { promotedEmail: targetEmail },
     });
 
     return { message: 'user_promoted_to_admin' };
   }
-
-  // ADMIN — FORGOT PASSWORD: email-only; masks "no account"/"not admin"/"inactive" identically.
-  // Already the email-OTP path (see OtpChannelEnum.email below) — kept unchanged.
-  //
-  // FIX (audit review, item #1): the masked branch returned an empty verificationId with
-  // no trace at all — so probing the admin forgot-password endpoint with non-admin or
-  // deactivated accounts was invisible. The *response* to the caller is still masked
-  // identically, but an internal DENIED row now records why. Severity is WARNING when a
-  // real account was targeted (not an admin / inactive) and INFO for a plain unknown
-  // email, which is noisy typo traffic on a public endpoint.
-  //
-  // NOTE: no success row is added here — OtpUtil.issueAndSendOtp() is outside this file
-  // and may already audit the issuance; adding one here risked double-logging.
 
   async adminForgotPassword(data: AdminForgotPasswordDto): Promise<{ verificationId: string }> {
     const email = this.normalizeEmailOrThrow(data.email);
@@ -1189,7 +1192,6 @@ export class AdminAuthService {
 
     const isAdmin = this.hasAdminRole(roles);
 
-    // Mask: no account, not an admin, or inactive all look identical externally.
     if (!user || !isAdmin || !user.isActive) {
       this.emitAudit({
         userId: user?.id ?? null,
@@ -1215,29 +1217,11 @@ export class AdminAuthService {
       email,
       UserOtpPurposeEnum.password_reset,
       OtpChannelEnum.email,
+      { adminEmail: true, recipientName: user.name ?? undefined },
     );
 
     return { verificationId };
   }
-
-  // ADMIN — LOGIN BY EMAIL: the only admin credential path; also requires isEmailVerified.
-  //
-  // FIX (audit review, item #1): every LOGIN_FAILED row here was written with no outcome
-  // or severity, so each one fell through to the default SUCCESS/INFO — a failed admin
-  // login was being recorded as a successful, informational event. Now:
-  //   - bad credentials / unknown account / not an admin / email unverified → FAILURE
-  //   - locked account, inactive account (policy refusals)                  → DENIED
-  // all at WARNING severity. The first branch also gains a specific diff.reason
-  // (unknown_account / not_an_admin / password_not_set / email_not_verified) — internal
-  // only, the caller still gets the same masked 'invalid_credentials'.
-  //
-  // FIX (audit review, item #5): the attempted email goes in metadata on the
-  // unknown-account/not-admin branch — without it a failed login for an account that
-  // doesn't exist has nothing identifying what was tried.
-  //
-  // (userId stays as the account being logged into on these rows — for unauthenticated
-  // self-service flows there is no separate actor, which is the convention LOGIN_FAILED
-  // already established here.)
 
   async adminLoginByEmail(data: AdminLoginEmailDto): Promise<TokenPair> {
     const email = this.normalizeEmailOrThrow(data.email);
@@ -1382,30 +1366,6 @@ export class AdminAuthService {
     );
   }
 
-  // ADMIN — RESET PASSWORD (FORGOT-PASSWORD FLOW): verifies the OTP owner is actually an
-  // admin, then runs the same OTP-claim + password-update flow AuthService.resetPassword()
-  // uses (duplicated here since admin-auth/ doesn't import from auth/). Reached only via
-  // adminForgotPassword() — i.e. the admin does NOT already know their current password.
-  // Contrast with adminChangePasswordInitiate/Verify below, which is for an admin who DOES
-  // know their current password and wants to change it while logged in.
-  //
-  // FIX (audit review, item #1): the OTP guards here left no trace except the
-  // attempts >= 5 SECURITY_ALERT. Now:
-  //   - invalid / wrong-purpose / used / expired OTP     → OTP_VERIFIED FAILURE
-  //   - OTP owner isn't an admin                          → OTP_VERIFIED DENIED
-  //   - wrong OTP value (below the lockout threshold)     → OTP_VERIFIED FAILURE, with the
-  //     running attempt count in metadata (the individual attempts leading up to a lockout
-  //     were previously invisible; only the final SECURITY_ALERT existed)
-  //   - lost the claim race inside the transaction        → OTP_VERIFIED FAILURE
-  // Each carries a specific diff.reason. Uses the UserOtp entity, matching the SECURITY_ALERT
-  // rows and promoteUserVerify's OTP_VERIFIED rows.
-  //
-  // FIX (audit review, items #1/#2): both SECURITY_ALERT rows now go through
-  // emitOtpAbuseAlert() — SYSTEM actor, targetUserId = the locked account, DENIED/WARNING.
-  //
-  // FIX (audit review, item #4): the OTP lookup now also selects the user's name/email
-  // so rows can carry an entityLabel.
-
   async adminResetPassword(data: ResetPasswordDto): Promise<{ message: string }> {
     const otpRecord = await this.prisma.userOtp.findUnique({
       where: { id: data.verificationId },
@@ -1523,6 +1483,11 @@ export class AdminAuthService {
       throw new BadRequestException('invalid_or_expired_otp');
     }
 
+    assertStrongPassword(data.newPassword, {
+      minLength: this.adminPasswordMinLength(),
+      personal: [otpRecord.user.email, otpRecord.user.name],
+    });
+
     const hashedPassword = await bcrypt.hash(data.newPassword, 10);
 
     await this.prisma.$transaction(async (tx) => {
@@ -1560,7 +1525,6 @@ export class AdminAuthService {
         data: { passwordHash: hashedPassword },
       });
 
-      // Invalidate every existing session
       await tx.session.deleteMany({
         where: { userId: otpRecord.user.id },
       });
@@ -1576,32 +1540,13 @@ export class AdminAuthService {
       diff: { method: 'otp', result: 'success', context: 'admin_reset_password' },
     });
 
-    // Notify after successful transaction — same as AuthService.resetPassword().
     const resetEvent: PasswordResetEvent = { userId: otpRecord.user.id };
     this.eventEmitter.emit(NotificationEventEnum.PASSWORD_RESET, resetEvent);
 
+    await this.sendAdminPasswordSuccessEmail(otpRecord.user, 'reset');
+
     return { message: 'password_reset_successful' };
   }
-
-  // ADMIN — CHANGE PASSWORD (STEP 1): authenticated admin proves they still know their
-  // current password, then an OTP is emailed to their own address before a new password
-  // is accepted. This is the dedicated admin-only self-service flow — the shared USER
-  // /auth/change-password endpoint (AuthService.changePassword()) now rejects any
-  // account holding an admin role and points it here instead.
-  //
-  // FIX (audit review, item #1): the not-an-admin, password-not-set, WRONG CURRENT
-  // PASSWORD, and admin-email-missing guards all threw with no audit row. The wrong-
-  // current-password one matters most — on an already-authenticated session it can mean
-  // a hijacked session probing for the real password. All now emit before throwing, under
-  // PASSWORD_CHANGED (there is no dedicated "password change initiated" event) with
-  // context 'admin_change_password_initiated' to pair with the existing
-  // 'admin_change_password_completed' success row from step 2.
-  //
-  // NOTE (not changed — needs a decision): there is still no *success* audit row for step
-  // 1, because no suitable AuditEventEnum value exists for it (unlike
-  // ADMIN_EMAIL_CHANGE_INITIATED / USER_PROMOTION_INITIATED on the sibling flows). Adding
-  // one means adding it to the audit catalog. Also, unlike login, a wrong current password
-  // here isn't counted toward any lockout, so it can be retried without limit.
 
   async adminChangePasswordInitiate(
     actor: CurrentUserDto,
@@ -1661,7 +1606,6 @@ export class AdminAuthService {
     }
 
     if (!admin.email) {
-      // Shouldn't happen for an admin account, but guard anyway — there's nowhere to send the OTP.
       this.emitAudit({
         userId: actor.id,
         actorType,
@@ -1680,29 +1624,16 @@ export class AdminAuthService {
       throw new BadRequestException('admin_email_missing');
     }
 
-    // Dedicated password_change purpose (distinct from password_reset, which stays
-    // scoped to adminForgotPassword()/adminResetPassword()) — same email channel and
-    // proof-of-inbox pattern, just reached only after the current-password check above,
-    // and no longer redeemable via the forgot-password /verify endpoint or vice versa.
     const { verificationId } = await this.otpUtil.issueAndSendOtp(
       admin.id,
       admin.email,
       UserOtpPurposeEnum.password_change,
       OtpChannelEnum.email,
+      { adminEmail: true, recipientName: admin.name ?? undefined },
     );
 
     return { verificationId };
   }
-
-  // ADMIN — CHANGE PASSWORD (STEP 2): possessing the emailed OTP proves inbox control.
-  // Mirrors adminResetPassword()'s OTP-claim pattern; kept as a separate method (rather
-  // than calling adminResetPassword() directly) so the two flows stay independently
-  // auditable, matching this file's existing register/promote/reset duplication pattern.
-  //
-  // FIX (audit review, items #1/#2/#4): identical treatment to adminResetPassword() — the
-  // OTP guards now emit OTP_VERIFIED FAILURE/DENIED rows, both SECURITY_ALERT rows go
-  // through emitOtpAbuseAlert() (SYSTEM actor, targetUserId), and the OTP lookup selects
-  // name/email for entityLabel.
 
   async adminChangePasswordVerify(data: ResetPasswordDto): Promise<{ message: string }> {
     const otpRecord = await this.prisma.userOtp.findUnique({
@@ -1776,7 +1707,12 @@ export class AdminAuthService {
     if (otpRecord.attempts >= 5) {
       await this.lockoutUtil.lockAccountForOtpAbuse(otpRecord.user.id);
 
-      this.emitOtpAbuseAlert(otpRecord.id, otpRecord.user.id, 'password_change', otpRecord.attempts);
+      this.emitOtpAbuseAlert(
+        otpRecord.id,
+        otpRecord.user.id,
+        'password_change',
+        otpRecord.attempts,
+      );
 
       throw new BadRequestException('too_many_otp_attempts');
     }
@@ -1821,6 +1757,11 @@ export class AdminAuthService {
       throw new BadRequestException('invalid_or_expired_otp');
     }
 
+    assertStrongPassword(data.newPassword, {
+      minLength: this.adminPasswordMinLength(),
+      personal: [otpRecord.user.email, otpRecord.user.name],
+    });
+
     const hashedPassword = await bcrypt.hash(data.newPassword, 10);
 
     await this.prisma.$transaction(async (tx) => {
@@ -1858,7 +1799,6 @@ export class AdminAuthService {
         data: { passwordHash: hashedPassword },
       });
 
-      // Invalidate every existing session, including the one used to call step 1.
       await tx.session.deleteMany({
         where: { userId: otpRecord.user.id },
       });
@@ -1874,21 +1814,13 @@ export class AdminAuthService {
       diff: { method: 'otp', result: 'success', context: 'admin_change_password_completed' },
     });
 
-    // Notify after successful transaction — same as AuthService.changePasswordVerify().
     const changedEvent: PasswordChangedEvent = { userId: otpRecord.user.id };
     this.eventEmitter.emit(NotificationEventEnum.PASSWORD_CHANGED, changedEvent);
 
+    await this.sendAdminPasswordSuccessEmail(otpRecord.user, 'changed');
+
     return { message: 'password_changed' };
   }
-
-  // Self-service admin email change (STEP 1): gated by re-authentication at the controller.
-  //
-  // FIX (audit review, item #1): the not-an-admin, email-unchanged, and email-already-
-  // registered (up-front check and P2002 race) guards now emit before throwing.
-  //
-  // FIX (audit review): diff now records previousEmail alongside newEmail — the row
-  // describes a state change (old address -> new address), and without the old value an
-  // email swap on an admin account couldn't be reconstructed from the log.
 
   async adminChangeEmailInitiate(
     actor: CurrentUserDto,
@@ -1942,7 +1874,6 @@ export class AdminAuthService {
       throw new BadRequestException('email_already_registered');
     }
 
-    // Attach the new email now (unverified) — same immediate-attach pattern as promotion.
     try {
       await this.prisma.user.update({
         where: { id: admin.id },
@@ -1971,8 +1902,6 @@ export class AdminAuthService {
     const tokenHash = this.tokenUtil.hashOpaqueToken(rawToken, 'email_change');
     const expiresAt = new Date(Date.now() + EMAIL_CHANGE_TOKEN_EXPIRES_MINUTES * 60 * 1000);
 
-    // Reuses email_verification purpose — no dedicated "email change" enum value exists.
-    // Invalidate any previous unused email-change request for this admin.
     await this.prisma.userOtp.updateMany({
       where: {
         userId: admin.id,
@@ -1996,10 +1925,8 @@ export class AdminAuthService {
     const changeEmailLink = `${appUrl}/admin/change-email/verify?token=${rawToken}`;
     const expiresInHours = Math.round(EMAIL_CHANGE_TOKEN_EXPIRES_MINUTES / 60) || 1;
 
-    // Dedicated link-based template — previously this borrowed the OTP-code template
-    // as a stand-in, which read wrong ("Your OTP is: https://...") for a clickable link.
     try {
-      await sendEmail(
+      await this.emailService.send(
         newEmail,
         renderEmailChangeVerificationSubject(),
         renderEmailChangeVerificationHtml({
@@ -2011,7 +1938,7 @@ export class AdminAuthService {
       console.error(`[EHTE EMAIL] Failed to send email-change verification to ${newEmail}`, error);
     }
 
-    if (this.configService.get<boolean>('app.debug', false)) {
+    if (this.shouldLogDevLinks()) {
       console.log(`[EHTE DEV] Email-change verification link for ${newEmail}: ${changeEmailLink}`);
     }
 
@@ -2032,18 +1959,6 @@ export class AdminAuthService {
 
     return { message: 'email_change_verification_sent' };
   }
-
-  // ADMIN — CHANGE EMAIL (STEP 2): possessing the token proves control of the new inbox.
-  //
-  // FIX (audit review, item #1): the invalid/expired-token guard and the lost-the-claim-
-  // race guard inside the transaction now emit ADMIN_EMAIL_CHANGE_VERIFIED / FAILURE
-  // before throwing. With no matching OTP there's no entity to attach to, so entityId is
-  // null (the token itself is never logged).
-  //
-  // FIX (audit review, items #4): the success row previously used resolveActorType([]) —
-  // i.e. an actor with no roles at all — because the user was never loaded. The
-  // transaction's user update now returns the user + roles, so actorType resolves from
-  // their real roles and entityLabel can carry the verified email.
 
   async adminChangeEmailVerify(data: AdminChangeEmailVerifyDto): Promise<{ message: string }> {
     const tokenHash = this.tokenUtil.hashOpaqueToken(data.token, 'email_change');
@@ -2125,7 +2040,6 @@ export class AdminAuthService {
     return { message: 'email_changed' };
   }
 
-  // Wraps normalizePhoneNumber() so malformed input yields a clean 400, not a raw 500.
   private normalizePhoneOrThrow(phone: string): string {
     try {
       return normalizePhoneNumber(phone);
@@ -2134,12 +2048,688 @@ export class AdminAuthService {
     }
   }
 
-  // Wraps normalizeEmail() so malformed input yields a clean 400, not a raw 500.
   private normalizeEmailOrThrow(email: string): string {
     try {
       return normalizeEmail(email);
     } catch {
       throw new BadRequestException('invalid_email');
     }
+  }
+
+  private maskEmail(email: string): string {
+    const [local, domain] = email.split('@');
+    if (!domain) return '***';
+    return `${local.slice(0, 1)}***@${domain}`;
+  }
+
+  // AR-13. Undoes a pending promotion: the emailed link stops working and the unverified
+  // email that initiate wrote on the account is cleared. The user keeps their normal account.
+  async promoteUserCancel(
+    actor: CurrentUserDto,
+    data: PromoteCancelDto,
+  ): Promise<{ message: string }> {
+    const actorType = resolveActorType(actor.roles ?? []);
+
+    this.assertSuperAdmin(actor, AuditEventEnum.USER_PROMOTION_CANCELLED);
+
+    const phone = this.normalizePhoneOrThrow(data.phone);
+
+    const user = await this.prisma.user.findUnique({
+      where: { phone },
+      include: { userRoles: { include: { role: true } } },
+    });
+
+    if (!user) {
+      throw new NotFoundException('user_not_found');
+    }
+
+    const roles = user.userRoles.map((userRole) => userRole.role.name);
+
+    if (this.hasAdminRole(roles)) {
+      this.emitAudit({
+        userId: actor.id,
+        targetUserId: user.id,
+        actorType,
+        action: AuditEventEnum.USER_PROMOTION_CANCELLED,
+        outcome: AuditOutcome.FAILURE,
+        severity: AuditSeverity.WARNING,
+        entity: 'User',
+        entityId: user.id,
+        entityLabel: this.userLabel(user),
+        diff: { result: 'failure', reason: 'promotion_already_completed' },
+      });
+      throw new BadRequestException('promotion_already_completed');
+    }
+
+    const pending = await this.prisma.userOtp.findFirst({
+      where: { userId: user.id, purpose: UserOtpPurposeEnum.promotion_verification, usedAt: null },
+      select: { id: true },
+    });
+
+    if (!pending) {
+      throw new NotFoundException('no_pending_promotion');
+    }
+
+    const cancelledEmail = this.promotionTargetEmail(user);
+
+    // Older promotions parked the new email in `email`; those still need it cleared. Newer ones
+    // only clear pendingEmail, so the email the person already had and verified stays.
+    const legacyUnverifiedEmail = !user.pendingEmail && !!user.email && !user.isEmailVerified;
+
+    await this.prisma.$transaction([
+      this.prisma.userOtp.updateMany({
+        where: {
+          userId: user.id,
+          purpose: UserOtpPurposeEnum.promotion_verification,
+          usedAt: null,
+        },
+        data: { usedAt: new Date() },
+      }),
+      this.prisma.user.update({
+        where: { id: user.id },
+        data: legacyUnverifiedEmail ? { pendingEmail: null, email: null } : { pendingEmail: null },
+      }),
+    ]);
+
+    this.emitAudit({
+      userId: actor.id,
+      targetUserId: user.id,
+      actorType,
+      action: AuditEventEnum.USER_PROMOTION_CANCELLED,
+      entity: 'User',
+      entityId: user.id,
+      entityLabel: this.userLabel(user),
+      diff: { result: 'success', context: 'promotion_cancelled' },
+      metadata: { cancelledEmail },
+    });
+
+    return { message: 'promotion_cancelled' };
+  }
+
+  // AR-14
+  async listPendingPromotions(actor: CurrentUserDto) {
+    this.assertSuperAdmin(actor, AuditEventEnum.USER_PROMOTION_INITIATED);
+
+    const pending = await this.prisma.userOtp.findMany({
+      where: { purpose: UserOtpPurposeEnum.promotion_verification, usedAt: null },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        createdAt: true,
+        expiresAt: true,
+        user: { select: { id: true, name: true, phone: true, email: true, pendingEmail: true } },
+      },
+    });
+
+    const now = new Date();
+
+    return pending.map((item) => ({
+      id: item.id,
+      userId: item.user.id,
+      name: item.user.name,
+      phone: item.user.phone,
+      email: item.user.pendingEmail ?? item.user.email,
+      createdAt: item.createdAt,
+      expiresAt: item.expiresAt,
+      expired: item.expiresAt < now,
+    }));
+  }
+
+  // AR-15. A registration is pending while the invited admin has not set a password yet.
+  async listPendingRegistrations(actor: CurrentUserDto) {
+    this.assertSuperAdmin(actor, AuditEventEnum.ADMIN_REGISTERED);
+
+    const pending = await this.prisma.user.findMany({
+      where: PENDING_REGISTRATION_WHERE,
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        createdAt: true,
+        inviteTokenExpiresAt: true,
+      },
+    });
+
+    const now = new Date();
+
+    return pending.map((item) => ({
+      id: item.id,
+      name: item.name,
+      email: item.email,
+      createdAt: item.createdAt,
+      expiresAt: item.inviteTokenExpiresAt,
+      expired: item.inviteTokenExpiresAt ? item.inviteTokenExpiresAt < now : true,
+    }));
+  }
+
+  // AR-16. Same empty-handed refusals as adminForgotPassword, plus a 30-second gap and an hourly cap.
+  async adminResendForgotPasswordOtp(verificationId: string): Promise<{ verificationId: string }> {
+    const oldOtp = await this.prisma.userOtp.findUnique({
+      where: { id: verificationId },
+      include: {
+        user: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            isActive: true,
+            userRoles: { select: { role: { select: { name: true } } } },
+          },
+        },
+      },
+    });
+
+    if (!oldOtp || oldOtp.purpose !== UserOtpPurposeEnum.password_reset) {
+      throw new BadRequestException('invalid_verification');
+    }
+
+    // Used up by a reset, or replaced by a newer code: either way this id is finished.
+    if (oldOtp.usedAt) {
+      throw new BadRequestException('invalid_verification');
+    }
+
+    const roles = oldOtp.user.userRoles.map((userRole) => userRole.role.name);
+
+    if (!oldOtp.user.isActive || !oldOtp.user.email || !this.hasAdminRole(roles)) {
+      throw new BadRequestException('invalid_verification');
+    }
+
+    // OtpUtil silently returns the SAME id inside its own cooldown, so refuse out loud instead.
+    const cooldownMs = this.configService.get<number>('otp.resendCooldownSeconds', 60) * 1000;
+
+    if (Date.now() - oldOtp.createdAt.getTime() < cooldownMs) {
+      throw new BadRequestException('resend_too_soon');
+    }
+
+    const recent = await this.prisma.userOtp.count({
+      where: {
+        userId: oldOtp.userId,
+        purpose: UserOtpPurposeEnum.password_reset,
+        createdAt: { gt: new Date(Date.now() - 60 * 60 * 1000) },
+      },
+    });
+
+    if (recent >= OTP_RESEND_HOURLY_CAP) {
+      throw new BadRequestException('too_many_resend_requests');
+    }
+
+    const { verificationId: newVerificationId } = await this.otpUtil.issueAndSendOtp(
+      oldOtp.userId,
+      oldOtp.user.email,
+      UserOtpPurposeEnum.password_reset,
+      OtpChannelEnum.email,
+      { adminEmail: true, recipientName: oldOtp.user.name ?? undefined },
+    );
+
+    return { verificationId: newVerificationId };
+  }
+
+  // AR-17. Sends a fresh link to the pending new email; the old link stops working.
+  async adminChangeEmailResend(
+    actor: CurrentUserDto,
+    data: AdminChangeEmailResendDto,
+  ): Promise<{ message: string }> {
+    const actorType = resolveActorType(actor.roles ?? []);
+
+    this.assertActorIsAdmin(actor, AuditEventEnum.ADMIN_EMAIL_CHANGE_INITIATED);
+
+    const admin = await this.prisma.user.findUnique({ where: { id: actor.id } });
+
+    if (!admin) {
+      throw new NotFoundException('user_not_found');
+    }
+
+    // An email change in progress is an unverified email on the account.
+    if (!admin.email || admin.isEmailVerified) {
+      throw new BadRequestException('no_pending_email_change');
+    }
+
+    if (data.newEmail && this.normalizeEmailOrThrow(data.newEmail) !== admin.email) {
+      throw new BadRequestException('email_does_not_match_pending_change');
+    }
+
+    const lastOtp = await this.prisma.userOtp.findFirst({
+      where: { userId: admin.id, purpose: UserOtpPurposeEnum.email_verification },
+      orderBy: { createdAt: 'desc' },
+      select: { createdAt: true },
+    });
+
+    if (lastOtp && Date.now() - lastOtp.createdAt.getTime() < OTP_RESEND_COOLDOWN_MS) {
+      throw new BadRequestException('resend_too_soon');
+    }
+
+    const rawToken = randomBytes(32).toString('hex');
+    const tokenHash = this.tokenUtil.hashOpaqueToken(rawToken, 'email_change');
+    const expiresAt = new Date(Date.now() + EMAIL_CHANGE_TOKEN_EXPIRES_MINUTES * 60 * 1000);
+
+    await this.prisma.userOtp.updateMany({
+      where: { userId: admin.id, purpose: UserOtpPurposeEnum.email_verification, usedAt: null },
+      data: { usedAt: new Date() },
+    });
+
+    await this.prisma.userOtp.create({
+      data: {
+        userId: admin.id,
+        otpHash: tokenHash,
+        purpose: UserOtpPurposeEnum.email_verification,
+        channel: OtpChannelEnum.email,
+        expiresAt,
+      },
+    });
+
+    const appUrl = this.configService.get<string>('app.adminUrl', 'https://ehte.org');
+    const changeEmailLink = `${appUrl}/admin/change-email/verify?token=${rawToken}`;
+    const expiresInHours = Math.round(EMAIL_CHANGE_TOKEN_EXPIRES_MINUTES / 60) || 1;
+
+    try {
+      await this.emailService.send(
+        admin.email,
+        renderEmailChangeVerificationSubject(),
+        renderEmailChangeVerificationHtml({ changeEmailLink, expiresInHours }),
+      );
+    } catch (error) {
+      console.error(
+        `[EHTE EMAIL] Failed to resend email-change verification to ${admin.email}`,
+        error,
+      );
+    }
+
+    if (this.shouldLogDevLinks()) {
+      console.log(`[EHTE DEV] Resent email-change link for ${admin.email}: ${changeEmailLink}`);
+    }
+
+    this.emitAudit({
+      userId: admin.id,
+      actorType,
+      action: AuditEventEnum.ADMIN_EMAIL_CHANGE_INITIATED,
+      entity: 'User',
+      entityId: admin.id,
+      entityLabel: this.userLabel(admin),
+      diff: { result: 'success', context: 'admin_email_change_resent' },
+      metadata: { pendingEmail: this.maskEmail(admin.email) },
+    });
+
+    return { message: 'email_change_verification_resent' };
+  }
+
+  // AR-18 / AR-19 / AR-20. These reuse the user-side logic, which already handles the refresh
+  // token, the session cache and the audit trail, so there is one implementation to maintain.
+  async adminLogout(actor: CurrentUserDto, req: any): Promise<{ message: string }> {
+    this.assertActorIsAdmin(actor, AuditEventEnum.LOGOUT);
+    return this.authService.logout(actor, req);
+  }
+
+  async adminRefresh(data: RefreshTokenDto): Promise<TokenPair> {
+    return this.authService.refresh(data);
+  }
+
+  async adminLogoutAll(actor: CurrentUserDto, req: any) {
+    this.assertActorIsAdmin(actor, AuditEventEnum.LOGOUT);
+    return this.authService.logoutAll(actor, req);
+  }
+
+  // AR-21
+  async adminMe(actor: CurrentUserDto) {
+    this.assertActorIsAdmin(actor, AuditEventEnum.LOGIN_SUCCESS);
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: actor.id },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        phone: true,
+        isActive: true,
+        isEmailVerified: true,
+        createdAt: true,
+        userRoles: {
+          select: {
+            role: {
+              select: {
+                name: true,
+                rolePermissions: { select: { permission: { select: { name: true } } } },
+              },
+            },
+          },
+        },
+        twoFactorSecret: { select: { isEnabled: true } },
+      },
+    });
+
+    if (!user) {
+      throw new NotFoundException('user_not_found');
+    }
+
+    // The newest sign-in is this session's own; the one before it is the "last sign-in" to show.
+    const signIns = await this.prisma.auditLog.findMany({
+      where: { userId: actor.id, action: AuditEventEnum.LOGIN_SUCCESS },
+      orderBy: { createdAt: 'desc' },
+      take: 2,
+      select: { createdAt: true, ipAddress: true, country: true, city: true, userAgent: true },
+    });
+
+    const { userRoles, twoFactorSecret, ...profile } = user;
+
+    return {
+      ...profile,
+      roles: userRoles.map((userRole) => userRole.role.name),
+      permissions: this.derivePermissions(userRoles).sort(),
+      twoFactorEnabled: Boolean(twoFactorSecret?.isEnabled),
+      currentSignIn: signIns[0] ?? null,
+      lastSignIn: signIns[1] ?? null,
+    };
+  }
+
+  // AR-22. Removes only the ADMIN role. The user keeps every other role; if that would leave
+  // them with none, they go back to USER. Sessions are ended so the old permissions stop at once.
+  async demoteAdmin(
+    actor: CurrentUserDto,
+    data: DemoteAdminDto,
+  ): Promise<{ message: string; remainingRoles: string[] }> {
+    const actorType = resolveActorType(actor.roles ?? []);
+
+    this.assertSuperAdmin(actor, AuditEventEnum.ADMIN_DEMOTED);
+
+    const reason = (data.reason ?? '').trim();
+
+    if (reason.length < 5) {
+      throw new BadRequestException('reason_required');
+    }
+
+    const deny = (code: string, targetId: string, label?: string): never => {
+      this.emitAudit({
+        userId: actor.id,
+        targetUserId: targetId,
+        actorType,
+        action: AuditEventEnum.ADMIN_DEMOTED,
+        outcome: AuditOutcome.DENIED,
+        severity: AuditSeverity.WARNING,
+        entity: 'User',
+        entityId: targetId,
+        entityLabel: label,
+        diff: { result: 'denied', reason: code },
+      });
+      throw new BadRequestException(code);
+    };
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: data.userId },
+      include: { userRoles: { include: { role: true } } },
+    });
+
+    if (!user) {
+      throw new NotFoundException('user_not_found');
+    }
+
+    const roles = user.userRoles.map((userRole) => userRole.role.name);
+
+    if (user.id === actor.id) deny('cannot_demote_self', user.id, this.userLabel(user));
+
+    // The last Super Admin (and any Super Admin) is never demoted through this route.
+    if (roles.includes(RolesEnum.SUPER_ADMIN)) {
+      deny('cannot_demote_super_admin', user.id, this.userLabel(user));
+    }
+
+    const adminRow = user.userRoles.find((userRole) => userRole.role.name === RolesEnum.ADMIN);
+
+    if (!adminRow) deny('user_is_not_admin', user.id, this.userLabel(user));
+
+    const remaining = roles.filter((name) => name !== RolesEnum.ADMIN);
+    const needsUserRole = remaining.length === 0;
+
+    let sessionsRevoked = 0;
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.userRole.delete({ where: { id: adminRow!.id } });
+
+      if (needsUserRole) {
+        const userRole = await tx.role.findUnique({ where: { name: RolesEnum.USER } });
+
+        if (!userRole) {
+          throw new BadRequestException('user_role_not_configured');
+        }
+
+        await tx.userRole.create({
+          data: { userId: user.id, roleId: userRole.id, assignedBy: actor.id },
+        });
+      }
+
+      const revoked = await tx.session.deleteMany({ where: { userId: user.id } });
+      sessionsRevoked = revoked.count;
+    });
+
+    await this.cache.purgeUserCache(user.id);
+
+    const remainingRoles = needsUserRole ? [RolesEnum.USER] : remaining;
+
+    this.emitAudit({
+      userId: actor.id,
+      targetUserId: user.id,
+      actorType,
+      action: AuditEventEnum.ADMIN_DEMOTED,
+      entity: 'User',
+      entityId: user.id,
+      entityLabel: this.userLabel(user),
+      diff: {
+        result: 'success',
+        reason,
+        previousRoles: roles,
+        removedRole: RolesEnum.ADMIN,
+        remainingRoles,
+      },
+      metadata: { sessionsRevoked },
+    });
+
+    return { message: 'admin_demoted', remainingRoles };
+  }
+
+  // AR-24
+  async listMySessions(actor: CurrentUserDto) {
+    this.assertActorIsAdmin(actor, AuditEventEnum.LOGIN_SUCCESS);
+
+    return this.prisma.session.findMany({
+      where: { userId: actor.id, revokedAt: null, expiresAt: { gt: new Date() } },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        createdAt: true,
+        expiresAt: true,
+        lastActiveAt: true,
+        deviceLabel: true,
+        userAgent: true,
+        ipAddress: true,
+      },
+    });
+  }
+
+  // AR-25. Deletes the session; marking it revoked would look like a stolen token on refresh.
+  async revokeMySession(actor: CurrentUserDto, sessionId: string): Promise<{ message: string }> {
+    this.assertActorIsAdmin(actor, AuditEventEnum.ADMIN_SESSION_REVOKED);
+
+    const deleted = await this.prisma.session.deleteMany({
+      where: { id: sessionId, userId: actor.id },
+    });
+
+    if (deleted.count === 0) {
+      throw new NotFoundException('session_not_found');
+    }
+
+    await this.cache.purgeUserCache(actor.id);
+
+    this.emitAudit({
+      userId: actor.id,
+      actorType: resolveActorType(actor.roles ?? []),
+      action: AuditEventEnum.ADMIN_SESSION_REVOKED,
+      entity: 'Session',
+      entityId: sessionId,
+      diff: { result: 'success' },
+    });
+
+    return { message: 'session_revoked' };
+  }
+
+  // AR-28. Built from the audit trail, so it needs no extra writes in the login code.
+  async loginHistory(actor: CurrentUserDto, query: AdminLoginHistoryQueryDto) {
+    this.assertSuperAdmin(actor, AuditEventEnum.LOGIN_SUCCESS);
+
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 20;
+
+    const actions =
+      query.result === 'SUCCESS'
+        ? [AuditEventEnum.LOGIN_SUCCESS]
+        : query.result
+          ? [AuditEventEnum.LOGIN_FAILED]
+          : [AuditEventEnum.LOGIN_SUCCESS, AuditEventEnum.LOGIN_FAILED];
+
+    const where: Prisma.AuditLogWhereInput = {
+      action: { in: actions },
+      diff: { path: ['context'], equals: ADMIN_LOGIN_CONTEXT },
+      ...(query.adminId ? { userId: query.adminId } : {}),
+      ...(query.from || query.to
+        ? {
+            createdAt: {
+              ...(query.from ? { gte: new Date(query.from) } : {}),
+              ...(query.to ? { lte: new Date(query.to) } : {}),
+            },
+          }
+        : {}),
+    };
+
+    const [rows, total] = await Promise.all([
+      this.prisma.auditLog.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+        select: {
+          id: true,
+          createdAt: true,
+          action: true,
+          userId: true,
+          actorName: true,
+          entityLabel: true,
+          ipAddress: true,
+          userAgent: true,
+          country: true,
+          city: true,
+          diff: true,
+        },
+      }),
+      this.prisma.auditLog.count({ where }),
+    ]);
+
+    const items = rows.map(({ diff, action, ...row }) => {
+      const reason =
+        diff && typeof diff === 'object' && !Array.isArray(diff) && typeof diff.reason === 'string'
+          ? diff.reason
+          : null;
+      const result =
+        action === AuditEventEnum.LOGIN_SUCCESS
+          ? 'SUCCESS'
+          : reason && reason.includes('lock')
+            ? 'LOCKED'
+            : 'FAILED';
+
+      return { ...row, result, reason };
+    });
+
+    return {
+      items: query.result === 'LOCKED' ? items.filter((i) => i.result === 'LOCKED') : items,
+      total,
+      page,
+      limit,
+    };
+  }
+
+  // AR-78
+  async statsLogins(actor: CurrentUserDto, query: AdminStatsQueryDto) {
+    this.assertSuperAdmin(actor, AuditEventEnum.LOGIN_SUCCESS);
+
+    const to = query.to ? new Date(query.to) : new Date();
+    const from = query.from
+      ? new Date(query.from)
+      : new Date(to.getTime() - 30 * 24 * 60 * 60 * 1000);
+    const interval =
+      query.interval === 'week' || query.interval === 'month' ? query.interval : 'day';
+
+    if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || from > to) {
+      throw new BadRequestException('invalid_period');
+    }
+
+    const rows = await this.prisma.$queryRaw<{ bucket: Date; action: string; count: bigint }[]>(
+      Prisma.sql`
+        SELECT date_trunc(${interval}::text, "createdAt") AS bucket, action, COUNT(*)::bigint AS count
+        FROM audit_log
+        WHERE "createdAt" >= ${from}
+          AND "createdAt" <= ${to}
+          AND action IN (${Prisma.join([AuditEventEnum.LOGIN_SUCCESS, AuditEventEnum.LOGIN_FAILED])})
+          AND diff->>'context' = ${ADMIN_LOGIN_CONTEXT}
+        GROUP BY 1, 2
+        ORDER BY 1
+      `,
+    );
+
+    const buckets = new Map<string, { date: string; signIns: number; failures: number }>();
+
+    for (const row of rows) {
+      const key = row.bucket.toISOString();
+      if (!buckets.has(key)) buckets.set(key, { date: key, signIns: 0, failures: 0 });
+      const bucket = buckets.get(key)!;
+      if (row.action === AuditEventEnum.LOGIN_SUCCESS) bucket.signIns = Number(row.count);
+      else bucket.failures = Number(row.count);
+    }
+
+    const series = [...buckets.values()];
+
+    const lockedNow = await this.prisma.user.count({
+      where: {
+        lockedUntil: { gt: new Date() },
+        userRoles: { some: { role: { name: { notIn: NON_INVITABLE_ROLE_NAMES } } } },
+      },
+    });
+
+    return {
+      period: { from, to, interval },
+      totals: {
+        signIns: series.reduce((sum, b) => sum + b.signIns, 0),
+        failures: series.reduce((sum, b) => sum + b.failures, 0),
+        // Lockouts are a point-in-time count: admin accounts locked right now.
+        adminsLockedNow: lockedNow,
+      },
+      series,
+    };
+  }
+
+  // AR-79. Staff roles only; the USER role is excluded so the counts stay fast and meaningful.
+  async stats2faAdoption(actor: CurrentUserDto) {
+    this.assertSuperAdmin(actor, AuditEventEnum.LOGIN_SUCCESS);
+
+    const roles = await this.prisma.role.findMany({
+      where: { name: { notIn: NON_INVITABLE_ROLE_NAMES } },
+      orderBy: { name: 'asc' },
+      select: { id: true, name: true },
+    });
+
+    const rows = await Promise.all(
+      roles.map(async (role) => {
+        const [total, enrolled] = await Promise.all([
+          this.prisma.userRole.count({ where: { roleId: role.id } }),
+          this.prisma.userRole.count({
+            where: { roleId: role.id, user: { twoFactorSecret: { isEnabled: true } } },
+          }),
+        ]);
+
+        return {
+          role: role.name,
+          accounts: total,
+          withTwoFactor: enrolled,
+          percent: total === 0 ? 0 : Math.round((enrolled / total) * 1000) / 10,
+        };
+      }),
+    );
+
+    return { roles: rows };
   }
 }
